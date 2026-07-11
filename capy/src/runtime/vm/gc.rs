@@ -29,7 +29,7 @@ mod tests {
             );
 
             assert_eq!(
-                ephemeron.as_gcobj().header().class_id(),
+                ephemeron.as_gc_object().header().class_id(),
                 ClassId::new(builtin_class_ids::EPHEMERON).unwrap()
             );
         });

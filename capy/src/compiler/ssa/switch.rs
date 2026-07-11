@@ -9,7 +9,7 @@ const SYMBOL_HASH_DISPATCH_MIN_LENGTH: usize = 4;
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SwitchCandidate<'gc> {
     kind: SwitchKind,
-    scrutinee: LinearAtom<'gc>,
+    scrutinee: Operand<'gc>,
     cases: Vec<SwitchCase<'gc>>,
     default: BranchTarget<'gc>,
     chain_blocks: Vec<BlockId>,
@@ -19,7 +19,7 @@ struct SwitchCandidate<'gc> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SwitchNode<'gc> {
     kind: SwitchKind,
-    scrutinee: LinearAtom<'gc>,
+    scrutinee: Operand<'gc>,
     value: SwitchCaseValue<'gc>,
     target: BranchTarget<'gc>,
     next: BranchTarget<'gc>,
@@ -194,7 +194,7 @@ fn switch_node<'gc>(
 
 fn switch_direct_node<'gc>(block: &Block<'gc>, allow_prefix: bool) -> Option<SwitchNode<'gc>> {
     let Terminator::Branch {
-        test: LinearAtom::Local(test),
+        test: Operand::Local(test),
         consequent,
         alternative,
         hints: _,
@@ -224,7 +224,7 @@ fn switch_jump_branch_node<'gc>(
         return None;
     }
     let Terminator::Branch {
-        test: LinearAtom::Local(branch_test),
+        test: Operand::Local(branch_test),
         consequent,
         alternative,
         hints: _,
@@ -242,7 +242,7 @@ fn switch_jump_branch_node<'gc>(
 fn branch_test_jump_arg<'gc>(
     branch: &Block<'gc>,
     branch_test: ValueId,
-    args: &[LinearAtom<'gc>],
+    args: &[Operand<'gc>],
 ) -> Option<ValueId> {
     let fixed_param_count = branch
         .params
@@ -251,7 +251,7 @@ fn branch_test_jump_arg<'gc>(
     let index = branch.params[..fixed_param_count]
         .iter()
         .position(|param| *param == branch_test)?;
-    let LinearAtom::Local(test) = args.get(index).copied()? else {
+    let Operand::Local(test) = args.get(index).copied()? else {
         return None;
     };
     Some(test)
@@ -307,15 +307,12 @@ fn switch_kind_for_primitive(prim: Primitive) -> Option<SwitchKind> {
     }
 }
 
-fn fixnum_switch_test<'gc>(
-    lhs: LinearAtom<'gc>,
-    rhs: LinearAtom<'gc>,
-) -> Option<(LinearAtom<'gc>, i32)> {
+fn fixnum_switch_test<'gc>(lhs: Operand<'gc>, rhs: Operand<'gc>) -> Option<(Operand<'gc>, i32)> {
     match (lhs, rhs) {
-        (scrutinee, LinearAtom::Constant(value)) if value.is_int32() => {
+        (scrutinee, Operand::Constant(value)) if value.is_int32() => {
             Some((scrutinee, value.as_int32()))
         }
-        (LinearAtom::Constant(value), scrutinee) if value.is_int32() => {
+        (Operand::Constant(value), scrutinee) if value.is_int32() => {
             Some((scrutinee, value.as_int32()))
         }
         _ => None,
@@ -349,15 +346,12 @@ fn switch_eq_char_node<'gc>(
     })
 }
 
-fn char_switch_test<'gc>(
-    lhs: LinearAtom<'gc>,
-    rhs: LinearAtom<'gc>,
-) -> Option<(LinearAtom<'gc>, i32)> {
+fn char_switch_test<'gc>(lhs: Operand<'gc>, rhs: Operand<'gc>) -> Option<(Operand<'gc>, i32)> {
     match (lhs, rhs) {
-        (scrutinee, LinearAtom::Constant(value)) if value.is_char() => {
+        (scrutinee, Operand::Constant(value)) if value.is_char() => {
             Some((scrutinee, value.char() as i32))
         }
-        (LinearAtom::Constant(value), scrutinee) if value.is_char() => {
+        (Operand::Constant(value), scrutinee) if value.is_char() => {
             Some((scrutinee, value.char() as i32))
         }
         _ => None,
@@ -400,7 +394,7 @@ fn is_eq_like_primitive(prim: Primitive) -> bool {
 
 struct SwitchPrimCall<'gc> {
     prim: Primitive,
-    args: Vec<LinearAtom<'gc>>,
+    args: Vec<Operand<'gc>>,
     instruction_count: usize,
 }
 
@@ -424,8 +418,8 @@ fn switch_prim_call<'gc>(
     let mut needed = args
         .iter()
         .filter_map(|arg| match arg {
-            LinearAtom::Local(value) => Some(*value),
-            LinearAtom::Constant(_) => None,
+            Operand::Local(value) => Some(*value),
+            Operand::Constant(_) => None,
         })
         .collect::<HashSet<_>>();
 
@@ -460,25 +454,25 @@ fn switch_prim_call<'gc>(
 }
 
 fn resolve_local_constant<'gc>(
-    atom: LinearAtom<'gc>,
+    atom: Operand<'gc>,
     constants: &HashMap<ValueId, Value<'gc>>,
-) -> LinearAtom<'gc> {
+) -> Operand<'gc> {
     match atom {
-        LinearAtom::Local(value) => constants
+        Operand::Local(value) => constants
             .get(&value)
             .copied()
-            .map(LinearAtom::Constant)
+            .map(Operand::Constant)
             .unwrap_or(atom),
-        LinearAtom::Constant(_) => atom,
+        Operand::Constant(_) => atom,
     }
 }
 
 fn symbol_switch_test<'gc>(
-    lhs: LinearAtom<'gc>,
-    rhs: LinearAtom<'gc>,
-) -> Option<(LinearAtom<'gc>, SwitchCaseValue<'gc>)> {
+    lhs: Operand<'gc>,
+    rhs: Operand<'gc>,
+) -> Option<(Operand<'gc>, SwitchCaseValue<'gc>)> {
     match (lhs, rhs) {
-        (scrutinee, LinearAtom::Constant(value)) if value.is::<Symbol>() => {
+        (scrutinee, Operand::Constant(value)) if value.is::<Symbol>() => {
             let symbol = value.downcast::<Symbol<'_>>();
             Some((
                 scrutinee,
@@ -488,7 +482,7 @@ fn symbol_switch_test<'gc>(
                 },
             ))
         }
-        (LinearAtom::Constant(value), scrutinee) if value.is::<Symbol>() => {
+        (Operand::Constant(value), scrutinee) if value.is::<Symbol>() => {
             let symbol = value.downcast::<Symbol<'_>>();
             Some((
                 scrutinee,
@@ -579,7 +573,7 @@ fn switch_char_node<'gc>(
         return None;
     }
 
-    let LinearAtom::Constant(case_char) = case_args[0] else {
+    let Operand::Constant(case_char) = case_args[0] else {
         return None;
     };
     if !case_char.is_char() {
@@ -588,11 +582,11 @@ fn switch_char_node<'gc>(
 
     let compares_ints = matches!(
         (cmp_args[0], cmp_args[1]),
-        (LinearAtom::Local(lhs), LinearAtom::Local(rhs))
+        (Operand::Local(lhs), Operand::Local(rhs))
             if lhs == *scrutinee_int && rhs == *case_int
     ) || matches!(
         (cmp_args[0], cmp_args[1]),
-        (LinearAtom::Local(lhs), LinearAtom::Local(rhs))
+        (Operand::Local(lhs), Operand::Local(rhs))
             if lhs == *case_int && rhs == *scrutinee_int
     );
     if !compares_ints {
@@ -645,15 +639,15 @@ fn switch_removed_defs<'gc>(
     defs
 }
 
-fn atom_mentions_defs<'gc>(atom: LinearAtom<'gc>, defs: &HashSet<ValueId>) -> bool {
-    matches!(atom, LinearAtom::Local(value) if defs.contains(&value))
+fn atom_mentions_defs<'gc>(atom: Operand<'gc>, defs: &HashSet<ValueId>) -> bool {
+    matches!(atom, Operand::Local(value) if defs.contains(&value))
 }
 
 fn branch_target_mentions_defs<'gc>(target: &BranchTarget<'gc>, defs: &HashSet<ValueId>) -> bool {
     target
         .uses()
         .iter()
-        .any(|atom| matches!(atom, LinearAtom::Local(value) if defs.contains(value)))
+        .any(|atom| matches!(atom, Operand::Local(value) if defs.contains(value)))
 }
 
 fn surviving_blocks_mention_defs<'gc>(
@@ -673,7 +667,7 @@ fn surviving_blocks_mention_defs<'gc>(
             if block.instructions[..keep]
                 .iter()
                 .flat_map(Instruction::uses)
-                .any(|atom| matches!(atom, LinearAtom::Local(value) if defs.contains(&value)))
+                .any(|atom| matches!(atom, Operand::Local(value) if defs.contains(&value)))
             {
                 return true;
             }
@@ -685,7 +679,7 @@ fn surviving_blocks_mention_defs<'gc>(
             .iter()
             .flat_map(Instruction::uses)
             .chain(block.terminator.uses())
-            .any(|atom| matches!(atom, LinearAtom::Local(value) if defs.contains(&value)))
+            .any(|atom| matches!(atom, Operand::Local(value) if defs.contains(&value)))
         {
             return true;
         }

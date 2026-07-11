@@ -290,7 +290,7 @@ fn analyze_dominators<'gc>(
         push_group(&mut groups, destination, function);
     }
 
-    groups.sort_by(|left, right| right.1.len().cmp(&left.1.len()));
+    groups.sort_by_key(|group| std::cmp::Reverse(group.1.len()));
     groups
 }
 

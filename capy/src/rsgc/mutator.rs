@@ -3,7 +3,7 @@ use crate::{
         ObjectSlot,
         finalizer::Finalizers,
         mm::MemoryManager,
-        object::{AllocationHooksOf, GCObject, HeapObjectHeader, OBJECT_REF_OFFSET},
+        object::{AllocationHooksOf, GcObject, HeapObjectHeader, OBJECT_REF_OFFSET},
         ptr::Gc,
         sync::thread::{AllocFastPath, Thread, current_thread, is_current_thread_registed},
         traits::Trace,
@@ -50,13 +50,13 @@ pub trait Rootable<'a> {
 
 #[derive(Clone, Copy)]
 pub struct UnpublishedAllocation {
-    object: GCObject,
+    object: GcObject,
     payload_size: usize,
     semantics: AllocationSemantics,
 }
 
 impl UnpublishedAllocation {
-    pub fn object(self) -> GCObject {
+    pub fn object(self) -> GcObject {
         self.object
     }
 }
@@ -162,7 +162,7 @@ where
         INIT_COLLECTION.call_once(|| {
             mmtk::memory_manager::initialize_collection(
                 &super::GarbageCollector::get().mmtk,
-                thread.to_vmthread(),
+                thread.to_vm_thread(),
             );
 
             GLOBAL_SIDE_METADATA_BASE_ADDRESS.store(
@@ -313,11 +313,11 @@ impl<'gc> Mutation<'gc> {
     pub const OFFSET_OF_STATE: usize = Thread::RT_STATE_OFFSET;
 
     #[inline(always)]
-    unsafe fn post_alloc(&self, object: GCObject, bytes: usize, semantics: AllocationSemantics) {
+    unsafe fn post_alloc(&self, object: GcObject, bytes: usize, semantics: AllocationSemantics) {
         unsafe {
             mmtk::memory_manager::post_alloc(
                 self.thread.mutator_unchecked(),
-                object.to_objref().unwrap(),
+                object.to_object_reference().unwrap(),
                 bytes,
                 semantics,
             );
@@ -325,8 +325,8 @@ impl<'gc> Mutation<'gc> {
     }
 
     #[inline(always)]
-    unsafe fn set_vo_bit_for_object(&self, object: GCObject) {
-        let object = object.to_objref().unwrap();
+    unsafe fn set_vo_bit_for_object(&self, object: GcObject) {
+        let object = object.to_object_reference().unwrap();
         VO_BIT_SIDE_METADATA_SPEC.store_atomic::<u8>(object.to_raw_address(), 1, Ordering::SeqCst);
     }
 
@@ -355,7 +355,7 @@ impl<'gc> Mutation<'gc> {
         size: usize,
         semantics: AllocationSemantics,
     ) -> UnpublishedAllocation {
-        let object = GCObject::from(object_start + OBJECT_REF_OFFSET);
+        let object = GcObject::from(object_start + OBJECT_REF_OFFSET);
         UnpublishedAllocation {
             object,
             payload_size: size,
@@ -369,7 +369,7 @@ impl<'gc> Mutation<'gc> {
         object_start: Address,
         size: usize,
         semantics: AllocationSemantics,
-    ) -> GCObject {
+    ) -> GcObject {
         let allocation = unsafe { self.finish_unpublished_object(object_start, size, semantics) };
         let object = allocation.object();
         unsafe {
@@ -399,7 +399,7 @@ impl<'gc> Mutation<'gc> {
         size: usize,
         header_word: u64,
         semantics: AllocationSemantics,
-    ) -> GCObject {
+    ) -> GcObject {
         let allocation = unsafe {
             self.finish_unpublished_object_with_header(object_start, size, header_word, semantics)
         };
@@ -506,7 +506,7 @@ impl<'gc> Mutation<'gc> {
             obj.to_address().store(value);
             self.publish_allocated_object(allocation);
 
-            Gc::from_gcobj(obj)
+            Gc::from_gc_object(obj)
         }
     }
 
@@ -608,7 +608,7 @@ impl<'gc> Mutation<'gc> {
         alignment: usize,
         header_word: u64,
         semantics: AllocationSemantics,
-    ) -> GCObject {
+    ) -> GcObject {
         unsafe {
             self.flush_tlab();
             let object_start = mmtk::memory_manager::alloc_slow_with_options(
@@ -638,7 +638,7 @@ impl<'gc> Mutation<'gc> {
         size: usize,
         alignment: usize,
         header_word: u64,
-    ) -> GCObject {
+    ) -> GcObject {
         unsafe {
             self.flush_tlab();
             let object_start = mmtk::memory_manager::alloc_slow_with_options(
@@ -673,7 +673,7 @@ impl<'gc> Mutation<'gc> {
         size: usize,
         alignment: usize,
         header_word: u64,
-    ) -> GCObject {
+    ) -> GcObject {
         unsafe {
             self.flush_tlab();
             let object_start = mmtk::memory_manager::alloc_slow_with_options(
@@ -708,7 +708,7 @@ impl<'gc> Mutation<'gc> {
         size: usize,
         alignment: usize,
         header_word: u64,
-    ) -> GCObject {
+    ) -> GcObject {
         unsafe {
             self.flush_tlab();
             let object_start = mmtk::memory_manager::alloc_slow_with_options(
@@ -741,7 +741,7 @@ impl<'gc> Mutation<'gc> {
             let align = layout.align();
             let obj = self.raw_allocate_with_header_word(size, align, header_word, semantics);
             obj.to_address().store(MaybeUninit::<T>::uninit());
-            Gc::from_gcobj(obj)
+            Gc::from_gc_object(obj)
         }
     }
 
@@ -759,7 +759,7 @@ impl<'gc> Mutation<'gc> {
         alignment: usize,
         header_word: u64,
         semantics: AllocationSemantics,
-    ) -> GCObject {
+    ) -> GcObject {
         let allocation = unsafe {
             self.raw_allocate_with_header_word_unpublished(size, alignment, header_word, semantics)
         };
@@ -892,7 +892,7 @@ impl<'gc> Mutation<'gc> {
     /// # Safety
     ///
     /// May cause UB if not used during a concurrent mark.
-    pub unsafe fn raw_weak_reference_load(&self, weak: GCObject) {
+    pub unsafe fn raw_weak_reference_load(&self, weak: GcObject) {
         if weak.is_null() {
             return;
         }
@@ -901,7 +901,7 @@ impl<'gc> Mutation<'gc> {
             self.thread
                 .mutator_unchecked()
                 .barrier()
-                .load_weak_reference(weak.to_objref().unwrap());
+                .load_weak_reference(weak.to_object_reference().unwrap());
         }
     }
 
@@ -914,9 +914,9 @@ impl<'gc> Mutation<'gc> {
     /// subject to change in the future.
     pub unsafe fn raw_object_reference_write(
         &self,
-        src: GCObject,
+        src: GcObject,
         slot: ObjectSlot,
-        target: GCObject,
+        target: GcObject,
     ) {
         match self.thread.barrier() {
             BarrierSelector::ObjectBarrier => unsafe {
@@ -930,9 +930,9 @@ impl<'gc> Mutation<'gc> {
                         .mutator_unchecked()
                         .barrier()
                         .object_reference_write_slow(
-                            src.to_objref().unwrap_unchecked(),
+                            src.to_object_reference().unwrap_unchecked(),
                             slot,
-                            target.to_objref(),
+                            target.to_object_reference(),
                         );
                 }
             },
@@ -948,9 +948,9 @@ impl<'gc> Mutation<'gc> {
                             .mutator_unchecked()
                             .barrier()
                             .object_reference_write_slow(
-                                src.to_objref().unwrap_unchecked(),
+                                src.to_object_reference().unwrap_unchecked(),
                                 slot,
-                                target.to_objref(),
+                                target.to_object_reference(),
                             );
                     }
                 }
@@ -971,7 +971,7 @@ impl<'gc> Mutation<'gc> {
         size: usize,
         alignment: usize,
         mut semantics: AllocationSemantics,
-    ) -> GCObject {
+    ) -> GcObject {
         unsafe {
             if size + size_of::<HeapObjectHeader>() >= 8 * 1024 {
                 semantics = AllocationSemantics::Los;
@@ -1007,7 +1007,7 @@ impl<'gc> Mutation<'gc> {
         size: usize,
         alignment: usize,
         semantics: AllocationSemantics,
-    ) -> GCObject {
+    ) -> GcObject {
         unsafe {
             self.flush_tlab();
             let object_start = mmtk::memory_manager::alloc_slow_with_options(
@@ -1034,7 +1034,7 @@ impl<'gc> Mutation<'gc> {
         size: usize,
         alignment: usize,
         mut semantics: AllocationSemantics,
-    ) -> GCObject {
+    ) -> GcObject {
         if semantics == AllocationSemantics::Default
             && size + size_of::<HeapObjectHeader>() >= self.thread.max_non_los_alloc_bytes()
         {
@@ -1054,7 +1054,7 @@ impl<'gc> Mutation<'gc> {
         }
     }
 
-    pub fn raw_allocate_los_uninit(&self, size: usize, alignment: usize) -> GCObject {
+    pub fn raw_allocate_los_uninit(&self, size: usize, alignment: usize) -> GcObject {
         unsafe {
             self.flush_tlab();
             let object_start = mmtk::memory_manager::alloc_slow_with_options(
@@ -1076,7 +1076,7 @@ impl<'gc> Mutation<'gc> {
     /// # Safety
     ///
     /// Same as [`raw_alloc_uninit`](Self::raw_alloc_uninit).
-    pub unsafe fn raw_allocate_immortal_uninit(&self, size: usize, alignment: usize) -> GCObject {
+    pub unsafe fn raw_allocate_immortal_uninit(&self, size: usize, alignment: usize) -> GcObject {
         unsafe {
             self.flush_tlab();
             let object_start = mmtk::memory_manager::alloc_slow_with_options(
@@ -1098,7 +1098,7 @@ impl<'gc> Mutation<'gc> {
     /// # Safety
     ///
     /// Same as [`raw_alloc_uninit`](Self::raw_alloc_uninit).
-    pub unsafe fn raw_allocate_nonmoving_uninit(&self, size: usize, alignment: usize) -> GCObject {
+    pub unsafe fn raw_allocate_nonmoving_uninit(&self, size: usize, alignment: usize) -> GcObject {
         unsafe {
             self.flush_tlab();
             let object_start = mmtk::memory_manager::alloc_slow_with_options(

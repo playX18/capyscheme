@@ -201,7 +201,7 @@ macro_rules! make_finalizer_queue {
 
     }) => {
         pub struct $name {
-            finalizers: ::std::sync::Mutex<::std::collections::VecDeque<$crate::object::GCObject>>,
+            finalizers: ::std::sync::Mutex<::std::collections::VecDeque<$crate::object::GcObject>>,
         }
 
         impl $name {
@@ -217,7 +217,7 @@ macro_rules! make_finalizer_queue {
             ) -> Option<$crate::ptr::Gc<$gc, $t>> {
                 let mut finalizers = self.finalizers.lock().unwrap();
                 if let Some(object) = finalizers.pop_front() {
-                    Some(unsafe { $crate::ptr::Gc::from_gcobj(object) })
+                    Some(unsafe { $crate::ptr::Gc::from_gc_object(object) })
                 } else {
                     None
                 }
@@ -229,7 +229,7 @@ macro_rules! make_finalizer_queue {
             ) -> Option<$crate::ptr::Gc<$gc, $t>> {
                 let mut finalizers = self.finalizers.lock().unwrap();
                 if let Some(object) = finalizers.pop_back() {
-                    Some(unsafe { $crate::ptr::Gc::from_gcobj(object) })
+                    Some(unsafe { $crate::ptr::Gc::from_gc_object(object) })
                 } else {
                     None
                 }
@@ -247,7 +247,7 @@ macro_rules! make_finalizer_queue {
         unsafe impl $crate::finalizer::FinalizerQueue for $name {
             fn mark_ready_to_run(&self, object: $crate::mmtk::util::ObjectReference) {
                 let mut finalizers = self.finalizers.lock().unwrap();
-                finalizers.push_back($crate::object::GCObject::from(object));
+                finalizers.push_back($crate::object::GcObject::from(object));
             }
 
             fn schedule(&self) {

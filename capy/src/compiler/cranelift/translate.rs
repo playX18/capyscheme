@@ -11,13 +11,11 @@ use crate::{
     compiler::{
         cps::graph::Atom,
         cranelift::{
-            RestSource, MAX_RAISE_ARITY, RegisterCallArgs, SSABuilder, VarDef,
-            primitive::PrimValue,
+            MAX_RAISE_ARITY, RegisterCallArgs, RestSource, SsaBuilder, VarDef, primitive::PrimValue,
         },
         ssa::{
-            Block as LinearBlock, BranchTarget, ClosureKind, CodeId, Instruction, LinearAtom,
-            Procedure, ProcedureKind, RestPredicate, SwitchCaseValue, SwitchKind, Terminator,
-            ValueId,
+            Block as SsaBlock, BranchTarget, ClosureKind, CodeId, Instruction, Operand, Procedure,
+            ProcedureKind, RestPredicate, SwitchCaseValue, SwitchKind, Terminator, ValueId,
         },
     },
     expander::core::{LVarRef, fresh_lvar},
@@ -84,7 +82,7 @@ impl AllocationHeaderPreset {
     }
 }
 
-impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
+impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
     fn target_binding(&self) -> LVarRef<'gc> {
         self.target.sources[&self.target.binding]
     }
@@ -900,7 +898,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             .blocks
             .iter()
             .find(|block| block.id == procedure.entry)
-            .expect("linear procedure should contain its entry block");
+            .expect("SSA procedure should contain its entry block");
         self.lower_block(procedure, entry, true);
 
         for block in &procedure.blocks {
@@ -914,12 +912,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
-    fn lower_block(
-        &mut self,
-        procedure: &Procedure<'gc>,
-        block: &LinearBlock<'gc>,
-        is_entry: bool,
-    ) {
+    fn lower_block(&mut self, procedure: &Procedure<'gc>, block: &SsaBlock<'gc>, is_entry: bool) {
         self.set_debug_loc(block.source);
         if is_entry {
             self.bind_ssa_var(procedure.binding, VarDef::Value(self.rator));
@@ -968,7 +961,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             .ssa_variables
             .get(&var)
             .copied()
-            .unwrap_or_else(|| panic!("linear variable {var:?} not found"));
+            .unwrap_or_else(|| panic!("SSA variable {var:?} not found"));
         match def {
             VarDef::Value(value) => value,
             VarDef::Comparison(value) => self.comparison_to_value(value),
@@ -979,7 +972,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         *self
             .rest_sources
             .get(&rest)
-            .unwrap_or_else(|| panic!("linear rest source {rest:?} not found"))
+            .unwrap_or_else(|| panic!("SSA rest source {rest:?} not found"))
     }
 
     fn rest_suffix_len(&mut self, rest: ValueId, skip: usize) -> ir::Value {
@@ -995,16 +988,16 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.builder.ins().bor_imm(value, Value::NUMBER_TAG)
     }
 
-    fn emit_atom(&mut self, atom: LinearAtom<'gc>) -> ir::Value {
+    fn emit_atom(&mut self, atom: Operand<'gc>) -> ir::Value {
         match atom {
-            LinearAtom::Constant(value) => self.atom(Atom::Constant(value)),
-            LinearAtom::Local(var) => self.ssa_var(var),
+            Operand::Constant(value) => self.atom(Atom::Constant(value)),
+            Operand::Local(var) => self.ssa_var(var),
         }
     }
 
-    fn emit_atom_for_cond(&mut self, atom: LinearAtom<'gc>) -> ir::Value {
+    fn emit_atom_for_cond(&mut self, atom: Operand<'gc>) -> ir::Value {
         match atom {
-            LinearAtom::Local(var) => match self.ssa_variables.get(&var).copied() {
+            Operand::Local(var) => match self.ssa_variables.get(&var).copied() {
                 Some(VarDef::Comparison(val)) => val,
                 _ => {
                     let val = self.ssa_var(var);
@@ -1013,7 +1006,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                         .icmp_imm(IntCC::NotEqual, val, Value::VALUE_FALSE)
                 }
             },
-            LinearAtom::Constant(_) => {
+            Operand::Constant(_) => {
                 let val = self.emit_atom(atom);
                 self.builder
                     .ins()
@@ -1022,16 +1015,16 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
-    fn emit_atom_as_term_arg(&mut self, atom: LinearAtom<'gc>) -> Atom<'gc> {
+    fn emit_atom_as_term_arg(&mut self, atom: Operand<'gc>) -> Atom<'gc> {
         match atom {
-            LinearAtom::Constant(value) => Atom::Constant(value),
-            LinearAtom::Local(var) => {
+            Operand::Constant(value) => Atom::Constant(value),
+            Operand::Local(var) => {
                 let alias = self.ssa_source(var).unwrap_or_else(|| {
                     if let Some(alias) = self.synthetic_aliases.get(&var).copied() {
                         alias
                     } else {
                         let name =
-                            Symbol::from_str(self.module_builder.ctx, "linear-synthetic").into();
+                            Symbol::from_str(self.module_builder.ctx, "ssa-synthetic").into();
                         let alias = fresh_lvar(self.module_builder.ctx, name);
                         self.synthetic_aliases.insert(var, alias);
                         alias
@@ -1040,7 +1033,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 let def = *self
                     .ssa_variables
                     .get(&var)
-                    .unwrap_or_else(|| panic!("linear variable {var:?} not found"));
+                    .unwrap_or_else(|| panic!("SSA variable {var:?} not found"));
                 self.variables.insert(alias, def);
                 Atom::Local(alias)
             }
@@ -1082,7 +1075,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 closure,
                 index,
             } => {
-                if matches!(closure, LinearAtom::Local(binding) if *binding == self.target.binding)
+                if matches!(closure, Operand::Local(binding) if *binding == self.target.binding)
                     && let Some(source) = self.target.free_vars.get(*index)
                     && self.is_self_reference(self.target.sources[source])
                 {
@@ -1119,7 +1112,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 source,
             } => {
                 self.set_debug_loc(*source);
-                let LinearAtom::Constant(cache_key) = cache_key else {
+                let Operand::Constant(cache_key) = cache_key else {
                     panic!("invalid cache-ref: expected constant cache key, got {cache_key:?}");
                 };
                 let cell = self.module_builder.intern_cache_cell(*cache_key);
@@ -1133,7 +1126,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 source,
             } => {
                 self.set_debug_loc(*source);
-                let LinearAtom::Constant(cache_key) = cache_key else {
+                let Operand::Constant(cache_key) = cache_key else {
                     panic!("invalid cache-set!: expected constant cache key, got {cache_key:?}");
                 };
                 let value = self.emit_atom(*value);
@@ -1244,13 +1237,12 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
-    fn resolve_callee(&mut self, callee: LinearAtom<'gc>) -> Callee {
-        if let LinearAtom::Local(var_id) = callee
+    fn resolve_callee(&mut self, callee: Operand<'gc>) -> Callee {
+        if let Operand::Local(var_id) = callee
             && let Some(var) = self.ssa_source(var_id)
+            && self.is_self_reference(var)
         {
-            if self.is_self_reference(var) {
-                return Callee::SelfRec(self.entry_block);
-            }
+            return Callee::SelfRec(self.entry_block);
         }
 
         let callee = self.emit_atom(callee);
@@ -1283,7 +1275,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
-    fn resolve_tail_callee(&mut self, callee: LinearAtom<'gc>) -> Callee {
+    fn resolve_tail_callee(&mut self, callee: Operand<'gc>) -> Callee {
         let closure = self.emit_atom(callee);
         let code = self.builder.ins().load(
             types::I64,
@@ -1299,9 +1291,9 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
     fn emit_call(
         &mut self,
-        callee: LinearAtom<'gc>,
-        retk: LinearAtom<'gc>,
-        args: &[LinearAtom<'gc>],
+        callee: Operand<'gc>,
+        retk: Operand<'gc>,
+        args: &[Operand<'gc>],
         source: Value<'gc>,
     ) {
         self.set_debug_loc(source);
@@ -1337,12 +1329,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.emit_callee_jump(callee, call_args);
     }
 
-    fn emit_tail_call(
-        &mut self,
-        callee: LinearAtom<'gc>,
-        args: &[LinearAtom<'gc>],
-        source: Value<'gc>,
-    ) {
+    fn emit_tail_call(&mut self, callee: Operand<'gc>, args: &[Operand<'gc>], source: Value<'gc>) {
         self.set_debug_loc(source);
         let callee = self.resolve_tail_callee(callee);
         let args = args
@@ -1354,7 +1341,12 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.emit_callee_jump(callee, call_args);
     }
 
-    fn emit_raise_to_handler(&mut self, kind: RaiseKind, args: &[LinearAtom<'gc>], source: Value<'gc>) {
+    fn emit_raise_to_handler(
+        &mut self,
+        kind: RaiseKind,
+        args: &[Operand<'gc>],
+        source: Value<'gc>,
+    ) {
         let args = args
             .iter()
             .copied()
@@ -1417,13 +1409,13 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         &mut self,
         procedure: &Procedure<'gc>,
         target: crate::compiler::ssa::BlockId,
-        args: &[LinearAtom<'gc>],
+        args: &[Operand<'gc>],
     ) {
         let block = procedure
             .blocks
             .iter()
             .find(|block| block.id == target)
-            .expect("linear jump target should exist");
+            .expect("SSA jump target should exist");
         let fixed_count = if block.variadic.is_some() {
             block.params.len() - 1
         } else {
@@ -1471,7 +1463,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.builder.ins().jump(clif_block, &block_args);
     }
 
-    fn raise_wrong_block_arity(&mut self, args: &[LinearAtom<'gc>], expected: isize) {
+    fn raise_wrong_block_arity(&mut self, args: &[Operand<'gc>], expected: isize) {
         let got = self
             .builder
             .ins()
@@ -1489,9 +1481,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
     fn emit_branch_target(&mut self, procedure: &Procedure<'gc>, target: &BranchTarget<'gc>) {
         match target {
-            BranchTarget::Local { block, args } => {
-                self.jump_to_block(procedure, *block, args)
-            }
+            BranchTarget::Local { block, args } => self.jump_to_block(procedure, *block, args),
             BranchTarget::Reified { continuation, args } => {
                 self.emit_tail_call(*continuation, args, Value::new(false));
             }
@@ -1511,7 +1501,9 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 args,
                 source,
             } => self.emit_tail_call(*callee, args, *source),
-            Terminator::Raise { kind, args, source } => self.emit_raise_to_handler(*kind, args, *source),
+            Terminator::Raise { kind, args, source } => {
+                self.emit_raise_to_handler(*kind, args, *source)
+            }
             Terminator::Jump { target, args } => {
                 self.jump_to_block(procedure, *target, args);
             }
@@ -1545,7 +1537,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         &mut self,
         procedure: &Procedure<'gc>,
         kind: SwitchKind,
-        scrutinee: LinearAtom<'gc>,
+        scrutinee: Operand<'gc>,
         cases: &[crate::compiler::ssa::SwitchCase<'gc>],
         default: &BranchTarget<'gc>,
     ) {

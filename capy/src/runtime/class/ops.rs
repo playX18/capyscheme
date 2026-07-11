@@ -469,7 +469,7 @@ pub mod class_ops {
         let Some(current_class) = table.lookup(class.id()) else {
             return nctx.return_(false);
         };
-        nctx.return_(current_class.as_gcobj() != class.as_gcobj())
+        nctx.return_(current_class.as_gc_object() != class.as_gc_object())
     }
 
     #[scheme(name = "touch-instance!")]
@@ -1099,7 +1099,7 @@ pub mod class_ops {
         }
 
         let mut parsed_initargs = Vec::new();
-        for pair in initargs.chunks_exact(2) {
+        for pair in initargs.as_chunks::<2>().0 {
             let keyword_value = pair[0];
             if !keyword_value.is::<Keyword>() {
                 let who = nctx.ctx.intern("make-instance");
@@ -1462,8 +1462,8 @@ pub mod class_ops {
             value
         } else if !accessor.init_thunk().is_empty() {
             match crate::runtime::vm::call_scheme(nctx.ctx, accessor.init_thunk(), []) {
-                crate::runtime::vm::VMResult::Ok(value) => value,
-                crate::runtime::vm::VMResult::Err(error) => {
+                crate::runtime::vm::ExecutionResult::Ok(value) => value,
+                crate::runtime::vm::ExecutionResult::Err(error) => {
                     let who = nctx.ctx.intern("slot-initialize-using-accessor!");
                     let message = nctx.ctx.str("slot init thunk failed");
                     return nctx.raise_assertion_violation(who, message, error);

@@ -261,7 +261,7 @@ fn code_blocks_allocate_with_class_only_headers() {
     with_ctx(|ctx| {
         let unlinked = RelocatableCodeBlock::new(ctx, &[0xc3], 0, &[], &[]);
         assert_eq!(
-            unlinked.as_gcobj().header().class_id(),
+            unlinked.as_gc_object().header().class_id(),
             ClassId::new(builtin_class_ids::RELOCATABLE_CODE_BLOCK).unwrap()
         );
 
@@ -273,7 +273,7 @@ fn code_blocks_allocate_with_class_only_headers() {
             Value::new(false),
         );
         assert_eq!(
-            code_block.as_gcobj().header().class_id(),
+            code_block.as_gc_object().header().class_id(),
             ClassId::new(builtin_class_ids::CODE_BLOCK).unwrap()
         );
     });

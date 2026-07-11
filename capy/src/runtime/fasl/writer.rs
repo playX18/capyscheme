@@ -3,7 +3,7 @@ use std::{
     io::{self, BufWriter, Write},
 };
 
-use flate2::{Compression, write::GzEncoder};
+use flate2::{Compression as FlateCompression, write::GzEncoder};
 use im::HashSet;
 
 use crate::rsgc::mmtk::util::Address;
@@ -28,12 +28,12 @@ use super::{
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FaslCompression {
+pub enum Compression {
     None,
     Gzip,
 }
 
-impl FaslCompression {
+impl Compression {
     fn tag(self) -> u8 {
         match self {
             Self::None => FASL_COMPRESSION_NONE,
@@ -43,12 +43,12 @@ impl FaslCompression {
 }
 
 #[derive(Clone, Copy)]
-pub enum FaslImage<'a, 'gc> {
+pub enum Image<'a, 'gc> {
     Value(Value<'gc>),
     Program(&'a ProgramSpec<'a, 'gc>),
 }
 
-pub struct FaslWriter<'gc, W: Write> {
+pub struct Writer<'gc, W: Write> {
     pub ctx: Context<'gc>,
     pub writer: BufWriter<W>,
     pub lites: crate::rsgc::Gc<'gc, HashTable<'gc>>,
@@ -57,7 +57,7 @@ pub struct FaslWriter<'gc, W: Write> {
     pub initmap: HashSet<Address>,
 }
 
-impl<'gc, W: Write> FaslWriter<'gc, W> {
+impl<'gc, W: Write> Writer<'gc, W> {
     pub fn put8(&mut self, byte: u8) -> io::Result<()> {
         self.writer.write_all(&[byte])
     }
@@ -382,17 +382,17 @@ impl<'gc, W: Write> FaslWriter<'gc, W> {
     }
 
     pub fn write(self, obj: Value<'gc>) -> io::Result<()> {
-        self.write_image(FaslImage::Value(obj), FaslCompression::None)
+        self.write_image(Image::Value(obj), Compression::None)
     }
 
     pub fn write_image(
         mut self,
-        image: FaslImage<'_, 'gc>,
-        compression: FaslCompression,
+        image: Image<'_, 'gc>,
+        compression: Compression,
     ) -> io::Result<()> {
         match image {
-            FaslImage::Value(value) => self.scan(value)?,
-            FaslImage::Program(spec) => self.scan_program(spec)?,
+            Image::Value(value) => self.scan(value)?,
+            Image::Program(spec) => self.scan_program(spec)?,
         }
         self.put_header()?;
         self.put8(compression.tag())?;
@@ -418,10 +418,10 @@ impl<'gc, W: Write> FaslWriter<'gc, W> {
         Ok(())
     }
 
-    fn put_image_payload(&mut self, image: FaslImage<'_, 'gc>) -> io::Result<()> {
+    fn put_image_payload(&mut self, image: Image<'_, 'gc>) -> io::Result<()> {
         match image {
-            FaslImage::Value(value) => self.put(value),
-            FaslImage::Program(spec) => self.put_program(spec),
+            Image::Value(value) => self.put(value),
+            Image::Program(spec) => self.put_program(spec),
         }
     }
 
@@ -446,8 +446,8 @@ impl<'gc, W: Write> FaslWriter<'gc, W> {
         Ok(())
     }
 
-    fn payload_writer<'a>(&self, writer: &'a mut Vec<u8>) -> FaslWriter<'gc, &'a mut Vec<u8>> {
-        FaslWriter {
+    fn payload_writer<'a>(&self, writer: &'a mut Vec<u8>) -> Writer<'gc, &'a mut Vec<u8>> {
+        Writer {
             ctx: self.ctx,
             writer: BufWriter::new(writer),
             lites: self.lites,
@@ -457,15 +457,15 @@ impl<'gc, W: Write> FaslWriter<'gc, W> {
         }
     }
 
-    fn put_payload(&mut self, compression: FaslCompression, payload: &[u8]) -> io::Result<()> {
+    fn put_payload(&mut self, compression: Compression, payload: &[u8]) -> io::Result<()> {
         self.put32(checked_u32_len(payload.len())?)?;
         match compression {
-            FaslCompression::None => {
+            Compression::None => {
                 self.put32(checked_u32_len(payload.len())?)?;
                 self.put_many(payload)
             }
-            FaslCompression::Gzip => {
-                let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+            Compression::Gzip => {
+                let mut encoder = GzEncoder::new(Vec::new(), FlateCompression::default());
                 encoder.write_all(payload)?;
                 let compressed = encoder.finish()?;
                 self.put32(checked_u32_len(compressed.len())?)?;

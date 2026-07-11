@@ -181,7 +181,7 @@ pub fn builtin_primitive_layout_hooks(id: ClassId) -> Option<PrimitiveLayoutHook
             AllocationHooksOf::<'static, crate::runtime::vm::ffi::Pointer>::HOOKS
         }
         builtin_class_ids::CIF => {
-            AllocationHooksOf::<'static, crate::runtime::vm::ffi::CIF<'static>>::HOOKS
+            AllocationHooksOf::<'static, crate::runtime::vm::ffi::Cif<'static>>::HOOKS
         }
         builtin_class_ids::THREAD => AllocationHooksOf::<
             'static,

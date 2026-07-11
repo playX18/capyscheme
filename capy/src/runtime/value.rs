@@ -8,7 +8,7 @@ use crate::rsgc::{
     Gc, ObjectSlot, Trace,
     barrier::Write,
     mmtk::{util::Address, vm::SlotVisitor},
-    object::{ClassId, GCObject, HeapObjectHeader, builtin_class_ids},
+    object::{ClassId, GcObject, HeapObjectHeader, builtin_class_ids},
 };
 use crate::runtime::Context;
 use crate::runtime::class::{ClassDescriptor, class_table, hash_primitive_value};
@@ -47,8 +47,8 @@ pub union EncodedValueDescriptor {
 
 impl EncodedValueDescriptor {
     // SAFETY: Caller must ensure preconditions are met (see fn docs)
-    pub(crate) unsafe fn ptr(self) -> GCObject {
-        // SAFETY: `*mut ()` and `GCObject` have the same layout (both pointer-sized).
+    pub(crate) unsafe fn ptr(self) -> GcObject {
+        // SAFETY: `*mut ()` and `GcObject` have the same layout (both pointer-sized).
         // Caller must ensure the value is a cell (i.e. `is_cell()` is true) so that `self.ptr`
         // contains a valid GC-managed pointer, not a NaN-boxed integer/float/tag.
         unsafe { std::mem::transmute(self.ptr) }
@@ -344,7 +344,7 @@ impl<'gc> Value<'gc> {
         self.raw_i64() & !1 == Value::VALUE_FALSE
     }
 
-    pub fn as_cell_raw(self) -> GCObject {
+    pub fn as_cell_raw(self) -> GcObject {
         // SAFETY: Caller must ensure the value is a cell. The NaN-boxing encoding guarantees
         // the low bits of a cell value form a valid pointer into the GC heap.
         // debug_assert!(self.is_cell());
@@ -428,7 +428,7 @@ impl<'gc> Value<'gc> {
     pub fn from_gc<T: ClassTagged>(gc: Gc<'gc, T>) -> Self {
         Self {
             desc: EncodedValueDescriptor {
-                ptr: gc.as_gcobj().to_address().to_mut_ptr(),
+                ptr: gc.as_gc_object().to_address().to_mut_ptr(),
             },
             pd: PhantomData,
         }
@@ -451,7 +451,7 @@ impl<'gc> Value<'gc> {
             self
         );
         // SAFETY: The pointer references a valid GC-managed object of the expected type
-        unsafe { Gc::from_gcobj(self.as_cell_raw()) }
+        unsafe { Gc::from_gc_object(self.as_cell_raw()) }
     }
 
     /// Downcast this value to a GC pointer without checking its type tag.
@@ -462,7 +462,7 @@ impl<'gc> Value<'gc> {
     // SAFETY: Caller must ensure preconditions are met (see fn docs)
     pub unsafe fn downcast_unchecked<T: ClassTagged>(self) -> Gc<'gc, T> {
         // SAFETY: The pointer references a valid GC-managed object of the expected type
-        unsafe { Gc::from_gcobj(self.as_cell_raw()) }
+        unsafe { Gc::from_gc_object(self.as_cell_raw()) }
     }
 
     pub fn try_as<T: ClassTagged>(self) -> Option<Gc<'gc, T>> {

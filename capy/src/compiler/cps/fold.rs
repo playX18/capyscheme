@@ -8,8 +8,8 @@ use crate::rsgc::Global;
 use crate::rsgc::Trace;
 use crate::runtime::Context;
 use crate::runtime::value::*;
-use crate::runtime::vm::syntax::Syntax;
 use crate::runtime::value::{Number, Value};
+use crate::runtime::vm::syntax::Syntax;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -26,9 +26,7 @@ impl<'gc> FoldingTable<'gc> {
         prim: Value<'gc>,
         args: &[Value<'gc>],
     ) -> Option<Value<'gc>> {
-        let Some(entry) = self.table.get(&prim) else {
-            return None;
-        };
+        let entry = self.table.get(&prim)?;
         entry.apply(ctx, args)
     }
 }
@@ -124,28 +122,28 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
 
             Some(Value::new(a.is_zero()))
         }
-"+" => plus(ctx, a,b) {
+    "+" => plus(ctx, a,b) {
 
             let a = a.number()?;
             let b = b.number()?;
 
             Some(Number::add(ctx, a, b).into_value(ctx))
         }
-"-" => minus(ctx, a,b) {
+    "-" => minus(ctx, a,b) {
 
             let a = a.number()?;
             let b = b.number()?;
 
             Some(Number::sub(ctx, a, b).into_value(ctx))
         }
-"*" => mul(ctx, a,b) {
+    "*" => mul(ctx, a,b) {
 
             let a = a.number()?;
             let b = b.number()?;
 
             Some(Number::mul(ctx, a, b).into_value(ctx))
         }
-"/" => div(ctx, a,b) {
+    "/" => div(ctx, a,b) {
 
             let a = a.number()?;
             let b = b.number()?;
@@ -156,85 +154,85 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
 
             Some(Number::div(ctx, a, b).into_value(ctx))
         }
-"=" => eq(ctx, a,b) {
+    "=" => eq(ctx, a,b) {
 
             let a = a.number()?;
             let b = b.number()?;
 
             Some(Number::equal(ctx, a, b).into_value(ctx))
         }
-">" => gt(ctx, a,b) {
+    ">" => gt(ctx, a,b) {
 
             let a = a.number()?;
             let b = b.number()?;
 
             Some((Number::compare(ctx, a, b) == Some(std::cmp::Ordering::Greater)).into_value(ctx))
         }
-"<" => lt(ctx, a,b) {
+    "<" => lt(ctx, a,b) {
 
             let a = a.number()?;
             let b = b.number()?;
 
             Some((Number::compare(ctx, a, b) == Some(std::cmp::Ordering::Less)).into_value(ctx))
         }
-">=" => ge(ctx, a,b) {
+    ">=" => ge(ctx, a,b) {
 
             let a = a.number()?;
             let b = b.number()?;
 
             Some((Number::compare(ctx, a, b) != Some(std::cmp::Ordering::Less)).into_value(ctx))
         }
-"<=" => le(ctx, a,b) {
+    "<=" => le(ctx, a,b) {
 
             let a = a.number()?;
             let b = b.number()?;
 
             Some((Number::compare(ctx, a, b) != Some(std::cmp::Ordering::Greater)).into_value(ctx))
         }
-"not" => not(ctx, a) {
+    "not" => not(ctx, a) {
             Some(Value::new(!a.as_bool()))
         }
-"pair?" => is_pair(ctx, a) {
+    "pair?" => is_pair(ctx, a) {
             Some(Value::new(a.is_pair()))
         }
-"null?" => is_null(ctx, a) {
+    "null?" => is_null(ctx, a) {
             Some(Value::new(a.is_null()))
         }
-"unspecified?" => is_unspecified(ctx, a) {
+    "unspecified?" => is_unspecified(ctx, a) {
             Some(Value::new(a == Value::undefined()))
         }
-"list?" => is_list(ctx, a) {
+    "list?" => is_list(ctx, a) {
             Some(Value::new(a.is_list()))
         }
-"vector?" => is_vector(ctx, a) {
+    "vector?" => is_vector(ctx, a) {
             Some(Value::new(a.is::<Vector>()))
         }
-"bytevector?" => is_bytevector(ctx, a) {
+    "bytevector?" => is_bytevector(ctx, a) {
             Some(Value::new(a.is::<ByteVector>()))
         }
-"symbol?" => is_symbol(ctx, a) {
+    "symbol?" => is_symbol(ctx, a) {
             Some(Value::new(a.is::<Symbol>()))
         }
-"string?" => is_string(ctx, a) {
+    "string?" => is_string(ctx, a) {
             Some(Value::new(a.is::<Str>()))
         }
-"boolean?" => is_boolean(ctx, a) {
+    "boolean?" => is_boolean(ctx, a) {
             Some(Value::new(a.is_bool()))
         }
-"number?" => is_number(ctx, a) {
+    "number?" => is_number(ctx, a) {
             Some(Value::new(a.is_number()))
         }
-"char?" => is_char(ctx, a) {
+    "char?" => is_char(ctx, a) {
             Some(Value::new(a.is_char()))
         }
-"char->integer" => char_to_integer(ctx, a) {
+    "char->integer" => char_to_integer(ctx, a) {
             if a.is_char() {
                 Some(Value::new(a.char() as u32 as i32))
             } else {
                 None
             }
         }
-"integer->char" => integer_to_char(ctx, a) {
+    "integer->char" => integer_to_char(ctx, a) {
             if a.is_int32() {
                 let c = a.as_int32();
                 if (0..=0x10FFFF).contains(&c) {
@@ -246,27 +244,27 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
                 None
             }
         }
-"string->symbol" => string_to_symbol(ctx, a) {
+    "string->symbol" => string_to_symbol(ctx, a) {
             a.try_as::<Str>().map(|s| Value::new(Symbol::from_string(ctx, s)))
         }
-"symbol->string" => symbol_to_string(ctx, a) {
+    "symbol->string" => symbol_to_string(ctx, a) {
             a.try_as::<Symbol>().map(|sym| Value::new(sym.to_str(*ctx)))
         }
-"cons" => cons(ctx, a, b) {
+    "cons" => cons(ctx, a, b) {
             Some(Value::cons(ctx, a, b))
         }
-"%class-id?" => class_idp(ctx, a, b) {
+    "%class-id?" => class_idp(ctx, a, b) {
             let class_id = b.int32()?;
             Some(Value::new(
                 a.class_id()
                     .is_some_and(|actual| actual.bits() == class_id as u32),
             ))
         }
-"immediate?" => is_immediate(ctx, a) {
+    "immediate?" => is_immediate(ctx, a) {
             let _ = a;
             return None;
         }
-"make-syntax" => make_syntax(ctx, exp, wrap, module, source, properties) {
+    "make-syntax" => make_syntax(ctx, exp, wrap, module, source, properties) {
             Some(Syntax::new(
                 ctx,
                 exp,
@@ -276,10 +274,10 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
                 properties,
             ).into())
         }
-".is-cell" => is_cell(ctx, a) {
+    ".is-cell" => is_cell(ctx, a) {
             Some(Value::new(a.is_cell()))
         }
-"usize->value" => usize_to_value(ctx, a) {
+    "usize->value" => usize_to_value(ctx, a) {
             Some(Number::from_usize(ctx, a.bits() as usize).into_value(ctx))
         }
 

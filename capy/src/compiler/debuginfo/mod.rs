@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 
-
 use crate::expander::core::LVarRef;
 use crate::runtime::value::{Value, Vector};
 use cranelift_codegen::binemit::CodeOffset;

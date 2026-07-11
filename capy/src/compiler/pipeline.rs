@@ -1,12 +1,13 @@
 use std::path::Path;
 
-use crate::compiler::ssa::LinearProgram;
+use crate::compiler::cps::optimize::optimize_graph_func_to_ssa;
+use crate::compiler::dump;
+use crate::compiler::ssa::Program;
 use crate::expander::core::TermRef;
 use crate::expander::{
     assignment_elimination, compile_cps, eta_expand::eta_expand, fix_letrec::fix_letrec,
     free_vars::resolve_free_vars, letrectify::letrectify, primitives,
 };
-use crate::compiler::cps::optimize::optimize_graph_func_to_linear;
 use crate::rsgc::Gc;
 use crate::runtime::stats::{CompilationBreakdownPhase, CompilationBreakdownScope};
 use crate::runtime::{Context, modules::Module, value::Value};
@@ -17,7 +18,7 @@ pub struct LoweredProgram<'gc> {
     pub(crate) original_il: TermRef<'gc>,
     pub(crate) optimized_il: TermRef<'gc>,
     pub(crate) graph_cps: String,
-    pub(crate) linear_cps: LinearProgram<'gc>,
+    pub(crate) ssa: Program<'gc>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -26,7 +27,7 @@ pub(crate) struct DumpArtifactsOptions {
     pub(crate) include_unoptimized: bool,
     pub(crate) dump_ir: bool,
     pub(crate) dump_graph: bool,
-    pub(crate) dump_lcps: bool,
+    pub(crate) dump_ssa: bool,
     pub(crate) dump_cranelift: bool,
     pub(crate) dump_disassembly: bool,
 }
@@ -37,7 +38,7 @@ impl DumpArtifactsOptions {
             enabled: true,
             include_unoptimized: true,
             dump_ir: true,
-            dump_lcps: true,
+            dump_ssa: true,
             ..Self::default()
         }
     }
@@ -47,7 +48,7 @@ impl DumpArtifactsOptions {
         match name {
             "ir" => self.dump_ir = true,
             "graph" | "gcps" => self.dump_graph = true,
-            "lcps" => self.dump_lcps = true,
+            "ssa" => self.dump_ssa = true,
             "cranelift" | "clif" => self.dump_cranelift = true,
             "disassembly" | "asm" => self.dump_disassembly = true,
             _ => return false,
@@ -56,7 +57,7 @@ impl DumpArtifactsOptions {
     }
 
     pub(crate) fn has_frontend_artifacts(self) -> bool {
-        self.enabled && (self.dump_ir || self.dump_graph || self.dump_lcps)
+        self.enabled && (self.dump_ir || self.dump_graph || self.dump_ssa)
     }
 }
 
@@ -111,18 +112,18 @@ pub(crate) fn lower_expanded_to_cps<'gc>(
         .graph
         .read_term_link(graph.root())
         .expect("graph root");
-    let graph_cps = graph.graph.pretty_term(graph_root);
-    let linear_cps = {
+    let graph_cps = crate::compiler::cps::pretty::render_graph(&graph.graph, graph_root);
+    let ssa = {
         let _profile = ProfileScope::new("compiler.lower.gcps.optimize");
-        optimize_graph_func_to_linear(ctx, graph)
+        optimize_graph_func_to_ssa(ctx, graph)
             .unwrap_or_else(|err| panic!("gcps optimization failed: {err}"))
-            .linear
+            .ssa
     };
     Ok(LoweredProgram {
         original_il,
         optimized_il,
         graph_cps,
-        linear_cps,
+        ssa,
     })
 }
 
@@ -136,9 +137,10 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
         return;
     }
 
-    let destination = destination.as_ref().display().to_string();
+    let destination = destination.as_ref();
 
     if options.dump_ir && options.include_unoptimized {
+        let path = dump::resolve_artifact_dump_path(destination, ".ir.noopt.scm");
         let doc = lowered
             .original_il
             .pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
@@ -146,13 +148,14 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
             .create(true)
             .write(true)
             .truncate(true)
-            .open(format!("{destination}.ir.noopt.scm"))
+            .open(&path)
             .unwrap();
-        log::info!(";; TRACE  (capy)@load: IR noopt -> {destination}.ir.noopt.scm");
+        dump::log_dump_path("IR noopt", &path);
         doc.1.render(80, &mut file_noopt).unwrap();
     }
 
     if options.dump_ir {
+        let path = dump::resolve_artifact_dump_path(destination, ".ir.scm");
         let doc = lowered
             .optimized_il
             .pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
@@ -160,47 +163,41 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
             .create(true)
             .write(true)
             .truncate(true)
-            .open(format!("{destination}.ir.scm"))
+            .open(&path)
             .unwrap();
-        log::info!(";; TRACE  (capy)@load: IR -> {destination}.ir.scm");
+        dump::log_dump_path("IR", &path);
         doc.1.render(80, &mut file).unwrap();
     }
 
     if options.dump_graph {
-        std::fs::write(format!("{destination}.gcps.scm"), &lowered.graph_cps).unwrap();
-        log::info!(";; TRACE  (capy)@load: GCPS -> {destination}.gcps.scm");
+        let path = dump::resolve_artifact_dump_path(destination, ".gcps.txt");
+        std::fs::write(&path, &lowered.graph_cps).unwrap();
+        dump::log_dump_path("GCPS", &path);
     }
 
-    if options.dump_lcps {
+    if options.dump_ssa {
         let _ = ctx;
-        let rendered = render_lcps_dump(&lowered.linear_cps);
-        std::fs::write(format!("{destination}.lcps.scm"), rendered).unwrap();
-        log::info!(";; TRACE  (capy)@load: LCPS -> {destination}.lcps.scm");
+        let path = dump::resolve_artifact_dump_path(destination, ".ssa.txt");
+        let mut rendered = crate::compiler::ssa::render_program(&lowered.ssa);
+        rendered.push('\n');
+        std::fs::write(&path, rendered).unwrap();
+        dump::log_dump_path("SSA", &path);
     }
-}
-
-fn render_lcps_dump<'gc>(linear_cps: &crate::compiler::ssa::LinearProgram<'gc>) -> String {
-    let mut rendered = crate::compiler::cps::linear_pretty::render_program(linear_cps);
-    rendered.push('\n');
-
-    rendered
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        DumpArtifactsOptions, LoweredProgram, dump_lowered_program_artifacts, render_lcps_dump,
-    };
+    use super::{DumpArtifactsOptions, LoweredProgram, dump_lowered_program_artifacts};
     use crate::{
         compiler::{
             cranelift::primitive::Primitive,
             ssa::{
-                Block, BlockId, CodeId, GraphCodeId, LinearAtom, LinearProgram, Procedure,
-                ProcedureKind, Terminator, ValueId,
+                Block, BlockId, CodeId, GraphCodeId, Operand, Procedure, ProcedureKind, Program,
+                Terminator, ValueId,
             },
         },
         expander::{
-            core::{LVarRef, fresh_lvar},
+            core::fresh_lvar,
             term::{Term as IlTerm, TermKind as IlTermKind},
         },
         rsgc::{Gc, cell::Lock},
@@ -243,19 +240,19 @@ mod tests {
         .into()
     }
 
-    fn dummy_graph_linear<'gc>(ctx: Context<'gc>) -> LinearProgram<'gc> {
-        let binding = fresh_lvar(ctx, Symbol::from_str(ctx, "lcps-dump-test").into());
+    fn dummy_ssa<'gc>(ctx: Context<'gc>) -> Program<'gc> {
+        let binding = fresh_lvar(ctx, Symbol::from_str(ctx, "ssa-dump-test").into());
         let p0 = ValueId(0);
         let src = source(ctx);
         let mut sources = std::collections::HashMap::new();
         sources.insert(ValueId(10_000), binding);
-        LinearProgram {
+        Program {
             entry: CodeId::GraphFunction(GraphCodeId(7)),
             procedures: vec![Procedure {
                 code: CodeId::GraphFunction(GraphCodeId(7)),
                 kind: ProcedureKind::Function,
                 binding: ValueId(10_000),
-                name: Symbol::from_str(ctx, "lcps-dump-test").into(),
+                name: Symbol::from_str(ctx, "ssa-dump-test").into(),
                 source: src,
                 meta: Value::new(false),
                 return_cont: None,
@@ -270,7 +267,7 @@ mod tests {
                     variadic: None,
                     instructions: vec![],
                     terminator: Terminator::TailCall {
-                        callee: LinearAtom::Local(p0),
+                        callee: Operand::Local(p0),
                         args: vec![],
                         source: src,
                     },
@@ -293,7 +290,7 @@ mod tests {
                 original_il: il,
                 optimized_il: il,
                 graph_cps: "(gcps-dump-test)".to_string(),
-                linear_cps: dummy_graph_linear(ctx),
+                ssa: dummy_ssa(ctx),
             };
 
             dump_lowered_program_artifacts(
@@ -305,27 +302,27 @@ mod tests {
 
             assert!(!dir.join("out.fasl.cps.opt.scm").exists());
             assert!(!dir.join("out.fasl.cps.scm").exists());
-            assert!(dir.join("out.fasl.lcps.scm").exists());
+            assert!(dir.join("out.fasl.ssa.txt").exists());
 
             std::fs::remove_dir_all(&dir).unwrap();
         });
     }
 
     #[test]
-    fn trace_artifacts_use_available_linear_cps_dump() {
+    fn trace_artifacts_use_available_ssa_dump() {
         with_ctx(|ctx| {
-            let dir = std::env::temp_dir()
-                .join(format!("capy-linear-cps-dump-test-{}", std::process::id()));
+            let dir =
+                std::env::temp_dir().join(format!("capy-ssa-dump-test-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             let destination = dir.join("out.fasl");
             let il = dummy_il(ctx);
-            let linear_cps = dummy_graph_linear(ctx);
+            let ssa = dummy_ssa(ctx);
             let lowered = LoweredProgram {
                 original_il: il,
                 optimized_il: il,
                 graph_cps: "(gcps-dump-test)".to_string(),
-                linear_cps,
+                ssa,
             };
 
             dump_lowered_program_artifacts(
@@ -335,11 +332,9 @@ mod tests {
                 DumpArtifactsOptions::trace(),
             );
 
-            let lcps =
-                std::fs::read_to_string(dir.join("out.fasl.lcps.scm")).expect("linear CPS dump");
-            assert!(lcps.contains("(entry (graph-function 7))"));
-            assert!(lcps.contains("(procedure function (graph-function 7)"));
-            assert!(lcps.contains("; @ dump.scm:2:4-2:12"));
+            let ssa = std::fs::read_to_string(dir.join("out.fasl.ssa.txt")).expect("SSA dump");
+            assert!(ssa.contains("procedure function gf7 ssa-dump-test (v@0) retk #f:"));
+            assert!(ssa.contains("BB0: (v@0)"));
 
             std::fs::remove_dir_all(&dir).unwrap();
         });
@@ -358,7 +353,7 @@ mod tests {
                 original_il: il,
                 optimized_il: il,
                 graph_cps: "(gcps-dump-test)".to_string(),
-                linear_cps: dummy_graph_linear(ctx),
+                ssa: dummy_ssa(ctx),
             };
             let mut options = DumpArtifactsOptions::default();
             assert!(options.enable("graph"));
@@ -366,18 +361,18 @@ mod tests {
             dump_lowered_program_artifacts(ctx, &destination, &lowered, options);
 
             let gcps =
-                std::fs::read_to_string(dir.join("out.fasl.gcps.scm")).expect("graph CPS dump");
+                std::fs::read_to_string(dir.join("out.fasl.gcps.txt")).expect("graph CPS dump");
             assert!(gcps.contains("gcps-dump-test"));
-            assert!(!dir.join("out.fasl.lcps.scm").exists());
+            assert!(!dir.join("out.fasl.ssa.txt").exists());
 
             std::fs::remove_dir_all(&dir).unwrap();
         });
     }
 
     #[test]
-    fn lcps_dump_includes_slot_allocation() {
+    fn ssa_dump_includes_slot_allocation() {
         with_ctx(|ctx| {
-            let binding = fresh_lvar(ctx, Symbol::from_str(ctx, "lcps-dump-test").into());
+            let binding = fresh_lvar(ctx, Symbol::from_str(ctx, "ssa-dump-test").into());
             let p0 = ValueId(0);
             let tmp = ValueId(1);
             let mut sources = std::collections::HashMap::new();
@@ -402,30 +397,28 @@ mod tests {
                     instructions: vec![crate::compiler::ssa::Instruction::PrimCall {
                         dst: tmp,
                         prim: Primitive::Car,
-                        args: vec![LinearAtom::Local(p0)],
+                        args: vec![Operand::Local(p0)],
                         source: Value::new(false),
                     }],
                     terminator: Terminator::TailCall {
-                        callee: LinearAtom::Local(tmp),
-                        args: vec![LinearAtom::Local(p0)],
+                        callee: Operand::Local(tmp),
+                        args: vec![Operand::Local(p0)],
                         source: Value::new(false),
                     },
                     source: Value::new(false),
                 }],
             };
-            let linear = LinearProgram {
+            let program = Program {
                 entry: CodeId::GraphFunction(GraphCodeId(7)),
                 procedures: vec![procedure],
             };
 
-            let rendered = render_lcps_dump(&linear);
+            let rendered = crate::compiler::ssa::render_program(&program);
 
-            assert!(rendered.contains("(linear-program"));
-            assert!(rendered.contains("(procedure graph-function"));
-            assert!(rendered.contains("(binding %v10000)"));
-            assert!(rendered.contains("(params %v0)"));
-            assert!(rendered.contains("(prim-call %v1 car %v0)"));
-            assert!(rendered.contains("(tail-call %v1 %v0)"));
+            assert!(rendered.contains("procedure function gf7 ssa-dump-test (v@0) retk #f:"));
+            assert!(rendered.contains("BB0: (v@0)"));
+            assert!(rendered.contains("v@1 = car(v@0)"));
+            assert!(rendered.contains("Successors: TailCall v@1(v@0)"));
         });
     }
 }

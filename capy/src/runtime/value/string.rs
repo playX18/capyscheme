@@ -59,7 +59,7 @@ unsafe impl Trace for Stringbuf {
     unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
 }
 
-extern "C" fn compute_stringbuf_size(sb: GCObject) -> usize {
+extern "C" fn compute_stringbuf_size(sb: GcObject) -> usize {
     // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         let sb = sb.to_address().as_ref::<Stringbuf>();
@@ -74,9 +74,9 @@ extern "C" fn compute_stringbuf_size(sb: GCObject) -> usize {
     }
 }
 
-extern "C" fn trace_stringbuf(_: GCObject, _: &mut Visitor) {}
+extern "C" fn trace_stringbuf(_: GcObject, _: &mut Visitor) {}
 
-extern "C" fn process_weak_stringbuf(_: GCObject, _: &mut crate::rsgc::WeakProcessor) {}
+extern "C" fn process_weak_stringbuf(_: GcObject, _: &mut crate::rsgc::WeakProcessor) {}
 
 impl Stringbuf {
     pub const HOOKS: AllocationHooks = AllocationHooks {
@@ -154,7 +154,7 @@ impl Stringbuf {
                 .contents()
                 .to_mut_ptr::<u8>()
                 .write_bytes(0, bytesize_data);
-            Gc::from_gcobj(stringbuf_)
+            Gc::from_gc_object(stringbuf_)
         }
     }
 
@@ -952,7 +952,7 @@ mod tests {
 
             for (buffer, raw_class_id) in cases {
                 assert_eq!(
-                    buffer.as_gcobj().header().class_id(),
+                    buffer.as_gc_object().header().class_id(),
                     ClassId::new(raw_class_id).unwrap()
                 );
             }

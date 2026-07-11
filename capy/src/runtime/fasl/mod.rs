@@ -5,10 +5,10 @@
 //!
 //! ## Submodules
 //!
-//! - `writer` — `FaslWriter`: serializes Scheme values and code objects into FASL byte streams
-//! - `reader` — `FaslReader`: deserializes FASL byte streams into live GC objects + JIT code
+//! - `writer` — `Writer`: serializes Scheme values and code objects into FASL byte streams
+//! - `reader` — `Reader`: deserializes FASL byte streams into live GC objects + JIT code
 //! - `reloc` — `Relocation` / `RelocKind` / `RelocTarget`: relocation records
-//! - `graph` — `FaslGraphTable`: graph tracking for shared structure and cycles
+//! - `graph` — `Table`: graph tracking for shared structure and cycles
 
 use std::io;
 
@@ -18,8 +18,8 @@ pub mod reader;
 pub mod reloc;
 pub mod writer;
 
-pub use reader::{FaslLoadOptions, FaslReader};
-pub use writer::{FaslCompression, FaslImage, FaslWriter};
+pub use reader::{LoadOptions, Reader};
+pub use writer::{Compression, Image, Writer};
 
 pub const FASL_EOF: u8 = 0;
 pub const FASL_TAG_LOOKUP: u8 = 1;

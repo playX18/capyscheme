@@ -194,7 +194,7 @@ unsafe impl<'gc> Trace for WeakTable<'gc> {
         for index in 0..entries.len() {
             let mut entry = entries[index].get();
             while let Some(current) = entry {
-                current.as_gcobj().process_weak_refs(weak_processor);
+                current.as_gc_object().process_weak_refs(weak_processor);
                 entry = current.next.get();
             }
         }
@@ -269,7 +269,7 @@ impl<'gc> WeakTable<'gc> {
     // SAFETY: Caller must ensure preconditions are met (see fn docs)
     pub(crate) unsafe fn at_object(
         ctx: Context<'gc>,
-        obj: GCObject,
+        obj: GcObject,
         kvs: Vec<(Value<'gc>, Value<'gc>)>,
     ) {
         // SAFETY: Preconditions verified by the surrounding code
@@ -289,7 +289,7 @@ impl<'gc> WeakTable<'gc> {
                     inner: Monitor::new(inner),
                 });
 
-            let ht: Gc<Self> = Gc::from_gcobj(obj);
+            let ht: Gc<Self> = Gc::from_gc_object(obj);
 
             for (k, v) in kvs {
                 ht.put(ctx, k, v);
@@ -650,7 +650,7 @@ unsafe impl<'gc> Trace for AllWeakTables<'gc> {
 
             // SAFETY: The weak reference is known to be live at this point in the trace
             if let Some(table) = unsafe { table.upgrade_unchecked() } {
-                table.as_gcobj().process_weak_refs(weak_processor);
+                table.as_gc_object().process_weak_refs(weak_processor);
             }
 
             true

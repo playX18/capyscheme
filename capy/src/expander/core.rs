@@ -19,12 +19,12 @@ use crate::{
 };
 
 // Re-export types from focused submodules for backward compatibility.
-pub use crate::expander::cenv::{Cenv, Denotations, Frame};
 pub use crate::compiler::tree::{
     Fix, LVar, LVarRef, Let, LetStyle, Proc, ProcRef, Term, TermKind, TermRef, call_term, constant,
     define, fix_term, if_term, let_term, lref, lset, module_ref, module_set, prim_call_term,
     proc_term, seq, seq_from_slice, toplevel_ref, toplevel_set,
 };
+pub use crate::expander::cenv::{Cenv, Denotations, Frame};
 
 type RootedDenotations = crate::Rootable!(Denotations<'_>);
 

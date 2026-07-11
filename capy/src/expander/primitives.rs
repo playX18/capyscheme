@@ -84,6 +84,8 @@ interesting_prim_names!(
     not = "not"
 
     // predicates
+    fixnump = "fixnum?"
+    flonump = "flonum?"
     pairp = "pair?"
     nullp = "null?"
     listp = "list?"
@@ -819,6 +821,22 @@ primitive_expanders!(
         Some(prim_call_term(ctx, sym_not(ctx).into(), args, src))
     }
 
+    "fixnum?" ex_fixnump<'gc>(ctx, args, src) {
+        if args.len() != 1 {
+            return None;
+        }
+
+        Some(prim_call_term(ctx, sym_fixnump(ctx).into(), args, src))
+    }
+
+    "flonum?" ex_flonump<'gc>(ctx, args, src) {
+        if args.len() != 1 {
+            return None;
+        }
+
+        Some(prim_call_term(ctx, sym_flonump(ctx).into(), args, src))
+    }
+
     "pair?" ex_pairp<'gc>(ctx, args, src) {
         if args.len() != 1 {
             return None;
@@ -857,6 +875,14 @@ primitive_expanders!(
         }
 
         Some(prim_call_term(ctx, sym_stringp(ctx).into(), args, src))
+    }
+
+    "symbol?" ex_symbolp<'gc>(ctx, args, src) {
+        if args.len() != 1 {
+            return None;
+        }
+
+        Some(prim_call_term(ctx, sym_symbolp(ctx).into(), args, src))
     }
 
     "number?" ex_numberp<'gc>(ctx, args, src) {

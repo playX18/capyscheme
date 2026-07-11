@@ -2,35 +2,34 @@ use std::collections::HashMap;
 
 use crate::{
     compiler::{
-        cranelift::primitive::Primitive,
-        ssa::{
-            Block, BlockId, BranchTarget, ClosureKind, CodeId, GraphCodeId, Instruction,
-            LinearAtom, LinearProgram, Procedure, ProcedureKind, Terminator, ValueId,
-            finish_procedure,
+        cps::{
+            graph::{
+                BoundVar, ContVar, ExprId, ExprKind, FreeVar, FreeVars, FunctionId, FunctionLinks,
+                Graph, Subterm, TermId, TermKind,
+            },
+            reify::{BinderSet, GraphReifyInfo},
         },
+        cranelift::primitive::Primitive,
     },
     expander::core::LVarRef,
     runtime::value::Value,
 };
 
 use super::{
-    graph::{
-        BoundVar, ContVar, ExprId, ExprKind, FreeVar, FreeVars, FunctionId,
-        FunctionLinks, Graph, Subterm, TermId, TermKind,
-    },
-    reify::{BinderSet, GraphReifyInfo},
+    Block, BlockId, BranchTarget, ClosureKind, CodeId, GraphCodeId, Instruction, Operand,
+    Procedure, ProcedureKind, Program, Terminator, ValueId, finish_procedure,
 };
 
-pub fn linearize_graph<'gc>(graph: &Graph<'gc>, reify: &GraphReifyInfo) -> LinearProgram<'gc> {
+pub fn lower_graph<'gc>(graph: &Graph<'gc>, reify: &GraphReifyInfo) -> Program<'gc> {
     let mut procedures = Vec::new();
 
     for function in reify.functions.iter().copied() {
-        procedures.push(finish_procedure(linearize_function(graph, reify, function)));
+        procedures.push(finish_procedure(lower_function(graph, reify, function)));
     }
 
     for continuation in reify.continuations.iter().copied() {
         if graph[continuation].is_reified {
-            procedures.push(finish_procedure(linearize_continuation(
+            procedures.push(finish_procedure(lower_continuation(
                 graph,
                 reify,
                 continuation,
@@ -38,13 +37,13 @@ pub fn linearize_graph<'gc>(graph: &Graph<'gc>, reify: &GraphReifyInfo) -> Linea
         }
     }
 
-    LinearProgram {
+    Program {
         entry: graph_code_id(graph, reify.entrypoint),
         procedures,
     }
 }
 
-fn linearize_function<'gc>(
+fn lower_function<'gc>(
     graph: &Graph<'gc>,
     reify: &GraphReifyInfo,
     function: FunctionId,
@@ -59,7 +58,7 @@ fn linearize_function<'gc>(
     let return_cont = builder.value(return_cont);
     let params = builder.values(graph.bound_vars_slice(&data.vars));
     let variadic = data.variadic.map(|var| builder.value(var));
-    let free_vars = builder.value_slice(&source_free_vars);
+    let free_vars = builder.values(&source_free_vars);
     let entry = BlockId(0);
     let instructions = closure_refs(&mut builder, binding, &source_free_vars);
     builder.convert_block(
@@ -88,7 +87,7 @@ fn linearize_function<'gc>(
     }
 }
 
-fn linearize_continuation<'gc>(
+fn lower_continuation<'gc>(
     graph: &Graph<'gc>,
     reify: &GraphReifyInfo,
     continuation: FunctionId,
@@ -103,7 +102,7 @@ fn linearize_continuation<'gc>(
     let binding = builder.value(data.var);
     let params = builder.values(graph.bound_vars_slice(&data.vars));
     let variadic = data.variadic.map(|var| builder.value(var));
-    let free_vars = builder.value_slice(&source_free_vars);
+    let free_vars = builder.values(&source_free_vars);
     let entry = BlockId(0);
     let instructions = closure_refs(&mut builder, binding, &source_free_vars);
     builder.convert_block(
@@ -145,13 +144,6 @@ fn binder_set_to_vec(vars: &BinderSet) -> Vec<BoundVar> {
     vars.iter().collect()
 }
 
-fn primitive_from_value<'gc>(value: Value<'gc>) -> Primitive {
-    let name = value
-        .downcast::<crate::runtime::value::Symbol>()
-        .to_string();
-    Primitive::from_name(&name).unwrap_or_else(|| panic!("undefined primitive: {value}"))
-}
-
 fn params_with_variadic(mut args: Vec<ValueId>, variadic: Option<ValueId>) -> Vec<ValueId> {
     args.extend(variadic);
     args
@@ -167,7 +159,7 @@ fn closure_refs<'gc>(
         .enumerate()
         .map(|(index, free_var)| Instruction::ClosureRef {
             dst: builder.value(*free_var),
-            closure: LinearAtom::Local(binding),
+            closure: Operand::Local(binding),
             index,
         })
         .collect()
@@ -220,15 +212,11 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
         vars.iter().copied().map(|var| self.value(var)).collect()
     }
 
-    fn value_slice(&mut self, vars: &[BoundVar]) -> Vec<ValueId> {
-        vars.iter().copied().map(|var| self.value(var)).collect()
+    fn atom(&mut self, var: FreeVar) -> Operand<'gc> {
+        Operand::Local(self.value(self.graph.free_binder(var)))
     }
 
-    fn atom(&mut self, var: FreeVar) -> LinearAtom<'gc> {
-        LinearAtom::Local(self.value(self.graph.free_binder(var)))
-    }
-
-    fn atoms(&mut self, vars: &FreeVars) -> Vec<LinearAtom<'gc>> {
+    fn atoms(&mut self, vars: &FreeVars) -> Vec<Operand<'gc>> {
         self.graph
             .free_vars_slice(vars)
             .iter()
@@ -237,22 +225,21 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
             .collect()
     }
 
-    fn literal_atom(&self, var: FreeVar) -> Option<LinearAtom<'gc>> {
+    fn literal_atom(&self, var: FreeVar) -> Option<Operand<'gc>> {
         let binder = self.graph.free_binder(var);
         self.known_literals
             .get(&binder)
             .copied()
-            .map(LinearAtom::Constant)
+            .map(Operand::Constant)
     }
 
-    fn atoms_for_prim(&mut self, prim: Primitive, vars: &FreeVars) -> Vec<LinearAtom<'gc>> {
+    fn atoms_for_prim(&mut self, prim: Primitive, vars: &FreeVars) -> Vec<Operand<'gc>> {
         let mut args = self.atoms(vars);
-        if matches!(prim, Primitive::CacheRef | Primitive::CacheSet) {
-            if let Some(first) = self.graph.free_vars_slice(vars).first().copied() {
-                if let Some(literal) = self.literal_atom(first) {
-                    args[0] = literal;
-                }
-            }
+        if matches!(prim, Primitive::CacheRef | Primitive::CacheSet)
+            && let Some(first) = self.graph.free_vars_slice(vars).first().copied()
+            && let Some(literal) = self.literal_atom(first)
+        {
+            args[0] = literal;
         }
         args
     }
@@ -274,7 +261,7 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
         let term = self
             .graph
             .read_term_link(link)
-            .unwrap_or_else(|| panic!("dead graph term link while linearizing: {link}"));
+            .unwrap_or_else(|| panic!("dead graph term link while lowering to SSA: {link}"));
         let source = self.graph[term].source;
         let terminator = self.convert_term(term, &mut instructions);
         self.blocks.push(Block {
@@ -298,7 +285,7 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
                 let expr = self
                     .graph
                     .read_expr_link(expr)
-                    .unwrap_or_else(|| panic!("dead graph expression link while linearizing"));
+                    .unwrap_or_else(|| panic!("dead graph expression link while lowering to SSA"));
                 self.convert_expr(var, expr, instructions);
                 self.convert_term_link(body, instructions)
             }
@@ -379,7 +366,7 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
                     }
                 } else {
                     Terminator::TailCall {
-                        callee: LinearAtom::Local(self.value(target)),
+                        callee: Operand::Local(self.value(target)),
                         args: self.atoms(&args),
                         source: data.source,
                     }
@@ -403,10 +390,7 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
                 test: self.atom(test),
                 consequent: self.branch_target(consequent),
                 alternative: self.branch_target(alternative),
-                hints: [
-                    hints[0],
-                    hints[1],
-                ],
+                hints: [hints[0], hints[1]],
             },
         }
     }
@@ -419,7 +403,7 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
         let term = self
             .graph
             .read_term_link(link)
-            .unwrap_or_else(|| panic!("dead graph term link while linearizing: {link}"));
+            .unwrap_or_else(|| panic!("dead graph term link while lowering to SSA: {link}"));
         self.convert_term(term, instructions)
     }
 
@@ -436,7 +420,9 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
                 instructions.push(Instruction::Const { dst, value });
             }
             ExprKind::PrimCall(prim, args) => {
-                let prim = primitive_from_value(prim);
+                let name = prim.downcast::<crate::runtime::value::Symbol>().to_string();
+                let prim = Primitive::from_name(&name)
+                    .unwrap_or_else(|| panic!("undefined primitive: {prim}"));
                 let args = self.atoms_for_prim(prim, &args);
                 let dst = self.value(binding);
                 instructions.push(Instruction::PrimCall {
@@ -480,7 +466,7 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
             }
         } else {
             BranchTarget::Reified {
-                continuation: LinearAtom::Local(self.value(continuation)),
+                continuation: Operand::Local(self.value(continuation)),
                 args,
             }
         }
@@ -504,9 +490,9 @@ fn emit_closure_sets<'gc>(
 ) {
     for (index, free_var) in free_vars.iter().enumerate() {
         instructions.push(Instruction::ClosureSet {
-            closure: LinearAtom::Local(closure),
+            closure: Operand::Local(closure),
             index,
-            value: LinearAtom::Local(builder.value(*free_var)),
+            value: Operand::Local(builder.value(*free_var)),
         });
     }
 }

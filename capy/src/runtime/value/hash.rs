@@ -213,7 +213,7 @@ impl<'gc> HashTable<'gc> {
     pub(crate) unsafe fn at_object(
         ctx: Context<'gc>,
 
-        obj: GCObject,
+        obj: GcObject,
         typ: HashTableType<'gc>,
         kvs: Vec<(Value<'gc>, Value<'gc>)>,
     ) {
@@ -255,7 +255,7 @@ impl<'gc> HashTable<'gc> {
                 inner: Monitor::new(inner),
             });
 
-            let ht: Gc<'gc, Self> = Gc::from_gcobj(obj);
+            let ht: Gc<'gc, Self> = Gc::from_gc_object(obj);
 
             for (k, v) in kvs {
                 ht.put(ctx, k, v);

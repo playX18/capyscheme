@@ -626,8 +626,8 @@ mod tests {
             assert!(!ordinary.is_thread_local());
             assert!(thread_local.is_thread_local());
             assert_eq!(
-                ordinary.as_gcobj().header().class_id(),
-                thread_local.as_gcobj().header().class_id()
+                ordinary.as_gc_object().header().class_id(),
+                thread_local.as_gc_object().header().class_id()
             );
         });
     }
@@ -647,13 +647,13 @@ mod tests {
 
             for fluid in [ordinary, thread_local] {
                 assert_eq!(
-                    fluid.as_gcobj().header().class_id(),
+                    fluid.as_gc_object().header().class_id(),
                     ClassId::new(builtin_class_ids::FLUID).unwrap()
                 );
             }
 
             assert_eq!(
-                dynamic_state.as_gcobj().header().class_id(),
+                dynamic_state.as_gc_object().header().class_id(),
                 ClassId::new(builtin_class_ids::DYNAMIC_STATE).unwrap()
             );
         });

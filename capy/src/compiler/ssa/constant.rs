@@ -61,24 +61,24 @@ impl ConstantHoister {
 
     fn atom<'gc>(
         &mut self,
-        atom: LinearAtom<'gc>,
+        atom: Operand<'gc>,
         instructions: &mut Vec<Instruction<'gc>>,
-    ) -> LinearAtom<'gc> {
+    ) -> Operand<'gc> {
         match atom {
-            LinearAtom::Local(_) => atom,
-            LinearAtom::Constant(value) => {
+            Operand::Local(_) => atom,
+            Operand::Constant(value) => {
                 let dst = self.fresh_value();
                 instructions.push(Instruction::Const { dst, value });
-                LinearAtom::Local(dst)
+                Operand::Local(dst)
             }
         }
     }
 
     fn atoms<'gc>(
         &mut self,
-        atoms: Vec<LinearAtom<'gc>>,
+        atoms: Vec<Operand<'gc>>,
         instructions: &mut Vec<Instruction<'gc>>,
-    ) -> Vec<LinearAtom<'gc>> {
+    ) -> Vec<Operand<'gc>> {
         atoms
             .into_iter()
             .map(|atom| self.atom(atom, instructions))
@@ -215,9 +215,9 @@ impl ConstantHoister {
     }
 }
 
-pub(super) fn local_values<'gc>(uses: Vec<LinearAtom<'gc>>) -> impl Iterator<Item = ValueId> {
+pub(super) fn local_values<'gc>(uses: Vec<Operand<'gc>>) -> impl Iterator<Item = ValueId> {
     uses.into_iter().filter_map(|atom| match atom {
-        LinearAtom::Local(value) => Some(value),
-        LinearAtom::Constant(_) => None,
+        Operand::Local(value) => Some(value),
+        Operand::Constant(_) => None,
     })
 }

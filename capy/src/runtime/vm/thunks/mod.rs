@@ -16,25 +16,23 @@ pub mod pairs;
 pub mod preds;
 pub mod vectors;
 
-pub use helpers::{RegisterArgs, collect_register_args, save_register_args, wrong_number_of_args_impl};
+pub use helpers::{
+    RegisterArgs, collect_register_args, save_register_args, wrong_number_of_args_impl,
+};
 
+use crate::rsgc::{
+    ObjectSlot,
+    mmtk::util::{Address, ObjectReference},
+};
 use crate::runtime::vm::exceptions::make_undefined_violation as undefined_violation;
 use crate::{
     prelude::ClosureRef,
     runtime::{
         Context,
-        value::{
-            Str, Symbol, Value,
-        },
-        vm::{
-            VMResult, call_scheme,
-        },
+        value::{Str, Symbol, Value},
+        vm::{ExecutionResult, call_scheme},
     },
 };
-use crate::rsgc::{
-        ObjectSlot,
-        mmtk::util::{Address, ObjectReference},
-    };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
@@ -633,6 +631,22 @@ thunks! {
         vectors::vector_ref(ctx, vec, index)
     }
 
+    pub fn string_ref(ctx: Context<'gc>, s: Value<'gc>, index: Value<'gc>) -> ThunkResult<'gc> {
+        misc::string_ref_value(ctx, s, index)
+    }
+
+    pub fn string_ref_unchecked(ctx: Context<'gc>, s: Value<'gc>, index: Value<'gc>) -> ThunkResult<'gc> {
+        misc::string_ref_unchecked_value(ctx, s, index)
+    }
+
+    pub fn bytevector_length(ctx: Context<'gc>, bv: Value<'gc>) -> ThunkResult<'gc> {
+        vectors::bytevector_length(ctx, bv)
+    }
+
+    pub fn bytevector_u8_ref(ctx: Context<'gc>, bv: Value<'gc>, index: Value<'gc>) -> ThunkResult<'gc> {
+        vectors::bytevector_u8_ref(ctx, bv, index)
+    }
+
     pub fn vector_set(ctx: Context<'gc>, vec: Value<'gc>, index: Value<'gc>, new_value: Value<'gc>) -> ThunkResult<'gc> {
         vectors::vector_set(ctx, vec, index, new_value)
     }
@@ -768,8 +782,8 @@ pub fn make_assertion_violation<'gc>(
         });
 
     match call_scheme(ctx, assertion_violation, args) {
-        VMResult::Ok(val) => val,
-        VMResult::Err(err) => err,
+        ExecutionResult::Ok(val) => val,
+        ExecutionResult::Err(err) => err,
     }
 }
 
@@ -793,8 +807,8 @@ pub fn make_undefined_violation<'gc>(
             panic!("failed to resolve %make-undefined-violation (pre-boot): who={who}, message={message}, irritants={irritants:?}",)
         });
     match call_scheme(ctx, undefined_violation, args) {
-        VMResult::Ok(val) => val,
-        VMResult::Err(err) => err,
+        ExecutionResult::Ok(val) => val,
+        ExecutionResult::Err(err) => err,
     }
 }
 
@@ -816,8 +830,8 @@ pub fn make_error<'gc>(
         .expect("failed to resolve %make-error (pre-boot)");
 
     match call_scheme(ctx, error, args) {
-        VMResult::Ok(val) => val,
-        VMResult::Err(err) => err,
+        ExecutionResult::Ok(val) => val,
+        ExecutionResult::Err(err) => err,
     }
 }
 
@@ -845,8 +859,8 @@ pub fn make_io_error<'gc>(
         });
 
     match call_scheme(ctx, io_error, args) {
-        VMResult::Ok(val) => val,
-        VMResult::Err(err) => err,
+        ExecutionResult::Ok(val) => val,
+        ExecutionResult::Err(err) => err,
     }
 }
 
@@ -866,8 +880,8 @@ pub fn make_lexical_violation<'gc>(
         .unwrap_or_else(|| panic!("failed to resolve %make-lexical-violation (pre-boot): who={who}, message={message}",));
 
     match call_scheme(ctx, lexical_violation, args) {
-        VMResult::Ok(val) => val,
-        VMResult::Err(err) => err,
+        ExecutionResult::Ok(val) => val,
+        ExecutionResult::Err(err) => err,
     }
 }
 
@@ -897,10 +911,6 @@ pub fn resolve_module<'gc>(ctx: Context<'gc>, name: Value<'gc>, public: bool) ->
 #[cfg(test)]
 mod runtime_thunk_import_tests {
     use super::*;
-    use crate::{
-        rsgc::object::builtin_class_ids,
-        runtime::{Scheme, value::Value},
-    };
 
     #[test]
     fn direct_imported_thunks_use_runtime_thunk_ids() {
@@ -925,5 +935,4 @@ mod runtime_thunk_import_tests {
             ))
         );
     }
-
 }

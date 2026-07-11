@@ -1,5 +1,5 @@
 use crate::rsgc::collection::{Visitor, VisitorKind};
-use crate::rsgc::{Gc, mm::MemoryManager, object::GCObject, traits::Trace};
+use crate::rsgc::{Gc, mm::MemoryManager, object::GcObject, traits::Trace};
 use crate::rsgc::{Mutation, ObjectSlot};
 use mmtk::{
     scheduler::GCWorker,
@@ -146,7 +146,7 @@ impl<'a> WeakProcessor<'a> {
     ///
     /// If weak pointer is kept alive, pointer might be moved around memory by moving GC.
     pub fn process_weak<T: Sized>(&mut self, weak: &mut Weak<'_, T>) {
-        let Some(objref) = weak
+        let Some(object_reference) = weak
             .ptr
             .map(|p| p.as_ptr() as *const u8)
             .map(Address::from_ptr)
@@ -156,10 +156,12 @@ impl<'a> WeakProcessor<'a> {
             return;
         };
 
-        if objref.is_reachable() {
-            let new_objref = objref.get_forwarded_object().unwrap_or(objref);
+        if object_reference.is_reachable() {
+            let new_object_reference = object_reference
+                .get_forwarded_object()
+                .unwrap_or(object_reference);
 
-            weak.ptr = NonNull::new(new_objref.to_raw_address().to_mut_ptr());
+            weak.ptr = NonNull::new(new_object_reference.to_raw_address().to_mut_ptr());
         } else {
             weak.ptr = None;
         }
@@ -172,23 +174,25 @@ impl<'a> WeakProcessor<'a> {
     }
 
     /// Checks if object is live and potentially returns new reference, or old but live reference
-    /// OR `GCObject::NULL` if object is dead.
+    /// OR `GcObject::NULL` if object is dead.
     ///
     /// # Safety
     ///
     /// Caller must ensure that `object` is a valid GC object and also check the return value appropriately.
     #[must_use]
-    pub unsafe fn is_live_object(&self, object: GCObject) -> GCObject {
-        let Some(objref) = object.to_objref() else {
-            return GCObject::NULL;
+    pub unsafe fn is_live_object(&self, object: GcObject) -> GcObject {
+        let Some(object_reference) = object.to_object_reference() else {
+            return GcObject::NULL;
         };
 
-        if objref.is_reachable() {
-            let new = objref.get_forwarded_object().unwrap_or(objref);
+        if object_reference.is_reachable() {
+            let new = object_reference
+                .get_forwarded_object()
+                .unwrap_or(object_reference);
 
-            GCObject::from_objref_nullable(Some(new))
+            GcObject::from(new)
         } else {
-            GCObject::NULL
+            GcObject::NULL
         }
     }
 
@@ -263,7 +267,7 @@ impl WeakProcessingState {
             let mut objects_with_weak_refs = self.objects_with_weak_refs.lock();
 
             for obj in objects_with_weak_refs.drain() {
-                GCObject::from(obj).process_weak_refs(&mut weak_processor);
+                GcObject::from(obj).process_weak_refs(&mut weak_processor);
             }
 
             let mut roots = self.roots_with_weak_refs.lock();

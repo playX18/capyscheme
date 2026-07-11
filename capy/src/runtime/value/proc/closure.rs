@@ -41,7 +41,7 @@ impl<'gc> Index<usize> for Closure<'gc> {
 // access to the same in-bounds slots. The GC write barrier is handled at the call site.
 unsafe impl<'gc> IndexWrite<usize> for Closure<'gc> {}
 
-extern "C" fn trace_closure(obj: GCObject, visitor: &mut Visitor) {
+extern "C" fn trace_closure(obj: GcObject, visitor: &mut Visitor) {
     // SAFETY: `obj` is guaranteed by the GC to point to a valid `Closure` allocated with
     // a closure class header. We iterate exactly `nfree` trailing elements.
     unsafe {
@@ -54,11 +54,11 @@ extern "C" fn trace_closure(obj: GCObject, visitor: &mut Visitor) {
     }
 }
 
-extern "C" fn process_weak(_obj: GCObject, _weak_processor: &mut crate::rsgc::WeakProcessor) {
+extern "C" fn process_weak(_obj: GcObject, _weak_processor: &mut crate::rsgc::WeakProcessor) {
     // No weak references in Closure, so do nothing.
 }
 
-extern "C" fn compute_closure_size(obj: GCObject) -> usize {
+extern "C" fn compute_closure_size(obj: GcObject) -> usize {
     // SAFETY: `obj` is a valid `Closure` allocated by the GC with a closure class header.
     unsafe {
         let closure = obj.to_address().as_ref::<Closure>();
@@ -160,7 +160,7 @@ impl<'gc> Closure<'gc> {
                 let value = free.map_or(Value::undefined(), |free| free[i]);
                 this.free.as_mut_ptr().add(i).write(Lock::new(value));
             }
-            Gc::from_gcobj(ptr)
+            Gc::from_gc_object(ptr)
         }
     }
 

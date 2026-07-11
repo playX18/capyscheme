@@ -57,7 +57,7 @@ fn relocatable_code_block_layout(
     })
 }
 
-extern "C" fn compute_relocatable_code_block_size(obj: GCObject) -> usize {
+extern "C" fn compute_relocatable_code_block_size(obj: GcObject) -> usize {
     // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         let obj = obj.to_address().as_ref::<RelocatableCodeBlock<'static>>();
@@ -71,7 +71,7 @@ extern "C" fn compute_relocatable_code_block_size(obj: GCObject) -> usize {
     }
 }
 
-extern "C" fn trace_relocatable_code_block(obj: GCObject, vis: &mut Visitor) {
+extern "C" fn trace_relocatable_code_block(obj: GcObject, vis: &mut Visitor) {
     // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         let obj = obj
@@ -82,7 +82,7 @@ extern "C" fn trace_relocatable_code_block(obj: GCObject, vis: &mut Visitor) {
 }
 
 extern "C" fn process_weak_relocatable_code_block(
-    obj: GCObject,
+    obj: GcObject,
     weak_processor: &mut WeakProcessor,
 ) {
     // SAFETY: Preconditions verified by the surrounding code
@@ -168,7 +168,7 @@ impl<'gc> RelocatableCodeBlock<'gc> {
                 );
             }
 
-            Gc::from_gcobj(alloc)
+            Gc::from_gc_object(alloc)
         }
     }
 

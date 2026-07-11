@@ -7,7 +7,7 @@ use crate::rsgc::{
     collection::{Visitor, VisitorKind},
     conservative::scan_conservative_native_stack,
     mm::MemoryManager,
-    object::GCObject,
+    object::GcObject,
     sync::thread::Thread,
     traits::Trace,
 };
@@ -23,7 +23,7 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
     ) {
         let mut visitor = unsafe { Visitor::new(VisitorKind::Slot(slot_visitor), Some(object)) };
 
-        GCObject::from(object).trace(&mut visitor);
+        GcObject::from(object).trace(&mut visitor);
     }
 
     fn support_slot_enqueuing(
@@ -40,7 +40,7 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
         object_tracer: &mut OT,
     ) {
         let mut visitor = unsafe { Visitor::new(VisitorKind::Trace(object_tracer), Some(object)) };
-        GCObject::from(object).trace(&mut visitor);
+        GcObject::from(object).trace(&mut visitor);
     }
 
     fn notify_initial_thread_scan_complete(_partial_scan: bool, _tls: mmtk::util::VMWorkerThread) {}

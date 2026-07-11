@@ -46,7 +46,10 @@ pub fn runtime_data(data: RuntimeData) -> Symbol {
     Symbol::data(DataKind::RuntimeData, DataSymbol::new(data.id()))
 }
 
-pub fn declare_runtime_data(function: &mut cranelift_codegen::ir::Function, data: RuntimeData) -> cranelift_codegen::ir::GlobalValue {
+pub fn declare_runtime_data(
+    function: &mut cranelift_codegen::ir::Function,
+    data: RuntimeData,
+) -> cranelift_codegen::ir::GlobalValue {
     declare_data(function, runtime_data(data), false, false)
 }
 
@@ -96,21 +99,18 @@ impl Default for CompileContext {
     }
 }
 
-// End of low-level Cranelift helpers.
-// Below: SSA builder and ModuleBuilder (formerly in compiler/ssa/).
-
 #[cfg(test)]
 use crate::compiler::codegen::declare_function as codegen_declare_function;
 use crate::{
     compiler::{
         BackendDumpOptions,
+        cranelift::primitive::PrimitiveLowerer,
         debuginfo::{DebugContext, DebugSourceLocation, FunctionDebugContext},
         direct::{
             CompiledFunction, Relocation as DirectRelocation, Target as DirectTarget,
             compile_function,
         },
-        cranelift::primitive::PrimitiveLowerer,
-        ssa::{BlockId, CodeId, LinearProgram, Procedure, ValueId},
+        ssa::{BlockId, CodeId, Procedure, Program, ValueId},
         symbols::FunctionSymbol,
     },
     disassembly::{DisassemblySource, SourceAnnotation, SourceRangeAnnotation},
@@ -119,8 +119,8 @@ use crate::{
     runtime::{
         CallData, Context, REGISTER_ARG_COUNT, State,
         fasl::{
-            CodeSourceMapEntry, CodeSpec, FaslCompression, FaslImage, FaslWriter, GraphCodeSpec,
-            GraphValueSpec, ProgramSpec,
+            CodeSourceMapEntry, CodeSpec, Compression, GraphCodeSpec, GraphValueSpec, Image,
+            ProgramSpec, Writer,
             reloc::{RelocKind, RelocTarget, Relocation, SideMetadataSlot},
         },
         value::{Closure, ReturnCode, Symbol as SchemeSymbol, Value, ValueEqual},
@@ -140,21 +140,21 @@ use std::{
     fs::File,
     io::Write,
     mem::offset_of,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use crate::runtime::vm::thunks::*;
 
 pub mod helpers;
-pub mod translate;
 pub mod primitive;
+pub mod translate;
 pub use primitive::{PrimValue, Primitive};
 pub mod traits;
 mod types;
 
 pub(crate) use translate::AllocationHeaderPreset;
-pub use types::{RestSource, RegisterCallArgs, VarDef};
 pub(crate) use types::{MAX_RAISE_ARITY, compiled_scheme_signature, overflow_base_from_argc};
+pub use types::{RegisterCallArgs, RestSource, VarDef};
 
 fn declare_direct_function(
     next_function_symbol: &mut u32,
@@ -374,11 +374,11 @@ fn fasl_relocation_from_direct_relocation(
     ))
 }
 
-/// A SSA Builder. Constructs Cranelift module and SSA from single compilation unit.
+/// Builds a Cranelift module from one SSA compilation unit.
 pub struct ModuleBuilder<'gc> {
     pub ctx: Context<'gc>,
     pub(crate) debug_context: DebugContext<'gc>,
-    pub program: LinearProgram<'gc>,
+    pub program: Program<'gc>,
     pub constants: HashMap<ValueEqual<'gc>, DataSymbol>,
     pub cache_cells: HashMap<ValueEqual<'gc>, DataSymbol>,
 
@@ -419,7 +419,7 @@ struct CompiledFaslFunction {
 }
 
 #[derive(Clone, Copy)]
-struct FaslDataSlot {
+struct DataSlot {
     symbol: DataSymbol,
     kind: DataKind,
     constant_index: Option<u32>,
@@ -428,7 +428,7 @@ struct FaslDataSlot {
     side_metadata: Option<SideMetadataSlot>,
 }
 
-impl FaslDataSlot {
+impl DataSlot {
     fn constant(symbol: DataSymbol, index: Option<u32>) -> Self {
         Self::new(symbol, DataKind::Constant).with_constant(index)
     }
@@ -482,7 +482,7 @@ impl FaslDataSlot {
 }
 
 impl<'gc> ModuleBuilder<'gc> {
-    pub fn new_with_program(ctx: Context<'gc>, program: LinearProgram<'gc>) -> Self {
+    pub fn new_with_program(ctx: Context<'gc>, program: Program<'gc>) -> Self {
         let isa = host_isa();
         let entry = program
             .procedures
@@ -500,7 +500,7 @@ impl<'gc> ModuleBuilder<'gc> {
 
     fn new_with_debug_context(
         ctx: Context<'gc>,
-        program: LinearProgram<'gc>,
+        program: Program<'gc>,
         debug_context: DebugContext<'gc>,
     ) -> Self {
         let prims = PrimitiveLowerer::new(ctx);
@@ -733,7 +733,7 @@ impl<'gc> ModuleBuilder<'gc> {
             };
             let metadata = metadata_with_source(self.ctx, metadata, declared.procedure.source);
             let func_debug_cx = {
-                let mut ssa = SSABuilder::new(
+                let mut ssa = SsaBuilder::new(
                     self,
                     builder,
                     declared.procedure.clone(),
@@ -757,7 +757,61 @@ impl<'gc> ModuleBuilder<'gc> {
                 )?;
             }
 
-            let compiled = compile_function(&*isa, &mut cache)?;
+            let compiled = match compile_function(&*isa, &mut cache) {
+                Ok(compiled) => compiled,
+                Err(err) => {
+                    // Hard-coded paths so a verify failure is always inspectable,
+                    // independent of CAPY_*_DUMP_DIR ownership / limits.
+                    let dump_dir = std::env::var_os("CAPY_DUMP_DIR")
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| PathBuf::from("/tmp/capy-verify-fail"));
+                    let _ = std::fs::create_dir_all(&dump_dir);
+                    let safe_name = declared.name.replace(['/', '\\', ' '], "_");
+                    let fail_path = dump_dir.join(format!("{safe_name}.clif"));
+                    match File::create(&fail_path) {
+                        Ok(mut file) => {
+                            let _ = write_cranelift_dump(
+                                &mut file,
+                                declared.function.index(),
+                                &declared.name,
+                                &cache.ctx.func,
+                            );
+                            eprintln!(
+                                ";; TRACE  (capy)@compile: verify-fail CLIF -> {}",
+                                fail_path.display()
+                            );
+                        }
+                        Err(io_err) => eprintln!(
+                            ";; WARN  (capy)@compile: could not write {}: {io_err}",
+                            fail_path.display()
+                        ),
+                    }
+                    let ssa_path = dump_dir.join(format!("{safe_name}.ssa.txt"));
+                    let rendered = crate::compiler::ssa::render_program(&Program {
+                        entry: declared.procedure.code,
+                        procedures: vec![declared.procedure.clone()],
+                    });
+                    match std::fs::write(&ssa_path, &rendered) {
+                        Ok(()) => eprintln!(
+                            ";; TRACE  (capy)@compile: verify-fail SSA -> {}",
+                            ssa_path.display()
+                        ),
+                        Err(io_err) => eprintln!(
+                            ";; WARN  (capy)@compile: could not write {}: {io_err}",
+                            ssa_path.display()
+                        ),
+                    }
+                    // Also dump the full module SSA for cross-procedure context.
+                    let full_path = dump_dir.join("module.ssa.txt");
+                    let full = crate::compiler::ssa::render_program(&self.program);
+                    let _ = std::fs::write(&full_path, full);
+                    eprintln!(
+                        ";; TRACE  (capy)@compile: verify-fail module SSA -> {}",
+                        full_path.display()
+                    );
+                    return Err(err);
+                }
+            };
             let source = disassembly_source(&func_debug_cx, &self.debug_context, &compiled);
             let source_map = code_source_map(&source);
             if let Some(file) = disassembly_dump.as_mut() {
@@ -961,8 +1015,8 @@ impl<'gc> ModuleBuilder<'gc> {
             entry_code.index(),
             false,
         );
-        FaslWriter::new(self.ctx, &mut bytes)
-            .write_image(FaslImage::Program(&program), FaslCompression::Gzip)
+        Writer::new(self.ctx, &mut bytes)
+            .write_image(Image::Program(&program), Compression::Gzip)
             .map_err(|err| err.to_string())?;
         Ok(bytes)
     }
@@ -1489,32 +1543,32 @@ impl<'gc> ModuleBuilder<'gc> {
             .collect::<HashMap<_, _>>()
     }
 
-    fn fasl_data_slots(&self, constant_indices: &HashMap<DataSymbol, u32>) -> Vec<FaslDataSlot> {
+    fn fasl_data_slots(&self, constant_indices: &HashMap<DataSymbol, u32>) -> Vec<DataSlot> {
         let mut slots = Vec::new();
 
         for symbol in self.constants.values().copied() {
-            slots.push(FaslDataSlot::constant(
+            slots.push(DataSlot::constant(
                 symbol,
                 constant_indices.get(&symbol).copied(),
             ));
         }
         for symbol in self.cache_cells.values().copied() {
-            slots.push(FaslDataSlot::cache_cell(symbol));
+            slots.push(DataSlot::cache_cell(symbol));
         }
         for (code, symbol) in self.code_block_for_code.iter() {
-            slots.push(FaslDataSlot::code(
+            slots.push(DataSlot::code(
                 *symbol,
                 self.func_for_code.get(code).copied(),
             ));
         }
         for (function, symbol) in self.pointer_slot_for_function.iter() {
-            slots.push(FaslDataSlot::pointer(*symbol, *function));
+            slots.push(DataSlot::pointer(*symbol, *function));
         }
-        slots.push(FaslDataSlot::side_metadata(
+        slots.push(DataSlot::side_metadata(
             self.global_side_metadata_base_address,
             SideMetadataSlot::Global,
         ));
-        slots.push(FaslDataSlot::side_metadata(
+        slots.push(DataSlot::side_metadata(
             self.vo_bit_side_metadata_base_address,
             SideMetadataSlot::VoBit,
         ));
@@ -1566,22 +1620,6 @@ impl<'gc> ModuleBuilder<'gc> {
         self.declare_data_symbol(DataKind::CodeBlock, name)
     }
 
-    #[cfg(test)]
-    fn load_constant(&mut self, builder: &mut FunctionBuilder<'_>, value: Value<'gc>) -> ir::Value {
-        if let Some(data_id) = self.intern_constant(value) {
-            let gv = self.declare_data_in_func(data_id, builder.func);
-            let addr = builder.ins().global_value(clif_types::I64, gv);
-            builder.ins().load(
-                clif_types::I64,
-                ir::MemFlags::trusted().with_can_move(),
-                addr,
-                0,
-            )
-        } else {
-            builder.ins().iconst(clif_types::I64, value.bits() as i64)
-        }
-    }
-
     fn arity_for_procedure(procedure: &Procedure<'gc>) -> i32 {
         if procedure.variadic.is_some() {
             -((procedure.params.len() as i32) + 1)
@@ -1591,7 +1629,7 @@ impl<'gc> ModuleBuilder<'gc> {
     }
 }
 
-pub struct SSABuilder<'gc, 'a, 'f> {
+pub struct SsaBuilder<'gc, 'a, 'f> {
     pub module_builder: &'a mut ModuleBuilder<'gc>,
     pub builder: FunctionBuilder<'f>,
     pub(crate) func_debug_cx: FunctionDebugContext<'gc>,
@@ -1620,12 +1658,11 @@ pub struct SSABuilder<'gc, 'a, 'f> {
     pub sig_call: ir::SigRef,
 
     pub data_imports: HashMap<DataSymbol, ir::GlobalValue>,
-    pub heap_class_id_facts: HashSet<(ir::Block, ir::Value, u32)>,
 
     pub srcloc: Option<SourceLoc>,
 }
 
-impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
+impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
     pub(crate) fn new(
         module_builder: &'a mut ModuleBuilder<'gc>,
         mut builder: FunctionBuilder<'f>,
@@ -1708,7 +1745,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             sig_call,
 
             data_imports: HashMap::new(),
-            heap_class_id_facts: HashSet::new(),
             srcloc: None,
         };
 
@@ -1717,4 +1753,3 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         this
     }
 }
-

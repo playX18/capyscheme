@@ -23,7 +23,7 @@ pub(super) fn loop_blocks<'gc>(procedure: &Procedure<'gc>) -> HashSet<BlockId> {
 fn block_successors<'gc>(procedure: &Procedure<'gc>, block: &Block<'gc>) -> Vec<BlockId> {
     let mut successors = block.terminator.successors();
     if let Terminator::TailCall {
-        callee: LinearAtom::Local(callee),
+        callee: Operand::Local(callee),
         ..
     } = block.terminator
         && callee == procedure.binding

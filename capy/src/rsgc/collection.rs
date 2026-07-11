@@ -55,7 +55,7 @@ impl mmtk::vm::Collection<MemoryManager> for Collection {
                 let thread = Thread::new(false);
                 init_current_thread(thread.clone());
                 worker.run(
-                    VMWorkerThread(thread.to_vmthread()),
+                    VMWorkerThread(thread.to_vm_thread()),
                     &super::GarbageCollector::get().mmtk,
                 );
 
@@ -150,10 +150,10 @@ impl<'a> Visitor<'a> {
     /// invoked on corresponding object after marking closure.
     pub fn register_for_weak_processing(&mut self) {
         self.has_weak_refs |= true;
-        if let Some(objref) = self.current_object {
+        if let Some(object_reference) = self.current_object {
             crate::rsgc::GarbageCollector::get()
                 .weak
-                .add_object_with_weak_ref(objref);
+                .add_object_with_weak_ref(object_reference);
         }
     }
 

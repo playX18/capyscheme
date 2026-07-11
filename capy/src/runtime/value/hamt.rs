@@ -7,7 +7,7 @@ use crate::rsgc::{
     cell::Lock,
     collection::Visitor,
     mmtk::AllocationSemantics,
-    object::{AllocationHooks, ClassId, GCObject, builtin_class_ids, class_header_word},
+    object::{AllocationHooks, ClassId, GcObject, builtin_class_ids, class_header_word},
     weak::WeakProcessor,
 };
 
@@ -106,11 +106,11 @@ const _: () = {
     assert!(offset_of!(HamtCollisionHeader<'static>, tag) == 0);
 };
 
-unsafe fn node_tag(obj: GCObject) -> u8 {
+unsafe fn node_tag(obj: GcObject) -> u8 {
     unsafe { *obj.to_address().as_ref::<u8>() }
 }
 
-extern "C" fn trace_hamt_node(obj: GCObject, vis: &mut Visitor) {
+extern "C" fn trace_hamt_node(obj: GcObject, vis: &mut Visitor) {
     unsafe {
         match node_tag(obj) {
             TAG_LEAF => {
@@ -148,9 +148,9 @@ extern "C" fn trace_hamt_node(obj: GCObject, vis: &mut Visitor) {
     }
 }
 
-extern "C" fn weak_hamt_node(_: GCObject, _: &mut WeakProcessor) {}
+extern "C" fn weak_hamt_node(_: GcObject, _: &mut WeakProcessor) {}
 
-extern "C" fn compute_hamt_node_size(obj: GCObject) -> usize {
+extern "C" fn compute_hamt_node_size(obj: GcObject) -> usize {
     unsafe {
         match node_tag(obj) {
             TAG_BITMAP => {
@@ -198,7 +198,7 @@ fn alloc_leaf<'gc>(
         hamt_node_header_word(),
     );
     // SAFETY: HamtLeafNode shares the HamtNode header prefix.
-    unsafe { Gc::from_gcobj(leaf.as_gcobj()) }
+    unsafe { Gc::from_gc_object(leaf.as_gc_object()) }
 }
 
 fn alloc_bitmap<'gc>(
@@ -207,7 +207,7 @@ fn alloc_bitmap<'gc>(
     children: &[Gc<'gc, HamtNode>],
 ) -> Gc<'gc, HamtNode> {
     let child_count = children.len() as u32;
-    let size = size_of::<HamtBitmapHeader<'gc>>() + children.len() * size_of::<Gc<'gc, HamtNode>>();
+    let size = size_of::<HamtBitmapHeader<'gc>>() + size_of_val(children);
     unsafe {
         let alloc = mc.raw_allocate_with_header_word(
             size,
@@ -224,7 +224,7 @@ fn alloc_bitmap<'gc>(
             header.children.as_mut_ptr().add(i).write(*child);
         }
         // SAFETY: Allocation matches HamtNode layout prefix.
-        Gc::from_gcobj(alloc)
+        Gc::from_gc_object(alloc)
     }
 }
 
@@ -246,7 +246,7 @@ fn alloc_array<'gc>(
         hamt_node_header_word(),
     );
     // SAFETY: HamtArrayNode shares the HamtNode header prefix.
-    unsafe { Gc::from_gcobj(array.as_gcobj()) }
+    unsafe { Gc::from_gc_object(array.as_gc_object()) }
 }
 
 fn alloc_collision<'gc>(
@@ -280,7 +280,7 @@ fn alloc_collision<'gc>(
                 });
         }
         // SAFETY: Allocation matches HamtNode layout prefix.
-        Gc::from_gcobj(alloc)
+        Gc::from_gc_object(alloc)
     }
 }
 
@@ -313,9 +313,12 @@ fn hamt_get<'gc>(
     hash: u32,
 ) -> Option<Value<'gc>> {
     unsafe {
-        match node_tag(node.as_gcobj()) {
+        match node_tag(node.as_gc_object()) {
             TAG_LEAF => {
-                let leaf = node.as_gcobj().to_address().as_ref::<HamtLeafNode<'gc>>();
+                let leaf = node
+                    .as_gc_object()
+                    .to_address()
+                    .as_ref::<HamtLeafNode<'gc>>();
                 if typ.equal(key, leaf.key) {
                     Some(leaf.value)
                 } else {
@@ -324,7 +327,7 @@ fn hamt_get<'gc>(
             }
             TAG_BITMAP => {
                 let header = node
-                    .as_gcobj()
+                    .as_gc_object()
                     .to_address()
                     .as_ref::<HamtBitmapHeader<'gc>>();
                 let idx = fragment(hash, shift);
@@ -337,7 +340,10 @@ fn hamt_get<'gc>(
                 hamt_get(typ, child, shift + HAMT_SHIFT, key, hash)
             }
             TAG_ARRAY => {
-                let array = node.as_gcobj().to_address().as_ref::<HamtArrayNode<'gc>>();
+                let array = node
+                    .as_gc_object()
+                    .to_address()
+                    .as_ref::<HamtArrayNode<'gc>>();
                 let idx = fragment(hash, shift) as usize;
                 if let Some(child) = array.children[idx].get() {
                     hamt_get(typ, child, shift + HAMT_SHIFT, key, hash)
@@ -347,7 +353,7 @@ fn hamt_get<'gc>(
             }
             TAG_COLLISION => {
                 let header = node
-                    .as_gcobj()
+                    .as_gc_object()
                     .to_address()
                     .as_ref::<HamtCollisionHeader<'gc>>();
                 for i in 0..header.entry_count as usize {
@@ -363,9 +369,9 @@ fn hamt_get<'gc>(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Represents the two leaf entries being merged into a HAMT node.
 fn make_leaf_or_collision<'gc>(
     mc: Mutation<'gc>,
-    typ: HashTableType<'gc>,
     shift: u32,
     key1: Value<'gc>,
     value1: Value<'gc>,
@@ -382,7 +388,6 @@ fn make_leaf_or_collision<'gc>(
     if f1 == f2 {
         let child = make_leaf_or_collision(
             mc,
-            typ,
             shift + HAMT_SHIFT,
             key1,
             value1,
@@ -418,9 +423,7 @@ fn hamt_assoc_leaf<'gc>(
         (alloc_leaf(mc, hash, key, value), false)
     } else {
         (
-            make_leaf_or_collision(
-                mc, typ, shift, leaf.key, leaf.value, leaf.hash, key, value, hash,
-            ),
+            make_leaf_or_collision(mc, shift, leaf.key, leaf.value, leaf.hash, key, value, hash),
             true,
         )
     }
@@ -465,15 +468,18 @@ fn hamt_assoc<'gc>(
     };
 
     unsafe {
-        match node_tag(node.as_gcobj()) {
+        match node_tag(node.as_gc_object()) {
             TAG_LEAF => {
-                let leaf = node.as_gcobj().to_address().as_ref::<HamtLeafNode<'gc>>();
+                let leaf = node
+                    .as_gc_object()
+                    .to_address()
+                    .as_ref::<HamtLeafNode<'gc>>();
                 let (new_node, added) = hamt_assoc_leaf(mc, typ, shift, leaf, key, value, hash);
                 (Some(new_node), added)
             }
             TAG_BITMAP => {
                 let header = node
-                    .as_gcobj()
+                    .as_gc_object()
                     .to_address()
                     .as_ref::<HamtBitmapHeader<'gc>>();
                 let idx = fragment(hash, shift);
@@ -489,10 +495,10 @@ fn hamt_assoc<'gc>(
                     if popcount(new_bitmap) as u32 >= HAMT_ARRAY_THRESHOLD {
                         let mut slots = [None; HAMT_WIDTH];
                         let mut ci = 0usize;
-                        for i in 0..HAMT_WIDTH {
+                        for (i, slot) in slots.iter_mut().enumerate() {
                             let b = 1u32 << i;
                             if header.bitmap & b != 0 {
-                                slots[i] = Some(header.children.as_ptr().add(ci).read());
+                                *slot = Some(header.children.as_ptr().add(ci).read());
                                 ci += 1;
                             }
                         }
@@ -514,13 +520,16 @@ fn hamt_assoc<'gc>(
                 }
             }
             TAG_ARRAY => {
-                let array = node.as_gcobj().to_address().as_ref::<HamtArrayNode<'gc>>();
+                let array = node
+                    .as_gc_object()
+                    .to_address()
+                    .as_ref::<HamtArrayNode<'gc>>();
                 let idx = fragment(hash, shift) as usize;
                 if array.children[idx].get().is_none() {
                     let leaf = alloc_leaf(mc, hash, key, value);
                     let mut slots: [Option<Gc<'gc, HamtNode>>; HAMT_WIDTH] = [None; HAMT_WIDTH];
-                    for i in 0..HAMT_WIDTH {
-                        slots[i] = array.children[i].get();
+                    for (i, slot) in slots.iter_mut().enumerate() {
+                        *slot = array.children[i].get();
                     }
                     slots[idx] = Some(leaf);
                     let occupied = slots.iter().filter(|s| s.is_some()).count() as u32;
@@ -538,8 +547,8 @@ fn hamt_assoc<'gc>(
                     let (new_child, added) =
                         hamt_assoc(mc, typ, Some(child), shift + HAMT_SHIFT, key, value, hash);
                     let mut slots: [Option<Gc<'gc, HamtNode>>; HAMT_WIDTH] = [None; HAMT_WIDTH];
-                    for i in 0..HAMT_WIDTH {
-                        slots[i] = array.children[i].get();
+                    for (i, slot) in slots.iter_mut().enumerate() {
+                        *slot = array.children[i].get();
                     }
                     slots[idx] = new_child;
                     (Some(alloc_array(mc, slots)), added)
@@ -547,7 +556,7 @@ fn hamt_assoc<'gc>(
             }
             TAG_COLLISION => {
                 let header = node
-                    .as_gcobj()
+                    .as_gc_object()
                     .to_address()
                     .as_ref::<HamtCollisionHeader<'gc>>();
                 let (new_node, added) = hamt_assoc_collision(mc, typ, header, key, value, hash);
@@ -604,9 +613,12 @@ fn hamt_remove<'gc>(
     hash: u32,
 ) -> (Option<Gc<'gc, HamtNode>>, bool) {
     unsafe {
-        match node_tag(node.as_gcobj()) {
+        match node_tag(node.as_gc_object()) {
             TAG_LEAF => {
-                let leaf = node.as_gcobj().to_address().as_ref::<HamtLeafNode<'gc>>();
+                let leaf = node
+                    .as_gc_object()
+                    .to_address()
+                    .as_ref::<HamtLeafNode<'gc>>();
                 if typ.equal(key, leaf.key) {
                     (hamt_remove_leaf(typ, leaf, key), true)
                 } else {
@@ -615,7 +627,7 @@ fn hamt_remove<'gc>(
             }
             TAG_BITMAP => {
                 let header = node
-                    .as_gcobj()
+                    .as_gc_object()
                     .to_address()
                     .as_ref::<HamtBitmapHeader<'gc>>();
                 let idx = fragment(hash, shift);
@@ -630,7 +642,13 @@ fn hamt_remove<'gc>(
                 if !removed {
                     return (Some(node), false);
                 }
-                if new_child.is_none() {
+                if let Some(new_child) = new_child {
+                    let mut children: Vec<Gc<'gc, HamtNode>> = (0..header.child_count as usize)
+                        .map(|i| header.children.as_ptr().add(i).read())
+                        .collect();
+                    children[child_idx] = new_child;
+                    (Some(alloc_bitmap(mc, header.bitmap, &children)), true)
+                } else {
                     let new_bitmap = header.bitmap & !bit;
                     if new_bitmap == 0 {
                         return (None, true);
@@ -647,10 +665,10 @@ fn hamt_remove<'gc>(
                     if popcount(new_bitmap) as u32 >= HAMT_ARRAY_THRESHOLD {
                         let mut slots = [None; HAMT_WIDTH];
                         let mut ci = 0usize;
-                        for i in 0..HAMT_WIDTH {
+                        for (i, slot) in slots.iter_mut().enumerate() {
                             let b = 1u32 << i;
                             if header.bitmap & b != 0 && i != idx as usize {
-                                slots[i] = Some(header.children.as_ptr().add(ci).read());
+                                *slot = Some(header.children.as_ptr().add(ci).read());
                             }
                             if header.bitmap & b != 0 {
                                 ci += 1;
@@ -660,16 +678,13 @@ fn hamt_remove<'gc>(
                     } else {
                         (Some(alloc_bitmap(mc, new_bitmap, &children)), true)
                     }
-                } else {
-                    let mut children: Vec<Gc<'gc, HamtNode>> = (0..header.child_count as usize)
-                        .map(|i| header.children.as_ptr().add(i).read())
-                        .collect();
-                    children[child_idx] = new_child.unwrap();
-                    (Some(alloc_bitmap(mc, header.bitmap, &children)), true)
                 }
             }
             TAG_ARRAY => {
-                let array = node.as_gcobj().to_address().as_ref::<HamtArrayNode<'gc>>();
+                let array = node
+                    .as_gc_object()
+                    .to_address()
+                    .as_ref::<HamtArrayNode<'gc>>();
                 let idx = fragment(hash, shift) as usize;
                 let Some(child) = array.children[idx].get() else {
                     return (Some(node), false);
@@ -680,8 +695,8 @@ fn hamt_remove<'gc>(
                     return (Some(node), false);
                 }
                 let mut slots: [Option<Gc<'gc, HamtNode>>; HAMT_WIDTH] = [None; HAMT_WIDTH];
-                for i in 0..HAMT_WIDTH {
-                    slots[i] = array.children[i].get();
+                for (i, slot) in slots.iter_mut().enumerate() {
+                    *slot = array.children[i].get();
                 }
                 slots[idx] = new_child;
                 let occupied = slots.iter().filter(|s| s.is_some()).count();
@@ -697,7 +712,7 @@ fn hamt_remove<'gc>(
             }
             TAG_COLLISION => {
                 let header = node
-                    .as_gcobj()
+                    .as_gc_object()
                     .to_address()
                     .as_ref::<HamtCollisionHeader<'gc>>();
                 hamt_remove_collision(typ, mc, header, key)
@@ -757,13 +772,6 @@ impl<'gc> HamtTrie<'gc> {
         self.typ.hash(key) as u32
     }
 
-    fn leaf_value(&self, value: Value<'gc>) -> Value<'gc> {
-        match self.kind {
-            HamtKind::Map => value,
-            HamtKind::Set => Value::undefined(),
-        }
-    }
-
     pub fn get(&self, key: Value<'gc>) -> Option<Value<'gc>> {
         let root = self.root.get()?;
         let hash = self.key_hash(key);
@@ -788,9 +796,12 @@ impl<'gc> HamtTrie<'gc> {
             F: FnMut(Value<'gc>, Value<'gc>, Value<'gc>) -> Value<'gc>,
         {
             unsafe {
-                match node_tag(node.as_gcobj()) {
+                match node_tag(node.as_gc_object()) {
                     TAG_LEAF => {
-                        let leaf = node.as_gcobj().to_address().as_ref::<HamtLeafNode<'gc>>();
+                        let leaf = node
+                            .as_gc_object()
+                            .to_address()
+                            .as_ref::<HamtLeafNode<'gc>>();
                         match kind {
                             HamtKind::Map => f(acc, leaf.key, leaf.value),
                             HamtKind::Set => f(acc, leaf.key, Value::undefined()),
@@ -798,7 +809,7 @@ impl<'gc> HamtTrie<'gc> {
                     }
                     TAG_BITMAP => {
                         let header = node
-                            .as_gcobj()
+                            .as_gc_object()
                             .to_address()
                             .as_ref::<HamtBitmapHeader<'gc>>();
                         let mut acc = acc;
@@ -809,7 +820,10 @@ impl<'gc> HamtTrie<'gc> {
                         acc
                     }
                     TAG_ARRAY => {
-                        let array = node.as_gcobj().to_address().as_ref::<HamtArrayNode<'gc>>();
+                        let array = node
+                            .as_gc_object()
+                            .to_address()
+                            .as_ref::<HamtArrayNode<'gc>>();
                         let mut acc = acc;
                         for child in &array.children {
                             if let Some(node) = child.get() {
@@ -820,7 +834,7 @@ impl<'gc> HamtTrie<'gc> {
                     }
                     TAG_COLLISION => {
                         let header = node
-                            .as_gcobj()
+                            .as_gc_object()
                             .to_address()
                             .as_ref::<HamtCollisionHeader<'gc>>();
                         let mut acc = acc;
@@ -875,6 +889,10 @@ impl<'gc> PersistentMap<'gc> {
 
     pub fn len(&self) -> usize {
         self.trie.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn typ(&self) -> HashTableType<'gc> {
@@ -997,6 +1015,10 @@ impl<'gc> PersistentSet<'gc> {
         self.trie.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn typ(&self) -> HashTableType<'gc> {
         self.trie.typ()
     }
@@ -1103,14 +1125,17 @@ fn fold_set_into<'gc>(
     node: Gc<'gc, HamtNode>,
 ) -> Gc<'gc, PersistentSet<'gc>> {
     unsafe {
-        match node_tag(node.as_gcobj()) {
+        match node_tag(node.as_gc_object()) {
             TAG_LEAF => {
-                let leaf = node.as_gcobj().to_address().as_ref::<HamtLeafNode<'gc>>();
+                let leaf = node
+                    .as_gc_object()
+                    .to_address()
+                    .as_ref::<HamtLeafNode<'gc>>();
                 set.add(ctx, leaf.key)
             }
             TAG_BITMAP => {
                 let header = node
-                    .as_gcobj()
+                    .as_gc_object()
                     .to_address()
                     .as_ref::<HamtBitmapHeader<'gc>>();
                 for i in 0..header.child_count as usize {
@@ -1120,7 +1145,10 @@ fn fold_set_into<'gc>(
                 set
             }
             TAG_ARRAY => {
-                let array = node.as_gcobj().to_address().as_ref::<HamtArrayNode<'gc>>();
+                let array = node
+                    .as_gc_object()
+                    .to_address()
+                    .as_ref::<HamtArrayNode<'gc>>();
                 for child in &array.children {
                     if let Some(node) = child.get() {
                         set = fold_set_into(ctx, set, node);
@@ -1130,7 +1158,7 @@ fn fold_set_into<'gc>(
             }
             TAG_COLLISION => {
                 let header = node
-                    .as_gcobj()
+                    .as_gc_object()
                     .to_address()
                     .as_ref::<HamtCollisionHeader<'gc>>();
                 for i in 0..header.entry_count as usize {
@@ -1151,9 +1179,12 @@ fn intersect_nodes<'gc>(
     other: &PersistentSet<'gc>,
 ) -> Gc<'gc, PersistentSet<'gc>> {
     unsafe {
-        match node_tag(node.as_gcobj()) {
+        match node_tag(node.as_gc_object()) {
             TAG_LEAF => {
-                let leaf = node.as_gcobj().to_address().as_ref::<HamtLeafNode<'gc>>();
+                let leaf = node
+                    .as_gc_object()
+                    .to_address()
+                    .as_ref::<HamtLeafNode<'gc>>();
                 if other.contains(leaf.key) {
                     result = result.add(ctx, leaf.key);
                 }
@@ -1161,7 +1192,7 @@ fn intersect_nodes<'gc>(
             }
             TAG_BITMAP => {
                 let header = node
-                    .as_gcobj()
+                    .as_gc_object()
                     .to_address()
                     .as_ref::<HamtBitmapHeader<'gc>>();
                 for i in 0..header.child_count as usize {
@@ -1171,7 +1202,10 @@ fn intersect_nodes<'gc>(
                 result
             }
             TAG_ARRAY => {
-                let array = node.as_gcobj().to_address().as_ref::<HamtArrayNode<'gc>>();
+                let array = node
+                    .as_gc_object()
+                    .to_address()
+                    .as_ref::<HamtArrayNode<'gc>>();
                 for child in &array.children {
                     if let Some(node) = child.get() {
                         result = intersect_nodes(ctx, result, node, other);
@@ -1181,7 +1215,7 @@ fn intersect_nodes<'gc>(
             }
             TAG_COLLISION => {
                 let header = node
-                    .as_gcobj()
+                    .as_gc_object()
                     .to_address()
                     .as_ref::<HamtCollisionHeader<'gc>>();
                 for i in 0..header.entry_count as usize {
@@ -1204,9 +1238,12 @@ fn diff_nodes<'gc>(
     other: &PersistentSet<'gc>,
 ) -> Gc<'gc, PersistentSet<'gc>> {
     unsafe {
-        match node_tag(node.as_gcobj()) {
+        match node_tag(node.as_gc_object()) {
             TAG_LEAF => {
-                let leaf = node.as_gcobj().to_address().as_ref::<HamtLeafNode<'gc>>();
+                let leaf = node
+                    .as_gc_object()
+                    .to_address()
+                    .as_ref::<HamtLeafNode<'gc>>();
                 if !other.contains(leaf.key) {
                     result = result.add(ctx, leaf.key);
                 }
@@ -1214,7 +1251,7 @@ fn diff_nodes<'gc>(
             }
             TAG_BITMAP => {
                 let header = node
-                    .as_gcobj()
+                    .as_gc_object()
                     .to_address()
                     .as_ref::<HamtBitmapHeader<'gc>>();
                 for i in 0..header.child_count as usize {
@@ -1224,7 +1261,10 @@ fn diff_nodes<'gc>(
                 result
             }
             TAG_ARRAY => {
-                let array = node.as_gcobj().to_address().as_ref::<HamtArrayNode<'gc>>();
+                let array = node
+                    .as_gc_object()
+                    .to_address()
+                    .as_ref::<HamtArrayNode<'gc>>();
                 for child in &array.children {
                     if let Some(node) = child.get() {
                         result = diff_nodes(ctx, result, node, other);
@@ -1234,7 +1274,7 @@ fn diff_nodes<'gc>(
             }
             TAG_COLLISION => {
                 let header = node
-                    .as_gcobj()
+                    .as_gc_object()
                     .to_address()
                     .as_ref::<HamtCollisionHeader<'gc>>();
                 for i in 0..header.entry_count as usize {

@@ -616,7 +616,7 @@ mod tests {
         Scheme::new_uninit().enter(|ctx| {
             let thread = ThreadObject::new(*ctx, None);
             assert_eq!(
-                thread.as_gcobj().header().class_id(),
+                thread.as_gc_object().header().class_id(),
                 ClassId::new(builtin_class_ids::THREAD).unwrap()
             );
 
@@ -630,7 +630,7 @@ mod tests {
                 AllocationSemantics::NonMoving,
             );
             assert_eq!(
-                mutex.as_gcobj().header().class_id(),
+                mutex.as_gc_object().header().class_id(),
                 ClassId::new(builtin_class_ids::MUTEX).unwrap()
             );
 
@@ -642,7 +642,7 @@ mod tests {
                 AllocationSemantics::NonMoving,
             );
             assert_eq!(
-                condition.as_gcobj().header().class_id(),
+                condition.as_gc_object().header().class_id(),
                 ClassId::new(builtin_class_ids::CONDITION).unwrap()
             );
         });

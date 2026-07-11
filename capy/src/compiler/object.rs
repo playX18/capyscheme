@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use crate::compiler::LoweredProgram;
 use crate::compiler::cranelift::ModuleBuilder;
-use crate::compiler::ssa::LinearProgram;
 use crate::runtime::vm::thunks::make_io_error;
 use crate::runtime::{
     Context,
@@ -28,15 +27,7 @@ pub(crate) fn compile_lowered_to_fasl_bytes<'gc>(
     opts: CompilationOptions,
 ) -> Result<Vec<u8>, Value<'gc>> {
     let _stats = CompilationBreakdownScope::new(CompilationBreakdownPhase::Cranelift);
-    compile_graph_linear_cps_to_fasl_bytes(ctx, lowered.linear_cps.clone(), opts)
-}
-
-fn compile_graph_linear_cps_to_fasl_bytes<'gc>(
-    ctx: Context<'gc>,
-    linear: LinearProgram<'gc>,
-    opts: CompilationOptions,
-) -> Result<Vec<u8>, Value<'gc>> {
-    let mut module_builder = ModuleBuilder::new_with_program(ctx, linear);
+    let mut module_builder = ModuleBuilder::new_with_program(ctx, lowered.ssa.clone());
     module_builder.stacktraces = opts.backtraces;
     module_builder
         .compile_loaded_fasl_bytes_with_dumps(&opts.backend_dumps)

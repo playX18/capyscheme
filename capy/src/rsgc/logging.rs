@@ -16,7 +16,8 @@ use crate::{
     utils::FormattedSize,
 };
 
-const GC_LOG_FILTER: &str = "mmtk=trace,capy::gc=trace";
+const GC_LOG_FILTER: &str = "capy::gc=trace";
+const GC_TRACE_LOG_FILTER: &str = "mmtk=trace,capy::gc=trace";
 
 static GC_LOGGING_ENABLED: AtomicBool = AtomicBool::new(false);
 static GC_LOG_STATE: OnceLock<Mutex<GcLogState>> = OnceLock::new();
@@ -49,11 +50,56 @@ where
     false
 }
 
+fn rust_log_mentions_mmtk() -> bool {
+    std::env::var("RUST_LOG").ok().is_some_and(|rust_log| {
+        rust_log.split(',').any(|part| {
+            let part = part.trim();
+            part == "mmtk" || part.starts_with("mmtk=")
+        })
+    })
+}
+
+fn parse_log_filters(builder: &mut env_logger::Builder) {
+    let gc_trace = process_args_request_gc_logging();
+    if gc_trace {
+        builder.parse_filters(GC_TRACE_LOG_FILTER);
+        return;
+    }
+
+    if let Ok(rust_log) = std::env::var("RUST_LOG") {
+        let filter = if rust_log_mentions_mmtk() {
+            rust_log
+        } else if rust_log.is_empty() {
+            "mmtk=off".to_string()
+        } else {
+            format!("{rust_log},mmtk=off")
+        };
+        builder.parse_filters(&filter);
+        return;
+    }
+
+    builder.parse_filters(GC_LOG_FILTER);
+}
+
 pub(crate) fn init_rust_logger() {
     let rust_log_is_set = std::env::var_os("RUST_LOG").is_some();
-    let env = env_logger::Env::default().default_filter_or(GC_LOG_FILTER);
-    let initialized = env_logger::Builder::from_env(env)
-        .format(|buf, record| {
+    let gc_trace = process_args_request_gc_logging();
+    let mmtk_explicit = rust_log_mentions_mmtk();
+
+    let mut builder = env_logger::Builder::new();
+    parse_log_filters(&mut builder);
+    if !gc_trace && !mmtk_explicit {
+        builder.filter_module("mmtk", log::LevelFilter::Off);
+    }
+    let initialized = builder
+        .format(move |buf, record| {
+            if !gc_trace
+                && !mmtk_explicit
+                && (record.target().starts_with("mmtk")
+                    || record.module_path().is_some_and(|m| m.starts_with("mmtk")))
+            {
+                return Ok(());
+            }
             writeln!(
                 buf,
                 "{}",
@@ -63,7 +109,7 @@ pub(crate) fn init_rust_logger() {
         .try_init()
         .is_ok();
 
-    if initialized && !rust_log_is_set && !gc_logging_enabled() {
+    if initialized && !rust_log_is_set && !gc_logging_enabled() && !gc_trace {
         log::set_max_level(log::LevelFilter::Off);
     }
 }

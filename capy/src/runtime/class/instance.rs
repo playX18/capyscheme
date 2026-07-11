@@ -83,10 +83,10 @@ impl<'gc> SchemeInstance<'gc> {
                 continue;
             }
             match crate::runtime::vm::call_scheme(ctx, slot.init_thunk(), []) {
-                crate::runtime::vm::VMResult::Ok(value) => {
+                crate::runtime::vm::ExecutionResult::Ok(value) => {
                     Self::set_slot(ctx, instance, slot.index(), value);
                 }
-                crate::runtime::vm::VMResult::Err(error) => {
+                crate::runtime::vm::ExecutionResult::Err(error) => {
                     return Err(SlotInitError::InitThunkFailed(error));
                 }
             }
@@ -115,10 +115,13 @@ impl<'gc> SchemeInstance<'gc> {
         });
 
         Gc::write(*ctx, instance);
-        instance.as_gcobj().header().set_class_id(new_class.id());
+        instance
+            .as_gc_object()
+            .header()
+            .set_class_id(new_class.id());
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
-            let instance_mut = instance.as_gcobj().to_address().as_mut_ref::<Self>();
+            let instance_mut = instance.as_gc_object().to_address().as_mut_ref::<Self>();
             instance_mut.class = new_class;
             instance_mut.slots = migrated_slots;
         }
@@ -143,7 +146,7 @@ impl<'gc> SchemeInstance<'gc> {
         let Some(current_class) = table.lookup(old_class.id()) else {
             return false;
         };
-        if current_class.as_gcobj() == old_class.as_gcobj() {
+        if current_class.as_gc_object() == old_class.as_gc_object() {
             return false;
         }
         Self::migrate_to_class(ctx, instance, old_class, current_class);
@@ -241,7 +244,7 @@ impl<'gc> SchemeInstance<'gc> {
 
 impl<'gc> From<Gc<'gc, SchemeInstance<'gc>>> for Value<'gc> {
     fn from(instance: Gc<'gc, SchemeInstance<'gc>>) -> Self {
-        Value::from_raw(instance.as_gcobj().to_address().as_usize() as u64)
+        Value::from_raw(instance.as_gc_object().to_address().as_usize() as u64)
     }
 }
 
@@ -254,7 +257,7 @@ pub fn try_scheme_instance<'gc>(
         return None;
     }
     // SAFETY: The pointer references a valid GC-managed object of the expected type
-    Some(unsafe { Gc::from_gcobj(value.as_cell_raw()) })
+    Some(unsafe { Gc::from_gc_object(value.as_cell_raw()) })
 }
 
 pub fn print_primitive_value(
@@ -263,7 +266,7 @@ pub fn print_primitive_value(
 ) -> Option<fmt::Result> {
     let class = scheme_instance_class_for_primitive_value(value)?;
     // SAFETY: The pointer references a valid GC-managed object of the expected type
-    let instance: Gc<'_, SchemeInstance<'_>> = unsafe { Gc::from_gcobj(value.as_cell_raw()) };
+    let instance: Gc<'_, SchemeInstance<'_>> = unsafe { Gc::from_gc_object(value.as_cell_raw()) };
     debug_assert_eq!(instance.class().id(), class.id());
     class
         .primitive_operation_hooks()
@@ -274,7 +277,7 @@ pub fn print_primitive_value(
 pub fn compare_primitive_values(lhs: Value<'_>, rhs: Value<'_>) -> Option<bool> {
     let class = scheme_instance_class_for_primitive_value(lhs)?;
     // SAFETY: The pointer references a valid GC-managed object of the expected type
-    let instance: Gc<'_, SchemeInstance<'_>> = unsafe { Gc::from_gcobj(lhs.as_cell_raw()) };
+    let instance: Gc<'_, SchemeInstance<'_>> = unsafe { Gc::from_gc_object(lhs.as_cell_raw()) };
     debug_assert_eq!(instance.class().id(), class.id());
     class
         .primitive_operation_hooks()
@@ -285,7 +288,7 @@ pub fn compare_primitive_values(lhs: Value<'_>, rhs: Value<'_>) -> Option<bool> 
 pub fn hash_primitive_value(value: Value<'_>) -> Option<u64> {
     let class = scheme_instance_class_for_primitive_value(value)?;
     // SAFETY: The pointer references a valid GC-managed object of the expected type
-    let instance: Gc<'_, SchemeInstance<'_>> = unsafe { Gc::from_gcobj(value.as_cell_raw()) };
+    let instance: Gc<'_, SchemeInstance<'_>> = unsafe { Gc::from_gc_object(value.as_cell_raw()) };
     debug_assert_eq!(instance.class().id(), class.id());
     class
         .primitive_operation_hooks()

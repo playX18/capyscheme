@@ -3,11 +3,11 @@ use std::io;
 use crate::runtime::value::Value;
 
 #[derive(Clone)]
-pub struct FaslGraphTable<'gc> {
+pub struct Table<'gc> {
     entries: Vec<Option<Value<'gc>>>,
 }
 
-impl<'gc> FaslGraphTable<'gc> {
+impl<'gc> Table<'gc> {
     pub fn new(len: usize) -> Self {
         Self {
             entries: vec![None; len],

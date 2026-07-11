@@ -58,11 +58,11 @@ pub(crate) fn disassemble_host_with_annotations(
     for (instruction, (bytes, mnemonic, operands)) in instructions.iter().zip(rendered.iter()) {
         let offset = instruction.address().saturating_sub(base_address);
         let instruction_source = source.and_then(|source| source.instruction_source(offset as u32));
-        if let Some(instruction_source) = instruction_source {
-            if last_source.as_ref() != Some(instruction_source) {
-                write_source_annotation(&mut out, instruction_source);
-                last_source = Some(instruction_source.clone());
-            }
+        if let Some(instruction_source) = instruction_source
+            && last_source.as_ref() != Some(instruction_source)
+        {
+            write_source_annotation(&mut out, instruction_source);
+            last_source = Some(instruction_source.clone());
         }
         if operands.is_empty() {
             writeln!(out, "{offset:08x}  {bytes:<bytes_width$}  {mnemonic}")

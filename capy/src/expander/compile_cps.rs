@@ -2,15 +2,15 @@ use std::collections::HashMap;
 use std::mem::offset_of;
 use std::sync::OnceLock;
 
-use crate::expander::core::{
-    LVarRef, LetStyle, Proc, TermKind, TermRef as CoreTermRef, fresh_lvar, seq_from_slice,
-};
 use crate::compiler::cps::{
     convert::{ConvertResult, GraphFunctionProgram},
     graph::{
-        BranchHint, BoundVar, ExprKind, FreeVar, Function, FunctionId, FunctionLinks, Graph,
+        BoundVar, BranchHint, ExprKind, FreeVar, Function, FunctionId, FunctionLinks, Graph,
         Parent, Subexpr, Subterm, TermId, TermKind as GraphTermKind, TermLink,
     },
+};
+use crate::expander::core::{
+    LVarRef, LetStyle, Proc, TermKind, TermRef as CoreTermRef, fresh_lvar, seq_from_slice,
 };
 use crate::list;
 use crate::rsgc::alloc::array::Array;
@@ -139,10 +139,12 @@ impl<'gc> GraphCpsBuilder<'gc> {
     fn retarget_direct_free_owners(&mut self, term: TermId, owner: TermLink) {
         let mut vars = Vec::new();
         self.graph.push_direct_free_vars_of_term(term, &mut vars);
-        if let GraphTermKind::LetVal((_, expr), _) = self.graph[term].kind {
-            if let Some(expr) = self.graph.read_expr_link(expr) {
-                self.graph.push_free_vars_of_expr(expr, &mut vars);
-            }
+        let expr = match self.graph[term].kind {
+            GraphTermKind::LetVal((_, expr), _) => self.graph.read_expr_link(expr),
+            _ => None,
+        };
+        if let Some(expr) = expr {
+            self.graph.push_free_vars_of_expr(expr, &mut vars);
         }
 
         for var in vars {
@@ -299,6 +301,7 @@ impl<'gc> GraphCpsBuilder<'gc> {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn emit_if_continue(
         &mut self,
         owner: Subterm,
@@ -430,6 +433,7 @@ impl<'gc> GraphCpsBuilder<'gc> {
         function
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn make_cont(
         &mut self,
         binding: LVarRef<'gc>,
@@ -1240,6 +1244,7 @@ pub fn toplevel_box<'gc>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn module_box<'gc>(
     cps: &mut GraphCpsBuilder<'gc>,
     owner: Subterm,

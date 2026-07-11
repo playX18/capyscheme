@@ -45,7 +45,7 @@ fn vector_header_word(immutable: bool) -> u64 {
 }
 
 #[inline(never)]
-extern "C" fn trace_vector(vec: GCObject, vis: &mut Visitor) {
+extern "C" fn trace_vector(vec: GcObject, vis: &mut Visitor) {
     // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         let vec = vec.to_address().as_mut_ref::<Vector<'static>>();
@@ -55,10 +55,10 @@ extern "C" fn trace_vector(vec: GCObject, vis: &mut Visitor) {
     }
 }
 
-extern "C" fn process_weak_vector(_: GCObject, _: &mut WeakProcessor) {}
+extern "C" fn process_weak_vector(_: GcObject, _: &mut WeakProcessor) {}
 
 #[inline(never)]
-extern "C" fn compute_vector_size(vec: GCObject) -> usize {
+extern "C" fn compute_vector_size(vec: GcObject) -> usize {
     // SAFETY: Preconditions verified by the surrounding code
     unsafe { vec.to_address().as_ref::<Vector<'static>>().len() * size_of::<Value>() }
 }
@@ -109,7 +109,7 @@ impl<'gc> Vector<'gc> {
                 vec.data.as_mut_ptr().add(i).write(Lock::new(fill));
             }
 
-            Gc::from_gcobj(alloc)
+            Gc::from_gc_object(alloc)
         }
     }
 
@@ -262,7 +262,7 @@ fn mapped_bytevector_header_word() -> u64 {
 
 pub const BYTE_VECTOR_MAX_LENGTH: usize = usize::MAX;
 
-extern "C" fn trace_byte_vector_mapping(vec: GCObject, vis: &mut Visitor) {
+extern "C" fn trace_byte_vector_mapping(vec: GcObject, vis: &mut Visitor) {
     // SAFETY: The pointer references a valid GC-managed object of the expected type
     unsafe {
         let bv = vec.to_address().as_mut_ref::<ByteVector>();
@@ -273,9 +273,9 @@ extern "C" fn trace_byte_vector_mapping(vec: GCObject, vis: &mut Visitor) {
     }
 }
 
-extern "C" fn process_weak_byte_vector(_: GCObject, _: &mut WeakProcessor) {}
+extern "C" fn process_weak_byte_vector(_: GcObject, _: &mut WeakProcessor) {}
 
-extern "C" fn trace_owned_byte_vector(vec: GCObject, _: &mut Visitor) {
+extern "C" fn trace_owned_byte_vector(vec: GcObject, _: &mut Visitor) {
     // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         let bv = vec.to_address().as_mut_ref::<ByteVector>();
@@ -283,12 +283,12 @@ extern "C" fn trace_owned_byte_vector(vec: GCObject, _: &mut Visitor) {
     }
 }
 
-extern "C" fn compute_owned_byte_vector_size(vec: GCObject) -> usize {
+extern "C" fn compute_owned_byte_vector_size(vec: GcObject) -> usize {
     // SAFETY: Preconditions verified by the surrounding code
     unsafe { vec.to_address().as_ref::<ByteVector>().len * size_of::<u8>() }
 }
 
-extern "C" fn compute_mapped_byte_vector_size(_: GCObject) -> usize {
+extern "C" fn compute_mapped_byte_vector_size(_: GcObject) -> usize {
     0
 }
 
@@ -359,7 +359,7 @@ impl ByteVector {
             let contents = (vec as *mut Self).add(1);
             vec.contents = Address::from_ptr(contents as *mut u8);
 
-            Gc::from_gcobj(alloc)
+            Gc::from_gc_object(alloc)
         }
     }
 
@@ -379,7 +379,7 @@ impl ByteVector {
             vec.len = length;
             vec.contents = addr;
 
-            Gc::from_gcobj(alloc)
+            Gc::from_gc_object(alloc)
         }
     }
 
@@ -538,7 +538,7 @@ fn tuple_header_word() -> u64 {
     class_header_word(ClassId::new(builtin_class_ids::TUPLE).unwrap())
 }
 
-extern "C" fn trace_tuple(tuple: GCObject, vis: &mut Visitor) {
+extern "C" fn trace_tuple(tuple: GcObject, vis: &mut Visitor) {
     // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         let tuple = tuple.to_address().as_mut_ref::<Tuple<'static>>();
@@ -549,9 +549,9 @@ extern "C" fn trace_tuple(tuple: GCObject, vis: &mut Visitor) {
     }
 }
 
-extern "C" fn process_weak_tuple(_: GCObject, _: &mut WeakProcessor) {}
+extern "C" fn process_weak_tuple(_: GcObject, _: &mut WeakProcessor) {}
 
-extern "C" fn compute_tuple_size(tuple: GCObject) -> usize {
+extern "C" fn compute_tuple_size(tuple: GcObject) -> usize {
     // SAFETY: Preconditions verified by the surrounding code
     unsafe { tuple.to_address().as_ref::<Tuple<'static>>().len() * size_of::<Value>() }
 }
@@ -599,7 +599,7 @@ impl<'gc> Tuple<'gc> {
                 tuple.data.as_mut_ptr().add(i).write(Lock::new(init));
             }
 
-            Gc::from_gcobj(alloc)
+            Gc::from_gc_object(alloc)
         }
     }
 

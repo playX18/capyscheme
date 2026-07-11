@@ -37,7 +37,7 @@ fn utf16_bom_type(bv: &[u8]) -> Option<Endianness> {
 fn u8_to_u16(input: &[u8], is_little_endian: bool) -> Vec<u16> {
     let mut output: Vec<u16> = Vec::with_capacity(input.len() / 2);
 
-    for chunk in input.chunks_exact(2) {
+    for chunk in input.as_chunks::<2>().0 {
         let value = if is_little_endian {
             u16::from_le_bytes([chunk[0], chunk[1]])
         } else {

@@ -545,8 +545,8 @@ impl<'gc> Number<'gc> {
     }
 
     pub fn reduce_fix_fix(ctx: Context<'gc>, nume: i32, deno: i32) -> Self {
-        let mut nume = nume as IDigit;
-        let mut deno = deno as IDigit;
+        let mut nume = nume as SignedDigit;
+        let mut deno = deno as SignedDigit;
 
         if deno == 1 {
             return Number::Fixnum(nume as _);
@@ -611,7 +611,7 @@ impl<'gc> Number<'gc> {
     }
 
     pub fn reduce_fix_big(ctx: Context<'gc>, nume: i32, deno: Gc<'gc, BigInt<'gc>>) -> Self {
-        let mut nume = nume as IDigit;
+        let mut nume = nume as SignedDigit;
         if nume == 0 {
             return Number::Fixnum(0);
         }
@@ -658,7 +658,7 @@ impl<'gc> Number<'gc> {
             ans_sign = -ans_sign;
         }
 
-        let mut n1 = deno.remainder_digit(nume as _) as IDigit;
+        let mut n1 = deno.remainder_digit(nume as _) as SignedDigit;
         let mut n2 = nume;
 
         while n2 != 0 {
@@ -690,7 +690,7 @@ impl<'gc> Number<'gc> {
 
     pub fn reduce_big_fix(ctx: Context<'gc>, nume: Gc<'gc, BigInt<'gc>>, deno: i32) -> Self {
         let mut nume = nume;
-        let mut deno = deno as IDigit;
+        let mut deno = deno as SignedDigit;
 
         if nume.is_zero() {
             return Number::Fixnum(0);
@@ -712,7 +712,7 @@ impl<'gc> Number<'gc> {
             nume = BigInt::negate(nume, ctx);
         }
 
-        let mut n1 = nume.remainder_digit(deno as Digit) as IDigit;
+        let mut n1 = nume.remainder_digit(deno as Digit) as SignedDigit;
         let mut n2 = deno;
         while n2 != 0 {
             let t = n2;
@@ -1543,7 +1543,10 @@ impl<'gc> Number<'gc> {
                                     panic!("division by zero");
                                 }
 
-                                return Self::Fixnum(lhs / rhs);
+                                return match lhs.checked_div(rhs) {
+                                    Some(quotient) => Self::Fixnum(quotient),
+                                    None => BigInt::from_i64(ctx, -(lhs as i64)).into_number(ctx),
+                                };
                             }
 
                             Number::Flonum(rhs) => {
@@ -1681,7 +1684,7 @@ impl<'gc> Number<'gc> {
                                     panic!("division by zero");
                                 }
 
-                                return Self::Fixnum(lhs % rhs);
+                                return Self::Fixnum(lhs.checked_rem(rhs).unwrap_or(0));
                             }
 
                             Number::Flonum(rhs) => {
@@ -2190,7 +2193,7 @@ impl<'gc> Number<'gc> {
     pub fn log(ctx: Context<'gc>, n: Self) -> Self {
         match n {
             Number::Fixnum(n) => {
-                let value = n as IDigit;
+                let value = n as SignedDigit;
 
                 if value > 0 {
                     if value == 1 {
@@ -2333,13 +2336,13 @@ impl<'gc> Number<'gc> {
     pub fn sqrt(ctx: Context<'gc>, n: Self) -> Self {
         match n {
             Number::Fixnum(n) => {
-                let mut value = n as IDigit;
+                let mut value = n as SignedDigit;
                 if value == 0 {
                     return Number::Fixnum(0);
                 }
 
                 if value > 0 {
-                    let iroot = libm::floor(libm::sqrt(value as f64)) as IDigit;
+                    let iroot = libm::floor(libm::sqrt(value as f64)) as SignedDigit;
                     if iroot.wrapping_mul(iroot) == value {
                         Number::Fixnum(iroot as i32)
                     } else {
@@ -2347,7 +2350,7 @@ impl<'gc> Number<'gc> {
                     }
                 } else {
                     value = -value;
-                    let iroot = libm::floor(libm::sqrt(value as f64)) as IDigit;
+                    let iroot = libm::floor(libm::sqrt(value as f64)) as SignedDigit;
                     if iroot.wrapping_mul(iroot) == value {
                         Self::Complex(Complex::new(
                             ctx,
@@ -2521,13 +2524,13 @@ impl<'gc> Number<'gc> {
     pub fn exact_integer_sqrt(ctx: Context<'gc>, n: Self) -> (Self, Self) {
         match n {
             Number::Fixnum(n) => {
-                let value = n as IDigit;
+                let value = n as SignedDigit;
 
                 if value == 0 {
                     return (Number::Fixnum(0), Number::Fixnum(0));
                 }
 
-                let iroot = libm::floor(libm::sqrt(value as f64)) as IDigit;
+                let iroot = libm::floor(libm::sqrt(value as f64)) as SignedDigit;
                 (
                     Number::Fixnum(iroot as i32),
                     Number::Fixnum((value - iroot * iroot) as i32),
@@ -3965,16 +3968,15 @@ pub fn parse_ubignum<'gc>(
         if c == '#' {
             return ans;
         }
-        let digit;
-        if c.is_ascii_digit() {
-            digit = (c as u8) - b'0';
+        let digit = if c.is_ascii_digit() {
+            (c as u8) - b'0'
         } else if c >= 'a' {
-            digit = (c as u8) - b'a' + 10;
+            (c as u8) - b'a' + 10
         } else if c >= 'A' {
-            digit = (c as u8) - b'A' + 10;
+            (c as u8) - b'A' + 10
         } else {
             break;
-        }
+        };
 
         if digit < radix as u8 {
             ans = BigInt::times(ans, ctx, BigInt::from_u64(ctx, radix as _));
@@ -4000,16 +4002,15 @@ pub fn parse_uinteger<'gc>(
         if c == '#' {
             return Some(ans);
         }
-        let digit;
-        if c.is_ascii_digit() {
-            digit = (c as u8) - b'0';
+        let digit = if c.is_ascii_digit() {
+            (c as u8) - b'0'
         } else if c >= 'a' {
-            digit = (c as u8) - b'a' + 10;
+            (c as u8) - b'a' + 10
         } else if c >= 'A' {
-            digit = (c as u8) - b'A' + 10;
+            (c as u8) - b'A' + 10
         } else {
             return None;
-        }
+        };
 
         if digit < radix as u8 {
             ans = Number::mul(ctx, ans, Number::from_u64(ctx, radix as _));

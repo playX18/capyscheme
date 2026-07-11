@@ -7,7 +7,7 @@ use crate::rsgc::{
     Trace,
     finalizer::FinalizerQueue,
     mmtk::util::{Address, ObjectReference},
-    object::{ClassId, GCObject, builtin_class_ids, class_header_word},
+    object::{ClassId, GcObject, builtin_class_ids, class_header_word},
 };
 use crate::{
     global,
@@ -15,9 +15,9 @@ use crate::{
     runtime::{
         modules::define,
         prelude::*,
-        vm::VMResult,
+        vm::ExecutionResult,
         vm::thunks::make_assertion_violation,
-        vmthread::{VM_THREAD, VMThreadTask},
+        vmthread::{Command, VM_THREAD},
     },
     static_symbols,
 };
@@ -201,7 +201,7 @@ unsafe impl FinalizerQueue for PointerWithFinalizers {
     }
 
     fn schedule(&self) {
-        VM_THREAD.schedule_task(VMThreadTask::FinalizePointers);
+        VM_THREAD.schedule_task(Command::FinalizePointers);
     }
 }
 
@@ -416,7 +416,7 @@ pub mod ffi_ops {
         mc.finalizers()
             .register_finalizer(&POINTERS_WITH_FINALIZERS, p);
         POINTERS_WITH_FINALIZERS.finalizers.lock().unwrap().insert(
-            p.as_gcobj().to_objref().unwrap(),
+            p.as_gc_object().to_object_reference().unwrap(),
             // SAFETY: Source and destination types have compatible layouts and sizes
             unsafe {
                 std::mem::transmute::<*mut libc::c_void, extern "C" fn(*mut libc::c_void)>(
@@ -466,7 +466,8 @@ pub mod ffi_ops {
         blocking: Option<bool>,
     ) -> Value<'gc> {
         let variadic = variadic.unwrap_or(false);
-        let blocking = blocking.unwrap_or(true); // default to true: we can't risk CIF blocking mutator thread
+        // Assume foreign calls can block so they never stall the mutator.
+        let blocking = blocking.unwrap_or(true);
         let cif = match make_cif(nctx.ctx, return_type, arg_types, variadic, blocking) {
             Ok(cif) => cif,
             Err(e) => return nctx.conversion_error("pointer->procedure", e),
@@ -817,12 +818,12 @@ fn make_ffi_arg_types<'gc>(
 }
 
 #[repr(C)]
-pub struct CIF<'gc> {
+pub struct Cif<'gc> {
     pub(crate) cif: libffi::middle::Cif,
     pub(crate) nargs: u32,
     pub(crate) variadic: bool,
-    /// Is this CIF blocking? If so we use slightly slower
-    /// calling convention where we first yield to native and then perform a call.
+    /// Whether the foreign call can block. Blocking calls first yield to native
+    /// before using the slower calling convention.
     ///
     /// Anything that can block the mutator thread should be marked as blocking. Example:
     /// - `epoll`, `poll`, `read` etc can block
@@ -835,14 +836,14 @@ fn cif_header_word() -> u64 {
     class_header_word(ClassId::new(builtin_class_ids::CIF).unwrap())
 }
 
-// SAFETY: `gc` for `CIF` upholds all trait invariants
-unsafe impl<'gc> ClassTagged for CIF<'gc> {
+// SAFETY: `gc` for `Cif` upholds all trait invariants
+unsafe impl<'gc> ClassTagged for Cif<'gc> {
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::CIF];
     const TYPE_NAME: &'static str = "cif";
 }
 
-// SAFETY: `gc` for `CIF` upholds all trait invariants
-unsafe impl<'gc> Trace for CIF<'gc> {
+// SAFETY: `gc` for `Cif` upholds all trait invariants
+unsafe impl<'gc> Trace for Cif<'gc> {
     // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
         visitor.trace(&mut self.args);
@@ -858,7 +859,7 @@ unsafe impl<'gc> Trace for CIF<'gc> {
 #[allow(dead_code)]
 pub(crate) fn make_cif_at<'gc>(
     ctx: Context<'gc>,
-    obj: GCObject,
+    obj: GcObject,
     arg_types: Value<'gc>,
     return_type: Value<'gc>,
     variadic: bool,
@@ -896,7 +897,7 @@ pub(crate) fn make_cif_at<'gc>(
         libffi::middle::Cif::new_variadic(args, nargs, rtype)
     };
 
-    let cif = CIF {
+    let cif = Cif {
         cif,
         nargs: arg_types.list_length() as u32,
         variadic,
@@ -907,7 +908,7 @@ pub(crate) fn make_cif_at<'gc>(
 
     // SAFETY: Preconditions verified by the surrounding code
     unsafe {
-        obj.to_address().to_mut_ptr::<CIF>().write(cif);
+        obj.to_address().to_mut_ptr::<Cif>().write(cif);
     }
 
     Ok(())
@@ -919,7 +920,7 @@ fn make_cif<'gc>(
     arg_types: Value<'gc>,
     variadic: bool,
     blocking: bool,
-) -> Result<Gc<'gc, CIF<'gc>>, ConversionError<'gc>> {
+) -> Result<Gc<'gc, Cif<'gc>>, ConversionError<'gc>> {
     if !arg_types.is_list() {
         return Err(ConversionError::type_mismatch(1, "list", arg_types));
     }
@@ -952,7 +953,7 @@ fn make_cif<'gc>(
         libffi::middle::Cif::new_variadic(args, nargs, rtype)
     };
 
-    let cif = CIF {
+    let cif = Cif {
         cif,
         blocking,
         nargs: arg_types.list_length() as u32,
@@ -975,7 +976,7 @@ unsafe fn foreign_call<'a, 'gc>(
 ) -> NativeCallReturn<'gc> {
     // SAFETY: Pointer is valid for the given element count
     let rands = unsafe { std::slice::from_raw_parts(rands, num_rands) };
-    let cif = cif.downcast::<CIF>();
+    let cif = cif.downcast::<Cif>();
     let pointer = pointer.downcast::<Pointer>().value();
 
     let mut args: Vec<usize> = Vec::with_capacity(cif.nargs as usize);
@@ -1500,13 +1501,13 @@ unsafe extern "C" fn scheme_callback(
         let arg_loc = unsafe { *args.add(i) as *mut () };
         // SAFETY: `arg_types` belongs to the live CIF passed by libffi.
         let arg_type = unsafe { *cif.arg_types.add(i) };
-        // SAFETY: libffi argument locations match the CIF's argument types.
+        // SAFETY: libffi argument locations match the CIF argument types.
         scheme_args.push(unsafe { pack(ctx, arg_type, arg_loc, false) });
     }
 
     let value = match call_scheme(ctx, proc, scheme_args) {
-        VMResult::Ok(value) => value,
-        VMResult::Err(_) => {
+        ExecutionResult::Ok(value) => value,
+        ExecutionResult::Err(_) => {
             *result = 0;
             return;
         }
@@ -1536,7 +1537,7 @@ pub(crate) extern "C-unwind" fn c_foreign_call<'gc>(
         let rands = std::slice::from_raw_parts(rands, num_rands);
         let closure = rator.downcast::<Closure>();
 
-        let cif = closure[1].get().downcast::<CIF>();
+        let cif = closure[1].get().downcast::<Cif>();
         let pointer = closure[2].get().downcast::<Pointer>();
 
         let fits = if cif.variadic {
@@ -1693,14 +1694,14 @@ mod tests {
                 pointer_header_word(),
             );
             assert_eq!(
-                pointer.as_gcobj().header().class_id(),
+                pointer.as_gc_object().header().class_id(),
                 ClassId::new(builtin_class_ids::POINTER).unwrap()
             );
 
             let cif = make_cif(ctx, ForeignType::Void.into(), Value::null(), false, false)
                 .expect("make void cif");
             assert_eq!(
-                cif.as_gcobj().header().class_id(),
+                cif.as_gc_object().header().class_id(),
                 ClassId::new(builtin_class_ids::CIF).unwrap()
             );
         });

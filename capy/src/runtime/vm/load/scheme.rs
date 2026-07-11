@@ -2,14 +2,15 @@ use std::path::{Path, PathBuf};
 
 use crate::compiler::{
     BackendDumpOptions, CompilationOptions, DumpArtifactsOptions, LoweredProgram,
-    dump_lowered_program_artifacts, lower_expanded_to_cps,
+    begin_compilation_artifact, dump_lowered_program_artifacts, lower_expanded_to_cps,
+    merge_compile_dump_options, resolve_artifact_dump_path,
 };
 use crate::list;
 use crate::prelude::*;
 use crate::runtime::modules::{Module, current_module};
 use crate::runtime::value::{Closure, Str, Symbol, Value};
 use crate::runtime::vm::base::scm_log_level;
-use crate::runtime::vm::expand::ScmTermToRsTerm;
+use crate::runtime::vm::expand::TermConverter;
 use crate::runtime::vm::libraries::LIBRARY_COLLECTION;
 use crate::runtime::vm::thunks::make_io_error;
 #[cfg(feature = "bootstrap")]
@@ -302,8 +303,10 @@ fn compile_expanded_to_destination<'gc>(
     dump_options: DumpArtifactsOptions,
 ) -> LoadResult<'gc> {
     let _phase = CompilationPhase::new(ctx);
-    let lowered = lower_expanded_scheme(ctx, expanded, module)?;
     let destination = destination_artifact_for_current_policy(destination);
+    begin_compilation_artifact(&destination.path);
+    let lowered = lower_expanded_scheme(ctx, expanded, module)?;
+    let dump_options = merge_compile_dump_options(dump_options);
     let mut options = options;
     configure_backend_dump_paths(&mut options.backend_dumps, &destination.path, dump_options);
     dump_lowered_program_artifacts(ctx, &destination.path, &lowered, dump_options);
@@ -325,20 +328,17 @@ fn compile_dump_options<'gc>(
     } else {
         DumpArtifactsOptions::default()
     };
-    let Some(mut selections) = dump_selections else {
-        return options;
-    };
-
-    while selections.is_pair() {
-        let selection = selections.car();
-        if selection.is::<Symbol>() {
-            let name = selection.downcast::<Symbol>().to_string();
-            options.enable(&name);
+    if let Some(mut selections) = dump_selections {
+        while selections.is_pair() {
+            let selection = selections.car();
+            if selection.is::<Symbol>() {
+                let name = selection.downcast::<Symbol>().to_string();
+                options.enable(&name);
+            }
+            selections = selections.cdr();
         }
-        selections = selections.cdr();
     }
-
-    options
+    merge_compile_dump_options(options)
 }
 
 fn configure_backend_dump_paths(
@@ -350,15 +350,11 @@ fn configure_backend_dump_paths(
         return;
     }
     if dump_options.dump_cranelift {
-        options.cranelift = Some(dump_artifact_path(destination, ".clif"));
+        options.cranelift = Some(resolve_artifact_dump_path(destination, ".clif"));
     }
     if dump_options.dump_disassembly {
-        options.disassembly = Some(dump_artifact_path(destination, ".asm"));
+        options.disassembly = Some(resolve_artifact_dump_path(destination, ".asm"));
     }
-}
-
-fn dump_artifact_path(destination: &Path, suffix: &str) -> PathBuf {
-    PathBuf::from(format!("{}{}", destination.display(), suffix))
 }
 
 fn lower_expanded_scheme<'gc>(
@@ -366,8 +362,8 @@ fn lower_expanded_scheme<'gc>(
     expanded: Value<'gc>,
     module: Gc<'gc, Module<'gc>>,
 ) -> Result<LoweredProgram<'gc>, Value<'gc>> {
-    let mut reader = ScmTermToRsTerm::new(ctx);
-    let ir = reader.convert(expanded)?;
+    let mut converter = TermConverter::new(ctx);
+    let ir = converter.convert(expanded)?;
     lower_expanded_to_cps(ctx, ir, Some(module), cfg!(feature = "bootstrap"))
 }
 

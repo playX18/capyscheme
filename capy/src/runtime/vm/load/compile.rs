@@ -6,8 +6,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::compiler::{
-    CompilationOptions, LoweredProgram, compile_file,
-    compile_lowered_to_fasl_bytes,
+    CompilationOptions, DumpArtifactsOptions, LoweredProgram, begin_compilation_artifact,
+    compile_file, compile_lowered_to_fasl_bytes, dump_lowered_program_artifacts,
+    merge_compile_dump_options, resolve_artifact_dump_path,
 };
 use crate::runtime::Context;
 use crate::runtime::modules::current_module;
@@ -216,13 +217,20 @@ fn compile_and_load_source<'gc>(
     };
     let module = current_module(ctx).get(ctx).downcast();
     let _phase = CompilationPhase::new(ctx);
+    begin_compilation_artifact(&build_destination.path);
     let lowered = compile_file(ctx, &source_path, Some(module))?;
-    compile_lowered_to_destination(
-        ctx,
-        &lowered,
-        CompilationOptions::default(),
-        &build_destination,
-    )?;
+    let dump_options = merge_compile_dump_options(DumpArtifactsOptions::default());
+    dump_lowered_program_artifacts(ctx, &build_destination.path, &lowered, dump_options);
+    let mut options = CompilationOptions::default();
+    if dump_options.dump_cranelift {
+        options.backend_dumps.cranelift =
+            Some(resolve_artifact_dump_path(&build_destination.path, ".clif"));
+    }
+    if dump_options.dump_disassembly {
+        options.backend_dumps.disassembly =
+            Some(resolve_artifact_dump_path(&build_destination.path, ".asm"));
+    }
+    compile_lowered_to_destination(ctx, &lowered, options, &build_destination)?;
 
     load_artifact(ctx, libs, &build_destination)
 }
@@ -313,6 +321,7 @@ impl ArtifactLock {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(lock_path)?;
         lock_file(&file)?;
         Ok(Self { file })

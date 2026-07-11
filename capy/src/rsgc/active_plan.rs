@@ -28,7 +28,7 @@ impl<'a> Iterator for MutatorIterator<'a> {
 }
 impl mmtk::vm::ActivePlan<MemoryManager> for ActivePlan {
     fn is_mutator(tls: mmtk::util::VMThread) -> bool {
-        let thread = Thread::from_vmthread(tls);
+        let thread = Thread::from_vm_thread(tls);
         thread.is_mutator()
     }
 

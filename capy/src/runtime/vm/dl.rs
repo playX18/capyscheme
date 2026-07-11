@@ -7,7 +7,7 @@ use parking_lot::Mutex;
 use super::ffi::*;
 use crate::prelude::*;
 use crate::runtime::prelude::*;
-use crate::runtime::vm::VMResult;
+use crate::runtime::vm::ExecutionResult;
 
 #[allow(dead_code)]
 pub(crate) struct DynLib {
@@ -191,7 +191,7 @@ mod dl_ops {
             );
         }
         // SAFETY: FFI: handle is valid, symbol name is NUL-terminated
-        let init: extern "C-unwind" fn(Context<'gc>) -> VMResult<'gc> = unsafe {
+        let init: extern "C-unwind" fn(Context<'gc>) -> ExecutionResult<'gc> = unsafe {
             let symbol = libc::dlsym(handle, c"capy_register_extension".as_ptr() as _);
             if symbol.is_null() {
                 let dlerror = {
@@ -216,14 +216,14 @@ mod dl_ops {
 
         let result = init(nctx.ctx);
         match result {
-            VMResult::Ok(v) => {
+            ExecutionResult::Ok(v) => {
                 LOADED_EXTENSIONS.lock().push(Extension {
                     path: PathBuf::from(path.to_string()),
                     handle: Address::from_ptr(handle),
                 });
                 nctx.return_(Ok(v))
             }
-            VMResult::Err(e) => nctx.return_(Err(e)),
+            ExecutionResult::Err(e) => nctx.return_(Err(e)),
         }
     }
 }

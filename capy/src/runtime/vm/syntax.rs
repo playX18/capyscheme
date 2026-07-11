@@ -465,14 +465,14 @@ mod tests {
                 Value::null(),
             );
             assert_eq!(
-                syntax.as_gcobj().header().class_id(),
+                syntax.as_gc_object().header().class_id(),
                 ClassId::new(builtin_class_ids::SYNTAX).unwrap()
             );
 
             let transformer =
                 SyntaxTransformer::new(ctx, Value::undefined(), Value::null(), Value::new(false));
             assert_eq!(
-                transformer.as_gcobj().header().class_id(),
+                transformer.as_gc_object().header().class_id(),
                 ClassId::new(builtin_class_ids::SYNTAX_TRANSFORMER).unwrap()
             );
         });

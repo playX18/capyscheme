@@ -10,10 +10,9 @@ use std::{
 
 use crate::rsgc::{GarbageCollector, Mutation, Mutator, mmtk, sync::monitor::Monitor};
 
-pub enum VMThreadTask {
-    /// Vacuum weak sets. This task will walk all live weak sets and remove
-    /// any broken weak entries in them. This task is ran in mutator context
-    /// thus it won't run until GC is complete.
+pub enum Command {
+    /// Vacuum weak sets. This task walks all live weak sets and removes broken
+    /// entries. It runs in mutator context, so it waits until GC completes.
     VacuumWeakSets,
     VacuumWeakTables,
     ClosePorts,
@@ -25,20 +24,18 @@ pub enum VMThreadTask {
     Shutdown,
 }
 
-pub static VM_THREAD: LazyLock<VmThread> = LazyLock::new(VmThread::new);
+pub static VM_THREAD: LazyLock<TaskThread> = LazyLock::new(TaskThread::new);
 
-/// VM thread that handles execution of various tasks.
-///
-/// Mainly used for finalization tasks that are not time-critical and can be processed in the background.
-pub struct VmThread {
-    sender: mpsc::Sender<VMThreadTask>,
+/// Background thread for VM maintenance and finalization tasks.
+pub struct TaskThread {
+    sender: mpsc::Sender<Command>,
     thread_handle: Option<std::thread::JoinHandle<()>>,
     pair: Arc<Monitor<AtomicBool>>,
 }
 
-impl VmThread {
+impl TaskThread {
     pub fn new() -> Self {
-        let (sender, receiver) = mpsc::channel::<VMThreadTask>();
+        let (sender, receiver) = mpsc::channel::<Command>();
         let pair = Arc::new(Monitor::new(AtomicBool::new(false)));
         let thread_pair = Arc::clone(&pair);
 
@@ -58,32 +55,32 @@ impl VmThread {
                 loop {
                     match receiver.recv_timeout(Duration::from_millis(100)) {
                         Ok(task) => match task {
-                            VMThreadTask::FinalizePointers => (),
-                            VMThreadTask::ClosePorts => {
+                            Command::FinalizePointers => (),
+                            Command::ClosePorts => {
                                 // TODO(Adel): implement port closing on thread shutdown
                             }
-                            VMThreadTask::VacuumWeakSets => {
+                            Command::VacuumWeakSets => {
                                 mutator.mutate(|mc, _| {
                                     super::value::weak_set::vacuum_weak_sets(mc);
                                 });
                             }
-                            VMThreadTask::VacuumWeakTables => {
+                            Command::VacuumWeakTables => {
                                 mutator.mutate(|mc, _| {
                                     super::value::weak_table::vacuum_weak_tables(mc);
                                 });
                             }
 
-                            VMThreadTask::MutatorTask(task) => {
+                            Command::MutatorTask(task) => {
                                 mutator.mutate(|mc, _| {
                                     task(&mc);
                                 });
                             }
 
-                            VMThreadTask::Task(task) => {
+                            Command::Task(task) => {
                                 task();
                             }
 
-                            VMThreadTask::Shutdown => {
+                            Command::Shutdown => {
                                 shutdown_requested = true;
                                 break; // Exit task processing loop
                             }
@@ -116,7 +113,7 @@ impl VmThread {
             }
         });
 
-        VmThread {
+        Self {
             sender,
             thread_handle: Some(thread_handle),
             pair,
@@ -124,20 +121,20 @@ impl VmThread {
     }
 
     /// Sends a task to the VM thread and notifies it.
-    pub fn schedule_task(&self, task: VMThreadTask) {
+    pub fn schedule_task(&self, task: Command) {
         if self.sender.send(task).is_ok() {
             let guard = self.pair.lock();
             guard.store(true, Ordering::Relaxed);
             guard.notify_all();
         } else {
             // This might happen if the receiver (VM thread) has already panicked or exited.
-            panic!("VMThread: Failed to send task. Thread might be down.");
+            panic!("VM task thread is unavailable");
         }
     }
 
     /// Signals the VM thread to shut down and waits for it to complete.
     pub fn shutdown(mut self) {
-        if self.sender.send(VMThreadTask::Shutdown).is_ok() {
+        if self.sender.send(Command::Shutdown).is_ok() {
             let guard = self.pair.lock();
             guard.store(true, Ordering::Relaxed);
             guard.notify_all();
@@ -149,15 +146,15 @@ impl VmThread {
     }
 }
 
-impl Default for VmThread {
+impl Default for TaskThread {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Drop for VmThread {
+impl Drop for TaskThread {
     fn drop(&mut self) {
-        if self.thread_handle.is_some() && self.sender.send(VMThreadTask::Shutdown).is_ok() {
+        if self.thread_handle.is_some() && self.sender.send(Command::Shutdown).is_ok() {
             let guard = self.pair.lock();
             guard.store(true, Ordering::Relaxed);
             guard.notify_all();

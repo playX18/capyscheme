@@ -15,7 +15,7 @@ use crate::{
     runtime::{
         fluids::DynamicState,
         global::{Globals, VM_GLOBALS},
-        //image::{ALLOWED_GC, AllowedGC, reader::ImageReader},
+        //image::{ALLOWED_GC, AllowedGc, reader::ImageReader},
         modules::{Module, ModuleRef, resolve_module},
         prelude::VariableRef,
         value::{
@@ -23,8 +23,8 @@ use crate::{
             init_weak_tables,
         },
         vm::{
-            VMResult, call_scheme, control::ContinuationMarks, debug, load::load_thunk_in_vicinity,
-            threading::ThreadObject,
+            ExecutionResult, call_scheme, control::ContinuationMarks, debug,
+            load::load_thunk_in_vicinity, threading::ThreadObject,
         },
     },
 };
@@ -610,8 +610,8 @@ fn pin_saved_value(value: Value<'_>, visitor: &mut crate::rsgc::collection::Visi
     if value.is_cell() && !value.is_empty() {
         // SAFETY: The value descriptor contains a valid GC object pointer
         let object = unsafe { value.desc.ptr() };
-        if let Some(objref) = object.to_objref() {
-            visitor.pin_root(objref);
+        if let Some(object_reference) = object.to_object_reference() {
+            visitor.pin_root(object_reference);
         }
     }
 }
@@ -732,8 +732,8 @@ impl Scheme {
             ctx.stats.end_execution();
 
             let result = match run {
-                VMResult::Ok(ok) => Ok(ok),
-                VMResult::Err(err) => Err(err),
+                ExecutionResult::Ok(ok) => Ok(ok),
+                ExecutionResult::Err(err) => Err(err),
             };
             finish(ctx, result)
         })
@@ -774,15 +774,15 @@ impl Scheme {
             let mmtk_builder = crate::rsgc::logging::mmtk_builder();
             /*match *mmtk_builder.options.plan {
                 PlanSelector::GenImmix | PlanSelector::StickyImmix | PlanSelector::GenCopy => {
-                    let _ = ALLOWED_GC.set(AllowedGC::Generational).unwrap();
+                    let _ = ALLOWED_GC.set(AllowedGc::Generational).unwrap();
                 }
 
                 PlanSelector::ConcurrentImmix => {
-                    let _ = ALLOWED_GC.set(AllowedGC::Concurrent).unwrap();
+                    let _ = ALLOWED_GC.set(AllowedGc::Concurrent).unwrap();
                 }
 
                 _ => {
-                    let _ = ALLOWED_GC.set(AllowedGC::Regular).unwrap();
+                    let _ = ALLOWED_GC.set(AllowedGc::Regular).unwrap();
                 }
             }*/
             GarbageCollector::init(mmtk_builder);
@@ -842,9 +842,9 @@ impl Scheme {
 
     /*pub fn from_image(image: &[u8]) -> Self {
         let allowed_gc = match image[0] {
-            0 => AllowedGC::Generational,
-            1 => AllowedGC::Concurrent,
-            2 => AllowedGC::Regular,
+            0 => AllowedGc::Generational,
+            1 => AllowedGc::Concurrent,
+            2 => AllowedGc::Regular,
             _ => panic!("Invalid allowed GC type in image"),
         };
 
@@ -877,7 +877,7 @@ impl Scheme {
             let img = reader.deserialize().expect("Failed to read image");
 
             let entrypoint = match img.boot(ctx) {
-                VMResult::Ok(entry) => entry,
+                ExecutionResult::Ok(entry) => entry,
                 _ => unreachable!(),
             };
 
@@ -896,8 +896,8 @@ impl Scheme {
                 .expect("Failed to load boot.scm");
 
             match call_scheme(ctx, thunk, []) {
-                VMResult::Ok(_) => {}
-                VMResult::Err(err) => {
+                ExecutionResult::Ok(_) => {}
+                ExecutionResult::Err(err) => {
                     eprintln!("Failed to boot: {err}");
                     std::process::exit(1);
                 }
@@ -1082,9 +1082,9 @@ mod tests {
             drop(visitor);
 
             assert!(slot_visitor.slots.len() >= 3);
-            assert!(pinned.contains(&rator.as_cell_raw().to_objref().unwrap()));
-            assert!(pinned.contains(&arg0.as_cell_raw().to_objref().unwrap()));
-            assert!(pinned.contains(&arg1.as_cell_raw().to_objref().unwrap()));
+            assert!(pinned.contains(&rator.as_cell_raw().to_object_reference().unwrap()));
+            assert!(pinned.contains(&arg0.as_cell_raw().to_object_reference().unwrap()));
+            assert!(pinned.contains(&arg1.as_cell_raw().to_object_reference().unwrap()));
 
             ctx.state().gc_save.clear();
         });

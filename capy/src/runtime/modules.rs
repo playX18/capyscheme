@@ -1220,13 +1220,13 @@ mod tests {
         Scheme::new_uninit().enter(|ctx| {
             let module = Module::new(ctx, 8, Value::null(), Value::new(false));
             assert_eq!(
-                module.as_gcobj().header().class_id(),
+                module.as_gc_object().header().class_id(),
                 ClassId::new(builtin_class_ids::MODULE).unwrap()
             );
 
             let variable = Variable::new(ctx, Value::undefined());
             assert_eq!(
-                variable.as_gcobj().header().class_id(),
+                variable.as_gc_object().header().class_id(),
                 ClassId::new(builtin_class_ids::VARIABLE).unwrap()
             );
         });
@@ -1253,7 +1253,7 @@ mod tests {
             let expected = Value::new(42);
 
             let name_after_gc = Symbol::from_str(ctx, "assertion-violation");
-            assert_eq!(name_after_gc.as_gcobj(), roots.name.as_gcobj());
+            assert_eq!(name_after_gc.as_gc_object(), roots.name.as_gc_object());
             assert_eq!(roots.module.get(ctx, name_after_gc.into()), Some(expected));
         });
     }
@@ -1282,8 +1282,8 @@ mod tests {
             let name_after_gc = Symbol::from_str(ctx, "&undefined");
 
             assert_eq!(
-                name_after_gc.as_gcobj(),
-                roots.name.as_gcobj(),
+                name_after_gc.as_gc_object(),
+                roots.name.as_gc_object(),
                 "interning must preserve symbol pointer identity across GC"
             );
             assert_eq!(roots.module.get(ctx, name_after_gc.into()), Some(expected));

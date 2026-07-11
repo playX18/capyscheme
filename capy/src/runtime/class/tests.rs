@@ -651,11 +651,11 @@ fn generic_and_method_descriptors_are_gc_objects() {
         );
 
         assert_eq!(
-            generic.as_gcobj().header().class_id(),
+            generic.as_gc_object().header().class_id(),
             id(builtin_class_ids::GENERIC)
         );
         assert_eq!(
-            method.as_gcobj().header().class_id(),
+            method.as_gc_object().header().class_id(),
             id(builtin_class_ids::METHOD)
         );
         assert!(Value::from(generic).is::<GenericDescriptor>());
@@ -685,7 +685,7 @@ fn next_method_descriptors_are_gc_objects() {
         let generic = GenericDescriptor::new(ctx, "describe", 1);
         let method = GenericDescriptor::add_method_in_table(
             ctx,
-            &table,
+            table,
             generic,
             &[class.id()],
             1,
@@ -697,13 +697,13 @@ fn next_method_descriptors_are_gc_objects() {
             GenericDescriptor::next_method_chain(ctx, generic, &[instance.into()]).unwrap();
 
         assert_eq!(
-            next_method.as_gcobj().header().class_id(),
+            next_method.as_gc_object().header().class_id(),
             id(builtin_class_ids::NEXT_METHOD)
         );
         assert!(Value::from(next_method).is::<NextMethodDescriptor>());
-        assert_eq!(next_method.generic().as_gcobj(), generic.as_gcobj());
+        assert_eq!(next_method.generic().as_gc_object(), generic.as_gc_object());
         assert_eq!(next_method.methods().len(), 1);
-        assert_eq!(next_method.method().as_gcobj(), method.as_gcobj());
+        assert_eq!(next_method.method().as_gc_object(), method.as_gc_object());
         assert_eq!(next_method.body(), Value::new(77));
         assert_eq!(next_method.args().len(), 1);
         assert_eq!(next_method.index(), 0);
@@ -725,7 +725,7 @@ fn generic_slow_dispatch_selects_most_specific_method() {
         let generic = GenericDescriptor::new(ctx, "classify", 1);
         let base_method = GenericDescriptor::add_method_in_table(
             ctx,
-            &table,
+            table,
             generic,
             &[base.id()],
             1,
@@ -734,7 +734,7 @@ fn generic_slow_dispatch_selects_most_specific_method() {
         );
         let derived_method = GenericDescriptor::add_method_in_table(
             ctx,
-            &table,
+            table,
             generic,
             &[derived.id()],
             1,
@@ -785,13 +785,13 @@ fn next_method_chain_orders_applicable_methods_by_specificity() {
 
         let chain = GenericDescriptor::next_method_chain(ctx, generic, &[arg]).unwrap();
         assert_eq!(chain.methods().len(), 2);
-        assert_eq!(chain.method().as_gcobj(), fixnum_method.as_gcobj());
+        assert_eq!(chain.method().as_gc_object(), fixnum_method.as_gc_object());
         assert_eq!(chain.body(), Value::new(20));
         assert!(chain.has_next());
 
         let next = chain.next(ctx).unwrap();
         assert_eq!(next.methods().len(), 2);
-        assert_eq!(next.method().as_gcobj(), number_method.as_gcobj());
+        assert_eq!(next.method().as_gc_object(), number_method.as_gc_object());
         assert_eq!(next.body(), Value::new(10));
         assert_eq!(next.index(), 1);
         assert!(!next.has_next());
@@ -827,12 +827,21 @@ fn generic_dispatcher_cache_stores_applicable_method_chain() {
             entry.class_ids().as_slice(),
             &[id(builtin_class_ids::FIXNUM)]
         );
-        assert_eq!(entry.methods()[0].as_gcobj(), fixnum_method.as_gcobj());
-        assert_eq!(entry.methods()[1].as_gcobj(), number_method.as_gcobj());
+        assert_eq!(
+            entry.methods()[0].as_gc_object(),
+            fixnum_method.as_gc_object()
+        );
+        assert_eq!(
+            entry.methods()[1].as_gc_object(),
+            number_method.as_gc_object()
+        );
 
         let second = GenericDescriptor::next_method_chain(ctx, generic, &[Value::new(2)]).unwrap();
         assert_eq!(generic.dispatcher_cache().len(), 1);
-        assert_eq!(second.methods().as_gcobj(), entry.methods().as_gcobj());
+        assert_eq!(
+            second.methods().as_gc_object(),
+            entry.methods().as_gc_object()
+        );
     });
 }
 
@@ -896,7 +905,7 @@ fn class_redefinition_preserves_direct_methods_and_clears_generic_cache() {
         let generic = GenericDescriptor::new(ctx, "describe", 1);
         let method = GenericDescriptor::add_method_in_table(
             ctx,
-            &table,
+            table,
             generic,
             &[class.id()],
             1,
@@ -929,8 +938,8 @@ fn class_redefinition_preserves_direct_methods_and_clears_generic_cache() {
         assert_eq!(redefined.direct_methods()[0], method.into());
         assert!(generic.dispatcher_cache().is_empty());
         assert_eq!(
-            table.lookup(class.id()).unwrap().as_gcobj(),
-            redefined.as_gcobj()
+            table.lookup(class.id()).unwrap().as_gc_object(),
+            redefined.as_gc_object()
         );
 
         let replacement_instance = SchemeInstance::allocate(ctx, redefined);
@@ -980,9 +989,9 @@ fn class_redefinition_touches_stale_scheme_instances_by_slot_name() {
         let added = redefined.accessor_named("added").unwrap();
         let kept_after_redefinition = redefined.accessor_named("kept").unwrap();
 
-        assert_eq!(instance.class().as_gcobj(), class.as_gcobj());
+        assert_eq!(instance.class().as_gc_object(), class.as_gc_object());
         assert!(SchemeInstance::touch_in_table(ctx, &table, instance));
-        assert_eq!(instance.class().as_gcobj(), redefined.as_gcobj());
+        assert_eq!(instance.class().as_gc_object(), redefined.as_gc_object());
         assert_eq!(instance.slot_count(), redefined.slot_count());
         assert_eq!(instance.slot_by_accessor(added), Ok(Value::new(30)));
         assert_eq!(
@@ -1027,8 +1036,8 @@ fn scheme_instance_change_class_updates_header_and_preserves_named_slots() {
 
         SchemeInstance::change_class(ctx, instance, target);
 
-        assert_eq!(instance.as_gcobj().header().class_id(), target.id());
-        assert_eq!(instance.class().as_gcobj(), target.as_gcobj());
+        assert_eq!(instance.as_gc_object().header().class_id(), target.id());
+        assert_eq!(instance.class().as_gc_object(), target.as_gc_object());
         assert_eq!(instance.slot_count(), target.slot_count());
         assert_eq!(
             instance.slot_by_accessor(target.accessor_named("added").unwrap()),
@@ -1238,7 +1247,7 @@ fn generic_add_method_replaces_existing_specializers() {
         let generic = GenericDescriptor::new(ctx, "describe", 1);
         let old_method = GenericDescriptor::add_method_in_table(
             ctx,
-            &table,
+            table,
             generic,
             &[class.id()],
             1,
@@ -1247,7 +1256,7 @@ fn generic_add_method_replaces_existing_specializers() {
         );
         let replacement = GenericDescriptor::add_method_in_table(
             ctx,
-            &table,
+            table,
             generic,
             &[class.id()],
             1,
@@ -1256,7 +1265,7 @@ fn generic_add_method_replaces_existing_specializers() {
         );
         let instance = SchemeInstance::allocate(ctx, class);
 
-        assert_eq!(old_method.as_gcobj(), replacement.as_gcobj());
+        assert_eq!(old_method.as_gc_object(), replacement.as_gc_object());
         assert_eq!(generic.methods().len(), 1);
         assert_eq!(class.direct_methods().len(), 1);
         assert_eq!(old_method.body(), Value::new(12));
@@ -1349,7 +1358,7 @@ fn generic_dispatch_body_prefers_applicable_method_over_fallback() {
         GenericDescriptor::set_fallback(ctx, generic, Value::new(90));
         GenericDescriptor::add_method_in_table(
             ctx,
-            &table,
+            table,
             generic,
             &[class.id()],
             1,
@@ -1377,7 +1386,7 @@ fn generic_slow_dispatch_handles_multi_argument_specificity() {
         let generic = GenericDescriptor::new(ctx, "combine", 2);
         let generic_method = GenericDescriptor::add_method_in_table(
             ctx,
-            &table,
+            table,
             generic,
             &[base.id(), base.id()],
             2,
@@ -1386,7 +1395,7 @@ fn generic_slow_dispatch_handles_multi_argument_specificity() {
         );
         let second_specific = GenericDescriptor::add_method_in_table(
             ctx,
-            &table,
+            table,
             generic,
             &[base.id(), derived.id()],
             2,
@@ -1464,7 +1473,7 @@ fn type_class_allocations_are_registered_in_rooted_class_table() {
     crate::runtime::thread::Scheme::new_uninit().enter(|ctx| {
         let table = class_table(ctx);
         let value = Gc::new(*ctx, GcOnlyDummy { value: 7 });
-        let class_id = value.as_gcobj().class_id();
+        let class_id = value.as_gc_object().class_id();
         let class = table
             .lookup(class_id)
             .expect("type-class allocation should register class metadata into class table");
@@ -1534,10 +1543,10 @@ fn type_classes_do_not_route_scheme_instance_operations() {
     crate::runtime::thread::Scheme::new_uninit().enter(|ctx| {
         let table = class_table(ctx);
         let value = Gc::new(*ctx, GcOnlyDummy { value: 7 });
-        let raw_value = Value::from_raw(value.as_gcobj().to_address().as_usize() as u64);
+        let raw_value = Value::from_raw(value.as_gc_object().to_address().as_usize() as u64);
 
         assert!(raw_value.is_cell());
-        assert!(table.lookup(value.as_gcobj().class_id()).is_some());
+        assert!(table.lookup(value.as_gc_object().class_id()).is_some());
         assert!(try_scheme_instance(ctx, raw_value).is_none());
         assert_eq!(hash_primitive_value(raw_value), None);
         assert_eq!(compare_primitive_values(raw_value, raw_value), None);
@@ -1553,7 +1562,7 @@ fn class_descriptors_are_class_heap_objects() {
             .unwrap();
 
         assert_eq!(
-            descriptor.as_gcobj().header().class_id(),
+            descriptor.as_gc_object().header().class_id(),
             id(builtin_class_ids::CLASS)
         );
         assert!(Value::from(descriptor).is::<ClassDescriptor>());
@@ -1796,7 +1805,8 @@ fn scheme_class_operation_hooks_allocate_instances() {
             .unwrap();
         assert_eq!(value.class_id(), Some(class.id()));
         // SAFETY: the dynamic class ID check above proves the Scheme-instance payload layout.
-        let instance: Gc<'_, SchemeInstance<'_>> = unsafe { Gc::from_gcobj(value.as_cell_raw()) };
+        let instance: Gc<'_, SchemeInstance<'_>> =
+            unsafe { Gc::from_gc_object(value.as_cell_raw()) };
 
         assert_eq!(instance.class().id(), class.id());
         assert_eq!(instance.slot_by_accessor(x), Ok(Value::new(9)));
@@ -1846,7 +1856,7 @@ fn scheme_class_operation_hooks_hash_instances() {
             .unwrap();
         let instance = SchemeInstance::allocate(ctx, class);
         let value = Value::from(instance);
-        let expected = instance.as_gcobj().hashcode();
+        let expected = instance.as_gc_object().hashcode();
         let hook = class.primitive_operation_hooks().hash().unwrap();
 
         assert_eq!(hook(class, value), expected);
@@ -2082,7 +2092,7 @@ fn scheme_instances_use_dynamic_class_id_and_gc_slots() {
             .unwrap();
         let instance = SchemeInstance::new(ctx, class, 2);
 
-        assert_eq!(instance.as_gcobj().header().class_id(), class.id());
+        assert_eq!(instance.as_gc_object().header().class_id(), class.id());
         assert_eq!(instance.class().id(), class.id());
         assert_eq!(instance.slot_count(), 2);
         assert_eq!(instance.slot(0), Some(Value::empty()));

@@ -4,7 +4,7 @@ use crate::rsgc::{
     Weak,
     barrier::{Unlock, Write},
     mutator::Mutation,
-    object::GCObject,
+    object::GcObject,
     traits::Trace,
 };
 use mmtk::{
@@ -122,24 +122,24 @@ impl<'gc, T> Gc<'gc, T> {
         }
     }
 
-    /// Create `Gc` pointer from `GCObject`.
+    /// Create `Gc` pointer from `GcObject`.
     ///
     /// # Safety
     ///
-    /// `obj` must be of type `T` and must be valid, and coming from the GC heap.
+    /// `obj` must point to a valid `T` in the GC heap.
     ///
     /// # Panics
     ///
     /// Panics if `obj` is null.
-    pub unsafe fn from_gcobj(obj: GCObject) -> Self {
+    pub unsafe fn from_gc_object(obj: GcObject) -> Self {
         Self {
             ptr: unsafe { NonNull::new(obj.to_address().to_mut_ptr()).unwrap_unchecked() },
             pd: PhantomData,
         }
     }
 
-    pub fn as_gcobj(self) -> GCObject {
-        GCObject::from_objref_nullable(Some(self.to_object_reference()))
+    pub fn as_gc_object(self) -> GcObject {
+        GcObject::from(self.to_object_reference())
     }
 
     pub fn as_ptr(self) -> *const T {
@@ -164,7 +164,7 @@ impl<'gc, T> Gc<'gc, T> {
     /// - [`LOG_BYTES_IN_ADDRESS`](mmtk::util::constants::LOG_BYTES_IN_ADDRESS);
     ///
     pub fn ptr_hash(this: Self) -> u64 {
-        this.as_gcobj().hashcode()
+        this.as_gc_object().hashcode()
     }
 
     /// Allocate `value` on the GC heap.
@@ -189,11 +189,11 @@ impl<'gc, T> Gc<'gc, T> {
     ///
     /// # Safety
     ///
-    /// `objref` must be of type `T` and must be valid, and coming from the GC heap.
-    pub unsafe fn from_object_reference(objref: ObjectReference) -> Self {
+    /// `object_reference` must point to a valid `T` in the GC heap.
+    pub unsafe fn from_object_reference(object_reference: ObjectReference) -> Self {
         unsafe {
             Self {
-                ptr: NonNull::new_unchecked(objref.to_raw_address().as_mut_ref()),
+                ptr: NonNull::new_unchecked(object_reference.to_raw_address().as_mut_ref()),
                 pd: PhantomData,
             }
         }
@@ -218,9 +218,9 @@ impl<'gc, T> Gc<'gc, T> {
     pub fn write(mc: Mutation<'gc>, this: Self) -> &'gc Write<T> {
         unsafe {
             mc.raw_object_reference_write(
-                this.as_gcobj(),
+                this.as_gc_object(),
                 ObjectSlot::from_address(Address::ZERO),
-                GCObject::NULL,
+                GcObject::NULL,
             );
             Write::assume(this.as_gc_ref())
         }
@@ -415,7 +415,7 @@ mod tests {
             let object = Gc::new(*ctx, InternalGcOnly { value: 7 });
 
             assert_eq!(object.value, 7);
-            assert!(object.as_gcobj().header().class_id().bits() > builtin_class_ids::MAX);
+            assert!(object.as_gc_object().header().class_id().bits() > builtin_class_ids::MAX);
         });
     }
 
@@ -428,8 +428,8 @@ mod tests {
             assert_eq!(first.value, 7);
             assert_eq!(second.value, 9);
             assert_ne!(
-                first.as_gcobj().header().class_id(),
-                second.as_gcobj().header().class_id()
+                first.as_gc_object().header().class_id(),
+                second.as_gc_object().header().class_id()
             );
         });
     }
@@ -453,7 +453,7 @@ mod tests {
 
             assert_eq!(
                 crate::rsgc::is_mmtk_heap_object(object.to_address()),
-                object.to_objref()
+                object.to_object_reference()
             );
         });
     }
@@ -481,7 +481,7 @@ mod tests {
 
             assert_eq!(
                 crate::rsgc::is_mmtk_heap_object(object.to_address()),
-                object.to_objref()
+                object.to_object_reference()
             );
         });
     }

@@ -204,10 +204,11 @@ fn common_return_cont<'gc>(
 ) -> SingleValueSet<BoundVar> {
     match graph[term].kind {
         TermKind::LetVal((_, expr), body) => {
-            if let Some(expr) = graph.read_expr_link(expr) {
-                if expr_free_vars_contain_any(graph, expr, binders) {
-                    return SingleValueSet::Top;
-                }
+            if graph
+                .read_expr_link(expr)
+                .is_some_and(|expr| expr_free_vars_contain_any(graph, expr, binders))
+            {
+                return SingleValueSet::Top;
             }
             common_return_cont_link(graph, body, binders, ignore)
         }

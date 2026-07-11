@@ -1,7 +1,10 @@
 //! Shared helpers for thunk implementations.
 
 use super::{ThunkResult, make_assertion_violation};
-use crate::runtime::{Context, REGISTER_ARG_COUNT, value::{Number, Str, Value, Closure}};
+use crate::runtime::{
+    Context, REGISTER_ARG_COUNT,
+    value::{Closure, Number, Str, Value},
+};
 
 #[derive(Clone, Copy)]
 pub struct RegisterArgs<'gc> {
@@ -71,9 +74,14 @@ unsafe extern "C" {
 }
 
 /// Return address of the current stack frame (for diagnostics).
-pub unsafe fn llvm_return_address() -> *const u8 { unsafe {
-    returnaddress(0)
-}}
+///
+/// # Safety
+///
+/// The caller must be executing in a frame that provides LLVM's return-address
+/// intrinsic for the current target architecture.
+pub unsafe fn llvm_return_address() -> *const u8 {
+    unsafe { returnaddress(0) }
+}
 
 pub fn wrong_number_of_args_impl<'gc>(
     ctx: Context<'gc>,
@@ -138,8 +146,6 @@ pub fn wrong_number_of_args_impl<'gc>(
     )
 }
 
-
-
 pub fn require_number<'gc>(
     ctx: Context<'gc>,
     op: Value<'gc>,
@@ -194,5 +200,8 @@ where
         Ok(n) => n,
         Err(r) => return r,
     };
-    ThunkResult { code: 0, value: f(ctx, a, b) }
+    ThunkResult {
+        code: 0,
+        value: f(ctx, a, b),
+    }
 }

@@ -545,12 +545,12 @@ pub fn init_expand<'gc>(ctx: Context<'gc>) {
     let _ = ctx;
 }
 
-pub(crate) struct ScmTermToRsTerm<'gc> {
+pub(crate) struct TermConverter<'gc> {
     pub ctx: Context<'gc>,
     pub lvars: HashMap<Value<'gc>, LVarRef<'gc>>,
 }
 
-impl<'gc> ScmTermToRsTerm<'gc> {
+impl<'gc> TermConverter<'gc> {
     pub fn new(ctx: Context<'gc>) -> Self {
         Self {
             ctx,

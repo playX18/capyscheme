@@ -72,7 +72,7 @@ pub fn call_scheme<'gc>(
     ctx: Context<'gc>,
     rator: Value<'gc>,
     args: impl IntoIterator<Item = Value<'gc>>,
-) -> VMResult<'gc> {
+) -> ExecutionResult<'gc> {
     let procs = PROCEDURES.fetch(*ctx);
 
     let retk = procs.register_static_cont_closure(ctx, default_retk, Value::null());
@@ -86,9 +86,9 @@ pub extern "C" fn call_scheme_with_k<'gc>(
     retk: Value<'gc>,
     rator: Value<'gc>,
     args: impl IntoIterator<Item = Value<'gc>>,
-) -> VMResult<'gc> {
+) -> ExecutionResult<'gc> {
     if !rator.is::<Closure>() {
-        return VMResult::Err(rator);
+        return ExecutionResult::Err(rator);
     }
     let guard = NestedSchemeCallGuard::new(ctx);
 
@@ -113,8 +113,8 @@ pub extern "C" fn call_scheme_with_k<'gc>(
 
         match val.code {
             ReturnCode::Continue => unreachable!("cannot continue into native code"),
-            ReturnCode::ReturnErr => VMResult::Err(val.value),
-            ReturnCode::ReturnOk => VMResult::Ok(val.value),
+            ReturnCode::ReturnErr => ExecutionResult::Err(val.value),
+            ReturnCode::ReturnOk => ExecutionResult::Ok(val.value),
         }
     }
 }
@@ -130,9 +130,9 @@ pub unsafe extern "C" fn continue_to<'gc>(
     ctx: Context<'gc>,
     cont: Value<'gc>,
     args: impl IntoIterator<Item = Value<'gc>>,
-) -> VMResult<'gc> {
+) -> ExecutionResult<'gc> {
     if !cont.is::<Closure>() {
-        return VMResult::Err(cont);
+        return ExecutionResult::Err(cont);
     }
     let guard = NestedSchemeCallGuard::new(ctx);
 
@@ -156,8 +156,8 @@ pub unsafe extern "C" fn continue_to<'gc>(
         drop(guard);
         match val.code {
             ReturnCode::Continue => unreachable!("cannot continue into native code"),
-            ReturnCode::ReturnErr => VMResult::Err(val.value),
-            ReturnCode::ReturnOk => VMResult::Ok(val.value),
+            ReturnCode::ReturnErr => ExecutionResult::Err(val.value),
+            ReturnCode::ReturnOk => ExecutionResult::Ok(val.value),
         }
     }
 }
@@ -253,28 +253,28 @@ pub(crate) extern "C-unwind" fn default_exception_handler<'gc>(
     }
 }
 
-/// A VM execution result.
+/// A Scheme VM execution result.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Trace)]
 #[collect(no_drop)]
 #[repr(C)]
-pub enum VMResult<'gc> {
-    /// VM executed succsefully and value was returned.
+pub enum ExecutionResult<'gc> {
+    /// VM executed successfully and value was returned.
     Ok(Value<'gc>),
     /// VM executed, but error was thrown.
     Err(Value<'gc>),
 }
 
-impl<'gc> FromResidual<Value<'gc>> for VMResult<'gc> {
+impl<'gc> FromResidual<Value<'gc>> for ExecutionResult<'gc> {
     fn from_residual(residual: Value<'gc>) -> Self {
         Self::Err(residual)
     }
 }
 
 impl<'gc> std::ops::Residual<Value<'gc>> for Value<'gc> {
-    type TryType = VMResult<'gc>;
+    type TryType = ExecutionResult<'gc>;
 }
 
-impl<'gc> Try for VMResult<'gc> {
+impl<'gc> Try for ExecutionResult<'gc> {
     type Output = Value<'gc>;
     type Residual = Value<'gc>;
 
@@ -284,8 +284,8 @@ impl<'gc> Try for VMResult<'gc> {
 
     fn branch(self) -> std::ops::ControlFlow<Self::Residual, Self::Output> {
         match self {
-            VMResult::Ok(v) => std::ops::ControlFlow::Continue(v),
-            VMResult::Err(e) => std::ops::ControlFlow::Break(e),
+            ExecutionResult::Ok(v) => std::ops::ControlFlow::Continue(v),
+            ExecutionResult::Err(e) => std::ops::ControlFlow::Break(e),
         }
     }
 }

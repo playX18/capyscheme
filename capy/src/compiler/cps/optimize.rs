@@ -7,7 +7,7 @@ use std::{
 use cranelift_entity::{EntitySet, SecondaryMap};
 
 use crate::{
-    compiler::ssa::LinearProgram,
+    compiler::ssa::Program,
     runtime::{Context, value::Value},
     utils::pass_profile::ProfileScope,
 };
@@ -23,7 +23,6 @@ use super::{
         FunctionLinks, Graph, GraphWorklist, Parent, Subexpr, Subterm, TermId, TermKind,
         WorklistQueue,
     },
-    linear::linearize_graph,
     reify::reify_graph,
     scc_contify,
 };
@@ -66,14 +65,14 @@ macro_rules! verbose_log {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GcpsContifyMode {
+pub enum ContifyMode {
     Off,
     Scc,
     Dom,
     DomThenScc,
 }
 
-impl GcpsContifyMode {
+impl ContifyMode {
     fn current() -> Self {
         match env::var("CAPY_GCPS_CONTIFY").ok().as_deref() {
             Some("0" | "off" | "none" | "false") => Self::Off,
@@ -103,8 +102,8 @@ impl<'gc> OptimizedGraphFunctionProgram<'gc> {
     }
 }
 
-pub struct OptimizedDirectGraphLinearProgram<'gc> {
-    pub linear: LinearProgram<'gc>,
+pub struct OptimizedProgram<'gc> {
+    pub ssa: Program<'gc>,
     pub stats: OptimizationStats,
 }
 
@@ -149,10 +148,10 @@ fn optimize_graph_program<'gc>(
     }
 }
 
-pub fn optimize_graph_func_to_linear<'gc>(
+pub fn optimize_graph_func_to_ssa<'gc>(
     ctx: Context<'gc>,
     program: GraphFunctionProgram<'gc>,
-) -> ConvertResult<OptimizedDirectGraphLinearProgram<'gc>> {
+) -> ConvertResult<OptimizedProgram<'gc>> {
     let mut program = optimize_graph_program(ctx, program);
 
     let mut graph_reify_profile = ProfileScope::new("compiler.lower.gcps.graph_reify");
@@ -163,15 +162,15 @@ pub fn optimize_graph_func_to_linear<'gc>(
     }
     drop(graph_reify_profile);
 
-    let mut linearize_profile = ProfileScope::new("compiler.lower.gcps.linearize");
-    let linear = linearize_graph(&program.graph, &graph_reify);
-    if linearize_profile.is_enabled() {
-        linearize_profile.field("procedures", linear.procedures.len());
+    let mut ssa_profile = ProfileScope::new("compiler.lower.gcps.ssa");
+    let ssa = crate::compiler::ssa::lower::lower_graph(&program.graph, &graph_reify);
+    if ssa_profile.is_enabled() {
+        ssa_profile.field("procedures", ssa.procedures.len());
     }
-    drop(linearize_profile);
+    drop(ssa_profile);
 
-    Ok(OptimizedDirectGraphLinearProgram {
-        linear,
+    Ok(OptimizedProgram {
+        ssa,
         stats: program.stats,
     })
 }
@@ -183,7 +182,7 @@ pub fn optimize_graph<'gc>(
     gas: Option<usize>,
 ) -> OptimizationStats {
     let mut state = OptimizerState::new();
-    let contify_mode = GcpsContifyMode::current();
+    let contify_mode = ContifyMode::current();
     {
         let mut profile = ProfileScope::new("compiler.lower.gcps.collect");
         state.collect_redexes(graph, root);
@@ -278,7 +277,7 @@ impl OptimizerState {
         ctx: Context<'gc>,
         graph: &mut Graph<'gc>,
         mut gas: usize,
-        contify_mode: GcpsContifyMode,
+        contify_mode: ContifyMode,
     ) {
         let initial_gas = gas;
         while gas > 0 {
@@ -491,6 +490,7 @@ impl OptimizerState {
         self.old_occurrences = occurrences;
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn reduce_letval<'gc>(
         &mut self,
         ctx: Context<'gc>,
@@ -579,6 +579,7 @@ impl OptimizerState {
         self.enqueue_occurrence_owners(graph, binder);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn reduce_if<'gc>(
         &mut self,
         graph: &mut Graph<'gc>,
@@ -963,6 +964,7 @@ impl OptimizerState {
         Some((binder, link, function))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn reduce_call<'gc>(
         &mut self,
         ctx: Context<'gc>,
@@ -1010,14 +1012,8 @@ impl OptimizerState {
         self.beta_reduce_call(graph, function, &args, Some(cont));
         self.replace_with_existing_body(graph, active_link, term, function_data.body);
         self.kill_binding(graph, callee);
-        self.worklist.add_occurrences(
-            graph,
-            graph
-                .free_vars_slice(&args)
-                .iter()
-                .copied()
-                .collect::<Vec<_>>(),
-        );
+        self.worklist
+            .add_occurrences(graph, graph.free_vars_slice(&args).to_vec());
         if queued_link != active_link {
             graph.set_term_link(
                 queued_link,
@@ -1026,6 +1022,7 @@ impl OptimizerState {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn try_unroll_recursive_call<'gc>(
         &mut self,
         ctx: Context<'gc>,
@@ -1392,10 +1389,10 @@ impl OptimizerState {
 
         match graph[term].kind {
             TermKind::LetVal((binding, expr), body) => {
-                if let Some(expr_id) = graph.read_expr_link(expr) {
-                    if !self.expr_free_occurrences_are_allowed(graph, expr_id, value_scope) {
-                        return false;
-                    }
+                if graph.read_expr_link(expr).is_some_and(|expr_id| {
+                    !self.expr_free_occurrences_are_allowed(graph, expr_id, value_scope)
+                }) {
+                    return false;
                 }
                 value_scope.insert(binding);
                 self.term_is_simple_continuation_inline_body(graph, body, value_scope)
@@ -1452,7 +1449,7 @@ impl OptimizerState {
         term: TermId,
         functions: super::graph::FunctionLinks,
         body: Subterm,
-        mode: GcpsContifyMode,
+        mode: ContifyMode,
     ) {
         let live = self.live_function_links(graph, &functions);
         if live.is_empty() {
@@ -1461,14 +1458,14 @@ impl OptimizerState {
         }
 
         let candidate = match mode {
-            GcpsContifyMode::Off => None,
-            GcpsContifyMode::Scc => {
+            ContifyMode::Off => None,
+            ContifyMode::Scc => {
                 scc_contify::find_candidate(self, graph, active_link, term, &live, body)
             }
-            GcpsContifyMode::Dom => {
+            ContifyMode::Dom => {
                 dom_contify::find_candidate(self, graph, active_link, term, &live, body)
             }
-            GcpsContifyMode::DomThenScc => {
+            ContifyMode::DomThenScc => {
                 dom_contify::find_candidate(self, graph, active_link, term, &live, body).or_else(
                     || scc_contify::find_candidate(self, graph, active_link, term, &live, body),
                 )
@@ -1624,6 +1621,7 @@ impl OptimizerState {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn dump_contification<'gc>(
         &self,
         graph: &Graph<'gc>,
@@ -1989,16 +1987,16 @@ impl OptimizerState {
 
         match graph[term].kind {
             TermKind::LetVal((binding, expr), body) => {
-                if let Some(expr_id) = graph.read_expr_link(expr) {
-                    if !self.expr_free_occurrences_are_available_at_term(
+                if graph.read_expr_link(expr).is_some_and(|expr_id| {
+                    !self.expr_free_occurrences_are_available_at_term(
                         graph,
                         expr_id,
                         local,
                         site_term,
                         availability,
-                    ) {
-                        return false;
-                    }
+                    )
+                }) {
+                    return false;
                 }
                 let mut body_local = local.clone();
                 body_local.insert(binding);
@@ -2284,10 +2282,10 @@ impl OptimizerState {
 
         match graph[term].kind {
             TermKind::LetVal((binding, expr), body) => {
-                if let Some(expr_id) = graph.read_expr_link(expr) {
-                    if !self.expr_free_occurrences_are_allowed(graph, expr_id, allowed) {
-                        return false;
-                    }
+                if graph.read_expr_link(expr).is_some_and(|expr_id| {
+                    !self.expr_free_occurrences_are_allowed(graph, expr_id, allowed)
+                }) {
+                    return false;
                 }
                 let mut body_allowed = allowed.clone();
                 body_allowed.insert(binding);
@@ -2440,4 +2438,3 @@ fn emit_contification_dump(index: usize, phase: &str, dump: &str) {
         }
     }
 }
-

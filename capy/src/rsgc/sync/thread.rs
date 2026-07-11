@@ -104,9 +104,9 @@ type ShouldSuspend = BitField<u64, bool, { SoftHandshakeRequested::NEXT_BIT }, 1
 type IsSuspended = BitField<u64, bool, { ShouldSuspend::NEXT_BIT }, 1, false>;
 type ShouldBlockForHandshake = BitField<u64, bool, { IsSuspended::NEXT_BIT }, 1, false>;
 type IsBlockedForHandshake = BitField<u64, bool, { ShouldBlockForHandshake::NEXT_BIT }, 1, false>;
-type ShouldBlockForGC = BitField<u64, bool, { IsBlockedForHandshake::NEXT_BIT }, 1, false>;
-type IsBlockedForGC = BitField<u64, bool, { ShouldBlockForGC::NEXT_BIT }, 1, false>;
-type IsAboutToTerminate = BitField<u64, bool, { IsBlockedForGC::NEXT_BIT }, 1, false>;
+type ShouldBlockForGc = BitField<u64, bool, { IsBlockedForHandshake::NEXT_BIT }, 1, false>;
+type IsBlockedForGc = BitField<u64, bool, { ShouldBlockForGc::NEXT_BIT }, 1, false>;
+type IsAboutToTerminate = BitField<u64, bool, { IsBlockedForGc::NEXT_BIT }, 1, false>;
 type ActiveMutatorContext = BitField<u64, bool, { IsAboutToTerminate::NEXT_BIT }, 1, false>;
 type ThreadStateInitialized = BitField<u64, bool, { ActiveMutatorContext::NEXT_BIT }, 1, false>;
 
@@ -471,20 +471,20 @@ impl Thread {
         }
     }
 
-    pub(crate) fn from_vmthread(vmthread: VMThread) -> &'static Self {
-        unsafe { vmthread.0.to_address().as_ref() }
+    pub(crate) fn from_vm_thread(vm_thread: VMThread) -> &'static Self {
+        unsafe { vm_thread.0.to_address().as_ref() }
     }
 
-    pub(crate) fn from_mutator_thread(vmthread: VMMutatorThread) -> &'static Self {
-        unsafe { vmthread.0.0.to_address().as_ref() }
+    pub(crate) fn from_mutator_thread(mutator_thread: VMMutatorThread) -> &'static Self {
+        unsafe { mutator_thread.0.0.to_address().as_ref() }
     }
 
-    pub(crate) fn to_vmthread(&self) -> VMThread {
+    pub(crate) fn to_vm_thread(&self) -> VMThread {
         VMThread(OpaquePointer::from_address(Address::from_ref(self)))
     }
 
     pub(crate) fn to_mutator_thread(&self) -> VMMutatorThread {
-        VMMutatorThread(self.to_vmthread())
+        VMMutatorThread(self.to_vm_thread())
     }
 
     pub(crate) fn native_data(&self) -> &ThreadNativeData {
@@ -793,14 +793,14 @@ pub trait BlockAdapter: Send + Sync {
     fn clear_block_request(&self, thread: &Thread);
 }
 
-pub(crate) static GC_BLOCK_ADAPTER: GCBlockAdapter = GCBlockAdapter;
+pub(crate) static GC_BLOCK_ADAPTER: GcBlockAdapter = GcBlockAdapter;
 pub(crate) static BLOCK_ADAPTERS: &[&dyn BlockAdapter] = &[&GC_BLOCK_ADAPTER];
 
-pub(crate) struct GCBlockAdapter;
+pub(crate) struct GcBlockAdapter;
 
-impl BlockAdapter for GCBlockAdapter {
+impl BlockAdapter for GcBlockAdapter {
     fn is_blocked(&self, thread: &Thread) -> bool {
-        thread.status_word.read::<IsBlockedForGC>()
+        thread.status_word.read::<IsBlockedForGc>()
     }
 
     fn set_blocked(&self, thread: &Thread, value: bool) {
@@ -812,11 +812,11 @@ impl BlockAdapter for GCBlockAdapter {
                 state.stats.end_stw();
             }
         }
-        thread.status_word.update::<IsBlockedForGC>(value)
+        thread.status_word.update::<IsBlockedForGc>(value)
     }
 
     fn request_block(&self, thread: &Thread) -> u32 {
-        thread.status_word.update::<ShouldBlockForGC>(true);
+        thread.status_word.update::<ShouldBlockForGc>(true);
         0
     }
 
@@ -826,11 +826,11 @@ impl BlockAdapter for GCBlockAdapter {
     }
 
     fn has_block_request(&self, thread: &Thread) -> bool {
-        thread.status_word.read::<ShouldBlockForGC>()
+        thread.status_word.read::<ShouldBlockForGc>()
     }
 
     fn clear_block_request(&self, thread: &Thread) {
-        thread.status_word.update::<ShouldBlockForGC>(false);
+        thread.status_word.update::<ShouldBlockForGc>(false);
     }
 }
 

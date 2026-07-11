@@ -4,7 +4,7 @@ use cranelift::prelude::{InstBuilder, IntCC, MemFlags, types};
 use cranelift_codegen::ir::{self, BlockArg};
 
 use crate::{
-    compiler::cranelift::{AllocationHeaderPreset, SSABuilder},
+    compiler::cranelift::{AllocationHeaderPreset, SsaBuilder},
     expander::core::LVarRef,
     rsgc::{
         mmtk::BarrierSelector,
@@ -13,7 +13,7 @@ use crate::{
     runtime::value::{Pair, Value, Vector},
 };
 
-impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
+impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
     pub fn to_boolean(&mut self, v: ir::Value) -> ir::Value {
         self.builder
             .ins()
@@ -39,114 +39,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             offset_of!(Pair, cdr) as i32,
         );
         pair
-    }
-
-    pub fn inline_cmp_op(
-        &mut self,
-        lhs: ir::Value,
-        rhs: ir::Value,
-        i32_fastpath: impl FnOnce(&mut Self, ir::Value, ir::Value, ir::Block) -> ir::Value,
-        slowpath: impl FnOnce(&mut Self, ir::Value, ir::Value) -> ir::Value,
-    ) -> ir::Value {
-        /*let mask_lhs_i32 = self.builder.ins().band_imm(lhs, Value::NUMBER_TAG as i64);
-        let is_lhs_i32 =
-            self.builder
-                .ins()
-                .icmp_imm(IntCC::Equal, mask_lhs_i32, Value::NUMBER_TAG as i64);
-        let mask_rhs_i32 = self.builder.ins().band_imm(rhs, Value::NUMBER_TAG as i64);
-        let is_rhs_i32 =
-            self.builder
-                .ins()
-                .icmp_imm(IntCC::Equal, mask_rhs_i32, Value::NUMBER_TAG as i64);
-        let is_both_i32 = self.builder.ins().band(is_lhs_i32, is_rhs_i32);
-
-        let fastpath_bb = self.builder.create_block();*/
-
-        let slowpath_bb = self.builder.create_block();
-        let check_rhs = self.builder.create_block();
-        let fastpath_bb = self.builder.create_block();
-        let join = self.builder.create_block();
-
-        self.builder.append_block_param(join, types::I8);
-        self.builder.func.layout.set_cold(slowpath_bb);
-        self.branch_if_int32(lhs, check_rhs, &[], slowpath_bb, &[]);
-        self.builder.switch_to_block(check_rhs);
-        {
-            self.branch_if_int32(rhs, fastpath_bb, &[], slowpath_bb, &[]);
-        }
-
-        self.builder.switch_to_block(fastpath_bb);
-        {
-            let lhs_i32 = self.builder.ins().ireduce(types::I32, lhs);
-            let rhs_i32 = self.builder.ins().ireduce(types::I32, rhs);
-
-            let res = i32_fastpath(self, lhs_i32, rhs_i32, slowpath_bb);
-
-            self.builder.ins().jump(join, &[BlockArg::Value(res)]);
-        }
-        self.builder.switch_to_block(slowpath_bb);
-        {
-            let res = slowpath(self, lhs, rhs);
-            self.builder.ins().jump(join, &[BlockArg::Value(res)]);
-        }
-
-        self.builder.switch_to_block(join);
-        self.builder.block_params(join)[0]
-    }
-
-    pub fn inline_binary_op(
-        &mut self,
-        lhs: ir::Value,
-        rhs: ir::Value,
-        i32_fastpath: impl FnOnce(&mut Self, ir::Value, ir::Value, ir::Block) -> ir::Value,
-        slowpath: impl FnOnce(&mut Self, ir::Value, ir::Value) -> ir::Value,
-    ) -> ir::Value {
-        let check_rhs_i32 = self.builder.create_block();
-        let fastpath_bb = self.builder.create_block();
-        let slowpath_bb = self.builder.create_block();
-        let join = self.builder.create_block();
-
-        self.builder.append_block_param(join, types::I64);
-        self.builder.func.layout.set_cold(slowpath_bb);
-
-        let mask_lhs_i32 = self.builder.ins().band_imm(lhs, Value::NUMBER_TAG);
-        let is_lhs_i32 = self
-            .builder
-            .ins()
-            .icmp_imm(IntCC::Equal, mask_lhs_i32, Value::NUMBER_TAG);
-        self.builder
-            .ins()
-            .brif(is_lhs_i32, check_rhs_i32, &[], slowpath_bb, &[]);
-        self.builder.switch_to_block(check_rhs_i32);
-
-        let mask_rhs_i32 = self.builder.ins().band_imm(rhs, Value::NUMBER_TAG);
-        let is_rhs_i32 = self
-            .builder
-            .ins()
-            .icmp_imm(IntCC::Equal, mask_rhs_i32, Value::NUMBER_TAG);
-
-        self.builder
-            .ins()
-            .brif(is_rhs_i32, fastpath_bb, &[], slowpath_bb, &[]);
-
-        self.builder.switch_to_block(fastpath_bb);
-        {
-            let lhs_i32 = self.builder.ins().ireduce(types::I32, lhs);
-            let rhs_i32 = self.builder.ins().ireduce(types::I32, rhs);
-
-            let res = i32_fastpath(self, lhs_i32, rhs_i32, slowpath_bb);
-            let res = self.builder.ins().uextend(types::I64, res);
-            let res = self.builder.ins().bor_imm(res, Value::NUMBER_TAG);
-            self.builder.ins().jump(join, &[BlockArg::Value(res)]);
-        }
-        self.builder.switch_to_block(slowpath_bb);
-        {
-            let res = slowpath(self, lhs, rhs);
-            self.builder.ins().jump(join, &[BlockArg::Value(res)]);
-        }
-
-        self.builder.switch_to_block(join);
-        self.builder.block_params(join)[0]
     }
 
     pub fn inline_float_unary_op(
@@ -195,46 +87,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.builder.block_params(join)[0]
     }
 
-    pub fn inline_unary_op(
-        &mut self,
-        value: ir::Value,
-        fastpath: impl FnOnce(&mut Self, ir::Value, ir::Block) -> ir::Value,
-        slowpath: impl FnOnce(&mut Self, ir::Value) -> ir::Value,
-    ) -> ir::Value {
-        let mask = self.builder.ins().band_imm(value, Value::NUMBER_TAG);
-        let is_i32 = self
-            .builder
-            .ins()
-            .icmp_imm(IntCC::Equal, mask, Value::NUMBER_TAG);
-
-        let fastpath_bb = self.builder.create_block();
-        let slowpath_bb = self.builder.create_block();
-        let join = self.builder.create_block();
-
-        self.builder.append_block_param(join, types::I64);
-
-        self.builder
-            .ins()
-            .brif(is_i32, fastpath_bb, &[], slowpath_bb, &[]);
-
-        self.builder.switch_to_block(fastpath_bb);
-        {
-            let value_i32 = self.builder.ins().ireduce(types::I32, value);
-            let res = fastpath(self, value_i32, slowpath_bb);
-            let res = self.builder.ins().uextend(types::I64, res);
-            let res = self.builder.ins().bor_imm(res, Value::NUMBER_TAG);
-            self.builder.ins().jump(join, &[BlockArg::Value(res)]);
-        }
-        self.builder.switch_to_block(slowpath_bb);
-        {
-            let res = slowpath(self, value);
-            self.builder.ins().jump(join, &[BlockArg::Value(res)]);
-        }
-
-        self.builder.switch_to_block(join);
-        self.builder.block_params(join)[0]
-    }
-
     pub fn is_int32(&mut self, v: ir::Value) -> ir::Value {
         let tag = self.builder.ins().band_imm(v, Value::NUMBER_TAG);
         self.builder
@@ -244,12 +96,12 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
     pub fn is_flonum(&mut self, v: ir::Value) -> ir::Value {
         let tag = self.builder.ins().band_imm(v, Value::NUMBER_TAG);
-        let not_zero = self.builder.ins().icmp_imm(IntCC::NotEqual, v, 0);
+        let is_inline_number = self.builder.ins().icmp_imm(IntCC::NotEqual, tag, 0);
         let not_i32 = self
             .builder
             .ins()
             .icmp_imm(IntCC::NotEqual, tag, Value::NUMBER_TAG);
-        self.builder.ins().band(not_i32, not_zero)
+        self.builder.ins().band(is_inline_number, not_i32)
     }
 
     pub fn vector_ref_imm(&mut self, vec: ir::Value, ix: usize) -> ir::Value {
@@ -392,18 +244,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 self.builder.ins().band(is_number, not_fixnum)
             }
             _ => self.has_heap_class_id(v, class_id),
-        }
-    }
-
-    pub fn current_block_has_heap_class_id(&self, v: ir::Value, class_id: u32) -> bool {
-        self.builder
-            .current_block()
-            .is_some_and(|block| self.heap_class_id_facts.contains(&(block, v, class_id)))
-    }
-
-    pub fn prove_current_block_heap_class_id(&mut self, v: ir::Value, class_id: u32) {
-        if let Some(block) = self.builder.current_block() {
-            self.heap_class_id_facts.insert((block, v, class_id));
         }
     }
 

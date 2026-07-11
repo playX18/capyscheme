@@ -1,5 +1,5 @@
 use crate::{
-    compiler::{cranelift::primitive::Primitive, cps::graph::BranchHint},
+    compiler::{cps::graph::BranchHint, cranelift::primitive::Primitive},
     expander::core::LVarRef,
     runtime::{value::Value, vm::exceptions::RaiseKind},
 };
@@ -13,7 +13,7 @@ pub struct BlockId(pub usize);
 pub struct ValueId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum LinearAtom<'gc> {
+pub enum Operand<'gc> {
     Constant(Value<'gc>),
     Local(ValueId),
 }
@@ -40,7 +40,7 @@ pub enum CodeId {
 }
 
 #[derive(Debug, Clone)]
-pub struct LinearProgram<'gc> {
+pub struct Program<'gc> {
     pub entry: CodeId,
     pub procedures: Vec<Procedure<'gc>>,
 }
@@ -93,29 +93,29 @@ pub enum Instruction<'gc> {
     },
     ClosureRef {
         dst: ValueId,
-        closure: LinearAtom<'gc>,
+        closure: Operand<'gc>,
         index: usize,
     },
     ClosureSet {
-        closure: LinearAtom<'gc>,
+        closure: Operand<'gc>,
         index: usize,
-        value: LinearAtom<'gc>,
+        value: Operand<'gc>,
     },
     CacheRef {
         dst: ValueId,
-        cache_key: LinearAtom<'gc>,
+        cache_key: Operand<'gc>,
         source: Value<'gc>,
     },
     CacheSet {
         dst: ValueId,
-        cache_key: LinearAtom<'gc>,
-        value: LinearAtom<'gc>,
+        cache_key: Operand<'gc>,
+        value: Operand<'gc>,
         source: Value<'gc>,
     },
     PrimCall {
         dst: ValueId,
         prim: Primitive,
-        args: Vec<LinearAtom<'gc>>,
+        args: Vec<Operand<'gc>>,
         source: Value<'gc>,
     },
     RestToList {
@@ -148,11 +148,11 @@ pub enum Instruction<'gc> {
 pub enum BranchTarget<'gc> {
     Local {
         block: BlockId,
-        args: Vec<LinearAtom<'gc>>,
+        args: Vec<Operand<'gc>>,
     },
     Reified {
-        continuation: LinearAtom<'gc>,
-        args: Vec<LinearAtom<'gc>>,
+        continuation: Operand<'gc>,
+        args: Vec<Operand<'gc>>,
     },
 }
 
@@ -181,34 +181,34 @@ pub enum SwitchKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Terminator<'gc> {
     Call {
-        callee: LinearAtom<'gc>,
-        retk: LinearAtom<'gc>,
-        args: Vec<LinearAtom<'gc>>,
+        callee: Operand<'gc>,
+        retk: Operand<'gc>,
+        args: Vec<Operand<'gc>>,
         source: Value<'gc>,
     },
     TailCall {
-        callee: LinearAtom<'gc>,
-        args: Vec<LinearAtom<'gc>>,
+        callee: Operand<'gc>,
+        args: Vec<Operand<'gc>>,
         source: Value<'gc>,
     },
     Raise {
         kind: RaiseKind,
-        args: Vec<LinearAtom<'gc>>,
+        args: Vec<Operand<'gc>>,
         source: Value<'gc>,
     },
     Jump {
         target: BlockId,
-        args: Vec<LinearAtom<'gc>>,
+        args: Vec<Operand<'gc>>,
     },
     Branch {
-        test: LinearAtom<'gc>,
+        test: Operand<'gc>,
         consequent: BranchTarget<'gc>,
         alternative: BranchTarget<'gc>,
         hints: [BranchHint; 2],
     },
     Switch {
         kind: SwitchKind,
-        scrutinee: LinearAtom<'gc>,
+        scrutinee: Operand<'gc>,
         cases: Vec<SwitchCase<'gc>>,
         default: BranchTarget<'gc>,
     },
@@ -247,7 +247,7 @@ impl<'gc> Instruction<'gc> {
         }
     }
 
-    pub fn uses(&self) -> Vec<LinearAtom<'gc>> {
+    pub fn uses(&self) -> Vec<Operand<'gc>> {
         match self {
             Self::Const { .. } => vec![],
             Self::MakeClosure { .. } => vec![],
@@ -261,7 +261,7 @@ impl<'gc> Instruction<'gc> {
             Self::RestToList { .. } => vec![],
             Self::RestRef { rest, .. }
             | Self::RestLength { rest, .. }
-            | Self::RestPredicate { rest, .. } => vec![LinearAtom::Local(*rest)],
+            | Self::RestPredicate { rest, .. } => vec![Operand::Local(*rest)],
         }
     }
 }
@@ -274,7 +274,7 @@ impl<'gc> BranchTarget<'gc> {
         }
     }
 
-    pub fn uses(&self) -> Vec<LinearAtom<'gc>> {
+    pub fn uses(&self) -> Vec<Operand<'gc>> {
         match self {
             Self::Local { args, .. } => args.clone(),
             Self::Reified { continuation, args } => {
@@ -288,7 +288,7 @@ impl<'gc> BranchTarget<'gc> {
 }
 
 impl<'gc> Terminator<'gc> {
-    pub fn uses(&self) -> Vec<LinearAtom<'gc>> {
+    pub fn uses(&self) -> Vec<Operand<'gc>> {
         match self {
             Self::Call {
                 callee, retk, args, ..

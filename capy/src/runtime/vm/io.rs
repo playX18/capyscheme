@@ -2093,7 +2093,7 @@ mod tests {
             let poller = Gc::new_with_header_word(*ctx, poller, poller_header_word());
 
             assert_eq!(
-                poller.as_gcobj().header().class_id(),
+                poller.as_gc_object().header().class_id(),
                 ClassId::new(builtin_class_ids::POLLER).unwrap()
             );
         });

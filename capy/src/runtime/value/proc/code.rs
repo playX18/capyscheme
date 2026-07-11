@@ -56,7 +56,7 @@ unsafe impl FinalizerQueue for CodeBlockFinalizerQueue {
         while let Some(object) = self.pop() {
             // SAFETY: No concurrent access to the span; we own the code block
             unsafe {
-                let gc_object = GCObject::from(object);
+                let gc_object = GcObject::from(object);
                 let code_block = gc_object.to_address().as_ref::<CodeBlock<'static>>();
                 if code_block.take_span_for_finalization().is_some() {
                     // A dead CodeBlock can still have return addresses into its

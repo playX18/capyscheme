@@ -15,7 +15,7 @@ use crate::rsgc::{
     global::Global,
     mmtk::util::Address,
     mutator::Mutation,
-    object::GCObject,
+    object::GcObject,
     object::{ClassId, builtin_class_ids, class_header_word},
     sync::monitor::Monitor,
     weak::Weak,
@@ -50,7 +50,7 @@ impl<'gc> WeakEntry<'gc> {
 
         // SAFETY: The usize was derived from a valid address by the caller
         unsafe {
-            mc.raw_weak_reference_load(GCObject::from_address(Address::from_usize(
+            mc.raw_weak_reference_load(GcObject::from_address(Address::from_usize(
                 self.value.bits() as _,
             )));
             self.value
@@ -139,7 +139,7 @@ unsafe impl<'gc> Trace for WeakSet<'gc> {
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let inner = self.inner.get_mut();
         let entries = inner.entries.get();
-        entries.as_gcobj().process_weak_refs(weak_processor);
+        entries.as_gc_object().process_weak_refs(weak_processor);
     }
 }
 
@@ -658,7 +658,7 @@ unsafe impl<'gc> Trace for AllWeakSets<'gc> {
 
             // SAFETY: The weak reference is known to be live at this point in the trace
             if let Some(weak_set) = unsafe { weak_set.upgrade_unchecked() } {
-                weak_set.as_gcobj().process_weak_refs(weak_processor);
+                weak_set.as_gc_object().process_weak_refs(weak_processor);
             }
 
             true

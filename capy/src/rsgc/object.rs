@@ -105,24 +105,24 @@ static NEXT_CLASS_ID: AtomicU32 = AtomicU32::new(builtin_class_ids::MAX + 1);
 
 #[derive(Clone, Copy)]
 pub struct AllocationHooks {
-    pub trace: extern "C" fn(GCObject, &mut Visitor),
-    pub weak_proc: extern "C" fn(GCObject, &mut WeakProcessor),
+    pub trace: extern "C" fn(GcObject, &mut Visitor),
+    pub weak_proc: extern "C" fn(GcObject, &mut WeakProcessor),
     pub instance_size: usize,
-    pub compute_size: Option<extern "C" fn(GCObject) -> usize>,
+    pub compute_size: Option<extern "C" fn(GcObject) -> usize>,
     pub alignment: usize,
-    pub compute_alignment: Option<extern "C" fn(GCObject) -> usize>,
+    pub compute_alignment: Option<extern "C" fn(GcObject) -> usize>,
     pub type_name: &'static str,
 }
 
-extern "C" fn default_trace<T: Trace>(obj: GCObject, vis: &mut Visitor) {
-    vis.current_object = obj.to_objref();
+extern "C" fn default_trace<T: Trace>(obj: GcObject, vis: &mut Visitor) {
+    vis.current_object = obj.to_object_reference();
 
     unsafe {
         obj.to_address().as_mut_ref::<T>().trace(vis);
     }
 }
 
-extern "C" fn default_weak_proc<T: Trace>(obj: GCObject, weak_processor: &mut WeakProcessor) {
+extern "C" fn default_weak_proc<T: Trace>(obj: GcObject, weak_processor: &mut WeakProcessor) {
     unsafe {
         obj.to_address()
             .as_mut_ref::<T>()
@@ -452,33 +452,33 @@ impl HeapObjectHeader {
 
 #[repr(transparent)]
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct GCObject(Address);
+pub struct GcObject(Address);
 
-impl fmt::Pointer for GCObject {
+impl fmt::Pointer for GcObject {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Pointer::fmt(&self.0.to_ptr::<()>(), f)
     }
 }
 
-impl From<Address> for GCObject {
+impl From<Address> for GcObject {
     fn from(value: Address) -> Self {
         Self(value)
     }
 }
 
-impl From<GCObject> for Address {
-    fn from(val: GCObject) -> Self {
+impl From<GcObject> for Address {
+    fn from(val: GcObject) -> Self {
         val.0
     }
 }
 
-impl From<ObjectReference> for GCObject {
+impl From<ObjectReference> for GcObject {
     fn from(value: ObjectReference) -> Self {
         Self(value.to_raw_address())
     }
 }
 
-impl GCObject {
+impl GcObject {
     pub const NULL: Self = Self(Address::ZERO);
 
     pub fn is_null(self) -> bool {
@@ -493,11 +493,7 @@ impl GCObject {
         self.0
     }
 
-    pub fn from_objref_nullable(value: Option<ObjectReference>) -> Self {
-        value.map_or(Self::NULL, Self::from)
-    }
-
-    pub fn to_objref(self) -> Option<ObjectReference> {
+    pub fn to_object_reference(self) -> Option<ObjectReference> {
         ObjectReference::from_raw_address(self.0)
     }
 
@@ -638,14 +634,14 @@ impl GCObject {
 
 enum MoveTarget {
     ToAddress(Address),
-    ToObject(GCObject),
+    ToObject(GcObject),
 }
 
 #[derive(Default)]
 pub struct ObjectModel;
 
 impl ObjectModel {
-    fn move_object(from_obj: GCObject, mut to: MoveTarget, num_bytes: usize) -> GCObject {
+    fn move_object(from_obj: GcObject, mut to: MoveTarget, num_bytes: usize) -> GcObject {
         let mut copy_bytes = num_bytes;
         let mut obj_ref_offset = OBJECT_REF_OFFSET;
         let header = from_obj.header();
@@ -664,7 +660,7 @@ impl ObjectModel {
 
         let (to_address, to_obj) = match to {
             MoveTarget::ToAddress(addr) => {
-                let obj = GCObject(addr + obj_ref_offset);
+                let obj = GcObject(addr + obj_ref_offset);
                 (addr, obj)
             }
 
@@ -733,11 +729,11 @@ impl mmtk::vm::ObjectModel<MemoryManager> for ObjectModel {
     }
 
     fn ref_to_header(object: mmtk::util::ObjectReference) -> Address {
-        GCObject::from(object).header_address()
+        GcObject::from(object).header_address()
     }
 
     fn ref_to_object_start(object: mmtk::util::ObjectReference) -> Address {
-        GCObject::from(object).object_start()
+        GcObject::from(object).object_start()
     }
 
     fn copy(
@@ -745,7 +741,7 @@ impl mmtk::vm::ObjectModel<MemoryManager> for ObjectModel {
         semantics: mmtk::util::copy::CopySemantics,
         copy_context: &mut mmtk::util::copy::GCWorkerCopyContext<MemoryManager>,
     ) -> ObjectReference {
-        let gc_from = GCObject::from(from);
+        let gc_from = GcObject::from(from);
 
         let bytes = gc_from.bytes_required_when_copied();
         let align = gc_from.alignment();
@@ -765,11 +761,11 @@ impl mmtk::vm::ObjectModel<MemoryManager> for ObjectModel {
     }
 
     fn copy_to(from: ObjectReference, to: ObjectReference, _region: Address) -> Address {
-        let gc_from = GCObject::from(from);
+        let gc_from = GcObject::from(from);
         let copy = from != to;
 
         let bytes = if copy {
-            let gc_to = GCObject::from(to);
+            let gc_to = GcObject::from(to);
             let bytes = gc_from.bytes_required_when_copied();
             Self::move_object(gc_from, MoveTarget::ToObject(gc_to), bytes);
             bytes
@@ -783,33 +779,33 @@ impl mmtk::vm::ObjectModel<MemoryManager> for ObjectModel {
     }
 
     fn get_reference_when_copied_to(from: ObjectReference, to: Address) -> ObjectReference {
-        let gc_from = GCObject::from(from);
+        let gc_from = GcObject::from(from);
         let res_addr = to + OBJECT_REF_OFFSET + gc_from.hashcode_overhead::<true>();
-        let res = GCObject(res_addr);
+        let res = GcObject(res_addr);
 
         res.try_into().unwrap()
     }
 
     fn get_current_size(object: ObjectReference) -> usize {
-        GCObject::from(object).current_size()
+        GcObject::from(object).current_size()
     }
 
     fn get_size_when_copied(object: ObjectReference) -> usize {
-        GCObject::from(object).get_size_when_copied()
+        GcObject::from(object).get_size_when_copied()
     }
 
     fn get_align_offset_when_copied(object: ObjectReference) -> usize {
-        GCObject::from(object).get_align_offset_when_copied()
+        GcObject::from(object).get_align_offset_when_copied()
     }
 
     fn get_align_when_copied(object: ObjectReference) -> usize {
-        GCObject::from(object).get_align_when_copied()
+        GcObject::from(object).get_align_when_copied()
     }
 }
 
-impl TryFrom<GCObject> for ObjectReference {
+impl TryFrom<GcObject> for ObjectReference {
     type Error = ();
-    fn try_from(value: GCObject) -> Result<Self, Self::Error> {
+    fn try_from(value: GcObject) -> Result<Self, Self::Error> {
         if value.0.is_zero() {
             Err(())
         } else {
@@ -905,7 +901,7 @@ mod tests {
                 .write(0xfeed_face_cafe_beef);
         }
 
-        let from_obj = GCObject::from_address(Address::from_ptr(unsafe {
+        let from_obj = GcObject::from_address(Address::from_ptr(unsafe {
             from.as_ptr().cast::<u8>().add(OBJECT_REF_OFFSET as usize)
         }));
         let to_start = Address::from_ptr(to.as_mut_ptr());

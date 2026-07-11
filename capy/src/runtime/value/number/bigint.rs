@@ -19,7 +19,7 @@ use crate::rsgc::{
     global::Global,
     mmtk::{AllocationSemantics, util::conversions::raw_align_up},
     mutator::Mutation,
-    object::{AllocationHooks, ClassId, GCObject, builtin_class_ids, class_header_word},
+    object::{AllocationHooks, ClassId, GcObject, builtin_class_ids, class_header_word},
 };
 use rand::Rng;
 
@@ -31,27 +31,27 @@ pub const DIGIT_BIT: usize = 64;
 pub const DIGIT_MASK: u64 = u64::MAX;
 pub const DIGIT_BIT_SHIFT_COUNT: u32 = 6;
 
-const BASE: Digit2X = Digit::MAX as Digit2X + 1;
+const BASE: WideDigit = Digit::MAX as WideDigit + 1;
 
-pub type Digit2X = u128;
+pub type WideDigit = u128;
 pub type Digit = u64;
 
-extern "C" fn compute_bigint_size(object: GCObject) -> usize {
+extern "C" fn compute_bigint_size(object: GcObject) -> usize {
     // SAFETY: Preconditions verified by the surrounding code
     let bigint = unsafe { object.to_address().as_ref::<BigInt<'static>>() };
     let raw = bigint.num_words() * size_of::<Digit>() + size_of::<BigInt>();
     raw_align_up(raw, align_of::<BigInt>())
 }
 
-extern "C" fn trace_bigint(_object: GCObject, _visitor: &mut Visitor<'_>) {}
+extern "C" fn trace_bigint(_object: GcObject, _visitor: &mut Visitor<'_>) {}
 
 extern "C" fn process_weak_bigint(
-    _object: GCObject,
+    _object: GcObject,
     _weak_processor: &mut crate::rsgc::WeakProcessor,
 ) {
 }
-pub type IDigit = i64;
-pub type IDigit2X = i128;
+pub type SignedDigit = i64;
+pub type SignedWideDigit = i128;
 type RootedBigInt = crate::Rootable!(Gc<'_, BigInt<'_>>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -276,10 +276,10 @@ impl<'gc> BigInt<'gc> {
     pub fn flip2sc(&mut self) {
         let count = self.count();
 
-        let mut acc: Digit2X = 1;
+        let mut acc: WideDigit = 1;
 
         for i in 0..count {
-            acc = (!self[i] as Digit2X).wrapping_add(acc);
+            acc = (!self[i] as WideDigit).wrapping_add(acc);
             self[i] = acc as Digit;
             acc >>= DIGIT_BIT;
         }
@@ -466,15 +466,15 @@ impl<'gc> DerefMut for BigInt<'gc> {
     }
 }
 
-const fn loword(x: Digit2X) -> Digit {
-    (x & DIGIT_MASK as Digit2X) as Digit
+const fn loword(x: WideDigit) -> Digit {
+    (x & DIGIT_MASK as WideDigit) as Digit
 }
 
-const fn hiword(x: Digit2X) -> Digit {
+const fn hiword(x: WideDigit) -> Digit {
     (x >> DIGIT_BIT) as Digit
 }
-const fn joinwords(loword: Digit, hiword: Digit) -> Digit2X {
-    ((hiword as Digit2X) << DIGIT_BIT) | (loword as Digit2X)
+const fn joinwords(loword: Digit, hiword: Digit) -> WideDigit {
+    ((hiword as WideDigit) << DIGIT_BIT) | (loword as WideDigit)
 }
 impl<'gc> BigInt<'gc> {
     pub fn from_u64(ctx: Context<'gc>, value: u64) -> Gc<'gc, Self> {
@@ -691,18 +691,18 @@ impl<'gc> BigInt<'gc> {
         };
 
         Self::zeroed::<_, ()>(*ctx, b1.count() + 1, this.negative(), |result| {
-            let mut sum: Digit2X = 0;
+            let mut sum: WideDigit = 0;
             let mut off = 0;
             for i in 0..b2.count() {
-                sum += b1[i] as Digit2X;
-                sum += b2[i] as Digit2X;
+                sum += b1[i] as WideDigit;
+                sum += b2[i] as WideDigit;
                 result[off] = loword(sum);
                 off += 1;
                 sum = hiword(sum) as _;
             }
 
             for i in b2.count()..b1.count() {
-                sum += b1[i] as Digit2X;
+                sum += b1[i] as WideDigit;
                 result[off] = loword(sum);
                 off += 1;
                 sum = hiword(sum) as _;
@@ -747,14 +747,14 @@ impl<'gc> BigInt<'gc> {
         };
 
         BigInt::zeroed(*ctx, b1.count() + 1, sign, |res| {
-            let mut carry: Digit2X = 0;
+            let mut carry: WideDigit = 0;
             let mut offset = 0;
             for i in 0..b2.count() {
-                if (b1[i] as Digit2X) < b2[i] as Digit2X + carry {
-                    res[offset] = (BASE + b1[i] as Digit2X - b2[i] as Digit2X - carry) as Digit;
+                if (b1[i] as WideDigit) < b2[i] as WideDigit + carry {
+                    res[offset] = (BASE + b1[i] as WideDigit - b2[i] as WideDigit - carry) as Digit;
                     carry = 1;
                 } else {
-                    res[offset] = (b1[i] as Digit2X - b2[i] as Digit2X - carry) as Digit;
+                    res[offset] = (b1[i] as WideDigit - b2[i] as WideDigit - carry) as Digit;
                     carry = 0;
                 }
 
@@ -762,11 +762,11 @@ impl<'gc> BigInt<'gc> {
             }
 
             for i in b2.count()..b1.count() {
-                if (b1[i] as Digit2X) < carry {
+                if (b1[i] as WideDigit) < carry {
                     res[offset] = Digit::MAX;
                     carry = 1;
                 } else {
-                    res[offset] = (b1[i] as Digit2X - carry) as Digit;
+                    res[offset] = (b1[i] as WideDigit - carry) as Digit;
                     carry = 0;
                 }
 
@@ -823,13 +823,13 @@ impl<'gc> BigInt<'gc> {
 
         Self::zeroed(*ctx, b1.count() + b2.count(), a.negative(), |res| {
             for i in 0..b2.count() {
-                let mut sum: Digit2X = 0;
+                let mut sum: WideDigit = 0;
 
                 for j in 0..b1.count() {
-                    let mult = b1[j] as Digit2X * b2[i] as Digit2X;
-                    sum += res[i + j] as Digit2X + mult;
+                    let mult = b1[j] as WideDigit * b2[i] as WideDigit;
+                    sum += res[i + j] as WideDigit + mult;
                     res[i + j] = loword(sum);
-                    sum = hiword(sum) as Digit2X;
+                    sum = hiword(sum) as WideDigit;
                 }
 
                 res[i + b1.count()] = loword(sum);
@@ -1125,21 +1125,21 @@ impl<'gc> BigInt<'gc> {
     }
 
     fn mult_sub(approx: Digit, divis: &[Digit], rem: &mut [Digit], from: usize) {
-        let mut sum: Digit2X = 0;
+        let mut sum: WideDigit = 0;
         let mut carry = 0;
 
         for j in 0..divis.len() {
-            sum += divis[j] as Digit2X * approx as Digit2X;
-            let x = loword(sum) as Digit2X + carry;
-            if (rem[from + j] as Digit2X) < x {
-                rem[from + j] = (BASE + rem[from + j] as Digit2X - x) as Digit;
+            sum += divis[j] as WideDigit * approx as WideDigit;
+            let x = loword(sum) as WideDigit + carry;
+            if (rem[from + j] as WideDigit) < x {
+                rem[from + j] = (BASE + rem[from + j] as WideDigit - x) as Digit;
                 carry = 1;
             } else {
-                rem[from + j] = (rem[from + j] as Digit2X - x) as Digit;
+                rem[from + j] = (rem[from + j] as WideDigit - x) as Digit;
                 carry = 0;
             }
 
-            sum = hiword(sum) as Digit2X;
+            sum = hiword(sum) as WideDigit;
         }
     }
 
@@ -1155,12 +1155,12 @@ impl<'gc> BigInt<'gc> {
 
         let mut carry = 0;
         for j in 0..divis.len() {
-            let x = divis[j] as Digit2X + carry;
-            if (rem[from + j] as Digit2X) < x {
-                rem[from + j] = (BASE + rem[from + j] as Digit2X - x) as Digit;
+            let x = divis[j] as WideDigit + carry;
+            if (rem[from + j] as WideDigit) < x {
+                rem[from + j] = (BASE + rem[from + j] as WideDigit - x) as Digit;
                 carry = 1;
             } else {
-                rem[from + j] = (rem[from + j] as Digit2X - x) as Digit;
+                rem[from + j] = (rem[from + j] as WideDigit - x) as Digit;
                 carry = 0;
             }
         }
@@ -1170,10 +1170,10 @@ impl<'gc> BigInt<'gc> {
 
     pub fn remainder_digit(&self, deno: Digit) -> Digit {
         let numerator_count = self.len();
-        let mut remainder = 0 as Digit2X;
+        let mut remainder = 0 as WideDigit;
 
         for i in (0..numerator_count).rev() {
-            remainder = ((remainder << DIGIT_BIT) | self[i] as Digit2X) % deno as Digit2X;
+            remainder = ((remainder << DIGIT_BIT) | self[i] as WideDigit) % deno as WideDigit;
         }
 
         remainder as Digit
@@ -1212,7 +1212,7 @@ impl<'gc> BigInt<'gc> {
         divis.push(0);
 
         let mut sizediff = rem.len() as isize - divis.len() as isize;
-        let div = rhs[rhs.len() - 1] as Digit2X + 1;
+        let div = rhs[rhs.len() - 1] as WideDigit + 1;
         let mut res = vec![0 as Digit; sizediff as usize + 1];
         let mut divident = rem.len() as isize - 2;
 
@@ -1275,14 +1275,14 @@ impl<'gc> BigInt<'gc> {
 
         let mut quotient_digits = vec![0 as Digit; count];
 
-        let mut remainder: Digit2X = 0; // Digit2X is u128
+        let mut remainder: WideDigit = 0;
 
         for i in (0..count).rev() {
             let current_word = this[i];
-            let dividend_part: Digit2X = (remainder << 64) | (current_word as Digit2X);
+            let dividend_part: WideDigit = (remainder << 64) | (current_word as WideDigit);
 
-            quotient_digits[i] = (dividend_part / (divisor as Digit2X)) as Digit;
-            remainder = dividend_part % (divisor as Digit2X);
+            quotient_digits[i] = (dividend_part / (divisor as WideDigit)) as Digit;
+            remainder = dividend_part % (divisor as WideDigit);
         }
 
         let result_sign = this.negative();
@@ -2125,7 +2125,7 @@ mod tests {
             let bigint = BigInt::from_u64(ctx, u64::MAX);
 
             assert_eq!(
-                bigint.as_gcobj().header().class_id(),
+                bigint.as_gc_object().header().class_id(),
                 ClassId::new(builtin_class_ids::BIGINT).unwrap()
             );
         });

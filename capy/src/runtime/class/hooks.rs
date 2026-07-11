@@ -2,19 +2,19 @@ use std::fmt;
 
 use super::descriptor::ClassDescriptor;
 use super::slot::{SlotAccessError, SlotAccessorDescriptor, SlotInitError};
-use crate::rsgc::object::{AllocationHooks, GCObject};
+use crate::rsgc::object::{AllocationHooks, GcObject};
 use crate::rsgc::{Gc, Visitor, WeakProcessor};
 use crate::runtime::Context;
 use crate::runtime::value::Value;
 
 #[derive(Clone, Copy)]
 pub struct PrimitiveLayoutHooks {
-    trace: extern "C" fn(GCObject, &mut Visitor),
-    weak_proc: extern "C" fn(GCObject, &mut WeakProcessor),
+    trace: extern "C" fn(GcObject, &mut Visitor),
+    weak_proc: extern "C" fn(GcObject, &mut WeakProcessor),
     instance_size: usize,
-    compute_size: Option<extern "C" fn(GCObject) -> usize>,
+    compute_size: Option<extern "C" fn(GcObject) -> usize>,
     alignment: usize,
-    compute_alignment: Option<extern "C" fn(GCObject) -> usize>,
+    compute_alignment: Option<extern "C" fn(GcObject) -> usize>,
     type_name: &'static str,
 }
 
@@ -31,11 +31,11 @@ impl PrimitiveLayoutHooks {
         }
     }
 
-    pub fn trace(self) -> extern "C" fn(GCObject, &mut Visitor) {
+    pub fn trace(self) -> extern "C" fn(GcObject, &mut Visitor) {
         self.trace
     }
 
-    pub fn weak_proc(self) -> extern "C" fn(GCObject, &mut WeakProcessor) {
+    pub fn weak_proc(self) -> extern "C" fn(GcObject, &mut WeakProcessor) {
         self.weak_proc
     }
 
@@ -43,7 +43,7 @@ impl PrimitiveLayoutHooks {
         self.instance_size
     }
 
-    pub fn compute_size(self) -> Option<extern "C" fn(GCObject) -> usize> {
+    pub fn compute_size(self) -> Option<extern "C" fn(GcObject) -> usize> {
         self.compute_size
     }
 
@@ -51,7 +51,7 @@ impl PrimitiveLayoutHooks {
         self.alignment
     }
 
-    pub fn compute_alignment(self) -> Option<extern "C" fn(GCObject) -> usize> {
+    pub fn compute_alignment(self) -> Option<extern "C" fn(GcObject) -> usize> {
         self.compute_alignment
     }
 

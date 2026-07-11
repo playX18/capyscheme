@@ -31,14 +31,14 @@ use super::{
     patch, reloc,
 };
 
-pub struct FaslReader<'gc, R: io::Read> {
+pub struct Reader<'gc, R: io::Read> {
     pub ctx: Context<'gc>,
     pub reader: BufReader<R>,
     pub lites: Gc<'gc, HashTable<'gc>>,
-    options: FaslLoadOptions,
-    roots: Global<crate::Rootable!(FaslReaderRoots<'_>)>,
+    options: LoadOptions,
+    roots: Global<crate::Rootable!(Roots<'_>)>,
     pub reference_map: HashMap<u32, Address>,
-    graph_stack: Vec<graph::FaslGraphTable<'gc>>,
+    graph_stack: Vec<graph::Table<'gc>>,
     shared_cache_slots: Vec<HashMap<u32, SharedCacheSlot<'gc>>>,
     pending_code_entry_relocations: Vec<Vec<PendingCodeEntryRelocation>>,
     pending_data_slot_fills: Vec<Vec<PendingDataSlotFill>>,
@@ -47,11 +47,11 @@ pub struct FaslReader<'gc, R: io::Read> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FaslLoadOptions {
+pub struct LoadOptions {
     pub debug_entries: bool,
 }
 
-impl FaslLoadOptions {
+impl LoadOptions {
     pub const NORMAL: Self = Self {
         debug_entries: false,
     };
@@ -60,12 +60,12 @@ impl FaslLoadOptions {
     };
 }
 
-struct FaslReaderRoots<'gc> {
+struct Roots<'gc> {
     values: Monitor<Vec<Value<'gc>>>,
 }
 
-// SAFETY: `gc` for `FaslReaderRoots` upholds all trait invariants
-unsafe impl<'gc> Trace for FaslReaderRoots<'gc> {
+// SAFETY: `gc` for `Roots` upholds all trait invariants
+unsafe impl<'gc> Trace for Roots<'gc> {
     // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         for value in self.values.get_mut().iter_mut() {
@@ -77,10 +77,10 @@ unsafe impl<'gc> Trace for FaslReaderRoots<'gc> {
     unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
 }
 
-// SAFETY: `FaslReaderRoots` is `Send` because all mutable state is synchronized
-unsafe impl Send for FaslReaderRoots<'_> {}
-// SAFETY: `FaslReaderRoots` is `Sync` because all mutable access is serialized
-unsafe impl Sync for FaslReaderRoots<'_> {}
+// SAFETY: `Roots` is `Send` because all mutable state is synchronized
+unsafe impl Send for Roots<'_> {}
+// SAFETY: `Roots` is `Sync` because all mutable access is serialized
+unsafe impl Sync for Roots<'_> {}
 
 #[derive(Clone, Copy)]
 struct SharedCacheSlot<'gc> {
@@ -138,7 +138,7 @@ struct ReadCodeBlockSpec<'gc> {
     source_map: Vec<CodeSourceMapEntry>,
 }
 
-impl<'gc, R: io::Read> FaslReader<'gc, R> {
+impl<'gc, R: io::Read> Reader<'gc, R> {
     pub fn read8(&mut self) -> io::Result<u8> {
         let mut buf = [0; 1];
         self.reader.read_exact(&mut buf)?;
@@ -417,7 +417,7 @@ impl<'gc, R: io::Read> FaslReader<'gc, R> {
                         "FASL graph external references are not supported yet",
                     ));
                 }
-                self.graph_stack.push(graph::FaslGraphTable::new(graph_len));
+                self.graph_stack.push(graph::Table::new(graph_len));
                 self.shared_cache_slots.push(HashMap::new());
                 self.pending_code_entry_relocations.push(Vec::new());
                 self.pending_data_slot_fills.push(Vec::new());
@@ -873,12 +873,12 @@ impl<'gc, R: io::Read> FaslReader<'gc, R> {
     }
 
     pub fn new(ctx: Context<'gc>, reader: R) -> Self {
-        Self::new_with_options(ctx, reader, FaslLoadOptions::NORMAL)
+        Self::new_with_options(ctx, reader, LoadOptions::NORMAL)
     }
 
-    pub fn new_with_options(ctx: Context<'gc>, reader: R, options: FaslLoadOptions) -> Self {
+    pub fn new_with_options(ctx: Context<'gc>, reader: R, options: LoadOptions) -> Self {
         let lites = HashTable::new(*ctx, HashTableType::Eq, 32, 0.75);
-        let roots = Global::new(FaslReaderRoots {
+        let roots = Global::new(Roots {
             values: Monitor::new(vec![Value::from(lites)]),
         });
         Self {
@@ -931,7 +931,7 @@ impl<'gc, R: io::Read> FaslReader<'gc, R> {
     }
 
     fn read_payload_value(&self, payload: Vec<u8>) -> io::Result<Value<'gc>> {
-        let mut reader = FaslReader::new_with_options(self.ctx, Cursor::new(payload), self.options);
+        let mut reader = Reader::new_with_options(self.ctx, Cursor::new(payload), self.options);
         reader.lites = self.lites;
         reader.format_version = self.format_version;
         reader.keep_value(Value::from(reader.lites));

@@ -33,7 +33,7 @@ pub mod reader;
 pub fn all_native_procedures<'gc>(ctx: Context<'gc>) -> Vec<Address> {
     use crate::runtime::{self, vm};
     let mut native_procedures = Vec::with_capacity(600);
-// SAFETY: The pointer was derived from a valid allocation or symbol address
+    // SAFETY: The pointer was derived from a valid allocation or symbol address
     unsafe {
         native_procedures.push(Address::from_ptr(default_retk as *const ()));
 
@@ -187,7 +187,7 @@ pub fn all_native_procedures<'gc>(ctx: Context<'gc>) -> Vec<Address> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum AllowedGC {
+pub enum AllowedGc {
     /// Allow only StickyImmix.
     Generational,
     /// Allow only ConcurrentImmix.
@@ -196,10 +196,10 @@ pub enum AllowedGC {
     Regular,
 }
 
-impl AllowedGC {
+impl AllowedGc {
     pub fn adjust_mmtk_options(&self, opts: &mut Options) {
         match self {
-            AllowedGC::Generational => {
+            AllowedGc::Generational => {
                 if !matches!(*opts.plan, PlanSelector::StickyImmix) {
                     log::warn!(
                         "The loaded heap image only allows StickyImmix. Switching to StickyImmix plan."
@@ -208,7 +208,7 @@ impl AllowedGC {
                 }
             }
 
-            AllowedGC::Concurrent => {
+            AllowedGc::Concurrent => {
                 if !matches!(*opts.plan, PlanSelector::ConcurrentImmix) {
                     log::warn!(
                         "The loaded heap image only allows concurrent GC plans. Switching to ConcurrentImmix plan."
@@ -217,7 +217,7 @@ impl AllowedGC {
                 }
             }
 
-            AllowedGC::Regular => {
+            AllowedGc::Regular => {
                 if !matches!(*opts.plan, PlanSelector::MarkSweep | PlanSelector::Immix) {
                     log::warn!(
                         "The loaded heap image only allows MarkSweep or Immix. Switching to Immix plan."
@@ -235,4 +235,4 @@ impl AllowedGC {
 ///
 /// If you build heap image with a specific GC flavor, you *only* can use similar
 /// algorithms.
-pub static ALLOWED_GC: OnceLock<AllowedGC> = OnceLock::new();
+pub static ALLOWED_GC: OnceLock<AllowedGc> = OnceLock::new();

@@ -69,11 +69,11 @@ fn collect_rest_aliases<'gc>(
 }
 
 fn rest_alias_for_atom<'gc>(
-    atom: LinearAtom<'gc>,
+    atom: Operand<'gc>,
     rest: ValueId,
     aliases: &HashMap<ValueId, RestAlias>,
 ) -> Option<RestAlias> {
-    let LinearAtom::Local(var) = atom else {
+    let Operand::Local(var) = atom else {
         return None;
     };
     if var == rest {
@@ -84,7 +84,7 @@ fn rest_alias_for_atom<'gc>(
 
 fn rest_rewrite_for_prim<'gc>(
     prim: Primitive,
-    args: &[LinearAtom<'gc>],
+    args: &[Operand<'gc>],
     rest: ValueId,
     aliases: &HashMap<ValueId, RestAlias>,
 ) -> Option<RestRewrite> {

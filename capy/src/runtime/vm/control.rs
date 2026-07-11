@@ -228,7 +228,7 @@ mod tests {
         Scheme::new_uninit().enter(|ctx| {
             let marks = ctx.current_continuation_marks();
             assert_eq!(
-                marks.as_gcobj().header().class_id(),
+                marks.as_gc_object().header().class_id(),
                 ClassId::new(builtin_class_ids::CONTINUATION_MARKS).unwrap()
             );
         });

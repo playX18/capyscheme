@@ -5,7 +5,7 @@ use std::{fs, io::Cursor, sync::LazyLock};
 use crate::rsgc::{Global, Trace, sync::monitor::Monitor};
 use crate::runtime::{
     Context,
-    fasl::FaslReader,
+    fasl::Reader,
     value::Value,
     vm::load::{
         artifact::{LoadArtifact, LoadArtifactKind},
@@ -50,7 +50,7 @@ impl<'gc> Library<'gc> {
             LoadArtifactKind::FaslCode => {
                 let bytes = fs::read(&artifact.path)?;
                 let value =
-                    FaslReader::new_with_options(ctx, Cursor::new(bytes), get_fasl_load_options())
+                    Reader::new_with_options(ctx, Cursor::new(bytes), get_fasl_load_options())
                         .read()?;
                 let entrypoint = if initialize { value } else { Value::new(false) };
                 Ok((Self::Fasl(value), entrypoint))
@@ -124,7 +124,7 @@ mod tests {
     use super::*;
     use crate::runtime::{
         Scheme,
-        fasl::{CodeSpec, FaslCompression, FaslImage, FaslWriter, GraphCodeSpec, ProgramSpec},
+        fasl::{CodeSpec, Compression, GraphCodeSpec, Image, ProgramSpec, Writer},
         value::{Closure, Value},
         vm::{load::policy::set_fasl_debug_entries, trampolines::get_debug_trampoline_from_scheme},
     };
@@ -144,8 +144,8 @@ mod tests {
             let code = CodeSpec::new(&[0xc3], 0, 0, false, Value::new(false), &[], &[]);
             let code_blocks = [GraphCodeSpec::new(0, code)];
             let program = ProgramSpec::new(1, &[], &code_blocks, 0, false);
-            FaslWriter::new(ctx, &mut bytes)
-                .write_image(FaslImage::Program(&program), FaslCompression::None)
+            Writer::new(ctx, &mut bytes)
+                .write_image(Image::Program(&program), Compression::None)
                 .expect("write unified FASL");
             let path = std::env::temp_dir().join(format!(
                 "capy-test-unified-fasl-{}.fasl",
@@ -184,8 +184,8 @@ mod tests {
             let code = CodeSpec::new(&[0xc3], 0, 0, false, Value::new(false), &[], &[]);
             let code_blocks = [GraphCodeSpec::new(0, code)];
             let program = ProgramSpec::new(1, &[], &code_blocks, 0, false);
-            FaslWriter::new(ctx, &mut bytes)
-                .write_image(FaslImage::Program(&program), FaslCompression::None)
+            Writer::new(ctx, &mut bytes)
+                .write_image(Image::Program(&program), Compression::None)
                 .expect("write unified FASL");
             let path = std::env::temp_dir()
                 .join(format!("capy-test-debug-fasl-{}.fasl", std::process::id()));

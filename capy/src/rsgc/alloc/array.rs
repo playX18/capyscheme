@@ -12,7 +12,7 @@ use crate::rsgc::collection::Visitor;
 use crate::rsgc::{
     Gc, Mutation, WeakProcessor,
     barrier::IndexWrite,
-    object::{AllocationHooks, GCObject, type_class_header_word},
+    object::{AllocationHooks, GcObject, type_class_header_word},
     traits::Trace,
 };
 
@@ -41,7 +41,7 @@ unsafe impl<T: Trace> Trace for Array<T> {
     }
 }
 
-extern "C" fn array_size<T: Trace>(obj: GCObject) -> usize {
+extern "C" fn array_size<T: Trace>(obj: GcObject) -> usize {
     unsafe {
         let arr = obj.to_address().as_ref::<Array<T>>();
 
@@ -54,14 +54,14 @@ extern "C" fn array_size<T: Trace>(obj: GCObject) -> usize {
     }
 }
 
-extern "C" fn array_trace<T: Trace>(obj: GCObject, vis: &mut Visitor) {
+extern "C" fn array_trace<T: Trace>(obj: GcObject, vis: &mut Visitor) {
     unsafe {
         let arr = obj.to_address().as_mut_ref::<Array<T>>();
         arr.trace(vis);
     }
 }
 
-extern "C" fn array_process_weaks<T: Trace>(obj: GCObject, weak_processor: &mut WeakProcessor) {
+extern "C" fn array_process_weaks<T: Trace>(obj: GcObject, weak_processor: &mut WeakProcessor) {
     unsafe {
         let arr = obj.to_address().as_mut_ref::<Array<T>>();
         arr.process_weak_refs(weak_processor);
@@ -123,7 +123,7 @@ impl<T: Trace> Array<T> {
                 this.len = i + 1;
             }
 
-            Gc::from_gcobj(alloc)
+            Gc::from_gc_object(alloc)
         }
     }
 
@@ -304,7 +304,7 @@ mod tests {
             let array = Array::with(*ctx, 3, |_, index| index);
 
             assert_eq!(array.as_slice(), &[0, 1, 2]);
-            assert!(array.as_gcobj().header().class_id().bits() > builtin_class_ids::MAX);
+            assert!(array.as_gc_object().header().class_id().bits() > builtin_class_ids::MAX);
         });
     }
 
@@ -315,8 +315,8 @@ mod tests {
             let u64_array = Array::with(*ctx, 1, |_, _| 0_u64);
 
             assert_ne!(
-                int_array.as_gcobj().header().class_id(),
-                u64_array.as_gcobj().header().class_id()
+                int_array.as_gc_object().header().class_id(),
+                u64_array.as_gc_object().header().class_id()
             );
         });
     }
@@ -325,11 +325,11 @@ mod tests {
     fn array_element_slots_are_not_published_as_object_refs() {
         Scheme::new_uninit().enter(|ctx| {
             let array = Array::with(*ctx, 2, |_, index| index);
-            let element_slot = array.as_gcobj().to_address() + size_of::<usize>();
+            let element_slot = array.as_gc_object().to_address() + size_of::<usize>();
 
             assert_eq!(
-                crate::rsgc::is_mmtk_heap_object(array.as_gcobj().to_address()),
-                array.as_gcobj().to_objref()
+                crate::rsgc::is_mmtk_heap_object(array.as_gc_object().to_address()),
+                array.as_gc_object().to_object_reference()
             );
             assert_eq!(crate::rsgc::is_mmtk_heap_object(element_slot), None);
         });
