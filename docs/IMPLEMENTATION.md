@@ -177,3 +177,77 @@ all continuations that were not reified are converted to basic-blocks, and all p
 Once SSA is built we emit object file and link using platform linker as shared object.
 
 ## Runtime
+
+Runtime Scheme libraries live under `lib/boot/`, `lib/core/`, `lib/rnrs/`,
+`lib/scheme/`, `lib/srfi/`, `lib/capy/`, and `lib/common/`. Rust runtime
+primitives under `capy/src/runtime/` expose the low-level operations used by
+those libraries.
+
+### CLI and REPL entry
+
+The user-facing `capy` command enters `(boot cli)` in `lib/boot/cli.scm`.
+`enter` parses command-line options, configures load paths, and then evaluates
+the requested operations in order:
+
+- `--version` prints `CapyScheme <version>` and exits before any REPL setup.
+- `--help` prints the version and generated usage text.
+- `-l/--load` loads a file before continuing.
+- `-s/--script`, `-c/--command`, and `-e/--entrypoint` disable interactive mode.
+- `-L/--load-path` prepends source load paths, `-A/--append-load-path` appends
+  source load paths, and `-C/--compiled-load-path` prepends compiled load paths.
+- `--r6rs` and `--r7rs` install their compatibility modes and cannot be used
+  together.
+
+Interactive mode calls `(core repl)`'s `read-eval-print-loop`. That wrapper uses
+the fancy terminal REPL from `(core fancy-repl)` only when both
+`current-input-port` and `current-output-port` are TTYs. Otherwise it uses the
+simple REPL, which prints the module prompt, reads one datum at a time from the
+current input port, prints non-unspecified values, and exits cleanly at EOF.
+This keeps piped sessions and editor-driven processes from trying to open the
+terminal line editor.
+
+### File ports
+
+The R6RS/Core file-port API is layered:
+
+1. `(boot portio)` defines `file-options`, `no-create`, `no-fail`, and
+   `no-truncate`, plus the public `open-file-*-port` arity wrappers.
+2. `(boot fileio)` converts option sets to lists, performs Scheme-level
+   existence checks, creates Capy ports, and wraps binary ports with transcoders
+   when a transcoder is supplied.
+3. `(boot sys)` maps the remaining options to OS open flags.
+
+Input file ports ignore file options at the OS-open layer. Output and
+input/output file ports pass `no-create` and `no-truncate` through to
+`osdep/open-file`; `no-create` suppresses file creation and `no-truncate`
+suppresses truncation for existing files. `no-fail` is handled by the
+Scheme-level existence checks; for bidirectional ports, opening an existing file
+requires either `no-fail` or `no-create`.
+
+Use `no-fail` and `no-truncate` when modifying an existing file in place:
+
+```scm
+(let ([p (open-file-input/output-port
+           "data.bin"
+           (file-options no-fail no-truncate)
+           'block)])
+  (set-port-position! p 2)
+  (put-bytevector p #vu8(10 20 30))
+  (flush-output-port p)
+  (close-port p))
+```
+
+Passing a transcoder makes the port textual:
+
+```scm
+(open-file-input/output-port
+  "data.txt"
+  (file-options no-fail no-truncate)
+  'none
+  (make-transcoder (latin-1-codec)))
+```
+
+The bidirectional file-port implementation exposes `port-position` and
+`set-port-position!`, so callers can interleave reads and writes by seeking
+explicitly. Tests for this behavior live in `tests/bidi-ports-test.sps` and
+`tests/r6rs/io/ports.sls`.

@@ -220,6 +220,15 @@ The current source groups include:
 - common libraries under `lib/common/`
 - CLI entry libraries `lib/boot/cli.scm` and `lib/boot.scm`
 
+`compile-capy` depends on `compile-capy-args`, then builds every file listed in
+`CAPY_SRCS`. That set includes, among other modules, terminal helpers,
+persistent collection wrappers (`lib/capy/persistent-map.scm` and
+`lib/capy/persistent-set.scm`), generators, futures, binary heaps, intrusive
+lists, and Tree IR helper libraries. Add new `lib/capy/` modules to `CAPY_SRCS`
+when they must be present in `stage-1/compiled/` and `stage-2/compiled/`;
+otherwise bootstrap and packaging targets will not emit matching `.fasl` files
+for them.
+
 ## Tests
 
 Run:

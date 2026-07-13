@@ -31,6 +31,30 @@ To run tests yourself:
 $ capy -L . -s tests/r6rs/run-via-eval.sps
 ```
 
+## Running Capy
+
+After `make build`, the bootstrapped executables live under `stage-0/`,
+`stage-1/`, and `stage-2/`. Use the repository libraries on the load path when
+running from a checkout:
+
+```sh
+stage-0/capy --version
+stage-0/capy --help
+stage-0/capy -L lib -c '(display (+ 1 2)) (newline)'
+stage-0/capy -L lib -s examples/class-mop.scm
+```
+
+`--version` prints the CapyScheme version and exits. `-c` evaluates a command
+string, `-s` runs a script, `-l` loads a file before later command, script,
+entrypoint, or REPL work, `-L` prepends a source load path, `-A` appends a
+source load path, and `-C` adds a compiled load path. `--r6rs` and `--r7rs`
+select compatibility modes; they are mutually exclusive.
+
+Starting `capy` without an exit-only flag, `-c`, `-s`, or `--entrypoint` enters
+the REPL. Capy uses the fancy terminal REPL only when both standard input and
+standard output are TTYs; pipes and other non-TTY sessions use a simple
+read/eval/print loop.
+
 ## Thanks
 
 Big thanks to authors of [Larceny](https://github.com/larcenists/larceny), [Guile](https://www.gnu.org/software/guile/) and [Ypsilon](https://github.com/fujita-y/ypsilon). CapyScheme uses stdlib parts from all of them and takes inspiration from them.
