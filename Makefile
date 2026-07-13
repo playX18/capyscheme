@@ -89,6 +89,23 @@ CAPY_ENV = \
 	$(if $(CAPY_COMPILE_DUMP_DIR),CAPY_COMPILE_DUMP_DIR="$(CAPY_COMPILE_DUMP_DIR)") \
 	$(if $(CAPY_DUMP_DIR),CAPY_DUMP_DIR="$(CAPY_DUMP_DIR)")
 
+SBBV_BENCH_RUNS ?= 7
+SBBV_BENCH_LIMITS ?= 0,1,2,3,4
+SBBV_BENCH_DEPTH ?= 16
+SBBV_BENCH_BRAINFUCK_REPETITIONS ?= 10000
+SBBV_BENCH_EVAL_REPETITIONS ?= 250000
+SBBV_BENCH_LUA_REPETITIONS ?= 100000
+
+.PHONY: benchmark-sbbv
+benchmark-sbbv: stage-0
+	python3 benchmarks/sbbv.py \
+		--runs $(SBBV_BENCH_RUNS) \
+		--limits $(SBBV_BENCH_LIMITS) \
+		--benchmark benchmarks/binary-trees-serial.capy.scm:$(SBBV_BENCH_DEPTH) \
+		--benchmark benchmarks/sbbv-brainfuck.scm:$(SBBV_BENCH_BRAINFUCK_REPETITIONS) \
+		--benchmark benchmarks/sbbv-scheme-eval.scm:$(SBBV_BENCH_EVAL_REPETITIONS) \
+		--benchmark benchmarks/sbbv-lua-vm.scm:$(SBBV_BENCH_LUA_REPETITIONS)
+
 
 BOOT_SRCS := \
 	lib/boot/prim.scm \

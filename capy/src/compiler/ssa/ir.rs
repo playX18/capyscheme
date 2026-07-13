@@ -6,6 +6,8 @@ use crate::{
 use smallvec::{SmallVec, smallvec};
 use std::collections::HashMap;
 
+use super::effects::{EffectFlags, terminator_effects};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BlockId(pub usize);
 
@@ -302,6 +304,12 @@ impl<'gc> BranchTarget<'gc> {
 }
 
 impl<'gc> Terminator<'gc> {
+    pub fn is_terminal(&self) -> bool {
+        terminator_effects(self)
+            .flags
+            .contains(EffectFlags::TERMINAL)
+    }
+
     pub fn uses(&self) -> Vec<Operand<'gc>> {
         match self {
             Self::Call {
@@ -358,6 +366,9 @@ impl<'gc> Terminator<'gc> {
     }
 
     pub fn successors(&self) -> Vec<BlockId> {
+        if self.is_terminal() {
+            return vec![];
+        }
         match self {
             Self::Call { .. } | Self::TailCall { .. } | Self::Raise { .. } => vec![],
             Self::Jump { target, .. } => vec![*target],

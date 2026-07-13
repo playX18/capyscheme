@@ -1,6 +1,7 @@
 pub mod bbv;
 mod cache;
 mod constant;
+pub mod effects;
 mod graph;
 mod ir;
 pub(crate) mod lower;
@@ -10,6 +11,7 @@ mod switch;
 
 use cache::lower_cache_operations;
 use constant::hoist_constants;
+use effects::eliminate_dead_effect_free_instructions;
 pub use ir::*;
 pub use pretty::{render_program, render_program_with_annotations};
 use rest::lower_rest_arguments;
@@ -22,8 +24,10 @@ pub(crate) fn finish_procedure<'gc>(procedure: Procedure<'gc>) -> Procedure<'gc>
     // RestToList — defeating RestLength/RestRef for `(lambda args (case (length
     // args) ...))` and similar shapes.
     let after_rest = lower_rest_arguments(procedure);
-    let after_sbbv = bbv::run(after_rest);
-    let finished = hoist_constants(lower_cache_operations(infer_switches(after_sbbv)));
+    let after_effects = eliminate_dead_effect_free_instructions(after_rest);
+    let after_sbbv = bbv::run(after_effects);
+    let after_sbbv_effects = eliminate_dead_effect_free_instructions(after_sbbv);
+    let finished = hoist_constants(lower_cache_operations(infer_switches(after_sbbv_effects)));
     // Dump the IR that actually reaches Cranelift (after all SSA finish passes).
     if crate::compiler::dump::sbbv_dump_stage_enabled("post-finish")
         || crate::compiler::dump::sbbv_dump_stage_enabled("all")

@@ -2154,8 +2154,19 @@ impl OptimizerState {
             };
 
             match parent {
-                Parent::Func(function) => return function == owner,
                 Parent::Term(parent) => term = parent,
+                Parent::Func(function) => {
+                    if function == owner {
+                        return true;
+                    }
+                    let Some(definition) = self.function_owner_defs[function] else {
+                        return false;
+                    };
+                    let Some(definition) = graph.read_term_link(definition) else {
+                        return false;
+                    };
+                    term = definition;
+                }
             }
         }
     }
@@ -2436,5 +2447,103 @@ fn emit_contification_dump(index: usize, phase: &str, dump: &str) {
             );
             eprint!("{dump}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        compiler::cps::graph::{Function, Graph, TermKind},
+        expander::core::fresh_lvar,
+        runtime::{Scheme, value::Value},
+    };
+
+    #[test]
+    fn nested_continuation_is_inside_lexical_function() {
+        Scheme::new_uninit().enter(|ctx| {
+            let mut graph = Graph::new();
+            let outer_name = graph.new_bound_var(fresh_lvar(ctx, ctx.intern("outer")));
+            let outer_return = graph.new_bound_var(fresh_lvar(ctx, ctx.intern("outer-return")));
+            let inner_name = graph.new_bound_var(fresh_lvar(ctx, ctx.intern("inner")));
+            let inner_return = graph.new_bound_var(fresh_lvar(ctx, ctx.intern("inner-return")));
+
+            let inner_body = graph.new_term_link(None);
+            let inner_return_occurrence = graph.new_free_occ_for_binder(inner_return, inner_body);
+            let inner_args = graph.new_free_vars([]);
+            let inner_body_parent = graph.new_parent_link(None);
+            let inner_body_term = graph.new_term(
+                inner_body_parent,
+                TermKind::Continue(inner_return_occurrence, inner_args),
+                Value::new(false),
+            );
+            graph.set_term_link(inner_body, inner_body_term);
+            let inner_vars = graph.new_bound_vars([]);
+            let inner = graph.new_function(Function {
+                name: Value::new(false),
+                source: Value::new(false),
+                var: inner_name,
+                vars: inner_vars,
+                variadic: None,
+                cont: Some(inner_return),
+                is_variadic: false,
+                body: inner_body,
+                is_rec: false,
+                unroll_count: 0,
+                is_cold: false,
+                is_noinline: false,
+                is_reified: false,
+                meta: Value::new(false),
+            });
+            graph.backpatch_function(inner);
+
+            let outer_tail = graph.new_term_link(None);
+            let outer_return_occurrence = graph.new_free_occ_for_binder(outer_return, outer_tail);
+            let outer_args = graph.new_free_vars([]);
+            let outer_tail_parent = graph.new_parent_link(None);
+            let outer_tail_term = graph.new_term(
+                outer_tail_parent,
+                TermKind::Continue(outer_return_occurrence, outer_args),
+                Value::new(false),
+            );
+            graph.set_term_link(outer_tail, outer_tail_term);
+
+            let outer_body = graph.new_term_link(None);
+            let inner_link = graph.new_function_link(Some(inner));
+            let inner_functions = graph.new_function_links([inner_link]);
+            let outer_body_parent = graph.new_parent_link(None);
+            let outer_body_term = graph.new_term(
+                outer_body_parent,
+                TermKind::Letk(inner_functions, outer_tail),
+                Value::new(false),
+            );
+            graph.set_term_link(outer_body, outer_body_term);
+            graph.backpatch_subterms(outer_body_term, &[outer_tail]);
+
+            let outer_vars = graph.new_bound_vars([]);
+            let outer = graph.new_function(Function {
+                name: Value::new(false),
+                source: Value::new(false),
+                var: outer_name,
+                vars: outer_vars,
+                variadic: None,
+                cont: Some(outer_return),
+                is_variadic: false,
+                body: outer_body,
+                is_rec: false,
+                unroll_count: 0,
+                is_cold: false,
+                is_noinline: false,
+                is_reified: false,
+                meta: Value::new(false),
+            });
+            graph.backpatch_function(outer);
+
+            let mut state = OptimizerState::new();
+            state.function_owner_defs[inner] = Some(outer_body);
+
+            assert!(state.term_is_inside_function(&graph, inner_body_term, outer));
+            assert!(!state.term_is_inside_function(&graph, outer_tail_term, inner));
+        });
     }
 }

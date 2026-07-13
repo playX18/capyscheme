@@ -333,8 +333,8 @@ mod tests {
             );
 
             let ssa = std::fs::read_to_string(dir.join("out.fasl.ssa.txt")).expect("SSA dump");
-            assert!(ssa.contains("procedure function gf7 ssa-dump-test (v@0) retk #f:"));
-            assert!(ssa.contains("BB0: (v@0)"));
+            assert!(ssa.contains("function gf7 ssa-dump-test(v0) -> #f {"));
+            assert!(ssa.contains("block0(v0):"));
 
             std::fs::remove_dir_all(&dir).unwrap();
         });
@@ -415,10 +415,10 @@ mod tests {
 
             let rendered = crate::compiler::ssa::render_program(&program);
 
-            assert!(rendered.contains("procedure function gf7 ssa-dump-test (v@0) retk #f:"));
-            assert!(rendered.contains("BB0: (v@0)"));
-            assert!(rendered.contains("v@1 = car(v@0)"));
-            assert!(rendered.contains("Successors: TailCall v@1(v@0)"));
+            assert!(rendered.contains("function gf7 ssa-dump-test(v0) -> #f {"));
+            assert!(rendered.contains("block0(v0):"));
+            assert!(rendered.contains("v1 = car(v0)"));
+            assert!(rendered.contains("tail_call v1(v0)"));
         });
     }
 }

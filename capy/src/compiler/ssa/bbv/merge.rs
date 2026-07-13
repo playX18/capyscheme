@@ -42,6 +42,23 @@ pub(super) fn select_versions_to_merge(active: &[TypeContext]) -> (usize, usize)
     selected
 }
 
+/// Selects the version most similar to a newly reached version.
+pub(super) fn select_version_to_merge_with(active: &[TypeContext], incoming_index: usize) -> usize {
+    assert!(active.len() >= 2, "need another active version to merge");
+    assert!(
+        incoming_index < active.len(),
+        "incoming version must be active"
+    );
+
+    active
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != incoming_index)
+        .max_by_key(|(_, context)| similarity(context, &active[incoming_index]))
+        .map(|(index, _)| index)
+        .expect("another active version exists")
+}
+
 /// Joins two contexts by unioning the type of every live-in value.
 ///
 /// `widen` applies interval widening on the joined ranges to guarantee

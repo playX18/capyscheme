@@ -581,10 +581,7 @@ pub(super) fn specialize_prim<'gc>(prim: Primitive, args: &[Type]) -> PrimSpec<'
 
         // `case` expands to `eqv?`; RestLength is a fixnum, so rewrite to fx=?.
         Primitive::IsEqv => {
-            if args.len() == 2
-                && is_definitely_fixnum(&args[0])
-                && is_definitely_fixnum(&args[1])
-            {
+            if args.len() == 2 && is_definitely_fixnum(&args[0]) && is_definitely_fixnum(&args[1]) {
                 let fold = fold_compare(CmpOp::Eq, &args[0], &args[1]);
                 return PrimSpec {
                     result: boolean_type(),

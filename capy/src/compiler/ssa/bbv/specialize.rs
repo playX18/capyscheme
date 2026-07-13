@@ -1,10 +1,13 @@
-//! SBBV specialization driver (ECOOP'24 Sections 3.4-3.6).
+//! SBBV specialization driver (ECOOP'24 Algorithms 1–5, Sections 2–3).
 //!
-//! [`specialize_procedure`] clones each original block once per distinct entry
-//! typing context, threading the context through the block's instructions and
-//! terminators. Type predicates fold to constants, checked primitives collapse
-//! to unchecked variants when the context proves the guard, and branches whose
-//! outcome is statically known become unconditional jumps.
+//! [`specialize_procedure`] follows the paper worklist: `reach` is Algorithm 2
+//! (`BlockNewVersion`) and always materializes a fresh version for an unseen
+//! context; Algorithm 1 merges only when a version is popped and the live count
+//! exceeds the limit. Widened merge results are reused for covered incoming
+//! contexts so interval loops still converge. Type predicates fold to constants,
+//! checked primitives collapse to unchecked variants when the context proves the
+//! guard, and branches whose outcome is statically known become unconditional
+//! jumps.
 //!
 //! # Maintaining SSA
 //!
@@ -19,23 +22,50 @@
 //! used, which is exact when such escaping values are block parameters (as they
 //! are for the CPS-contified join points this IR produces).
 
-use super::types::{Bound, CmpOp, Interval, Type, TypeContext, TypeKind, exclude_kind};
+use super::types::{
+    Bound, CmpOp, Interval, Type, TypeContext, TypeKind, exclude_kind, union_types,
+};
 use super::{infer, merge};
 use crate::compiler::cranelift::primitive::Primitive;
+use crate::compiler::ssa::graph::backedges;
 use crate::compiler::ssa::{
     Block, BlockId, BranchTarget, Instruction, Operand, Procedure, RestPredicate, SwitchCase,
     SwitchCaseValue, SwitchKind, Terminator, ValueId,
 };
 use crate::runtime::value::Value;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 
-/// How a boolean-valued instruction can narrow the context when branched on.
+/// Relation described by a boolean-valued instruction.
 #[derive(Clone, Copy)]
-enum Predicate {
+enum PredicateRelation {
     /// Binary comparison over (possibly) fixnum operands.
     Cmp(CmpOp, ValueId, ValueId),
     /// Unary type test (`fixnum?`, `pair?`, ...).
     TypeTest(Primitive, ValueId),
+}
+
+/// How a boolean-valued instruction narrows the context when branched on.
+#[derive(Clone, Copy)]
+struct Predicate {
+    relation: PredicateRelation,
+    inverted: bool,
+}
+
+impl Predicate {
+    fn direct(relation: PredicateRelation) -> Self {
+        Self {
+            relation,
+            inverted: false,
+        }
+    }
+
+    fn inverted(self) -> Self {
+        Self {
+            inverted: !self.inverted,
+            ..self
+        }
+    }
 }
 
 /// Records the provenance of a specialized block for debugging and tooling.
@@ -71,8 +101,14 @@ struct Specializer<'gc> {
     all_versions: HashMap<BlockId, VersionInfo>,
     version_by_key: HashMap<(BlockId, String), BlockId>,
     replacement: HashMap<BlockId, BlockId>,
+    merge_targets: HashSet<BlockId>,
     edges: HashSet<(BlockId, BlockId)>,
+    reachable_cache: RefCell<HashSet<BlockId>>,
+    reachability_dirty: Cell<bool>,
     limit_checks: HashSet<BlockId>,
+    backedges: HashSet<(BlockId, BlockId)>,
+    loop_entry_versions: HashMap<BlockId, BlockId>,
+    recurrent_versions: HashMap<BlockId, Vec<BlockId>>,
 
     out_blocks: HashMap<BlockId, Block<'gc>>,
     annotations: HashMap<BlockId, BlockAnnotation>,
@@ -132,8 +168,14 @@ impl<'gc> Specializer<'gc> {
             all_versions: HashMap::new(),
             version_by_key: HashMap::new(),
             replacement: HashMap::new(),
+            merge_targets: HashSet::new(),
             edges: HashSet::new(),
+            reachable_cache: RefCell::new(HashSet::new()),
+            reachability_dirty: Cell::new(true),
             limit_checks: HashSet::new(),
+            backedges: backedges(procedure),
+            loop_entry_versions: HashMap::new(),
+            recurrent_versions: HashMap::new(),
             out_blocks: HashMap::new(),
             annotations: HashMap::new(),
             queue: VecDeque::new(),
@@ -175,8 +217,15 @@ impl<'gc> Specializer<'gc> {
                 self.pending.insert(task.new, task);
                 continue;
             }
-            if self.active_versions(task.orig).len() > self.version_limit {
-                self.merge_some(task.orig);
+            // Algorithm 1 merges on pop when over the limit. Repeat until the
+            // live set is within the limit (or this task was merged away) so a
+            // burst of Algorithm 2 creates cannot leave specialization running
+            // permanently above the cap.
+            while self.active_versions(task.orig).len() > self.version_limit {
+                self.merge_some(task.orig, Some(task.new));
+                if self.resolve(task.new) != task.new {
+                    break;
+                }
             }
             if self.resolve(task.new) != task.new || self.out_blocks.contains_key(&task.new) {
                 continue;
@@ -228,39 +277,70 @@ impl<'gc> Specializer<'gc> {
             .join(";")
     }
 
+    fn context_covers(&self, orig: BlockId, broader: &TypeContext, narrower: &TypeContext) -> bool {
+        self.block_params
+            .get(&orig)
+            .into_iter()
+            .flatten()
+            .all(|param| {
+                let broader_type = broader.get(*param);
+                union_types(broader_type.clone(), narrower.get(*param), false) == broader_type
+            })
+    }
+
     fn active_versions(&self, orig: BlockId) -> Vec<(BlockId, TypeContext)> {
+        self.refresh_reachability();
+        let reachable = self.reachable_cache.borrow();
         self.versions_of
             .get(&orig)
             .map(|ids| {
                 ids.iter()
-                    .filter(|id| !self.replacement.contains_key(id) && self.is_reachable(**id))
+                    .filter(|id| {
+                        !self.replacement.contains_key(id)
+                            && reachable.contains(&self.resolve(**id))
+                    })
                     .map(|id| (*id, self.all_versions[id].ctx.clone()))
                     .collect()
             })
             .unwrap_or_default()
     }
 
-    fn is_reachable(&self, target: BlockId) -> bool {
+    fn refresh_reachability(&self) {
+        if !self.reachability_dirty.get() {
+            return;
+        }
         let Some(entry) = self.entry_new else {
-            return false;
+            self.reachable_cache.borrow_mut().clear();
+            self.reachability_dirty.set(false);
+            return;
         };
-        let target = self.resolve(target);
+        let mut successors: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
+        for &(source, destination) in &self.edges {
+            successors
+                .entry(self.resolve(source))
+                .or_default()
+                .push(self.resolve(destination));
+        }
+
         let mut seen = HashSet::new();
         let mut queue = VecDeque::from([self.resolve(entry)]);
         while let Some(current) = queue.pop_front() {
             if !seen.insert(current) {
                 continue;
             }
-            if current == target {
-                return true;
-            }
-            for &(source, destination) in &self.edges {
-                if source == current {
-                    queue.push_back(self.resolve(destination));
-                }
+            if let Some(destinations) = successors.get(&current) {
+                queue.extend(destinations.iter().copied());
             }
         }
-        false
+        *self.reachable_cache.borrow_mut() = seen;
+        self.reachability_dirty.set(false);
+    }
+
+    fn is_reachable(&self, target: BlockId) -> bool {
+        self.refresh_reachability();
+        self.reachable_cache
+            .borrow()
+            .contains(&self.resolve(target))
     }
 
     fn create_version(
@@ -294,8 +374,13 @@ impl<'gc> Specializer<'gc> {
         new
     }
 
-    /// Returns the specialized block for `orig` under `ctx`, creating it if
-    /// this exact context has not been requested before.
+    /// Returns the specialized block for `orig` under `ctx` (Algorithm 2).
+    ///
+    /// Matches the paper's `BlockNewVersion`: an unseen context always creates a
+    /// fresh version and enqueues it. Version-limit maintenance happens later on
+    /// queue pop (Algorithm 1), not here. After a widened merge exists, reuse it
+    /// for any covered incoming context so interval loops converge without
+    /// recreating precise ranges that the merge already subsumes.
     fn reach(
         &mut self,
         orig: BlockId,
@@ -303,26 +388,183 @@ impl<'gc> Specializer<'gc> {
         subst: HashMap<ValueId, ValueId>,
         source: Option<BlockId>,
     ) -> BlockId {
+        let source_orig =
+            source.and_then(|source| self.version_orig.get(&self.resolve(source)).copied());
+        let is_backedge =
+            source_orig.is_some_and(|source| self.backedges.contains(&(source, orig)));
+        if is_backedge {
+            return self.reach_loop_header(orig, ctx, subst, source);
+        }
+        let is_loop_header = self.backedges.iter().any(|(_, header)| *header == orig);
+        if is_loop_header && let Some(entry) = self.loop_entry_versions.get(&orig).copied() {
+            return self.reach_loop_entry(orig, entry, ctx, subst, source);
+        }
+
         let key = self.ctx_key(orig, &ctx);
         let id = match self.version_by_key.get(&(orig, key.clone())).copied() {
             Some(id) => self.resolve(id),
-            None => self.create_version(orig, ctx, key, subst),
+            None => {
+                let covering = self
+                    .versions_of
+                    .get(&orig)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .find(|id| {
+                        !self.replacement.contains_key(id)
+                            && self.merge_targets.contains(id)
+                            && self.context_covers(orig, &self.all_versions[id].ctx, &ctx)
+                    });
+                if let Some(id) = covering {
+                    id
+                } else {
+                    self.create_version(orig, ctx, key.clone(), subst)
+                }
+            }
         };
+        self.version_by_key.insert((orig, key), id);
         if let Some(source) = source {
-            self.edges.insert((source, id));
+            if self.edges.insert((source, id)) {
+                self.reachability_dirty.set(true);
+            }
             self.limit_checks.insert(orig);
-            self.reactivate_pending();
+        }
+        if is_loop_header {
+            self.loop_entry_versions.entry(orig).or_insert(id);
         }
         id
     }
 
+    fn reach_loop_entry(
+        &mut self,
+        orig: BlockId,
+        entry: BlockId,
+        ctx: TypeContext,
+        subst: HashMap<ValueId, ValueId>,
+        source: Option<BlockId>,
+    ) -> BlockId {
+        let entry = self.resolve(entry);
+        let id = if self.context_covers(orig, &self.all_versions[&entry].ctx, &ctx) {
+            entry
+        } else {
+            let widened = merge::merge_contexts(&self.all_versions[&entry].ctx, &ctx, true);
+            let new = self.replace_loop_version(orig, entry, widened, subst);
+            self.loop_entry_versions.insert(orig, new);
+            new
+        };
+        self.record_edge(orig, source, id);
+        id
+    }
+
+    fn reach_loop_header(
+        &mut self,
+        orig: BlockId,
+        ctx: TypeContext,
+        subst: HashMap<ValueId, ValueId>,
+        source: Option<BlockId>,
+    ) -> BlockId {
+        let recurrent = self
+            .recurrent_versions
+            .get(&orig)
+            .into_iter()
+            .flatten()
+            .copied()
+            .map(|id| self.resolve(id))
+            .find(|id| self.same_kind_shape(orig, &self.all_versions[id].ctx, &ctx));
+
+        let id = if let Some(recurrent) = recurrent {
+            if self.context_covers(orig, &self.all_versions[&recurrent].ctx, &ctx) {
+                recurrent
+            } else {
+                self.widen_recurrent_version(orig, recurrent, ctx, subst)
+            }
+        } else {
+            let recurrent_ctx = self
+                .loop_entry_versions
+                .get(&orig)
+                .copied()
+                .map(|entry| self.resolve(entry))
+                .filter(|entry| self.same_kind_shape(orig, &self.all_versions[entry].ctx, &ctx))
+                .map(|entry| merge::merge_contexts(&self.all_versions[&entry].ctx, &ctx, true))
+                .unwrap_or(ctx);
+            let key = self.ctx_key(orig, &recurrent_ctx);
+            let id = self.create_version(orig, recurrent_ctx, key, subst);
+            self.merge_targets.insert(id);
+            self.recurrent_versions.entry(orig).or_default().push(id);
+            id
+        };
+
+        self.record_edge(orig, source, id);
+        id
+    }
+
+    fn record_edge(&mut self, orig: BlockId, source: Option<BlockId>, target: BlockId) {
+        if let Some(source) = source
+            && self.edges.insert((source, target))
+        {
+            self.reachability_dirty.set(true);
+        }
+        self.limit_checks.insert(orig);
+    }
+
+    fn same_kind_shape(&self, orig: BlockId, first: &TypeContext, second: &TypeContext) -> bool {
+        self.block_params
+            .get(&orig)
+            .into_iter()
+            .flatten()
+            .all(|param| first.get(*param).kinds == second.get(*param).kinds)
+    }
+
+    fn widen_recurrent_version(
+        &mut self,
+        orig: BlockId,
+        old: BlockId,
+        ctx: TypeContext,
+        subst: HashMap<ValueId, ValueId>,
+    ) -> BlockId {
+        let widened = merge::merge_contexts(&self.all_versions[&old].ctx, &ctx, true);
+        let new = self.replace_loop_version(orig, old, widened, subst);
+        self.merge_targets.insert(new);
+        if let Some(versions) = self.recurrent_versions.get_mut(&orig) {
+            for version in versions {
+                if *version == old {
+                    *version = new;
+                }
+            }
+        }
+        new
+    }
+
+    fn replace_loop_version(
+        &mut self,
+        orig: BlockId,
+        old: BlockId,
+        ctx: TypeContext,
+        subst: HashMap<ValueId, ValueId>,
+    ) -> BlockId {
+        let key = self.ctx_key(orig, &ctx);
+        let new = self.create_version(orig, ctx, key, subst);
+        self.replacement.insert(old, new);
+        self.reachability_dirty.set(true);
+        self.pending.remove(&old);
+        self.queued.remove(&old);
+        self.ensure_reachable_tasks();
+        self.reactivate_pending();
+        new
+    }
+
     fn reactivate_pending(&mut self) {
+        self.refresh_reachability();
+        let reachable_cache = self.reachable_cache.borrow();
         let reachable: Vec<_> = self
             .pending
             .iter()
-            .filter(|(id, _)| !self.queued.contains(id) && self.is_reachable(**id))
+            .filter(|(id, _)| {
+                !self.queued.contains(id) && reachable_cache.contains(&self.resolve(**id))
+            })
             .map(|(id, task)| (*id, task.clone()))
             .collect();
+        drop(reachable_cache);
         for (id, task) in reachable {
             self.limit_checks.insert(task.orig);
             self.queued.insert(id);
@@ -333,14 +575,21 @@ impl<'gc> Specializer<'gc> {
     /// Merges two live versions after the work queue exposes a version-limit
     /// overflow. Delaying this operation until queue pop matches Algorithm 1:
     /// it lets the selection heuristic see all pending contexts first.
-    fn merge_some(&mut self, orig: BlockId) {
+    fn merge_some(&mut self, orig: BlockId, incoming: Option<BlockId>) {
         let active = self.active_versions(orig);
         if active.len() < 2 {
             return;
         }
 
         let contexts: Vec<_> = active.iter().map(|(_, ctx)| ctx.clone()).collect();
-        let (first_index, second_index) = merge::select_versions_to_merge(&contexts);
+        let (first_index, second_index) =
+            match incoming.and_then(|incoming| active.iter().position(|(id, _)| *id == incoming)) {
+                Some(incoming_index) => (
+                    incoming_index,
+                    merge::select_version_to_merge_with(&contexts, incoming_index),
+                ),
+                None => merge::select_versions_to_merge(&contexts),
+            };
         self.merge_pair(orig, active[first_index].0, active[second_index].0);
     }
 
@@ -363,14 +612,17 @@ impl<'gc> Specializer<'gc> {
                 self.create_version(orig, merged_ctx, merged_key, subst)
             }
         };
+        self.merge_targets.insert(merged_id);
 
         if first != merged_id {
             self.replacement.insert(first, merged_id);
+            self.reachability_dirty.set(true);
             self.pending.remove(&first);
             self.queued.remove(&first);
         }
         if second != merged_id {
             self.replacement.insert(second, merged_id);
+            self.reachability_dirty.set(true);
             self.pending.remove(&second);
             self.queued.remove(&second);
         }
@@ -408,6 +660,8 @@ impl<'gc> Specializer<'gc> {
     /// output block. Reconstructing the task from the version record is the
     /// worklist equivalent of reactivating the version in Algorithm 1.
     fn ensure_reachable_tasks(&mut self) {
+        self.refresh_reachability();
+        let reachable_cache = self.reachable_cache.borrow();
         let missing: Vec<_> = self
             .versions_of
             .iter()
@@ -417,7 +671,7 @@ impl<'gc> Specializer<'gc> {
                         || self.out_blocks.contains_key(id)
                         || self.pending.contains_key(id)
                         || self.queued.contains(id)
-                        || !self.is_reachable(*id)
+                        || !reachable_cache.contains(&self.resolve(*id))
                     {
                         return None;
                     }
@@ -435,6 +689,7 @@ impl<'gc> Specializer<'gc> {
             })
             .collect();
 
+        drop(reachable_cache);
         for (id, task) in missing {
             self.pending.insert(id, task.clone());
             self.queued.insert(id);
@@ -600,12 +855,23 @@ impl<'gc> Specializer<'gc> {
                 if let Some(op) = infer::cmp_op(spec.prim) {
                     if let (Some(lhs), Some(rhs)) = (local_of(args.first()), local_of(args.get(1)))
                     {
-                        pred_of.insert(*dst, Predicate::Cmp(op, lhs, rhs));
+                        pred_of.insert(
+                            *dst,
+                            Predicate::direct(PredicateRelation::Cmp(op, lhs, rhs)),
+                        );
                     }
                 } else if infer::is_type_test(spec.prim)
                     && let Some(arg) = local_of(args.first())
                 {
-                    pred_of.insert(*dst, Predicate::TypeTest(spec.prim, arg));
+                    pred_of.insert(
+                        *dst,
+                        Predicate::direct(PredicateRelation::TypeTest(spec.prim, arg)),
+                    );
+                } else if spec.prim == Primitive::Not
+                    && let Some(arg) = local_of(args.first())
+                    && let Some(predicate) = pred_of.get(&arg).copied()
+                {
+                    pred_of.insert(*dst, predicate.inverted());
                 }
 
                 if let Some(value) = spec.fold {
@@ -1117,13 +1383,18 @@ fn narrow_contexts(
         return (ctx.clone(), ctx.clone());
     };
 
-    let (mut true_ctx, mut false_ctx) = match pred_of.get(test_id) {
-        Some(Predicate::Cmp(op, lhs, rhs)) => ctx.narrow_for_predicate(*op, *lhs, *rhs),
-        Some(Predicate::TypeTest(prim, arg)) => {
-            infer::narrow_type_test(*prim, *arg, ctx).unwrap_or_else(|| (ctx.clone(), ctx.clone()))
+    let predicate = pred_of.get(test_id);
+    let (mut true_ctx, mut false_ctx) = match predicate.map(|predicate| predicate.relation) {
+        Some(PredicateRelation::Cmp(op, lhs, rhs)) => ctx.narrow_for_predicate(op, lhs, rhs),
+        Some(PredicateRelation::TypeTest(prim, arg)) => {
+            infer::narrow_type_test(prim, arg, ctx).unwrap_or_else(|| (ctx.clone(), ctx.clone()))
         }
         None => (ctx.clone(), ctx.clone()),
     };
+
+    if predicate.is_some_and(|predicate| predicate.inverted) {
+        std::mem::swap(&mut true_ctx, &mut false_ctx);
+    }
 
     true_ctx.set(*test_id, exclude_kind(test_ty.clone(), TypeKind::BoolFalse));
     false_ctx.set(*test_id, Type::kind(TypeKind::BoolFalse));
@@ -1234,10 +1505,143 @@ pub(super) fn max_value_id(procedure: &Procedure<'_>) -> u32 {
 mod tests {
     use super::*;
     use crate::compiler::cps::graph::BranchHint;
-    use crate::compiler::ssa::bbv::merge::{merge_contexts, select_versions_to_merge};
+    use crate::compiler::ssa::bbv::merge::{
+        merge_contexts, select_version_to_merge_with, select_versions_to_merge,
+    };
     use crate::compiler::ssa::{CodeId, GraphCodeId, ProcedureKind};
     use crate::runtime::value::Value;
     use std::collections::HashMap;
+
+    #[test]
+    fn negated_type_test_narrows_assertion_success_path() {
+        let input = ValueId(1);
+        let is_fixnum = ValueId(2);
+        let assertion_fails = ValueId(3);
+        let checked_input = ValueId(4);
+        let one = ValueId(5);
+        let sum = ValueId(6);
+        let source = Value::new(false);
+        let procedure = Procedure {
+            code: CodeId::GraphFunction(GraphCodeId(0)),
+            kind: ProcedureKind::Function,
+            binding: ValueId(0),
+            name: source,
+            source,
+            meta: source,
+            return_cont: None,
+            params: vec![input],
+            variadic: None,
+            free_vars: vec![],
+            sources: HashMap::new(),
+            entry: BlockId(0),
+            blocks: vec![
+                Block {
+                    id: BlockId(0),
+                    params: vec![input],
+                    variadic: None,
+                    instructions: vec![
+                        Instruction::PrimCall {
+                            dst: is_fixnum,
+                            prim: Primitive::IsFixnum,
+                            args: vec![Operand::Local(input)],
+                            source,
+                        },
+                        Instruction::PrimCall {
+                            dst: assertion_fails,
+                            prim: Primitive::Not,
+                            args: vec![Operand::Local(is_fixnum)],
+                            source,
+                        },
+                    ],
+                    terminator: Terminator::Branch {
+                        test: Operand::Local(assertion_fails),
+                        consequent: BranchTarget::Local {
+                            block: BlockId(1),
+                            args: vec![],
+                        },
+                        alternative: BranchTarget::Local {
+                            block: BlockId(2),
+                            args: vec![Operand::Local(input)],
+                        },
+                        hints: [BranchHint::Cold, BranchHint::Normal],
+                    },
+                    source,
+                },
+                Block {
+                    id: BlockId(1),
+                    params: vec![],
+                    variadic: None,
+                    instructions: vec![],
+                    terminator: Terminator::Raise {
+                        kind: crate::runtime::vm::exceptions::RaiseKind::AssertionViolation,
+                        args: vec![],
+                        source,
+                    },
+                    source,
+                },
+                Block {
+                    id: BlockId(2),
+                    params: vec![checked_input],
+                    variadic: None,
+                    instructions: vec![
+                        Instruction::Const {
+                            dst: one,
+                            value: Value::from_i32(1),
+                        },
+                        Instruction::PrimCall {
+                            dst: sum,
+                            prim: Primitive::Plus,
+                            args: vec![Operand::Local(checked_input), Operand::Local(one)],
+                            source,
+                        },
+                    ],
+                    terminator: Terminator::Raise {
+                        kind: crate::runtime::vm::exceptions::RaiseKind::AssertionViolation,
+                        args: vec![Operand::Local(sum)],
+                        source,
+                    },
+                    source,
+                },
+            ],
+        };
+
+        let expanded = super::super::expand::expand_procedure(procedure);
+        let (specialized, _) = specialize_procedure(expanded, 4);
+        assert!(!specialized.blocks.iter().any(|block| {
+            block.instructions.iter().any(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::PrimCall {
+                        prim: Primitive::IsFlonum,
+                        ..
+                    }
+                )
+            })
+        }));
+        assert!(specialized.blocks.iter().any(|block| {
+            block.instructions.iter().any(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::PrimCall {
+                        prim: Primitive::FxAdd,
+                        ..
+                    } | Instruction::PrimCall {
+                        prim: Primitive::FxAddOvf,
+                        ..
+                    }
+                )
+            })
+        }));
+    }
+
+    #[test]
+    fn predicate_inversion_is_reversible() {
+        let predicate =
+            Predicate::direct(PredicateRelation::TypeTest(Primitive::IsFlonum, ValueId(1)));
+
+        assert!(predicate.inverted().inverted);
+        assert!(!predicate.inverted().inverted().inverted);
+    }
 
     #[test]
     fn select_versions_to_merge_picks_most_similar_pair() {
@@ -1260,6 +1664,20 @@ mod tests {
         let active = vec![ctx_a, ctx_c, ctx_d];
 
         assert_eq!(select_versions_to_merge(&active), (0, 2));
+    }
+
+    #[test]
+    fn incoming_version_merges_with_most_similar_active_version() {
+        let value = ValueId(1);
+        let mut fixnum = TypeContext::new();
+        fixnum.set(value, Type::kind(TypeKind::Fixnum));
+        let mut pair = TypeContext::new();
+        pair.set(value, Type::kind(TypeKind::Pair));
+        let mut incoming = TypeContext::new();
+        incoming.set(value, Type::constant(1));
+
+        let active = vec![fixnum, pair, incoming];
+        assert_eq!(select_version_to_merge_with(&active, 2), 0);
     }
 
     #[test]
@@ -1342,31 +1760,126 @@ mod tests {
             ],
         };
 
+        for version_limit in [2, 4, 8] {
+            let (specialized, annotations) = specialize_procedure(procedure.clone(), version_limit);
+            assert!(specialized.blocks.len() <= 4);
+            let contexts: Vec<_> = annotations
+                .values()
+                .filter(|annotation| annotation.orig == BlockId(1))
+                .map(|annotation| annotation.ctx.clone())
+                .collect();
+            assert_eq!(
+                contexts.len(),
+                2,
+                "unexpected loop contexts at limit {version_limit}: {contexts:?}"
+            );
+            assert!(
+                contexts.iter().any(|context| context.contains("[0..0]")),
+                "missing entry context: {contexts:?}"
+            );
+            assert!(
+                contexts
+                    .iter()
+                    .any(|context| context.contains("fx[>=..<=]")),
+                "missing recurrent context: {contexts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn multi_backedge_interval_loop_converges_under_version_limit() {
+        // Two entry edges into the header (0 and 10) plus a self-backedge that
+        // increments: Algorithm 2 may temporarily exceed the limit, then
+        // Algorithm 1 + widening must bring the header back within it.
+        let condition = ValueId(1);
+        let zero = ValueId(2);
+        let ten = ValueId(3);
+        let current = ValueId(4);
+        let one = ValueId(5);
+        let next = ValueId(6);
+        let source = Value::new(false);
+        let procedure = Procedure {
+            code: CodeId::GraphFunction(GraphCodeId(0)),
+            kind: ProcedureKind::Function,
+            binding: ValueId(0),
+            name: source,
+            source,
+            meta: source,
+            return_cont: None,
+            params: vec![condition],
+            variadic: None,
+            free_vars: vec![],
+            sources: HashMap::new(),
+            entry: BlockId(0),
+            blocks: vec![
+                Block {
+                    id: BlockId(0),
+                    params: vec![condition],
+                    variadic: None,
+                    instructions: vec![
+                        Instruction::Const {
+                            dst: zero,
+                            value: Value::from_i32(0),
+                        },
+                        Instruction::Const {
+                            dst: ten,
+                            value: Value::from_i32(10),
+                        },
+                    ],
+                    terminator: Terminator::Branch {
+                        test: Operand::Local(condition),
+                        consequent: BranchTarget::Local {
+                            block: BlockId(1),
+                            args: vec![Operand::Local(zero)],
+                        },
+                        alternative: BranchTarget::Local {
+                            block: BlockId(1),
+                            args: vec![Operand::Local(ten)],
+                        },
+                        hints: [BranchHint::Normal, BranchHint::Normal],
+                    },
+                    source,
+                },
+                Block {
+                    id: BlockId(1),
+                    params: vec![current],
+                    variadic: None,
+                    instructions: vec![
+                        Instruction::Const {
+                            dst: one,
+                            value: Value::from_i32(1),
+                        },
+                        Instruction::PrimCall {
+                            dst: next,
+                            prim: Primitive::FxAdd,
+                            args: vec![Operand::Local(current), Operand::Local(one)],
+                            source,
+                        },
+                    ],
+                    terminator: Terminator::Jump {
+                        target: BlockId(1),
+                        args: vec![Operand::Local(next)],
+                    },
+                    source,
+                },
+            ],
+        };
+
         let (specialized, annotations) = specialize_procedure(procedure, 2);
-        assert!(specialized.blocks.len() <= 4);
-        let contexts: Vec<_> = annotations
+        let header_versions = annotations
             .values()
             .filter(|annotation| annotation.orig == BlockId(1))
-            .map(|annotation| annotation.ctx.clone())
-            .collect();
+            .count();
         assert!(
-            contexts.len() <= 2,
-            "unexpected loop contexts: {contexts:?}"
+            header_versions <= 2,
+            "expected ≤2 header versions, got {header_versions}: {:?}",
+            annotations
+                .values()
+                .filter(|a| a.orig == BlockId(1))
+                .map(|a| a.ctx.clone())
+                .collect::<Vec<_>>()
         );
-        let header = annotations
-            .iter()
-            .find(|(_, annotation)| annotation.orig == BlockId(1))
-            .map(|(id, _)| &specialized.blocks[id.0])
-            .expect("monomorphic loop header");
-        assert!(header.instructions.iter().any(|instruction| {
-            matches!(
-                instruction,
-                Instruction::PrimCall {
-                    prim: Primitive::FxAdd,
-                    ..
-                }
-            )
-        }));
+        assert!(specialized.blocks.len() <= 5);
     }
 
     #[test]

@@ -988,6 +988,27 @@ fn ensure_variable<'gc>(
 }
 
 primitive_transformers!(
+    "assertion-violation" => assertion_violation_primitive(cps, owner, src, _op, args, _k) {
+        // The direct raise ABI has four fixed payload slots.  Keep larger
+        // variadic calls on the ordinary primitive path so all irritants are
+        // preserved.
+        if args.len() > 4 {
+            return None;
+        }
+        if args.len() < 2 {
+            return Some(primitive_wrong_number_of_arguments(
+                cps, owner, src, RaiseKind::WrongNumberOfArguments, args.len(),
+            ));
+        }
+
+        Some(cps.emit_raise(
+            owner,
+            RaiseKind::AssertionViolation,
+            args.iter().copied(),
+            src,
+        ))
+    }
+
     "string-length" => string_length(cps, owner, src, op, args, k) {
         let x = args.first().copied()?;
         if let Atom::Constant(val) = x
@@ -2114,6 +2135,31 @@ mod tests {
 
             assert_eq!(kind, RaiseKind::AssertionViolation);
             assert_eq!(cps.graph.free_vars_slice(&args).len(), 3);
+        });
+    }
+
+    #[test]
+    fn assertion_violation_primitive_does_not_return() {
+        with_ctx(|ctx| {
+            let mut cps = GraphCpsBuilder::new(ctx);
+            let owner = cps.graph.new_term_link(None);
+            let k = cps.fresh_variable("k");
+            let prim = Symbol::from_str(ctx, "assertion-violation").into();
+            let args = [
+                Atom::Constant(Value::new(false)),
+                Atom::Constant(Value::new(Str::new(*ctx, "bad", true))),
+            ];
+
+            let term = get_primitive_table(ctx)
+                .try_expand(&mut cps, owner, Value::new(false), prim, &args, k)
+                .expect("assertion-violation should be a CPS primitive");
+            let term = peel_letvals(&cps, term);
+            let GraphTermKind::Raise(kind, raised_args) = cps.graph[term].kind else {
+                panic!("assertion-violation primitive should not return");
+            };
+
+            assert_eq!(kind, RaiseKind::AssertionViolation);
+            assert_eq!(cps.graph.free_vars_slice(&raised_args).len(), args.len());
         });
     }
 

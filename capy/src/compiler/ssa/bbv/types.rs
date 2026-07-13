@@ -501,8 +501,7 @@ impl TypeContext {
                 && offset == offset2
             {
                 let mut container = ctx.get(v);
-                container.length_range =
-                    Some(Interval::singleton(n.saturating_add(offset)));
+                container.length_range = Some(Interval::singleton(n.saturating_add(offset)));
                 ctx.set(v, container);
             }
             ctx.set(id, ty);
@@ -534,11 +533,11 @@ impl fmt::Display for Bound {
             Self::Int(n) => write!(f, "{n}"),
             Self::VecLenMinus(id, offset) => {
                 if *offset == 0 {
-                    write!(f, "[[{id:?}]]")
+                    write!(f, "[[v{}]]", id.0)
                 } else if *offset > 0 {
-                    write!(f, "[[{id:?}]]-{offset}")
+                    write!(f, "[[v{}]]-{offset}", id.0)
                 } else {
-                    write!(f, "[[{id:?}]]+{}", -offset)
+                    write!(f, "[[v{}]]+{}", id.0, -offset)
                 }
             }
             Self::Overflow => write!(f, "overflow"),
@@ -598,7 +597,7 @@ impl fmt::Display for TypeContext {
             if idx > 0 {
                 write!(f, ", ")?;
             }
-            write!(f, "{id:?}={}", self.types[id])?;
+            write!(f, "v{}={}", id.0, self.types[id])?;
         }
         write!(f, "}}")
     }

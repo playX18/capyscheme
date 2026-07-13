@@ -35,62 +35,47 @@ fn render_procedure<'gc>(
     let retk = render_optional_value_id(procedure.return_cont);
     writeln!(
         out,
-        "procedure {} {} {} ({}) retk {}:",
+        "{} {} {}({}) -> {} {{",
         render_procedure_kind(procedure.kind),
         render_code_id(&procedure.code),
-        name,
+        name.trim(),
         params,
         retk
     )
     .unwrap();
 
-    let mut predecessors: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
-    for block in &procedure.blocks {
-        for successor in block.terminator.successors() {
-            predecessors.entry(successor).or_default().push(block.id);
-        }
-    }
-
     let mut blocks = procedure.blocks.clone();
     blocks.sort_by_key(|block| block.id.0);
     for block in &blocks {
-        render_block(out, block, &predecessors, procedure, annotations);
+        render_block(out, block, annotations);
         writeln!(out).unwrap();
     }
+    writeln!(out, "}}").unwrap();
 }
 
 fn render_block<'gc>(
     out: &mut String,
     block: &Block<'gc>,
-    predecessors: &HashMap<BlockId, Vec<BlockId>>,
-    procedure: &Procedure<'gc>,
     annotations: Option<&HashMap<BlockId, BlockAnnotation>>,
 ) {
-    let mut header = format!("BB{}: ({})", block.id.0, render_block_params(block));
+    let mut header = format!("block{}({}):", block.id.0, render_block_params(block));
     if let Some(annotations) = annotations
         && let Some(annotation) = annotations.get(&block.id)
     {
-        write!(header, " ; orig=BB{} {}", annotation.orig.0, annotation.ctx).unwrap();
+        write!(
+            header,
+            " ; orig=block{} {}",
+            annotation.orig.0, annotation.ctx
+        )
+        .unwrap();
     }
     writeln!(out, "{header}").unwrap();
 
-    if let Some(preds) = predecessors.get(&block.id) {
-        let mut pred_ids = preds.clone();
-        pred_ids.sort_by_key(|block| block.0);
-        pred_ids.dedup();
-        let rendered = pred_ids
-            .iter()
-            .map(|block| format!("BB{}", block.0))
-            .collect::<Vec<_>>()
-            .join(", ");
-        writeln!(out, "  Predecessors: {rendered}").unwrap();
-    }
-
     for instruction in &block.instructions {
-        writeln!(out, "  {}", render_instruction(instruction)).unwrap();
+        writeln!(out, "    {}", render_instruction(instruction)).unwrap();
     }
 
-    writeln!(out, "  {}", render_successors(&block.terminator, procedure)).unwrap();
+    writeln!(out, "    {}", render_terminator(&block.terminator)).unwrap();
 }
 
 fn render_block_params<'gc>(block: &Block<'gc>) -> String {
@@ -108,7 +93,7 @@ fn render_block_params<'gc>(block: &Block<'gc>) -> String {
 fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
     match instruction {
         Instruction::Const { dst, value } => {
-            format!("{} = Const {}", render_value_id(*dst), render_value(*value))
+            format!("{} = const {}", render_value_id(*dst), render_value(*value))
         }
         Instruction::MakeClosure {
             dst,
@@ -116,7 +101,7 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
             kind,
             free_count,
         } => format!(
-            "{} = MakeClosure {} {} {}",
+            "{} = make_closure {} {} {}",
             render_value_id(*dst),
             render_code_id(code),
             render_closure_kind(*kind),
@@ -127,7 +112,7 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
             closure,
             index,
         } => format!(
-            "{} = ClosureRef {}[{}]",
+            "{} = closure_ref {}[{}]",
             render_value_id(*dst),
             render_operand(*closure),
             index
@@ -137,13 +122,13 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
             index,
             value,
         } => format!(
-            "ClosureSet {}[{}] = {}",
+            "closure_set {}[{}], {}",
             render_operand(*closure),
             index,
             render_operand(*value)
         ),
         Instruction::CacheRef { dst, cache_key, .. } => format!(
-            "{} = CacheRef {}",
+            "{} = cache_ref {}",
             render_value_id(*dst),
             render_operand(*cache_key)
         ),
@@ -153,7 +138,7 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
             value,
             ..
         } => format!(
-            "{} = CacheSet {} {}",
+            "{} = cache_set {}, {}",
             render_value_id(*dst),
             render_operand(*cache_key),
             render_operand(*value)
@@ -167,14 +152,14 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
             render_call_args(args)
         ),
         Instruction::RestToList { dst, rest, .. } => format!(
-            "{} = RestToList {}",
+            "{} = rest_to_list {}",
             render_value_id(*dst),
             render_value_id(*rest)
         ),
         Instruction::RestRef {
             dst, rest, index, ..
         } => format!(
-            "{} = RestRef {} {}",
+            "{} = rest_ref {}, {}",
             render_value_id(*dst),
             render_value_id(*rest),
             index
@@ -182,7 +167,7 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
         Instruction::RestLength {
             dst, rest, skip, ..
         } => format!(
-            "{} = RestLength {} {}",
+            "{} = rest_length {}, {}",
             render_value_id(*dst),
             render_value_id(*rest),
             skip
@@ -194,7 +179,7 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
             skip,
             ..
         } => format!(
-            "{} = Rest{} {} {}",
+            "{} = rest_{} {}, {}",
             render_value_id(*dst),
             render_rest_predicate(*predicate),
             render_value_id(*rest),
@@ -203,38 +188,34 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
     }
 }
 
-fn render_successors<'gc>(terminator: &Terminator<'gc>, _procedure: &Procedure<'gc>) -> String {
+fn render_terminator<'gc>(terminator: &Terminator<'gc>) -> String {
     match terminator {
         Terminator::Call {
             callee, retk, args, ..
         } => format!(
-            "Successors: Call {} {}({})",
+            "call {}({}) -> {}",
             render_operand(*callee),
-            render_operand(*retk),
-            render_call_args_list(args)
+            render_call_args_list(args),
+            render_operand(*retk)
         ),
         Terminator::TailCall { callee, args, .. } => format!(
-            "Successors: TailCall {}({})",
+            "tail_call {}({})",
             render_operand(*callee),
             render_call_args_list(args)
         ),
-        Terminator::Raise { kind, args, .. } => format!(
-            "Successors: Raise {:?}({})",
-            kind,
-            render_call_args_list(args)
-        ),
-        Terminator::Jump { target, args } => format!(
-            "Successors: BB{}({})",
-            target.0,
-            render_call_args_list(args)
-        ),
+        Terminator::Raise { kind, args, .. } => {
+            format!("raise {:?}({})", kind, render_call_args_list(args))
+        }
+        Terminator::Jump { target, args } => {
+            format!("jump block{}({})", target.0, render_call_args_list(args))
+        }
         Terminator::Branch {
             test,
             consequent,
             alternative,
             hints,
         } => format!(
-            "Successors: If {} Then: {}, Else: {} [{:?}, {:?}]",
+            "brif {}, {}, {} ; {:?}, {:?}",
             render_operand(*test),
             render_branch_target(consequent),
             render_branch_target(alternative),
@@ -250,13 +231,13 @@ fn render_successors<'gc>(terminator: &Terminator<'gc>, _procedure: &Procedure<'
             let mut rendered_cases = Vec::new();
             for case in cases {
                 rendered_cases.push(format!(
-                    "{}: {}",
+                    "{} => {}",
                     render_switch_case_value(case.value),
                     render_branch_target(&case.target)
                 ));
             }
             format!(
-                "Successors: Switch {} {} [{}] Default: {}",
+                "switch {} {}, [{}], default {}",
                 render_switch_kind(*kind),
                 render_operand(*scrutinee),
                 rendered_cases.join(", "),
@@ -269,10 +250,10 @@ fn render_successors<'gc>(terminator: &Terminator<'gc>, _procedure: &Procedure<'
 fn render_branch_target<'gc>(target: &BranchTarget<'gc>) -> String {
     match target {
         BranchTarget::Local { block, args } => {
-            format!("BB{}({})", block.0, render_call_args_list(args))
+            format!("block{}({})", block.0, render_call_args_list(args))
         }
         BranchTarget::Reified { continuation, args } => format!(
-            "Reified {}({})",
+            "return {}({})",
             render_operand(*continuation),
             render_call_args_list(args)
         ),
@@ -281,9 +262,9 @@ fn render_branch_target<'gc>(target: &BranchTarget<'gc>) -> String {
 
 fn render_rest_predicate(predicate: RestPredicate) -> &'static str {
     match predicate {
-        RestPredicate::Null => "Null?",
-        RestPredicate::Pair => "Pair?",
-        RestPredicate::List => "List?",
+        RestPredicate::Null => "null",
+        RestPredicate::Pair => "pair",
+        RestPredicate::List => "list",
     }
 }
 
@@ -324,7 +305,7 @@ fn render_operand<'gc>(atom: Operand<'gc>) -> String {
 }
 
 fn render_value_id(id: ValueId) -> String {
-    format!("v@{}", id.0)
+    format!("v{}", id.0)
 }
 
 fn render_value_ids(vars: &[ValueId]) -> String {

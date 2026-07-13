@@ -243,6 +243,7 @@ interesting_prim_names!(
 
     unspecified = "unspecified"
     unspecifiedp = "unspecified?"
+    assertion_violation = "assertion-violation"
 );
 
 pub fn resolve_primitives<'gc>(
@@ -368,6 +369,21 @@ macro_rules! primitive_expanders {
 }
 
 primitive_expanders!(
+
+    "assertion-violation" ex_assertion_violation<'gc>(ctx, args, src) {
+        // Keep valid calls as primitive calls so CPS can lower them directly
+        // to a non-returning raise instead of an opaque library call.
+        if args.len() < 2 || args.len() > 4 {
+            return None;
+        }
+
+        Some(prim_call_term(
+            ctx,
+            sym_assertion_violation(ctx).into(),
+            args,
+            src,
+        ))
+    }
 
     "current-continuation-marks" ex_current_continuation_marks<'gc>(ctx, args, src) {
         if !args.is_empty() {
