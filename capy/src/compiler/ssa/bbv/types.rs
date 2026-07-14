@@ -118,6 +118,13 @@ impl Interval {
         }
     }
 
+    pub(super) fn as_singleton(self) -> Option<i64> {
+        match (self.lo, self.hi) {
+            (Bound::Int(lo), Bound::Int(hi)) if lo == hi => Some(lo),
+            _ => None,
+        }
+    }
+
     pub(super) fn is_empty(self) -> bool {
         match (self.lo, self.hi) {
             (Bound::Overflow, _) | (_, Bound::Overflow) => true,
@@ -298,13 +305,54 @@ impl Type {
     pub(super) fn has_kind(self, kind: TypeKind) -> bool {
         self.kinds & kind.bit() != 0
     }
-}
 
-pub(super) fn is_empty(ty: &Type) -> bool {
-    ty.kinds == 0
-        || ty
-            .fixnum_range
-            .is_some_and(|interval| interval.is_empty() && ty.kinds == KIND_FIXNUM)
+    pub fn is_definitely_fixnum(&self) -> bool {
+        self.kinds == KIND_FIXNUM
+    }
+
+    pub fn is_definitely_flonum(&self) -> bool {
+        self.kinds == KIND_FLONUM
+    }
+
+    pub fn is_definitely_bignum(&self) -> bool {
+        self.kinds == KIND_BIGNUM
+    }
+
+    pub fn is_definitely_pair(&self) -> bool {
+        self.kinds == KIND_PAIR
+    }
+
+    pub fn is_definitely_vector(&self) -> bool {
+        self.kinds == KIND_VECTOR
+    }
+
+    pub fn is_definitely_string(&self) -> bool {
+        self.kinds == KIND_STRING
+    }
+
+    pub fn is_definitely_bytevector(&self) -> bool {
+        self.kinds == KIND_BYTEVECTOR
+    }
+
+    pub fn is_definitely_symbol(&self) -> bool {
+        self.kinds == KIND_SYMBOL
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.kinds == 0
+            || self
+                .fixnum_range
+                .is_some_and(|interval| interval.is_empty() && self.kinds == KIND_FIXNUM)
+    }
+
+    pub(super) fn from_fixnum_interval(interval: Interval) -> Self {
+        Self {
+            kinds: KIND_FIXNUM,
+            fixnum_range: Some(interval),
+            length_range: None,
+            singleton: interval.as_singleton(),
+        }
+    }
 }
 
 pub(super) fn exclude_kind(ty: Type, kind: TypeKind) -> Type {
@@ -324,10 +372,10 @@ pub(super) fn exclude_kind(ty: Type, kind: TypeKind) -> Type {
 }
 
 pub(super) fn union_types(a: Type, b: Type, widen: bool) -> Type {
-    if is_empty(&a) {
+    if a.is_empty() {
         return b;
     }
-    if is_empty(&b) {
+    if b.is_empty() {
         return a;
     }
     if a.singleton.is_some() && a == b {
@@ -424,7 +472,7 @@ impl TypeContext {
     }
 
     pub(super) fn set(&mut self, id: ValueId, ty: Type) {
-        if is_empty(&ty) {
+        if ty.is_empty() {
             self.types.remove(&id);
         } else {
             self.types.insert(id, ty);
@@ -446,7 +494,7 @@ impl TypeContext {
         let mut out = Self::new();
         for id in ids {
             let ty = intersect_types(self.get(*id), other.get(*id));
-            if !is_empty(&ty) {
+            if !ty.is_empty() {
                 out.set(*id, ty);
             }
         }
@@ -556,7 +604,7 @@ impl fmt::Display for Interval {
 
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if is_empty(self) {
+        if self.is_empty() {
             return write!(f, "bot");
         }
         if self.kinds == ALL_KINDS

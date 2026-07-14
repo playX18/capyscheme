@@ -94,18 +94,32 @@ pub(super) fn truthiness(ty: &Type) -> Option<bool> {
 /// Maps a comparison primitive to the lattice comparison it narrows with.
 pub(super) fn cmp_op(prim: Primitive) -> Option<CmpOp> {
     match prim {
-        Primitive::NumericLt | Primitive::FxLt => Some(CmpOp::Lt),
-        Primitive::NumericLte | Primitive::FxLe => Some(CmpOp::Le),
-        Primitive::NumericGt | Primitive::FxGt => Some(CmpOp::Gt),
-        Primitive::NumericGte | Primitive::FxGe => Some(CmpOp::Ge),
-        Primitive::NumericEqual | Primitive::FxEq | Primitive::FxEqU | Primitive::IsEqv => {
-            Some(CmpOp::Eq)
-        }
-        Primitive::FlLt => Some(CmpOp::Lt),
-        Primitive::FlLe => Some(CmpOp::Le),
-        Primitive::FlGt => Some(CmpOp::Gt),
-        Primitive::FlGe => Some(CmpOp::Ge),
-        Primitive::FlEq => Some(CmpOp::Eq),
+        Primitive::NumericLt
+        | Primitive::FxLt
+        | Primitive::FxLtUnchecked
+        | Primitive::FlLt
+        | Primitive::FlLtUnchecked => Some(CmpOp::Lt),
+        Primitive::NumericLte
+        | Primitive::FxLe
+        | Primitive::FxLeUnchecked
+        | Primitive::FlLe
+        | Primitive::FlLeUnchecked => Some(CmpOp::Le),
+        Primitive::NumericGt
+        | Primitive::FxGt
+        | Primitive::FxGtUnchecked
+        | Primitive::FlGt
+        | Primitive::FlGtUnchecked => Some(CmpOp::Gt),
+        Primitive::NumericGte
+        | Primitive::FxGe
+        | Primitive::FxGeUnchecked
+        | Primitive::FlGe
+        | Primitive::FlGeUnchecked => Some(CmpOp::Ge),
+        Primitive::NumericEqual
+        | Primitive::FxEq
+        | Primitive::FxEqUUnchecked
+        | Primitive::FlEq
+        | Primitive::FlEqUnchecked
+        | Primitive::IsEqv => Some(CmpOp::Eq),
         _ => None,
     }
 }
@@ -144,40 +158,6 @@ fn predicate_ambiguous_mask(prim: Primitive) -> u32 {
     }
 }
 
-fn is_definitely_fixnum(ty: &Type) -> bool {
-    ty.kinds == KIND_FIXNUM
-}
-
-fn is_definitely_flonum(ty: &Type) -> bool {
-    ty.kinds == KIND_FLONUM
-}
-
-fn interval_singleton(interval: Interval) -> Option<i64> {
-    match (interval.lo, interval.hi) {
-        (super::types::Bound::Int(lo), super::types::Bound::Int(hi)) if lo == hi => Some(lo),
-        _ => None,
-    }
-}
-
-fn interval_overflows(interval: Interval) -> bool {
-    matches!(interval.lo, super::types::Bound::Overflow)
-        || matches!(interval.hi, super::types::Bound::Overflow)
-}
-
-fn fixnum_from_interval(interval: Interval) -> Type {
-    let singleton = interval_singleton(interval);
-    Type {
-        kinds: KIND_FIXNUM,
-        fixnum_range: Some(interval),
-        length_range: None,
-        singleton,
-    }
-}
-
-fn fits_fixnum(value: i64) -> bool {
-    (FIXNUM_MIN..=FIXNUM_MAX).contains(&value)
-}
-
 #[derive(Clone, Copy)]
 enum ArithOp {
     Add,
@@ -186,15 +166,15 @@ enum ArithOp {
 }
 
 fn arith_result(op: ArithOp, a: &Type, b: &Type) -> Type {
-    if is_definitely_fixnum(a) && is_definitely_fixnum(b) {
+    if a.is_definitely_fixnum() && b.is_definitely_fixnum() {
         if let (Some(ia), Some(ib)) = (a.fixnum_range, b.fixnum_range) {
             let interval = match op {
                 ArithOp::Add => ia.add(ib),
                 ArithOp::Sub => ia.sub(ib),
                 ArithOp::Mul => ia.mul(ib),
             };
-            if !interval.is_empty() && !interval_overflows(interval) {
-                return fixnum_from_interval(interval);
+            if !interval.is_empty() {
+                return Type::from_fixnum_interval(interval);
             }
         }
         // Fixnum operands whose result may overflow into a bignum.
@@ -219,8 +199,8 @@ fn arith_result(op: ArithOp, a: &Type, b: &Type) -> Type {
         };
     }
     let numeric_kinds = KIND_FIXNUM | KIND_FLONUM | KIND_BIGNUM;
-    if ((is_definitely_flonum(a) && b.kinds & !numeric_kinds == 0)
-        || (is_definitely_flonum(b) && a.kinds & !numeric_kinds == 0))
+    if ((a.is_definitely_flonum() && b.kinds & !numeric_kinds == 0)
+        || (b.is_definitely_flonum() && a.kinds & !numeric_kinds == 0))
         && a.kinds != 0
         && b.kinds != 0
     {
@@ -236,7 +216,7 @@ fn fold_arith(op: ArithOp, a: &Type, b: &Type) -> Option<Value<'static>> {
         ArithOp::Sub => x.checked_sub(y)?,
         ArithOp::Mul => x.checked_mul(y)?,
     };
-    fits_fixnum(result).then(|| Value::from_i32(result as i32))
+    (FIXNUM_MIN..=FIXNUM_MAX).contains(&result).then(|| Value::from_i32(result as i32))
 }
 
 /// `a < b` for every possible pair of values, when provable.
@@ -294,7 +274,7 @@ fn compare_intervals(op: CmpOp, x: Interval, y: Interval) -> Option<bool> {
         CmpOp::Gt => compare_intervals(CmpOp::Lt, y, x),
         CmpOp::Ge => compare_intervals(CmpOp::Le, y, x),
         CmpOp::Eq => {
-            if let (Some(a), Some(b)) = (interval_singleton(x), interval_singleton(y)) {
+            if let (Some(a), Some(b)) = (x.as_singleton(), y.as_singleton()) {
                 return Some(a == b);
             }
             if bound_definitely_lt(x.hi, y.lo) || bound_definitely_lt(y.hi, x.lo) {
@@ -318,7 +298,7 @@ fn fold_compare(op: CmpOp, a: &Type, b: &Type) -> Option<Value<'static>> {
         return Some(Value::from_bool(outcome));
     }
     // Interval-based folding is only sound when both operands are fixnums.
-    if is_definitely_fixnum(a) && is_definitely_fixnum(b) {
+    if a.is_definitely_fixnum() && b.is_definitely_fixnum() {
         let outcome = compare_intervals(op, a.fixnum_range?, b.fixnum_range?)?;
         return Some(Value::from_bool(outcome));
     }
@@ -391,6 +371,35 @@ pub(super) fn specialize_prim<'gc>(prim: Primitive, args: &[Type]) -> PrimSpec<'
                     fold: Some(Value::from_bool(value == 0)),
                 };
             }
+            if args.first().is_some_and(|ty| ty.is_definitely_fixnum()) {
+                return PrimSpec {
+                    result: boolean_type(),
+                    prim: Primitive::FxZeroUnchecked,
+                    fold: None,
+                };
+            }
+            if args.first().is_some_and(|ty| ty.is_definitely_flonum()) {
+                return PrimSpec {
+                    result: boolean_type(),
+                    prim: Primitive::FlZeroUnchecked,
+                    fold: None,
+                };
+            }
+            unchanged(boolean_type())
+        }
+
+        Primitive::IsOdd | Primitive::IsEven => {
+            if args.first().is_some_and(|ty| ty.is_definitely_fixnum()) {
+                return PrimSpec {
+                    result: boolean_type(),
+                    prim: if matches!(prim, Primitive::IsOdd) {
+                        Primitive::FxOddUnchecked
+                    } else {
+                        Primitive::FxEvenUnchecked
+                    },
+                    fold: None,
+                };
+            }
             unchanged(boolean_type())
         }
 
@@ -403,13 +412,77 @@ pub(super) fn specialize_prim<'gc>(prim: Primitive, args: &[Type]) -> PrimSpec<'
                 };
                 let result = arith_result(op, &args[0], &args[1]);
                 let fold = fold_arith(op, &args[0], &args[1]);
+                // Flonum fast path: lattice-proven flonums → unchecked fl op.
+                if args[0].is_definitely_flonum() && args[1].is_definitely_flonum() {
+                    return PrimSpec {
+                        result: Type::kind(TypeKind::Flonum),
+                        prim: match prim {
+                            Primitive::Plus => Primitive::FlAddUnchecked,
+                            Primitive::Minus => Primitive::FlSubUnchecked,
+                            _ => Primitive::FlMulUnchecked,
+                        },
+                        fold: None,
+                    };
+                }
                 return PrimSpec { result, prim, fold };
             }
             unchanged(Type::TOP)
         }
 
-        // Overflow-checked fixnum ops: when interval arithmetic proves the
-        // result stays in fixnum range, drop the overflow check entirely.
+        Primitive::Div => {
+            if args.len() == 2
+                && args[0].is_definitely_flonum()
+                && args[1].is_definitely_flonum()
+            {
+                return PrimSpec {
+                    result: Type::kind(TypeKind::Flonum),
+                    prim: Primitive::FlDivUnchecked,
+                    fold: None,
+                };
+            }
+            unchanged(Type::TOP)
+        }
+
+        // Checked fixnum ops (no overflow check): drop type checks when proven.
+        Primitive::FxAdd | Primitive::FxSub | Primitive::FxMul => {
+            if args.len() == 2 {
+                let op = match prim {
+                    Primitive::FxAdd => ArithOp::Add,
+                    Primitive::FxSub => ArithOp::Sub,
+                    _ => ArithOp::Mul,
+                };
+                if args[0].is_definitely_fixnum() && args[1].is_definitely_fixnum() {
+                    let unchecked = match prim {
+                        Primitive::FxAdd => Primitive::FxAddUnchecked,
+                        Primitive::FxSub => Primitive::FxSubUnchecked,
+                        _ => Primitive::FxMulUnchecked,
+                    };
+                    if let (Some(ia), Some(ib)) = (args[0].fixnum_range, args[1].fixnum_range) {
+                        let interval = match op {
+                            ArithOp::Add => ia.add(ib),
+                            ArithOp::Sub => ia.sub(ib),
+                            ArithOp::Mul => ia.mul(ib),
+                        };
+                        if !interval.is_empty() {
+                            let fold = fold_arith(op, &args[0], &args[1]);
+                            return PrimSpec {
+                                result: Type::from_fixnum_interval(interval),
+                                prim: unchecked,
+                                fold,
+                            };
+                        }
+                    }
+                    return PrimSpec {
+                        result: Type::kind(TypeKind::Fixnum),
+                        prim: unchecked,
+                        fold: None,
+                    };
+                }
+                return unchanged(Type::kind(TypeKind::Fixnum));
+            }
+            unchanged(Type::TOP)
+        }
+
         Primitive::FxAddOvf | Primitive::FxSubOvf | Primitive::FxMulOvf => {
             if args.len() == 2 {
                 let op = match prim {
@@ -417,8 +490,8 @@ pub(super) fn specialize_prim<'gc>(prim: Primitive, args: &[Type]) -> PrimSpec<'
                     Primitive::FxSubOvf => ArithOp::Sub,
                     _ => ArithOp::Mul,
                 };
-                if is_definitely_fixnum(&args[0])
-                    && is_definitely_fixnum(&args[1])
+                if args[0].is_definitely_fixnum()
+                    && args[1].is_definitely_fixnum()
                     && let (Some(ia), Some(ib)) = (args[0].fixnum_range, args[1].fixnum_range)
                 {
                     let interval = match op {
@@ -426,19 +499,34 @@ pub(super) fn specialize_prim<'gc>(prim: Primitive, args: &[Type]) -> PrimSpec<'
                         ArithOp::Sub => ia.sub(ib),
                         ArithOp::Mul => ia.mul(ib),
                     };
-                    if !interval.is_empty() && !interval_overflows(interval) {
-                        let result = fixnum_from_interval(interval);
+                    if !interval.is_empty() {
+                        let result = Type::from_fixnum_interval(interval);
                         let fold = fold_arith(op, &args[0], &args[1]);
                         return PrimSpec {
                             result,
                             prim: match prim {
-                                Primitive::FxAddOvf => Primitive::FxAdd,
-                                Primitive::FxSubOvf => Primitive::FxSub,
-                                _ => Primitive::FxMul,
+                                Primitive::FxAddOvf => Primitive::FxAddUnchecked,
+                                Primitive::FxSubOvf => Primitive::FxSubUnchecked,
+                                _ => Primitive::FxMulUnchecked,
                             },
                             fold,
                         };
                     }
+                    // Overflow possible but types known: drop type checks.
+                    return PrimSpec {
+                        result: Type {
+                            kinds: KIND_FIXNUM | KIND_BOOL_FALSE,
+                            fixnum_range: Some(Interval::TOP_FIXNUM),
+                            length_range: None,
+                            singleton: None,
+                        },
+                        prim: match prim {
+                            Primitive::FxAddOvf => Primitive::FxAddOvfUnchecked,
+                            Primitive::FxSubOvf => Primitive::FxSubOvfUnchecked,
+                            _ => Primitive::FxMulOvfUnchecked,
+                        },
+                        fold: None,
+                    };
                 }
                 // Overflow possible: fixnum result or #f.
                 return unchanged(Type {
@@ -451,11 +539,13 @@ pub(super) fn specialize_prim<'gc>(prim: Primitive, args: &[Type]) -> PrimSpec<'
             unchanged(Type::TOP)
         }
 
-        Primitive::FxAdd | Primitive::FxSub | Primitive::FxMul => {
+        Primitive::FxAddOvfUnchecked
+        | Primitive::FxSubOvfUnchecked
+        | Primitive::FxMulOvfUnchecked => {
             if args.len() == 2 {
                 let op = match prim {
-                    Primitive::FxAdd => ArithOp::Add,
-                    Primitive::FxSub => ArithOp::Sub,
+                    Primitive::FxAddOvfUnchecked => ArithOp::Add,
+                    Primitive::FxSubOvfUnchecked => ArithOp::Sub,
                     _ => ArithOp::Mul,
                 };
                 if let (Some(ia), Some(ib)) = (args[0].fixnum_range, args[1].fixnum_range) {
@@ -464,10 +554,46 @@ pub(super) fn specialize_prim<'gc>(prim: Primitive, args: &[Type]) -> PrimSpec<'
                         ArithOp::Sub => ia.sub(ib),
                         ArithOp::Mul => ia.mul(ib),
                     };
-                    if !interval.is_empty() && !interval_overflows(interval) {
+                    if !interval.is_empty() {
                         let fold = fold_arith(op, &args[0], &args[1]);
                         return PrimSpec {
-                            result: fixnum_from_interval(interval),
+                            result: Type::from_fixnum_interval(interval),
+                            prim: match prim {
+                                Primitive::FxAddOvfUnchecked => Primitive::FxAddUnchecked,
+                                Primitive::FxSubOvfUnchecked => Primitive::FxSubUnchecked,
+                                _ => Primitive::FxMulUnchecked,
+                            },
+                            fold,
+                        };
+                    }
+                }
+                return unchanged(Type {
+                    kinds: KIND_FIXNUM | KIND_BOOL_FALSE,
+                    fixnum_range: Some(Interval::TOP_FIXNUM),
+                    length_range: None,
+                    singleton: None,
+                });
+            }
+            unchanged(Type::TOP)
+        }
+
+        Primitive::FxAddUnchecked | Primitive::FxSubUnchecked | Primitive::FxMulUnchecked => {
+            if args.len() == 2 {
+                let op = match prim {
+                    Primitive::FxAddUnchecked => ArithOp::Add,
+                    Primitive::FxSubUnchecked => ArithOp::Sub,
+                    _ => ArithOp::Mul,
+                };
+                if let (Some(ia), Some(ib)) = (args[0].fixnum_range, args[1].fixnum_range) {
+                    let interval = match op {
+                        ArithOp::Add => ia.add(ib),
+                        ArithOp::Sub => ia.sub(ib),
+                        ArithOp::Mul => ia.mul(ib),
+                    };
+                    if !interval.is_empty() {
+                        let fold = fold_arith(op, &args[0], &args[1]);
+                        return PrimSpec {
+                            result: Type::from_fixnum_interval(interval),
                             prim,
                             fold,
                         };
@@ -481,7 +607,12 @@ pub(super) fn specialize_prim<'gc>(prim: Primitive, args: &[Type]) -> PrimSpec<'
         | Primitive::FxLe
         | Primitive::FxGt
         | Primitive::FxGe
-        | Primitive::FxEqU => {
+        | Primitive::FxEq
+        | Primitive::FxLtUnchecked
+        | Primitive::FxLeUnchecked
+        | Primitive::FxGtUnchecked
+        | Primitive::FxGeUnchecked
+        | Primitive::FxEqUUnchecked => {
             if args.len() == 2 {
                 let op = cmp_op(prim).expect("fixnum comparison has a cmp op");
                 if let Some(value) = fold_compare(op, &args[0], &args[1]) {
@@ -491,15 +622,76 @@ pub(super) fn specialize_prim<'gc>(prim: Primitive, args: &[Type]) -> PrimSpec<'
                         fold: Some(value),
                     };
                 }
+                if matches!(
+                    prim,
+                    Primitive::FxLt
+                        | Primitive::FxLe
+                        | Primitive::FxGt
+                        | Primitive::FxGe
+                        | Primitive::FxEq
+                ) && args[0].is_definitely_fixnum()
+                    && args[1].is_definitely_fixnum()
+                {
+                    return PrimSpec {
+                        result: boolean_type(),
+                        prim: match prim {
+                            Primitive::FxLt => Primitive::FxLtUnchecked,
+                            Primitive::FxLe => Primitive::FxLeUnchecked,
+                            Primitive::FxGt => Primitive::FxGtUnchecked,
+                            Primitive::FxGe => Primitive::FxGeUnchecked,
+                            _ => Primitive::FxEqUUnchecked,
+                        },
+                        fold: None,
+                    };
+                }
             }
             unchanged(boolean_type())
         }
 
-        Primitive::FlAdd | Primitive::FlSub | Primitive::FlMul | Primitive::FlDiv => {
+        Primitive::FlAdd
+        | Primitive::FlSub
+        | Primitive::FlMul
+        | Primitive::FlDiv
+        | Primitive::FlAddUnchecked
+        | Primitive::FlSubUnchecked
+        | Primitive::FlMulUnchecked
+        | Primitive::FlDivUnchecked => {
+            let unchecked = match prim {
+                Primitive::FlAdd | Primitive::FlAddUnchecked => Primitive::FlAddUnchecked,
+                Primitive::FlSub | Primitive::FlSubUnchecked => Primitive::FlSubUnchecked,
+                Primitive::FlMul | Primitive::FlMulUnchecked => Primitive::FlMulUnchecked,
+                _ => Primitive::FlDivUnchecked,
+            };
+            if args.len() == 2
+                && args[0].is_definitely_flonum()
+                && args[1].is_definitely_flonum()
+                && !matches!(
+                    prim,
+                    Primitive::FlAddUnchecked
+                        | Primitive::FlSubUnchecked
+                        | Primitive::FlMulUnchecked
+                        | Primitive::FlDivUnchecked
+                )
+            {
+                return PrimSpec {
+                    result: Type::kind(TypeKind::Flonum),
+                    prim: unchecked,
+                    fold: None,
+                };
+            }
             unchanged(Type::kind(TypeKind::Flonum))
         }
 
-        Primitive::FlLt | Primitive::FlLe | Primitive::FlGt | Primitive::FlGe | Primitive::FlEq => {
+        Primitive::FlLt
+        | Primitive::FlLe
+        | Primitive::FlGt
+        | Primitive::FlGe
+        | Primitive::FlEq
+        | Primitive::FlLtUnchecked
+        | Primitive::FlLeUnchecked
+        | Primitive::FlGtUnchecked
+        | Primitive::FlGeUnchecked
+        | Primitive::FlEqUnchecked => {
             if args.len() == 2 {
                 let op = cmp_op(prim).expect("flonum comparison has a cmp op");
                 if let Some(value) = fold_compare(op, &args[0], &args[1]) {
@@ -509,15 +701,56 @@ pub(super) fn specialize_prim<'gc>(prim: Primitive, args: &[Type]) -> PrimSpec<'
                         fold: Some(value),
                     };
                 }
+                if matches!(
+                    prim,
+                    Primitive::FlLt
+                        | Primitive::FlLe
+                        | Primitive::FlGt
+                        | Primitive::FlGe
+                        | Primitive::FlEq
+                ) && args[0].is_definitely_flonum()
+                    && args[1].is_definitely_flonum()
+                {
+                    return PrimSpec {
+                        result: boolean_type(),
+                        prim: match prim {
+                            Primitive::FlLt => Primitive::FlLtUnchecked,
+                            Primitive::FlLe => Primitive::FlLeUnchecked,
+                            Primitive::FlGt => Primitive::FlGtUnchecked,
+                            Primitive::FlGe => Primitive::FlGeUnchecked,
+                            _ => Primitive::FlEqUnchecked,
+                        },
+                        fold: None,
+                    };
+                }
             }
             unchanged(boolean_type())
         }
 
-        Primitive::Sqrt | Primitive::Atan => {
-            if args.first().is_some_and(|arg| arg.kinds == KIND_FLONUM) {
+        Primitive::Sqrt
+        | Primitive::Atan
+        | Primitive::Asin
+        | Primitive::Acos
+        | Primitive::Sin
+        | Primitive::Cos
+        | Primitive::Tan
+        | Primitive::Floor
+        | Primitive::Ceiling
+        | Primitive::Truncate
+        | Primitive::Abs => {
+            if args.first().is_some_and(|ty| ty.is_definitely_flonum()) {
                 let specialized = match prim {
-                    Primitive::Sqrt => Primitive::FlSqrt,
-                    _ => Primitive::FlAtan,
+                    Primitive::Sqrt => Primitive::FlSqrtUnchecked,
+                    Primitive::Atan => Primitive::FlAtanUnchecked,
+                    Primitive::Asin => Primitive::FlAsinUnchecked,
+                    Primitive::Acos => Primitive::FlAcosUnchecked,
+                    Primitive::Sin => Primitive::FlSinUnchecked,
+                    Primitive::Cos => Primitive::FlCosUnchecked,
+                    Primitive::Tan => Primitive::FlTanUnchecked,
+                    Primitive::Floor => Primitive::FlFloorUnchecked,
+                    Primitive::Ceiling => Primitive::FlCeilingUnchecked,
+                    Primitive::Truncate => Primitive::FlTruncateUnchecked,
+                    _ => Primitive::FlAbsUnchecked,
                 };
                 return PrimSpec {
                     result: Type::kind(TypeKind::Flonum),
@@ -528,7 +761,47 @@ pub(super) fn specialize_prim<'gc>(prim: Primitive, args: &[Type]) -> PrimSpec<'
             unchanged(Type::TOP)
         }
 
-        Primitive::Quotient | Primitive::Remainder => unchanged(Type::TOP),
+        Primitive::FlSqrt
+        | Primitive::FlAtan
+        | Primitive::FlAsin
+        | Primitive::FlAcos
+        | Primitive::FlSin
+        | Primitive::FlCos
+        | Primitive::FlTan
+        | Primitive::FlFloor
+        | Primitive::FlCeiling
+        | Primitive::FlTruncate
+        | Primitive::FlRound
+        | Primitive::FlAbs
+        | Primitive::FlExp
+        | Primitive::FlLog => {
+            if args.first().is_some_and(|ty| ty.is_definitely_flonum()) {
+                let unchecked = match prim {
+                    Primitive::FlSqrt => Primitive::FlSqrtUnchecked,
+                    Primitive::FlAtan => Primitive::FlAtanUnchecked,
+                    Primitive::FlAsin => Primitive::FlAsinUnchecked,
+                    Primitive::FlAcos => Primitive::FlAcosUnchecked,
+                    Primitive::FlSin => Primitive::FlSinUnchecked,
+                    Primitive::FlCos => Primitive::FlCosUnchecked,
+                    Primitive::FlTan => Primitive::FlTanUnchecked,
+                    Primitive::FlFloor => Primitive::FlFloorUnchecked,
+                    Primitive::FlCeiling => Primitive::FlCeilingUnchecked,
+                    Primitive::FlTruncate => Primitive::FlTruncateUnchecked,
+                    Primitive::FlRound => Primitive::FlRoundUnchecked,
+                    Primitive::FlAbs => Primitive::FlAbsUnchecked,
+                    Primitive::FlExp => Primitive::FlExpUnchecked,
+                    _ => Primitive::FlLogUnchecked,
+                };
+                return PrimSpec {
+                    result: Type::kind(TypeKind::Flonum),
+                    prim: unchecked,
+                    fold: None,
+                };
+            }
+            unchanged(Type::kind(TypeKind::Flonum))
+        }
+
+        Primitive::Quotient | Primitive::Remainder | Primitive::Modulo => unchanged(Type::TOP),
 
         Primitive::StringRef => PrimSpec {
             result: Type::kind(TypeKind::Char),
@@ -551,21 +824,21 @@ pub(super) fn specialize_prim<'gc>(prim: Primitive, args: &[Type]) -> PrimSpec<'
                 let op = cmp_op(prim).expect("numeric comparison has a cmp op");
                 let fold = fold_compare(op, &args[0], &args[1]);
                 let specialized =
-                    if is_definitely_fixnum(&args[0]) && is_definitely_fixnum(&args[1]) {
+                    if args[0].is_definitely_fixnum() && args[1].is_definitely_fixnum() {
                         match prim {
-                            Primitive::NumericLt => Primitive::FxLt,
-                            Primitive::NumericLte => Primitive::FxLe,
-                            Primitive::NumericGt => Primitive::FxGt,
-                            Primitive::NumericGte => Primitive::FxGe,
-                            _ => Primitive::FxEqU,
+                            Primitive::NumericLt => Primitive::FxLtUnchecked,
+                            Primitive::NumericLte => Primitive::FxLeUnchecked,
+                            Primitive::NumericGt => Primitive::FxGtUnchecked,
+                            Primitive::NumericGte => Primitive::FxGeUnchecked,
+                            _ => Primitive::FxEqUUnchecked,
                         }
-                    } else if is_definitely_flonum(&args[0]) && is_definitely_flonum(&args[1]) {
+                    } else if args[0].is_definitely_flonum() && args[1].is_definitely_flonum() {
                         match prim {
-                            Primitive::NumericLt => Primitive::FlLt,
-                            Primitive::NumericLte => Primitive::FlLe,
-                            Primitive::NumericGt => Primitive::FlGt,
-                            Primitive::NumericGte => Primitive::FlGe,
-                            _ => Primitive::FlEq,
+                            Primitive::NumericLt => Primitive::FlLtUnchecked,
+                            Primitive::NumericLte => Primitive::FlLeUnchecked,
+                            Primitive::NumericGt => Primitive::FlGtUnchecked,
+                            Primitive::NumericGte => Primitive::FlGeUnchecked,
+                            _ => Primitive::FlEqUnchecked,
                         }
                     } else {
                         prim
@@ -581,11 +854,11 @@ pub(super) fn specialize_prim<'gc>(prim: Primitive, args: &[Type]) -> PrimSpec<'
 
         // `case` expands to `eqv?`; RestLength is a fixnum, so rewrite to fx=?.
         Primitive::IsEqv => {
-            if args.len() == 2 && is_definitely_fixnum(&args[0]) && is_definitely_fixnum(&args[1]) {
+            if args.len() == 2 && args[0].is_definitely_fixnum() && args[1].is_definitely_fixnum() {
                 let fold = fold_compare(CmpOp::Eq, &args[0], &args[1]);
                 return PrimSpec {
                     result: boolean_type(),
-                    prim: Primitive::FxEqU,
+                    prim: Primitive::FxEqUUnchecked,
                     fold,
                 };
             }
@@ -593,7 +866,7 @@ pub(super) fn specialize_prim<'gc>(prim: Primitive, args: &[Type]) -> PrimSpec<'
         }
 
         Primitive::Car | Primitive::Cdr | Primitive::SetCar | Primitive::SetCdr => {
-            let definitely_pair = args.first().is_some_and(|arg| arg.kinds == KIND_PAIR);
+            let definitely_pair = args.first().is_some_and(|arg| arg.is_definitely_pair());
             let specialized = match (prim, definitely_pair) {
                 (Primitive::Car, true) => Primitive::CarUnchecked,
                 (Primitive::Cdr, true) => Primitive::CdrUnchecked,
@@ -698,7 +971,7 @@ mod tests {
 
         let spec = specialize_prim(Primitive::FxMulOvf, &[broad_nonnegative, ten]);
 
-        assert_eq!(spec.prim, Primitive::FxMulOvf);
+        assert_eq!(spec.prim, Primitive::FxMulOvfUnchecked);
         assert_eq!(spec.result.kinds, KIND_FIXNUM | KIND_BOOL_FALSE);
     }
 
@@ -712,7 +985,7 @@ mod tests {
             [minimum.clone(), negative_one.clone()],
         ] {
             let spec = specialize_prim(Primitive::FxMulOvf, &args);
-            assert_eq!(spec.prim, Primitive::FxMulOvf);
+            assert_eq!(spec.prim, Primitive::FxMulOvfUnchecked);
             assert_eq!(spec.result.kinds, KIND_FIXNUM | KIND_BOOL_FALSE);
         }
     }
@@ -723,7 +996,7 @@ mod tests {
 
         let spec = specialize_prim(Primitive::FxAddOvf, &[fixnum.clone(), fixnum]);
 
-        assert_eq!(spec.prim, Primitive::FxAddOvf);
+        assert_eq!(spec.prim, Primitive::FxAddOvfUnchecked);
         assert_eq!(spec.result.kinds, KIND_FIXNUM | KIND_BOOL_FALSE);
     }
 
@@ -733,8 +1006,18 @@ mod tests {
 
         let spec = specialize_prim(Primitive::FxSubOvf, &[fixnum.clone(), fixnum]);
 
-        assert_eq!(spec.prim, Primitive::FxSubOvf);
+        assert_eq!(spec.prim, Primitive::FxSubOvfUnchecked);
         assert_eq!(spec.result.kinds, KIND_FIXNUM | KIND_BOOL_FALSE);
+    }
+
+    #[test]
+    fn plain_fx_add_drops_checks_for_proven_fixnums_even_if_overflow_possible() {
+        let fixnum = Type::fixnum(Bound::Min, Bound::Max);
+
+        let spec = specialize_prim(Primitive::FxAdd, &[fixnum.clone(), fixnum]);
+
+        assert_eq!(spec.prim, Primitive::FxAddUnchecked);
+        assert_eq!(spec.result.kinds, KIND_FIXNUM);
     }
 
     #[test]
@@ -750,9 +1033,9 @@ mod tests {
         };
         let one = Type::constant(1);
 
-        let spec = specialize_prim(Primitive::FxAddOvf, &[mixed, one]);
+        let spec = specialize_prim(Primitive::FxAdd, &[mixed, one]);
 
-        assert_eq!(spec.prim, Primitive::FxAddOvf);
+        assert_eq!(spec.prim, Primitive::FxAdd);
     }
 
     #[test]
@@ -826,7 +1109,7 @@ mod tests {
         let minimum = Type::constant(FIXNUM_MIN);
         let negative_one = Type::constant(-1);
 
-        for prim in [Primitive::Quotient, Primitive::Remainder] {
+        for prim in [Primitive::Quotient, Primitive::Remainder, Primitive::Modulo] {
             let spec = specialize_prim(prim, &[minimum.clone(), negative_one.clone()]);
             assert_eq!(spec.prim, prim);
         }
@@ -854,12 +1137,12 @@ mod tests {
         let a = Type::constant(1);
         let b = Type::constant(1);
         let spec = specialize_prim(Primitive::IsEqv, &[a.clone(), b.clone()]);
-        assert_eq!(spec.prim, Primitive::FxEqU);
+        assert_eq!(spec.prim, Primitive::FxEqUUnchecked);
         assert_eq!(spec.fold, Some(Value::from_bool(true)));
 
         let c = Type::constant(2);
         let spec = specialize_prim(Primitive::IsEqv, &[a, c]);
-        assert_eq!(spec.prim, Primitive::FxEqU);
+        assert_eq!(spec.prim, Primitive::FxEqUUnchecked);
         assert_eq!(spec.fold, Some(Value::from_bool(false)));
 
         // Non-fixnum eqv? stays generic.

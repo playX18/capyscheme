@@ -151,22 +151,66 @@ pub enum Primitive {
     IsFixnum,
     IsFlonum,
 
-    // SBBV: overflow-checked fixnum ops
+    // SBBV: checked fixnum arith (type-check → raise; plain op)
+    FxAdd,
+    FxSub,
+    FxMul,
+
+    // SBBV: overflow-checked fixnum arith (type-check → raise; #f on overflow)
     FxAddOvf,
     FxSubOvf,
     FxMulOvf,
 
-    // SBBV: unchecked fixnum ops
-    FxAdd,
-    FxSub,
-    FxMul,
+    // SBBV: checked fixnum comparisons (type-check → raise)
     FxLt,
     FxLe,
     FxGt,
     FxGe,
-    FxEqU,
 
-    // SBBV: unchecked flonum ops
+    // SBBV: unchecked fixnum arith / comparisons
+    FxAddUnchecked,
+    FxSubUnchecked,
+    FxMulUnchecked,
+    FxAddOvfUnchecked,
+    FxSubOvfUnchecked,
+    FxMulOvfUnchecked,
+    FxLtUnchecked,
+    FxLeUnchecked,
+    FxGtUnchecked,
+    FxGeUnchecked,
+    FxEqUUnchecked,
+
+    // SBBV: checked + unchecked fixnum bitwise / shift
+    FxAnd,
+    FxIor,
+    FxXor,
+    FxNot,
+    FxAshl,
+    FxAshr,
+    FxAndUnchecked,
+    FxIorUnchecked,
+    FxXorUnchecked,
+    FxNotUnchecked,
+    FxAshlUnchecked,
+    FxAshrUnchecked,
+
+    // SBBV: checked + unchecked fixnum unary preds / minmax
+    FxZero,
+    FxPositive,
+    FxNegative,
+    FxOdd,
+    FxEven,
+    FxMin,
+    FxMax,
+    FxZeroUnchecked,
+    FxPositiveUnchecked,
+    FxNegativeUnchecked,
+    FxOddUnchecked,
+    FxEvenUnchecked,
+    FxMinUnchecked,
+    FxMaxUnchecked,
+
+    // SBBV: checked flonum ops (type-check → raise)
     FlAdd,
     FlSub,
     FlMul,
@@ -176,6 +220,63 @@ pub enum Primitive {
     FlGt,
     FlGe,
     FlEq,
+
+    // SBBV: unchecked flonum ops
+    FlAddUnchecked,
+    FlSubUnchecked,
+    FlMulUnchecked,
+    FlDivUnchecked,
+    FlLtUnchecked,
+    FlLeUnchecked,
+    FlGtUnchecked,
+    FlGeUnchecked,
+    FlEqUnchecked,
+
+    // SBBV: checked + unchecked flonum unary preds / minmax / math
+    FlZero,
+    FlPositive,
+    FlNegative,
+    FlNan,
+    FlInfinite,
+    FlFinite,
+    FlMin,
+    FlMax,
+    FlAbs,
+    FlFloor,
+    FlCeiling,
+    FlTruncate,
+    FlRound,
+    FlSin,
+    FlCos,
+    FlTan,
+    FlExp,
+    FlLog,
+    FlAsin,
+    FlAcos,
+    FlSqrt,
+    FlAtan,
+    FlZeroUnchecked,
+    FlPositiveUnchecked,
+    FlNegativeUnchecked,
+    FlNanUnchecked,
+    FlInfiniteUnchecked,
+    FlFiniteUnchecked,
+    FlMinUnchecked,
+    FlMaxUnchecked,
+    FlAbsUnchecked,
+    FlFloorUnchecked,
+    FlCeilingUnchecked,
+    FlTruncateUnchecked,
+    FlRoundUnchecked,
+    FlSinUnchecked,
+    FlCosUnchecked,
+    FlTanUnchecked,
+    FlExpUnchecked,
+    FlLogUnchecked,
+    FlAsinUnchecked,
+    FlAcosUnchecked,
+    FlSqrtUnchecked,
+    FlAtanUnchecked,
 
     // SBBV: unchecked pair/vector/string ops
     CarUnchecked,
@@ -192,10 +293,7 @@ pub enum Primitive {
     // SBBV: unchecked fixnum division
     FxQuotient,
     FxRemainder,
-
-    // SBBV: unchecked flonum unary math
-    FlSqrt,
-    FlAtan,
+    FxModulo,
 
     // SBBV: unchecked bytevector ops
     BytevectorLengthUnchecked,
@@ -331,17 +429,53 @@ impl Primitive {
         Self::DefaultRetk,
         Self::IsFixnum,
         Self::IsFlonum,
-        Self::FxAddOvf,
-        Self::FxSubOvf,
-        Self::FxMulOvf,
         Self::FxAdd,
         Self::FxSub,
         Self::FxMul,
+        Self::FxAddOvf,
+        Self::FxSubOvf,
+        Self::FxMulOvf,
         Self::FxLt,
         Self::FxLe,
         Self::FxGt,
         Self::FxGe,
-        Self::FxEqU,
+        Self::FxAddUnchecked,
+        Self::FxSubUnchecked,
+        Self::FxMulUnchecked,
+        Self::FxAddOvfUnchecked,
+        Self::FxSubOvfUnchecked,
+        Self::FxMulOvfUnchecked,
+        Self::FxLtUnchecked,
+        Self::FxLeUnchecked,
+        Self::FxGtUnchecked,
+        Self::FxGeUnchecked,
+        Self::FxEqUUnchecked,
+        Self::FxAnd,
+        Self::FxIor,
+        Self::FxXor,
+        Self::FxNot,
+        Self::FxAshl,
+        Self::FxAshr,
+        Self::FxAndUnchecked,
+        Self::FxIorUnchecked,
+        Self::FxXorUnchecked,
+        Self::FxNotUnchecked,
+        Self::FxAshlUnchecked,
+        Self::FxAshrUnchecked,
+        Self::FxZero,
+        Self::FxPositive,
+        Self::FxNegative,
+        Self::FxOdd,
+        Self::FxEven,
+        Self::FxMin,
+        Self::FxMax,
+        Self::FxZeroUnchecked,
+        Self::FxPositiveUnchecked,
+        Self::FxNegativeUnchecked,
+        Self::FxOddUnchecked,
+        Self::FxEvenUnchecked,
+        Self::FxMinUnchecked,
+        Self::FxMaxUnchecked,
         Self::FlAdd,
         Self::FlSub,
         Self::FlMul,
@@ -351,6 +485,59 @@ impl Primitive {
         Self::FlGt,
         Self::FlGe,
         Self::FlEq,
+        Self::FlAddUnchecked,
+        Self::FlSubUnchecked,
+        Self::FlMulUnchecked,
+        Self::FlDivUnchecked,
+        Self::FlLtUnchecked,
+        Self::FlLeUnchecked,
+        Self::FlGtUnchecked,
+        Self::FlGeUnchecked,
+        Self::FlEqUnchecked,
+        Self::FlZero,
+        Self::FlPositive,
+        Self::FlNegative,
+        Self::FlNan,
+        Self::FlInfinite,
+        Self::FlFinite,
+        Self::FlMin,
+        Self::FlMax,
+        Self::FlAbs,
+        Self::FlFloor,
+        Self::FlCeiling,
+        Self::FlTruncate,
+        Self::FlRound,
+        Self::FlSin,
+        Self::FlCos,
+        Self::FlTan,
+        Self::FlExp,
+        Self::FlLog,
+        Self::FlAsin,
+        Self::FlAcos,
+        Self::FlSqrt,
+        Self::FlAtan,
+        Self::FlZeroUnchecked,
+        Self::FlPositiveUnchecked,
+        Self::FlNegativeUnchecked,
+        Self::FlNanUnchecked,
+        Self::FlInfiniteUnchecked,
+        Self::FlFiniteUnchecked,
+        Self::FlMinUnchecked,
+        Self::FlMaxUnchecked,
+        Self::FlAbsUnchecked,
+        Self::FlFloorUnchecked,
+        Self::FlCeilingUnchecked,
+        Self::FlTruncateUnchecked,
+        Self::FlRoundUnchecked,
+        Self::FlSinUnchecked,
+        Self::FlCosUnchecked,
+        Self::FlTanUnchecked,
+        Self::FlExpUnchecked,
+        Self::FlLogUnchecked,
+        Self::FlAsinUnchecked,
+        Self::FlAcosUnchecked,
+        Self::FlSqrtUnchecked,
+        Self::FlAtanUnchecked,
         Self::CarUnchecked,
         Self::CdrUnchecked,
         Self::SetCarUnchecked,
@@ -363,8 +550,7 @@ impl Primitive {
         Self::StringRefUnchecked,
         Self::FxQuotient,
         Self::FxRemainder,
-        Self::FlSqrt,
-        Self::FlAtan,
+        Self::FxModulo,
         Self::BytevectorLengthUnchecked,
         Self::BytevectorU8RefUnchecked,
     ];
@@ -488,26 +674,115 @@ impl Primitive {
             "#%default-retk" => Some(Self::DefaultRetk),
             "fixnum?" => Some(Self::IsFixnum),
             "flonum?" => Some(Self::IsFlonum),
+            "fx+" => Some(Self::FxAdd),
+            "fx-" => Some(Self::FxSub),
+            "fx*" => Some(Self::FxMul),
             "fx+/ovf?" => Some(Self::FxAddOvf),
             "fx-/ovf?" => Some(Self::FxSubOvf),
             "fx*/ovf?" => Some(Self::FxMulOvf),
-            "fx+/unchecked" => Some(Self::FxAdd),
-            "fx-/unchecked" => Some(Self::FxSub),
-            "fx*/unchecked" => Some(Self::FxMul),
-            "fx</unchecked" => Some(Self::FxLt),
-            "fx<=/unchecked" => Some(Self::FxLe),
-            "fx>/unchecked" => Some(Self::FxGt),
-            "fx>=/unchecked" => Some(Self::FxGe),
-            "fx=/unchecked" => Some(Self::FxEqU),
-            "fl+/unchecked" => Some(Self::FlAdd),
-            "fl-/unchecked" => Some(Self::FlSub),
-            "fl*/unchecked" => Some(Self::FlMul),
-            "fl//unchecked" => Some(Self::FlDiv),
-            "fl</unchecked" => Some(Self::FlLt),
-            "fl<=/unchecked" => Some(Self::FlLe),
-            "fl>/unchecked" => Some(Self::FlGt),
-            "fl>=/unchecked" => Some(Self::FlGe),
-            "fl=/unchecked" => Some(Self::FlEq),
+            "fx<?" => Some(Self::FxLt),
+            "fx<=?" => Some(Self::FxLe),
+            "fx>?" => Some(Self::FxGt),
+            "fx>=?" => Some(Self::FxGe),
+            "fx+/unchecked" => Some(Self::FxAddUnchecked),
+            "fx-/unchecked" => Some(Self::FxSubUnchecked),
+            "fx*/unchecked" => Some(Self::FxMulUnchecked),
+            "fx+/ovf?/unchecked" => Some(Self::FxAddOvfUnchecked),
+            "fx-/ovf?/unchecked" => Some(Self::FxSubOvfUnchecked),
+            "fx*/ovf?/unchecked" => Some(Self::FxMulOvfUnchecked),
+            "fx</unchecked" => Some(Self::FxLtUnchecked),
+            "fx<=/unchecked" => Some(Self::FxLeUnchecked),
+            "fx>/unchecked" => Some(Self::FxGtUnchecked),
+            "fx>=/unchecked" => Some(Self::FxGeUnchecked),
+            "fx=/unchecked" => Some(Self::FxEqUUnchecked),
+            "fxand" => Some(Self::FxAnd),
+            "fxior" => Some(Self::FxIor),
+            "fxxor" => Some(Self::FxXor),
+            "fxnot" => Some(Self::FxNot),
+            "fxarithmetic-shift-left" => Some(Self::FxAshl),
+            "fxarithmetic-shift-right" => Some(Self::FxAshr),
+            "fxand/unchecked" => Some(Self::FxAndUnchecked),
+            "fxior/unchecked" => Some(Self::FxIorUnchecked),
+            "fxxor/unchecked" => Some(Self::FxXorUnchecked),
+            "fxnot/unchecked" => Some(Self::FxNotUnchecked),
+            "fxarithmetic-shift-left/unchecked" => Some(Self::FxAshlUnchecked),
+            "fxarithmetic-shift-right/unchecked" => Some(Self::FxAshrUnchecked),
+            "fxzero?" => Some(Self::FxZero),
+            "fxpositive?" => Some(Self::FxPositive),
+            "fxnegative?" => Some(Self::FxNegative),
+            "fxodd?" => Some(Self::FxOdd),
+            "fxeven?" => Some(Self::FxEven),
+            "fxmin" => Some(Self::FxMin),
+            "fxmax" => Some(Self::FxMax),
+            "fxzero?/unchecked" => Some(Self::FxZeroUnchecked),
+            "fxpositive?/unchecked" => Some(Self::FxPositiveUnchecked),
+            "fxnegative?/unchecked" => Some(Self::FxNegativeUnchecked),
+            "fxodd?/unchecked" => Some(Self::FxOddUnchecked),
+            "fxeven?/unchecked" => Some(Self::FxEvenUnchecked),
+            "fxmin/unchecked" => Some(Self::FxMinUnchecked),
+            "fxmax/unchecked" => Some(Self::FxMaxUnchecked),
+            "fl+" => Some(Self::FlAdd),
+            "fl-" => Some(Self::FlSub),
+            "fl*" => Some(Self::FlMul),
+            "fl/" => Some(Self::FlDiv),
+            "fl<?" => Some(Self::FlLt),
+            "fl<=?" => Some(Self::FlLe),
+            "fl>?" => Some(Self::FlGt),
+            "fl>=?" => Some(Self::FlGe),
+            "fl=?" => Some(Self::FlEq),
+            "fl+/unchecked" => Some(Self::FlAddUnchecked),
+            "fl-/unchecked" => Some(Self::FlSubUnchecked),
+            "fl*/unchecked" => Some(Self::FlMulUnchecked),
+            "fl//unchecked" => Some(Self::FlDivUnchecked),
+            "fl</unchecked" => Some(Self::FlLtUnchecked),
+            "fl<=/unchecked" => Some(Self::FlLeUnchecked),
+            "fl>/unchecked" => Some(Self::FlGtUnchecked),
+            "fl>=/unchecked" => Some(Self::FlGeUnchecked),
+            "fl=/unchecked" => Some(Self::FlEqUnchecked),
+            "flzero?" => Some(Self::FlZero),
+            "flpositive?" => Some(Self::FlPositive),
+            "flnegative?" => Some(Self::FlNegative),
+            "flnan?" => Some(Self::FlNan),
+            "flinfinite?" => Some(Self::FlInfinite),
+            "flfinite?" => Some(Self::FlFinite),
+            "flmin" => Some(Self::FlMin),
+            "flmax" => Some(Self::FlMax),
+            "flabs" => Some(Self::FlAbs),
+            "flfloor" => Some(Self::FlFloor),
+            "flceiling" => Some(Self::FlCeiling),
+            "fltruncate" => Some(Self::FlTruncate),
+            "flround" => Some(Self::FlRound),
+            "flsin" => Some(Self::FlSin),
+            "flcos" => Some(Self::FlCos),
+            "fltan" => Some(Self::FlTan),
+            "flexp" => Some(Self::FlExp),
+            "fllog" => Some(Self::FlLog),
+            "flasin" => Some(Self::FlAsin),
+            "flacos" => Some(Self::FlAcos),
+            "flsqrt" => Some(Self::FlSqrt),
+            "flatan" => Some(Self::FlAtan),
+            "flzero?/unchecked" => Some(Self::FlZeroUnchecked),
+            "flpositive?/unchecked" => Some(Self::FlPositiveUnchecked),
+            "flnegative?/unchecked" => Some(Self::FlNegativeUnchecked),
+            "flnan?/unchecked" => Some(Self::FlNanUnchecked),
+            "flinfinite?/unchecked" => Some(Self::FlInfiniteUnchecked),
+            "flfinite?/unchecked" => Some(Self::FlFiniteUnchecked),
+            "flmin/unchecked" => Some(Self::FlMinUnchecked),
+            "flmax/unchecked" => Some(Self::FlMaxUnchecked),
+            "flabs/unchecked" => Some(Self::FlAbsUnchecked),
+            "flfloor/unchecked" => Some(Self::FlFloorUnchecked),
+            "flceiling/unchecked" => Some(Self::FlCeilingUnchecked),
+            "fltruncate/unchecked" => Some(Self::FlTruncateUnchecked),
+            "flround/unchecked" => Some(Self::FlRoundUnchecked),
+            "flsin/unchecked" => Some(Self::FlSinUnchecked),
+            "flcos/unchecked" => Some(Self::FlCosUnchecked),
+            "fltan/unchecked" => Some(Self::FlTanUnchecked),
+            "flexp/unchecked" => Some(Self::FlExpUnchecked),
+            "fllog/unchecked" => Some(Self::FlLogUnchecked),
+            "flasin/unchecked" => Some(Self::FlAsinUnchecked),
+            "flacos/unchecked" => Some(Self::FlAcosUnchecked),
+            "flsqrt/unchecked" => Some(Self::FlSqrtUnchecked),
+            "flatan/unchecked" => Some(Self::FlAtanUnchecked),
             "car/unchecked" => Some(Self::CarUnchecked),
             "cdr/unchecked" => Some(Self::CdrUnchecked),
             "set-car!/unchecked" => Some(Self::SetCarUnchecked),
@@ -520,10 +795,12 @@ impl Primitive {
             "string-ref/unchecked" => Some(Self::StringRefUnchecked),
             "quotient/unchecked" => Some(Self::FxQuotient),
             "remainder/unchecked" => Some(Self::FxRemainder),
-            "flsqrt/unchecked" => Some(Self::FlSqrt),
-            "flatan/unchecked" => Some(Self::FlAtan),
+            "modulo/unchecked" => Some(Self::FxModulo),
             "bytevector-length/unchecked" => Some(Self::BytevectorLengthUnchecked),
             "bytevector-u8-ref/unchecked" => Some(Self::BytevectorU8RefUnchecked),
+            "fxlogand" => Some(Self::FxAnd),
+            "fxlogior" => Some(Self::FxIor),
+            "fxlogxor" => Some(Self::FxXor),
             _ => None,
         }
     }
@@ -647,26 +924,115 @@ impl Primitive {
             Self::DefaultRetk => "#%default-retk",
             Self::IsFixnum => "fixnum?",
             Self::IsFlonum => "flonum?",
+            Self::FxAdd => "fx+",
+            Self::FxSub => "fx-",
+            Self::FxMul => "fx*",
             Self::FxAddOvf => "fx+/ovf?",
             Self::FxSubOvf => "fx-/ovf?",
             Self::FxMulOvf => "fx*/ovf?",
-            Self::FxAdd => "fx+/unchecked",
-            Self::FxSub => "fx-/unchecked",
-            Self::FxMul => "fx*/unchecked",
-            Self::FxLt => "fx</unchecked",
-            Self::FxLe => "fx<=/unchecked",
-            Self::FxGt => "fx>/unchecked",
-            Self::FxGe => "fx>=/unchecked",
-            Self::FxEqU => "fx=/unchecked",
-            Self::FlAdd => "fl+/unchecked",
-            Self::FlSub => "fl-/unchecked",
-            Self::FlMul => "fl*/unchecked",
-            Self::FlDiv => "fl//unchecked",
-            Self::FlLt => "fl</unchecked",
-            Self::FlLe => "fl<=/unchecked",
-            Self::FlGt => "fl>/unchecked",
-            Self::FlGe => "fl>=/unchecked",
-            Self::FlEq => "fl=/unchecked",
+            Self::FxLt => "fx<?",
+            Self::FxLe => "fx<=?",
+            Self::FxGt => "fx>?",
+            Self::FxGe => "fx>=?",
+            Self::FxAddUnchecked => "fx+/unchecked",
+            Self::FxSubUnchecked => "fx-/unchecked",
+            Self::FxMulUnchecked => "fx*/unchecked",
+            Self::FxAddOvfUnchecked => "fx+/ovf?/unchecked",
+            Self::FxSubOvfUnchecked => "fx-/ovf?/unchecked",
+            Self::FxMulOvfUnchecked => "fx*/ovf?/unchecked",
+            Self::FxLtUnchecked => "fx</unchecked",
+            Self::FxLeUnchecked => "fx<=/unchecked",
+            Self::FxGtUnchecked => "fx>/unchecked",
+            Self::FxGeUnchecked => "fx>=/unchecked",
+            Self::FxEqUUnchecked => "fx=/unchecked",
+            Self::FxAnd => "fxand",
+            Self::FxIor => "fxior",
+            Self::FxXor => "fxxor",
+            Self::FxNot => "fxnot",
+            Self::FxAshl => "fxarithmetic-shift-left",
+            Self::FxAshr => "fxarithmetic-shift-right",
+            Self::FxAndUnchecked => "fxand/unchecked",
+            Self::FxIorUnchecked => "fxior/unchecked",
+            Self::FxXorUnchecked => "fxxor/unchecked",
+            Self::FxNotUnchecked => "fxnot/unchecked",
+            Self::FxAshlUnchecked => "fxarithmetic-shift-left/unchecked",
+            Self::FxAshrUnchecked => "fxarithmetic-shift-right/unchecked",
+            Self::FxZero => "fxzero?",
+            Self::FxPositive => "fxpositive?",
+            Self::FxNegative => "fxnegative?",
+            Self::FxOdd => "fxodd?",
+            Self::FxEven => "fxeven?",
+            Self::FxMin => "fxmin",
+            Self::FxMax => "fxmax",
+            Self::FxZeroUnchecked => "fxzero?/unchecked",
+            Self::FxPositiveUnchecked => "fxpositive?/unchecked",
+            Self::FxNegativeUnchecked => "fxnegative?/unchecked",
+            Self::FxOddUnchecked => "fxodd?/unchecked",
+            Self::FxEvenUnchecked => "fxeven?/unchecked",
+            Self::FxMinUnchecked => "fxmin/unchecked",
+            Self::FxMaxUnchecked => "fxmax/unchecked",
+            Self::FlAdd => "fl+",
+            Self::FlSub => "fl-",
+            Self::FlMul => "fl*",
+            Self::FlDiv => "fl/",
+            Self::FlLt => "fl<?",
+            Self::FlLe => "fl<=?",
+            Self::FlGt => "fl>?",
+            Self::FlGe => "fl>=?",
+            Self::FlEq => "fl=?",
+            Self::FlAddUnchecked => "fl+/unchecked",
+            Self::FlSubUnchecked => "fl-/unchecked",
+            Self::FlMulUnchecked => "fl*/unchecked",
+            Self::FlDivUnchecked => "fl//unchecked",
+            Self::FlLtUnchecked => "fl</unchecked",
+            Self::FlLeUnchecked => "fl<=/unchecked",
+            Self::FlGtUnchecked => "fl>/unchecked",
+            Self::FlGeUnchecked => "fl>=/unchecked",
+            Self::FlEqUnchecked => "fl=/unchecked",
+            Self::FlZero => "flzero?",
+            Self::FlPositive => "flpositive?",
+            Self::FlNegative => "flnegative?",
+            Self::FlNan => "flnan?",
+            Self::FlInfinite => "flinfinite?",
+            Self::FlFinite => "flfinite?",
+            Self::FlMin => "flmin",
+            Self::FlMax => "flmax",
+            Self::FlAbs => "flabs",
+            Self::FlFloor => "flfloor",
+            Self::FlCeiling => "flceiling",
+            Self::FlTruncate => "fltruncate",
+            Self::FlRound => "flround",
+            Self::FlSin => "flsin",
+            Self::FlCos => "flcos",
+            Self::FlTan => "fltan",
+            Self::FlExp => "flexp",
+            Self::FlLog => "fllog",
+            Self::FlAsin => "flasin",
+            Self::FlAcos => "flacos",
+            Self::FlSqrt => "flsqrt",
+            Self::FlAtan => "flatan",
+            Self::FlZeroUnchecked => "flzero?/unchecked",
+            Self::FlPositiveUnchecked => "flpositive?/unchecked",
+            Self::FlNegativeUnchecked => "flnegative?/unchecked",
+            Self::FlNanUnchecked => "flnan?/unchecked",
+            Self::FlInfiniteUnchecked => "flinfinite?/unchecked",
+            Self::FlFiniteUnchecked => "flfinite?/unchecked",
+            Self::FlMinUnchecked => "flmin/unchecked",
+            Self::FlMaxUnchecked => "flmax/unchecked",
+            Self::FlAbsUnchecked => "flabs/unchecked",
+            Self::FlFloorUnchecked => "flfloor/unchecked",
+            Self::FlCeilingUnchecked => "flceiling/unchecked",
+            Self::FlTruncateUnchecked => "fltruncate/unchecked",
+            Self::FlRoundUnchecked => "flround/unchecked",
+            Self::FlSinUnchecked => "flsin/unchecked",
+            Self::FlCosUnchecked => "flcos/unchecked",
+            Self::FlTanUnchecked => "fltan/unchecked",
+            Self::FlExpUnchecked => "flexp/unchecked",
+            Self::FlLogUnchecked => "fllog/unchecked",
+            Self::FlAsinUnchecked => "flasin/unchecked",
+            Self::FlAcosUnchecked => "flacos/unchecked",
+            Self::FlSqrtUnchecked => "flsqrt/unchecked",
+            Self::FlAtanUnchecked => "flatan/unchecked",
             Self::CarUnchecked => "car/unchecked",
             Self::CdrUnchecked => "cdr/unchecked",
             Self::SetCarUnchecked => "set-car!/unchecked",
@@ -679,8 +1045,7 @@ impl Primitive {
             Self::StringRefUnchecked => "string-ref/unchecked",
             Self::FxQuotient => "quotient/unchecked",
             Self::FxRemainder => "remainder/unchecked",
-            Self::FlSqrt => "flsqrt/unchecked",
-            Self::FlAtan => "flatan/unchecked",
+            Self::FxModulo => "modulo/unchecked",
             Self::BytevectorLengthUnchecked => "bytevector-length/unchecked",
             Self::BytevectorU8RefUnchecked => "bytevector-u8-ref/unchecked",
         }
@@ -812,50 +1177,130 @@ impl Primitive {
             Self::DefaultRetk => misc::lower_default_retk(ssa, args, source),
             Self::IsFixnum => unchecked::lower_is_fixnum(ssa, args, source),
             Self::IsFlonum => unchecked::lower_is_flonum(ssa, args, source),
-            Self::FxAddOvf => unchecked::lower_fx_add_ovf(ssa, args, source),
-            Self::FxSubOvf => unchecked::lower_fx_sub_ovf(ssa, args, source),
-            Self::FxMulOvf => unchecked::lower_fx_mul_ovf(ssa, args, source),
-            Self::FxAdd => unchecked::lower_fx_add(ssa, args, source),
-            Self::FxSub => unchecked::lower_fx_sub(ssa, args, source),
-            Self::FxMul => unchecked::lower_fx_mul(ssa, args, source),
-            Self::FxLt => unchecked::lower_fx_lt(ssa, args, source),
-            Self::FxLe => unchecked::lower_fx_le(ssa, args, source),
-            Self::FxGt => unchecked::lower_fx_gt(ssa, args, source),
-            Self::FxGe => unchecked::lower_fx_ge(ssa, args, source),
-            Self::FxEqU => unchecked::lower_fx_eq_unchecked(ssa, args, source),
-            Self::FlAdd => unchecked::lower_fl_add(ssa, args, source),
-            Self::FlSub => unchecked::lower_fl_sub(ssa, args, source),
-            Self::FlMul => unchecked::lower_fl_mul(ssa, args, source),
-            Self::FlDiv => unchecked::lower_fl_div(ssa, args, source),
-            Self::FlLt => unchecked::lower_fl_lt(ssa, args, source),
-            Self::FlLe => unchecked::lower_fl_le(ssa, args, source),
-            Self::FlGt => unchecked::lower_fl_gt(ssa, args, source),
-            Self::FlGe => unchecked::lower_fl_ge(ssa, args, source),
-            Self::FlEq => unchecked::lower_fl_eq(ssa, args, source),
+            Self::FxAdd => unchecked::lower_fx_add_checked(ssa, args, source),
+            Self::FxSub => unchecked::lower_fx_sub_checked(ssa, args, source),
+            Self::FxMul => unchecked::lower_fx_mul_checked(ssa, args, source),
+            Self::FxAddOvf => unchecked::lower_fx_add_ovf_checked(ssa, args, source),
+            Self::FxSubOvf => unchecked::lower_fx_sub_ovf_checked(ssa, args, source),
+            Self::FxMulOvf => unchecked::lower_fx_mul_ovf_checked(ssa, args, source),
+            Self::FxLt => unchecked::lower_fx_lt_checked(ssa, args, source),
+            Self::FxLe => unchecked::lower_fx_le_checked(ssa, args, source),
+            Self::FxGt => unchecked::lower_fx_gt_checked(ssa, args, source),
+            Self::FxGe => unchecked::lower_fx_ge_checked(ssa, args, source),
+            Self::FxAddUnchecked => unchecked::lower_fx_add(ssa, args, source),
+            Self::FxSubUnchecked => unchecked::lower_fx_sub(ssa, args, source),
+            Self::FxMulUnchecked => unchecked::lower_fx_mul(ssa, args, source),
+            Self::FxAddOvfUnchecked => unchecked::lower_fx_add_ovf(ssa, args, source),
+            Self::FxSubOvfUnchecked => unchecked::lower_fx_sub_ovf(ssa, args, source),
+            Self::FxMulOvfUnchecked => unchecked::lower_fx_mul_ovf(ssa, args, source),
+            Self::FxLtUnchecked => unchecked::lower_fx_lt(ssa, args, source),
+            Self::FxLeUnchecked => unchecked::lower_fx_le(ssa, args, source),
+            Self::FxGtUnchecked => unchecked::lower_fx_gt(ssa, args, source),
+            Self::FxGeUnchecked => unchecked::lower_fx_ge(ssa, args, source),
+            Self::FxEqUUnchecked => unchecked::lower_fx_eq_unchecked(ssa, args, source),
+            Self::FxAnd => unchecked::lower_fx_and_checked(ssa, args, source),
+            Self::FxIor => unchecked::lower_fx_ior_checked(ssa, args, source),
+            Self::FxXor => unchecked::lower_fx_xor_checked(ssa, args, source),
+            Self::FxNot => unchecked::lower_fx_not_checked(ssa, args, source),
+            Self::FxAshl => unchecked::lower_fx_ashl_checked(ssa, args, source),
+            Self::FxAshr => unchecked::lower_fx_ashr_checked(ssa, args, source),
+            Self::FxAndUnchecked => unchecked::lower_fx_and(ssa, args, source),
+            Self::FxIorUnchecked => unchecked::lower_fx_ior(ssa, args, source),
+            Self::FxXorUnchecked => unchecked::lower_fx_xor(ssa, args, source),
+            Self::FxNotUnchecked => unchecked::lower_fx_not(ssa, args, source),
+            Self::FxAshlUnchecked => unchecked::lower_fx_ashl(ssa, args, source),
+            Self::FxAshrUnchecked => unchecked::lower_fx_ashr(ssa, args, source),
+            Self::FxZero => unchecked::lower_fx_zero_checked(ssa, args, source),
+            Self::FxPositive => unchecked::lower_fx_positive_checked(ssa, args, source),
+            Self::FxNegative => unchecked::lower_fx_negative_checked(ssa, args, source),
+            Self::FxOdd => unchecked::lower_fx_odd_checked(ssa, args, source),
+            Self::FxEven => unchecked::lower_fx_even_checked(ssa, args, source),
+            Self::FxMin => unchecked::lower_fx_min_checked(ssa, args, source),
+            Self::FxMax => unchecked::lower_fx_max_checked(ssa, args, source),
+            Self::FxZeroUnchecked => unchecked::lower_fx_zero(ssa, args, source),
+            Self::FxPositiveUnchecked => unchecked::lower_fx_positive(ssa, args, source),
+            Self::FxNegativeUnchecked => unchecked::lower_fx_negative(ssa, args, source),
+            Self::FxOddUnchecked => unchecked::lower_fx_odd(ssa, args, source),
+            Self::FxEvenUnchecked => unchecked::lower_fx_even(ssa, args, source),
+            Self::FxMinUnchecked => unchecked::lower_fx_min(ssa, args, source),
+            Self::FxMaxUnchecked => unchecked::lower_fx_max(ssa, args, source),
+            Self::FlAdd => unchecked::lower_fl_add_checked(ssa, args, source),
+            Self::FlSub => unchecked::lower_fl_sub_checked(ssa, args, source),
+            Self::FlMul => unchecked::lower_fl_mul_checked(ssa, args, source),
+            Self::FlDiv => unchecked::lower_fl_div_checked(ssa, args, source),
+            Self::FlLt => unchecked::lower_fl_lt_checked(ssa, args, source),
+            Self::FlLe => unchecked::lower_fl_le_checked(ssa, args, source),
+            Self::FlGt => unchecked::lower_fl_gt_checked(ssa, args, source),
+            Self::FlGe => unchecked::lower_fl_ge_checked(ssa, args, source),
+            Self::FlEq => unchecked::lower_fl_eq_checked(ssa, args, source),
+            Self::FlAddUnchecked => unchecked::lower_fl_add(ssa, args, source),
+            Self::FlSubUnchecked => unchecked::lower_fl_sub(ssa, args, source),
+            Self::FlMulUnchecked => unchecked::lower_fl_mul(ssa, args, source),
+            Self::FlDivUnchecked => unchecked::lower_fl_div(ssa, args, source),
+            Self::FlLtUnchecked => unchecked::lower_fl_lt(ssa, args, source),
+            Self::FlLeUnchecked => unchecked::lower_fl_le(ssa, args, source),
+            Self::FlGtUnchecked => unchecked::lower_fl_gt(ssa, args, source),
+            Self::FlGeUnchecked => unchecked::lower_fl_ge(ssa, args, source),
+            Self::FlEqUnchecked => unchecked::lower_fl_eq(ssa, args, source),
+            Self::FlZero => unchecked::lower_fl_zero_checked(ssa, args, source),
+            Self::FlPositive => unchecked::lower_fl_positive_checked(ssa, args, source),
+            Self::FlNegative => unchecked::lower_fl_negative_checked(ssa, args, source),
+            Self::FlNan => unchecked::lower_fl_nan_checked(ssa, args, source),
+            Self::FlInfinite => unchecked::lower_fl_infinite_checked(ssa, args, source),
+            Self::FlFinite => unchecked::lower_fl_finite_checked(ssa, args, source),
+            Self::FlMin => unchecked::lower_fl_min_checked(ssa, args, source),
+            Self::FlMax => unchecked::lower_fl_max_checked(ssa, args, source),
+            Self::FlAbs => unchecked::lower_fl_abs_checked(ssa, args, source),
+            Self::FlFloor => unchecked::lower_fl_floor_checked(ssa, args, source),
+            Self::FlCeiling => unchecked::lower_fl_ceiling_checked(ssa, args, source),
+            Self::FlTruncate => unchecked::lower_fl_truncate_checked(ssa, args, source),
+            Self::FlRound => unchecked::lower_fl_round_checked(ssa, args, source),
+            Self::FlSin => unchecked::lower_fl_sin_checked(ssa, args, source),
+            Self::FlCos => unchecked::lower_fl_cos_checked(ssa, args, source),
+            Self::FlTan => unchecked::lower_fl_tan_checked(ssa, args, source),
+            Self::FlExp => unchecked::lower_fl_exp_checked(ssa, args, source),
+            Self::FlLog => unchecked::lower_fl_log_checked(ssa, args, source),
+            Self::FlAsin => unchecked::lower_fl_asin_checked(ssa, args, source),
+            Self::FlAcos => unchecked::lower_fl_acos_checked(ssa, args, source),
+            Self::FlSqrt => unchecked::lower_fl_sqrt_checked(ssa, args, source),
+            Self::FlAtan => unchecked::lower_fl_atan_checked(ssa, args, source),
+            Self::FlZeroUnchecked => unchecked::lower_fl_zero(ssa, args, source),
+            Self::FlPositiveUnchecked => unchecked::lower_fl_positive(ssa, args, source),
+            Self::FlNegativeUnchecked => unchecked::lower_fl_negative(ssa, args, source),
+            Self::FlNanUnchecked => unchecked::lower_fl_nan(ssa, args, source),
+            Self::FlInfiniteUnchecked => unchecked::lower_fl_infinite(ssa, args, source),
+            Self::FlFiniteUnchecked => unchecked::lower_fl_finite(ssa, args, source),
+            Self::FlMinUnchecked => unchecked::lower_fl_min(ssa, args, source),
+            Self::FlMaxUnchecked => unchecked::lower_fl_max(ssa, args, source),
+            Self::FlAbsUnchecked => unchecked::lower_fl_abs(ssa, args, source),
+            Self::FlFloorUnchecked => unchecked::lower_fl_floor(ssa, args, source),
+            Self::FlCeilingUnchecked => unchecked::lower_fl_ceiling(ssa, args, source),
+            Self::FlTruncateUnchecked => unchecked::lower_fl_truncate(ssa, args, source),
+            Self::FlRoundUnchecked => unchecked::lower_fl_round(ssa, args, source),
+            Self::FlSinUnchecked => unchecked::lower_fl_sin(ssa, args, source),
+            Self::FlCosUnchecked => unchecked::lower_fl_cos(ssa, args, source),
+            Self::FlTanUnchecked => unchecked::lower_fl_tan(ssa, args, source),
+            Self::FlExpUnchecked => unchecked::lower_fl_exp(ssa, args, source),
+            Self::FlLogUnchecked => unchecked::lower_fl_log(ssa, args, source),
+            Self::FlAsinUnchecked => unchecked::lower_fl_asin(ssa, args, source),
+            Self::FlAcosUnchecked => unchecked::lower_fl_acos(ssa, args, source),
+            Self::FlSqrtUnchecked => unchecked::lower_fl_sqrt(ssa, args, source),
+            Self::FlAtanUnchecked => unchecked::lower_fl_atan(ssa, args, source),
             Self::CarUnchecked => unchecked::lower_car_unchecked(ssa, args, source),
             Self::CdrUnchecked => unchecked::lower_cdr_unchecked(ssa, args, source),
             Self::SetCarUnchecked => unchecked::lower_set_car_unchecked(ssa, args, source),
             Self::SetCdrUnchecked => unchecked::lower_set_cdr_unchecked(ssa, args, source),
             Self::VectorRefUnchecked => unchecked::lower_vector_ref_unchecked(ssa, args, source),
             Self::VectorSetUnchecked => unchecked::lower_vector_set_unchecked(ssa, args, source),
-            Self::VectorLengthUnchecked => {
-                unchecked::lower_vector_length_unchecked(ssa, args, source)
-            }
+            Self::VectorLengthUnchecked => unchecked::lower_vector_length_unchecked(ssa, args, source),
             Self::CharToIntUnchecked => unchecked::lower_char_to_int_unchecked(ssa, args, source),
-            Self::StringLengthUnchecked => {
-                unchecked::lower_string_length_unchecked(ssa, args, source)
-            }
+            Self::StringLengthUnchecked => unchecked::lower_string_length_unchecked(ssa, args, source),
             Self::StringRefUnchecked => unchecked::lower_string_ref_unchecked(ssa, args, source),
             Self::FxQuotient => unchecked::lower_fx_quotient(ssa, args, source),
             Self::FxRemainder => unchecked::lower_fx_remainder(ssa, args, source),
-            Self::FlSqrt => unchecked::lower_fl_sqrt(ssa, args, source),
-            Self::FlAtan => unchecked::lower_fl_atan(ssa, args, source),
-            Self::BytevectorLengthUnchecked => {
-                unchecked::lower_bytevector_length_unchecked(ssa, args, source)
-            }
-            Self::BytevectorU8RefUnchecked => {
-                unchecked::lower_bytevector_u8_ref_unchecked(ssa, args, source)
-            }
+            Self::FxModulo => unchecked::lower_fx_modulo(ssa, args, source),
+            Self::BytevectorLengthUnchecked => unchecked::lower_bytevector_length_unchecked(ssa, args, source),
+            Self::BytevectorU8RefUnchecked => unchecked::lower_bytevector_u8_ref_unchecked(ssa, args, source),
         }
     }
 }
@@ -1145,150 +1590,133 @@ impl<'gc> PrimitiveLowerer<'gc> {
         );
         map.insert(Symbol::from_str(ctx, "fixnum?").into(), Primitive::IsFixnum);
         map.insert(Symbol::from_str(ctx, "flonum?").into(), Primitive::IsFlonum);
-        map.insert(
-            Symbol::from_str(ctx, "fx+/ovf?").into(),
-            Primitive::FxAddOvf,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "fx-/ovf?").into(),
-            Primitive::FxSubOvf,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "fx*/ovf?").into(),
-            Primitive::FxMulOvf,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "fx+/unchecked").into(),
-            Primitive::FxAdd,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "fx-/unchecked").into(),
-            Primitive::FxSub,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "fx*/unchecked").into(),
-            Primitive::FxMul,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "fx</unchecked").into(),
-            Primitive::FxLt,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "fx<=/unchecked").into(),
-            Primitive::FxLe,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "fx>/unchecked").into(),
-            Primitive::FxGt,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "fx>=/unchecked").into(),
-            Primitive::FxGe,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "fx=/unchecked").into(),
-            Primitive::FxEqU,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "fl+/unchecked").into(),
-            Primitive::FlAdd,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "fl-/unchecked").into(),
-            Primitive::FlSub,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "fl*/unchecked").into(),
-            Primitive::FlMul,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "fl//unchecked").into(),
-            Primitive::FlDiv,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "fl</unchecked").into(),
-            Primitive::FlLt,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "fl<=/unchecked").into(),
-            Primitive::FlLe,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "fl>/unchecked").into(),
-            Primitive::FlGt,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "fl>=/unchecked").into(),
-            Primitive::FlGe,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "fl=/unchecked").into(),
-            Primitive::FlEq,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "car/unchecked").into(),
-            Primitive::CarUnchecked,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "cdr/unchecked").into(),
-            Primitive::CdrUnchecked,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "set-car!/unchecked").into(),
-            Primitive::SetCarUnchecked,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "set-cdr!/unchecked").into(),
-            Primitive::SetCdrUnchecked,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "vector-ref/unchecked").into(),
-            Primitive::VectorRefUnchecked,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "vector-set!/unchecked").into(),
-            Primitive::VectorSetUnchecked,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "vector-length/unchecked").into(),
-            Primitive::VectorLengthUnchecked,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "char->integer/unchecked").into(),
-            Primitive::CharToIntUnchecked,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "string-length/unchecked").into(),
-            Primitive::StringLengthUnchecked,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "string-ref/unchecked").into(),
-            Primitive::StringRefUnchecked,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "quotient/unchecked").into(),
-            Primitive::FxQuotient,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "remainder/unchecked").into(),
-            Primitive::FxRemainder,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "flsqrt/unchecked").into(),
-            Primitive::FlSqrt,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "flatan/unchecked").into(),
-            Primitive::FlAtan,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "bytevector-length/unchecked").into(),
-            Primitive::BytevectorLengthUnchecked,
-        );
-        map.insert(
-            Symbol::from_str(ctx, "bytevector-u8-ref/unchecked").into(),
-            Primitive::BytevectorU8RefUnchecked,
-        );
+        map.insert(Symbol::from_str(ctx, "fx+").into(), Primitive::FxAdd);
+        map.insert(Symbol::from_str(ctx, "fx-").into(), Primitive::FxSub);
+        map.insert(Symbol::from_str(ctx, "fx*").into(), Primitive::FxMul);
+        map.insert(Symbol::from_str(ctx, "fx+/ovf?").into(), Primitive::FxAddOvf);
+        map.insert(Symbol::from_str(ctx, "fx-/ovf?").into(), Primitive::FxSubOvf);
+        map.insert(Symbol::from_str(ctx, "fx*/ovf?").into(), Primitive::FxMulOvf);
+        map.insert(Symbol::from_str(ctx, "fx<?").into(), Primitive::FxLt);
+        map.insert(Symbol::from_str(ctx, "fx<=?").into(), Primitive::FxLe);
+        map.insert(Symbol::from_str(ctx, "fx>?").into(), Primitive::FxGt);
+        map.insert(Symbol::from_str(ctx, "fx>=?").into(), Primitive::FxGe);
+        map.insert(Symbol::from_str(ctx, "fx+/unchecked").into(), Primitive::FxAddUnchecked);
+        map.insert(Symbol::from_str(ctx, "fx-/unchecked").into(), Primitive::FxSubUnchecked);
+        map.insert(Symbol::from_str(ctx, "fx*/unchecked").into(), Primitive::FxMulUnchecked);
+        map.insert(Symbol::from_str(ctx, "fx+/ovf?/unchecked").into(), Primitive::FxAddOvfUnchecked);
+        map.insert(Symbol::from_str(ctx, "fx-/ovf?/unchecked").into(), Primitive::FxSubOvfUnchecked);
+        map.insert(Symbol::from_str(ctx, "fx*/ovf?/unchecked").into(), Primitive::FxMulOvfUnchecked);
+        map.insert(Symbol::from_str(ctx, "fx</unchecked").into(), Primitive::FxLtUnchecked);
+        map.insert(Symbol::from_str(ctx, "fx<=/unchecked").into(), Primitive::FxLeUnchecked);
+        map.insert(Symbol::from_str(ctx, "fx>/unchecked").into(), Primitive::FxGtUnchecked);
+        map.insert(Symbol::from_str(ctx, "fx>=/unchecked").into(), Primitive::FxGeUnchecked);
+        map.insert(Symbol::from_str(ctx, "fx=/unchecked").into(), Primitive::FxEqUUnchecked);
+        map.insert(Symbol::from_str(ctx, "fxand").into(), Primitive::FxAnd);
+        map.insert(Symbol::from_str(ctx, "fxior").into(), Primitive::FxIor);
+        map.insert(Symbol::from_str(ctx, "fxxor").into(), Primitive::FxXor);
+        map.insert(Symbol::from_str(ctx, "fxnot").into(), Primitive::FxNot);
+        map.insert(Symbol::from_str(ctx, "fxarithmetic-shift-left").into(), Primitive::FxAshl);
+        map.insert(Symbol::from_str(ctx, "fxarithmetic-shift-right").into(), Primitive::FxAshr);
+        map.insert(Symbol::from_str(ctx, "fxand/unchecked").into(), Primitive::FxAndUnchecked);
+        map.insert(Symbol::from_str(ctx, "fxior/unchecked").into(), Primitive::FxIorUnchecked);
+        map.insert(Symbol::from_str(ctx, "fxxor/unchecked").into(), Primitive::FxXorUnchecked);
+        map.insert(Symbol::from_str(ctx, "fxnot/unchecked").into(), Primitive::FxNotUnchecked);
+        map.insert(Symbol::from_str(ctx, "fxarithmetic-shift-left/unchecked").into(), Primitive::FxAshlUnchecked);
+        map.insert(Symbol::from_str(ctx, "fxarithmetic-shift-right/unchecked").into(), Primitive::FxAshrUnchecked);
+        map.insert(Symbol::from_str(ctx, "fxzero?").into(), Primitive::FxZero);
+        map.insert(Symbol::from_str(ctx, "fxpositive?").into(), Primitive::FxPositive);
+        map.insert(Symbol::from_str(ctx, "fxnegative?").into(), Primitive::FxNegative);
+        map.insert(Symbol::from_str(ctx, "fxodd?").into(), Primitive::FxOdd);
+        map.insert(Symbol::from_str(ctx, "fxeven?").into(), Primitive::FxEven);
+        map.insert(Symbol::from_str(ctx, "fxmin").into(), Primitive::FxMin);
+        map.insert(Symbol::from_str(ctx, "fxmax").into(), Primitive::FxMax);
+        map.insert(Symbol::from_str(ctx, "fxzero?/unchecked").into(), Primitive::FxZeroUnchecked);
+        map.insert(Symbol::from_str(ctx, "fxpositive?/unchecked").into(), Primitive::FxPositiveUnchecked);
+        map.insert(Symbol::from_str(ctx, "fxnegative?/unchecked").into(), Primitive::FxNegativeUnchecked);
+        map.insert(Symbol::from_str(ctx, "fxodd?/unchecked").into(), Primitive::FxOddUnchecked);
+        map.insert(Symbol::from_str(ctx, "fxeven?/unchecked").into(), Primitive::FxEvenUnchecked);
+        map.insert(Symbol::from_str(ctx, "fxmin/unchecked").into(), Primitive::FxMinUnchecked);
+        map.insert(Symbol::from_str(ctx, "fxmax/unchecked").into(), Primitive::FxMaxUnchecked);
+        map.insert(Symbol::from_str(ctx, "fl+").into(), Primitive::FlAdd);
+        map.insert(Symbol::from_str(ctx, "fl-").into(), Primitive::FlSub);
+        map.insert(Symbol::from_str(ctx, "fl*").into(), Primitive::FlMul);
+        map.insert(Symbol::from_str(ctx, "fl/").into(), Primitive::FlDiv);
+        map.insert(Symbol::from_str(ctx, "fl<?").into(), Primitive::FlLt);
+        map.insert(Symbol::from_str(ctx, "fl<=?").into(), Primitive::FlLe);
+        map.insert(Symbol::from_str(ctx, "fl>?").into(), Primitive::FlGt);
+        map.insert(Symbol::from_str(ctx, "fl>=?").into(), Primitive::FlGe);
+        map.insert(Symbol::from_str(ctx, "fl=?").into(), Primitive::FlEq);
+        map.insert(Symbol::from_str(ctx, "fl+/unchecked").into(), Primitive::FlAddUnchecked);
+        map.insert(Symbol::from_str(ctx, "fl-/unchecked").into(), Primitive::FlSubUnchecked);
+        map.insert(Symbol::from_str(ctx, "fl*/unchecked").into(), Primitive::FlMulUnchecked);
+        map.insert(Symbol::from_str(ctx, "fl//unchecked").into(), Primitive::FlDivUnchecked);
+        map.insert(Symbol::from_str(ctx, "fl</unchecked").into(), Primitive::FlLtUnchecked);
+        map.insert(Symbol::from_str(ctx, "fl<=/unchecked").into(), Primitive::FlLeUnchecked);
+        map.insert(Symbol::from_str(ctx, "fl>/unchecked").into(), Primitive::FlGtUnchecked);
+        map.insert(Symbol::from_str(ctx, "fl>=/unchecked").into(), Primitive::FlGeUnchecked);
+        map.insert(Symbol::from_str(ctx, "fl=/unchecked").into(), Primitive::FlEqUnchecked);
+        map.insert(Symbol::from_str(ctx, "flzero?").into(), Primitive::FlZero);
+        map.insert(Symbol::from_str(ctx, "flpositive?").into(), Primitive::FlPositive);
+        map.insert(Symbol::from_str(ctx, "flnegative?").into(), Primitive::FlNegative);
+        map.insert(Symbol::from_str(ctx, "flnan?").into(), Primitive::FlNan);
+        map.insert(Symbol::from_str(ctx, "flinfinite?").into(), Primitive::FlInfinite);
+        map.insert(Symbol::from_str(ctx, "flfinite?").into(), Primitive::FlFinite);
+        map.insert(Symbol::from_str(ctx, "flmin").into(), Primitive::FlMin);
+        map.insert(Symbol::from_str(ctx, "flmax").into(), Primitive::FlMax);
+        map.insert(Symbol::from_str(ctx, "flabs").into(), Primitive::FlAbs);
+        map.insert(Symbol::from_str(ctx, "flfloor").into(), Primitive::FlFloor);
+        map.insert(Symbol::from_str(ctx, "flceiling").into(), Primitive::FlCeiling);
+        map.insert(Symbol::from_str(ctx, "fltruncate").into(), Primitive::FlTruncate);
+        map.insert(Symbol::from_str(ctx, "flround").into(), Primitive::FlRound);
+        map.insert(Symbol::from_str(ctx, "flsin").into(), Primitive::FlSin);
+        map.insert(Symbol::from_str(ctx, "flcos").into(), Primitive::FlCos);
+        map.insert(Symbol::from_str(ctx, "fltan").into(), Primitive::FlTan);
+        map.insert(Symbol::from_str(ctx, "flexp").into(), Primitive::FlExp);
+        map.insert(Symbol::from_str(ctx, "fllog").into(), Primitive::FlLog);
+        map.insert(Symbol::from_str(ctx, "flasin").into(), Primitive::FlAsin);
+        map.insert(Symbol::from_str(ctx, "flacos").into(), Primitive::FlAcos);
+        map.insert(Symbol::from_str(ctx, "flsqrt").into(), Primitive::FlSqrt);
+        map.insert(Symbol::from_str(ctx, "flatan").into(), Primitive::FlAtan);
+        map.insert(Symbol::from_str(ctx, "flzero?/unchecked").into(), Primitive::FlZeroUnchecked);
+        map.insert(Symbol::from_str(ctx, "flpositive?/unchecked").into(), Primitive::FlPositiveUnchecked);
+        map.insert(Symbol::from_str(ctx, "flnegative?/unchecked").into(), Primitive::FlNegativeUnchecked);
+        map.insert(Symbol::from_str(ctx, "flnan?/unchecked").into(), Primitive::FlNanUnchecked);
+        map.insert(Symbol::from_str(ctx, "flinfinite?/unchecked").into(), Primitive::FlInfiniteUnchecked);
+        map.insert(Symbol::from_str(ctx, "flfinite?/unchecked").into(), Primitive::FlFiniteUnchecked);
+        map.insert(Symbol::from_str(ctx, "flmin/unchecked").into(), Primitive::FlMinUnchecked);
+        map.insert(Symbol::from_str(ctx, "flmax/unchecked").into(), Primitive::FlMaxUnchecked);
+        map.insert(Symbol::from_str(ctx, "flabs/unchecked").into(), Primitive::FlAbsUnchecked);
+        map.insert(Symbol::from_str(ctx, "flfloor/unchecked").into(), Primitive::FlFloorUnchecked);
+        map.insert(Symbol::from_str(ctx, "flceiling/unchecked").into(), Primitive::FlCeilingUnchecked);
+        map.insert(Symbol::from_str(ctx, "fltruncate/unchecked").into(), Primitive::FlTruncateUnchecked);
+        map.insert(Symbol::from_str(ctx, "flround/unchecked").into(), Primitive::FlRoundUnchecked);
+        map.insert(Symbol::from_str(ctx, "flsin/unchecked").into(), Primitive::FlSinUnchecked);
+        map.insert(Symbol::from_str(ctx, "flcos/unchecked").into(), Primitive::FlCosUnchecked);
+        map.insert(Symbol::from_str(ctx, "fltan/unchecked").into(), Primitive::FlTanUnchecked);
+        map.insert(Symbol::from_str(ctx, "flexp/unchecked").into(), Primitive::FlExpUnchecked);
+        map.insert(Symbol::from_str(ctx, "fllog/unchecked").into(), Primitive::FlLogUnchecked);
+        map.insert(Symbol::from_str(ctx, "flasin/unchecked").into(), Primitive::FlAsinUnchecked);
+        map.insert(Symbol::from_str(ctx, "flacos/unchecked").into(), Primitive::FlAcosUnchecked);
+        map.insert(Symbol::from_str(ctx, "flsqrt/unchecked").into(), Primitive::FlSqrtUnchecked);
+        map.insert(Symbol::from_str(ctx, "flatan/unchecked").into(), Primitive::FlAtanUnchecked);
+        map.insert(Symbol::from_str(ctx, "car/unchecked").into(), Primitive::CarUnchecked);
+        map.insert(Symbol::from_str(ctx, "cdr/unchecked").into(), Primitive::CdrUnchecked);
+        map.insert(Symbol::from_str(ctx, "set-car!/unchecked").into(), Primitive::SetCarUnchecked);
+        map.insert(Symbol::from_str(ctx, "set-cdr!/unchecked").into(), Primitive::SetCdrUnchecked);
+        map.insert(Symbol::from_str(ctx, "vector-ref/unchecked").into(), Primitive::VectorRefUnchecked);
+        map.insert(Symbol::from_str(ctx, "vector-set!/unchecked").into(), Primitive::VectorSetUnchecked);
+        map.insert(Symbol::from_str(ctx, "vector-length/unchecked").into(), Primitive::VectorLengthUnchecked);
+        map.insert(Symbol::from_str(ctx, "char->integer/unchecked").into(), Primitive::CharToIntUnchecked);
+        map.insert(Symbol::from_str(ctx, "string-length/unchecked").into(), Primitive::StringLengthUnchecked);
+        map.insert(Symbol::from_str(ctx, "string-ref/unchecked").into(), Primitive::StringRefUnchecked);
+        map.insert(Symbol::from_str(ctx, "quotient/unchecked").into(), Primitive::FxQuotient);
+        map.insert(Symbol::from_str(ctx, "remainder/unchecked").into(), Primitive::FxRemainder);
+        map.insert(Symbol::from_str(ctx, "modulo/unchecked").into(), Primitive::FxModulo);
+        map.insert(Symbol::from_str(ctx, "bytevector-length/unchecked").into(), Primitive::BytevectorLengthUnchecked);
+        map.insert(Symbol::from_str(ctx, "bytevector-u8-ref/unchecked").into(), Primitive::BytevectorU8RefUnchecked);
+        map.insert(Symbol::from_str(ctx, "fxlogand").into(), Primitive::FxAnd);
+        map.insert(Symbol::from_str(ctx, "fxlogior").into(), Primitive::FxIor);
+        map.insert(Symbol::from_str(ctx, "fxlogxor").into(), Primitive::FxXor);
         Self { map }
     }
 

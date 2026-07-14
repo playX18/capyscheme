@@ -1,5 +1,7 @@
 use super::*;
 use crate::compiler::cranelift::primitive::Primitive;
+
+/// Lower primcalls for cache access into direct cache instructions.
 pub(super) fn lower_cache_operations<'gc>(mut procedure: Procedure<'gc>) -> Procedure<'gc> {
     for block in &mut procedure.blocks {
         let mut lowered = Vec::with_capacity(block.instructions.len());

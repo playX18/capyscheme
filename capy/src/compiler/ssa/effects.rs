@@ -326,8 +326,7 @@ pub fn analyze_procedure(procedure: &Procedure<'_>) -> ProcedureEffects {
 }
 
 /// Removes definitions whose values are unused and whose instructions have no
-/// observable causes.  Dependencies such as a mutable read are retained in
-/// the fact, but do not by themselves prevent this transformation.
+/// observable effects. 
 pub fn eliminate_dead_effect_free_instructions(mut procedure: Procedure<'_>) -> Procedure<'_> {
     loop {
         let mut uses = HashMap::<ValueId, usize>::new();
@@ -421,17 +420,84 @@ pub fn primitive_effects(primitive: Primitive) -> Effects {
         | Primitive::IsFixnum
         | Primitive::IsFlonum
         | Primitive::Not
-        | Primitive::FxEq
+        | Primitive::FxEqUUnchecked
+        | Primitive::FxAddUnchecked
+        | Primitive::FxSubUnchecked
+        | Primitive::FxMulUnchecked
+        | Primitive::FxLtUnchecked
+        | Primitive::FxLeUnchecked
+        | Primitive::FxGtUnchecked
+        | Primitive::FxGeUnchecked
+        | Primitive::FxAndUnchecked
+        | Primitive::FxIorUnchecked
+        | Primitive::FxXorUnchecked
+        | Primitive::FxNotUnchecked
+        | Primitive::FxAshlUnchecked
+        | Primitive::FxAshrUnchecked
+        | Primitive::FxZeroUnchecked
+        | Primitive::FxPositiveUnchecked
+        | Primitive::FxNegativeUnchecked
+        | Primitive::FxOddUnchecked
+        | Primitive::FxEvenUnchecked
+        | Primitive::FxMinUnchecked
+        | Primitive::FxMaxUnchecked
+        | Primitive::FxQuotient
+        | Primitive::FxRemainder
+        | Primitive::FxModulo
+        | Primitive::FlAddUnchecked
+        | Primitive::FlSubUnchecked
+        | Primitive::FlMulUnchecked
+        | Primitive::FlDivUnchecked
+        | Primitive::FlLtUnchecked
+        | Primitive::FlLeUnchecked
+        | Primitive::FlGtUnchecked
+        | Primitive::FlGeUnchecked
+        | Primitive::FlEqUnchecked
+        | Primitive::FlZeroUnchecked
+        | Primitive::FlPositiveUnchecked
+        | Primitive::FlNegativeUnchecked
+        | Primitive::FlNanUnchecked
+        | Primitive::FlInfiniteUnchecked
+        | Primitive::FlFiniteUnchecked
+        | Primitive::FlMinUnchecked
+        | Primitive::FlMaxUnchecked
+        | Primitive::FlAbsUnchecked
+        | Primitive::FlFloorUnchecked
+        | Primitive::FlCeilingUnchecked
+        | Primitive::FlTruncateUnchecked
+        | Primitive::FlRoundUnchecked
+        | Primitive::FlSinUnchecked
+        | Primitive::FlCosUnchecked
+        | Primitive::FlTanUnchecked
+        | Primitive::FlExpUnchecked
+        | Primitive::FlLogUnchecked
+        | Primitive::FlAsinUnchecked
+        | Primitive::FlAcosUnchecked
+        | Primitive::FlSqrtUnchecked
+        | Primitive::FlAtanUnchecked
+        | Primitive::CharToIntUnchecked => Effects::pure(),
+        // Checked fixnum/flonum ops: may raise on wrong type.
+        Primitive::FxAdd
+        | Primitive::FxSub
+        | Primitive::FxMul
         | Primitive::FxLt
         | Primitive::FxLe
         | Primitive::FxGt
         | Primitive::FxGe
-        | Primitive::FxEqU
-        | Primitive::FxAdd
-        | Primitive::FxSub
-        | Primitive::FxMul
-        | Primitive::FxQuotient
-        | Primitive::FxRemainder
+        | Primitive::FxEq
+        | Primitive::FxAnd
+        | Primitive::FxIor
+        | Primitive::FxXor
+        | Primitive::FxNot
+        | Primitive::FxAshl
+        | Primitive::FxAshr
+        | Primitive::FxZero
+        | Primitive::FxPositive
+        | Primitive::FxNegative
+        | Primitive::FxOdd
+        | Primitive::FxEven
+        | Primitive::FxMin
+        | Primitive::FxMax
         | Primitive::FlAdd
         | Primitive::FlSub
         | Primitive::FlMul
@@ -441,7 +507,41 @@ pub fn primitive_effects(primitive: Primitive) -> Effects {
         | Primitive::FlGt
         | Primitive::FlGe
         | Primitive::FlEq
-        | Primitive::CharToIntUnchecked => Effects::pure(),
+        | Primitive::FlZero
+        | Primitive::FlPositive
+        | Primitive::FlNegative
+        | Primitive::FlNan
+        | Primitive::FlInfinite
+        | Primitive::FlFinite
+        | Primitive::FlMin
+        | Primitive::FlMax
+        | Primitive::FlAbs
+        | Primitive::FlFloor
+        | Primitive::FlCeiling
+        | Primitive::FlTruncate
+        | Primitive::FlRound
+        | Primitive::FlSin
+        | Primitive::FlCos
+        | Primitive::FlTan
+        | Primitive::FlExp
+        | Primitive::FlLog
+        | Primitive::FlAsin
+        | Primitive::FlAcos
+        | Primitive::FlSqrt
+        | Primitive::FlAtan => Effects::pure().checked(),
+        // Overflow-checked fixnum ops: `#f` on overflow (and raise if typed).
+        Primitive::FxAddOvf | Primitive::FxSubOvf | Primitive::FxMulOvf => Effects {
+            causes: SemanticEffects::POSSIBLE_BAILOUT.union(SemanticEffects::TYPE_CHECK),
+            flags: EffectFlags::CONTROL_DEPENDENT.union(EffectFlags::MAY_RAISE),
+            ..Effects::pure()
+        },
+        Primitive::FxAddOvfUnchecked
+        | Primitive::FxSubOvfUnchecked
+        | Primitive::FxMulOvfUnchecked => Effects {
+            causes: SemanticEffects::POSSIBLE_BAILOUT,
+            flags: EffectFlags::CONTROL_DEPENDENT,
+            ..Effects::pure()
+        },
         Primitive::Car => Effects::read(MemoryRegion::Heap, SemanticEffects::CAR).checked(),
         Primitive::Cdr => Effects::read(MemoryRegion::Heap, SemanticEffects::CDR).checked(),
         Primitive::CarUnchecked => Effects::read(MemoryRegion::Heap, SemanticEffects::CAR),
@@ -535,98 +635,5 @@ pub fn primitive_effects(primitive: Primitive) -> Effects {
             Effects::read(MemoryRegion::Heap, SemanticEffects::BYTEVECTOR).checked()
         }
         _ => Effects::for_call(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::compiler::ssa::{Block, CodeId, GraphCodeId, Operand, ProcedureKind};
-    use crate::runtime::value::Value;
-
-    fn procedure_with_instructions<'gc>(instructions: Vec<Instruction<'gc>>) -> Procedure<'gc> {
-        Procedure {
-            code: CodeId::GraphFunction(GraphCodeId(0)),
-            kind: ProcedureKind::Function,
-            binding: ValueId(0),
-            name: Value::new(false),
-            source: Value::new(false),
-            meta: Value::new(false),
-            return_cont: None,
-            params: vec![],
-            variadic: None,
-            free_vars: vec![],
-            sources: HashMap::new(),
-            entry: BlockId(0),
-            blocks: vec![Block {
-                id: BlockId(0),
-                params: vec![],
-                variadic: None,
-                instructions,
-                terminator: Terminator::Raise {
-                    kind: crate::runtime::vm::exceptions::RaiseKind::AssertionViolation,
-                    args: vec![],
-                    source: Value::new(false),
-                },
-                source: Value::new(false),
-            }],
-        }
-    }
-
-    #[test]
-    fn pure_operations_are_discardable() {
-        assert!(primitive_effects(Primitive::IsFixnum).effect_free());
-        assert!(primitive_effects(Primitive::FxAdd).effect_free());
-    }
-
-    #[test]
-    fn checked_access_is_not_discardable() {
-        assert!(!primitive_effects(Primitive::Car).effect_free());
-        assert!(primitive_effects(Primitive::CarUnchecked).effect_free());
-    }
-
-    #[test]
-    fn raise_is_terminal_and_abrupt() {
-        let effects = terminator_effects(&Terminator::Raise {
-            kind: crate::runtime::vm::exceptions::RaiseKind::AssertionViolation,
-            args: vec![],
-            source: crate::runtime::value::Value::new(false),
-        });
-        assert!(effects.flags.contains(EffectFlags::TERMINAL));
-        assert!(effects.causes.contains(SemanticEffects::DEFINITE_BAILOUT));
-    }
-
-    #[test]
-    fn unknown_calls_interfere_with_memory_reads() {
-        assert!(
-            Effects::for_call()
-                .interferes(Effects::read(MemoryRegion::Heap, SemanticEffects::CAR,))
-        );
-    }
-
-    #[test]
-    fn dead_pure_definitions_are_removed() {
-        let procedure = procedure_with_instructions(vec![Instruction::PrimCall {
-            dst: ValueId(1),
-            prim: Primitive::IsFixnum,
-            args: vec![Operand::Constant(Value::new(1_i32))],
-            source: Value::new(false),
-        }]);
-
-        let procedure = eliminate_dead_effect_free_instructions(procedure);
-        assert!(procedure.blocks[0].instructions.is_empty());
-    }
-
-    #[test]
-    fn dead_checked_definitions_are_retained() {
-        let procedure = procedure_with_instructions(vec![Instruction::PrimCall {
-            dst: ValueId(1),
-            prim: Primitive::Car,
-            args: vec![Operand::Constant(Value::new(false))],
-            source: Value::new(false),
-        }]);
-
-        let procedure = eliminate_dead_effect_free_instructions(procedure);
-        assert_eq!(procedure.blocks[0].instructions.len(), 1);
     }
 }

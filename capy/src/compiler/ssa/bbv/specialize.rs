@@ -1247,8 +1247,7 @@ impl<'gc> Specializer<'gc> {
         successor
     }
 
-    // --- finalization ------------------------------------------------------
-
+    
     fn finalize(
         &mut self,
         entry_new: BlockId,
@@ -1296,8 +1295,6 @@ impl<'gc> Specializer<'gc> {
         (renumber[&self.resolve(entry)], blocks, annotations)
     }
 }
-
-// --- free helpers ---------------------------------------------------------
 
 fn atom_type<'gc>(atom: &Operand<'gc>, ctx: &TypeContext) -> Type {
     match atom {
@@ -1623,10 +1620,10 @@ mod tests {
                 matches!(
                     instruction,
                     Instruction::PrimCall {
-                        prim: Primitive::FxAdd,
+                        prim: Primitive::FxAddUnchecked,
                         ..
                     } | Instruction::PrimCall {
-                        prim: Primitive::FxAddOvf,
+                        prim: Primitive::FxAddOvfUnchecked,
                         ..
                     }
                 )

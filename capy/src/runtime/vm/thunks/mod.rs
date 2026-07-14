@@ -558,6 +558,14 @@ thunks! {
         numbers::atan(ctx, n)
     }
 
+    pub fn exp(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+        numbers::exp(ctx, n)
+    }
+
+    pub fn log(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+        numbers::log(ctx, n)
+    }
+
     pub fn atan2(ctx: Context<'gc>, y: Value<'gc>, x: Value<'gc>) -> ThunkResult<'gc> {
         numbers::atan2(ctx, y, x)
     }

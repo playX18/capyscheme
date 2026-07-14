@@ -1033,6 +1033,44 @@ pub fn atan<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
     }
 }
 
+pub fn exp<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    let Some(n) = n.number() else {
+        return ThunkResult {
+            code: 1,
+            value: make_assertion_violation(
+                ctx,
+                Symbol::from_str(ctx, "exp").into(),
+                Str::new(*ctx, "not a number", true).into(),
+                &[n],
+            ),
+        };
+    };
+
+    ThunkResult {
+        code: 0,
+        value: Number::exp(ctx, n).into_value(ctx),
+    }
+}
+
+pub fn log<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    let Some(n) = n.number() else {
+        return ThunkResult {
+            code: 1,
+            value: make_assertion_violation(
+                ctx,
+                Symbol::from_str(ctx, "log").into(),
+                Str::new(*ctx, "not a number", true).into(),
+                &[n],
+            ),
+        };
+    };
+
+    ThunkResult {
+        code: 0,
+        value: Number::log(ctx, n).into_value(ctx),
+    }
+}
+
 pub fn atan2<'gc>(ctx: Context<'gc>, y: Value<'gc>, x: Value<'gc>) -> ThunkResult<'gc> {
     let Some(y) = y.number() else {
         return ThunkResult {
