@@ -123,6 +123,7 @@
 
 ### 🐛 Bug Fixes
 
+- *(bbv)* Paper algo more closely implemented - ([91e94e7](https://codeberg.org/playXE/capy/commit/91e94e7c2d7497d5040a2751b86d6a5051b9d0e5))
 - *(boot)* Add inf?, $set-attachments! and $winders wrapper functions - ([f113334](https://codeberg.org/playXE/capy/commit/f11333434a9702c25ec2e8806256f93396339ff3))
 - *(boot)* Make accessor and mutator for records safe - ([59a95d6](https://codeberg.org/playXE/capy/commit/59a95d694c2ca39100bbde5f4a5f4104512acbba))
 - *(capy/gc)* Mutator always used 8 bytes alignment, use max(alignment, 8) - ([b536b2b](https://codeberg.org/playXE/capy/commit/b536b2b3f9a4df6b5b72a10ae66bb32d8d3af6cd))
@@ -168,6 +169,7 @@
 - *(repl)* Open regular repl on non TTY ports - ([0c8d87f](https://codeberg.org/playXE/capy/commit/0c8d87f8167fbbc79d2a8180888acfadac1fb848))
 - *(repl)* Import core control - ([539a5b1](https://codeberg.org/playXE/capy/commit/539a5b1f217c8f01da64cc21d7f470eb88fb2af5))
 - *(runtime)* Aarch64 and riscv64 stubs - ([3e16f7f](https://codeberg.org/playXE/capy/commit/3e16f7feea15c848b49825f9bae903a784f0ef15))
+- *(sbbv)* Propagate type facts through not - ([071a57b](https://codeberg.org/playXE/capy/commit/071a57b000d78739fe93439ba2caa86a7303f4da))
 - *(sbbv)* Preserve rest lists and optimize Rest* under SBBV - ([b672981](https://codeberg.org/playXE/capy/commit/b672981574ca564743e62c9d5f4ad7f1450554ab))
 - *(tests)* Letrectify outputs letrec* - ([baaeb64](https://codeberg.org/playXE/capy/commit/baaeb64e059dfd8e61d17391e77c16cbb132690f))
 - *(threading)* Wait for thread to be in %thread-join-data - ([da930e1](https://codeberg.org/playXE/capy/commit/da930e1fd842576699fb3af6abdfb23f2af1f5cc))
