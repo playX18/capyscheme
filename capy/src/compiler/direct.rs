@@ -1,6 +1,7 @@
 use cranelift_codegen::{FinalizedRelocTarget, binemit::Reloc, entity::PrimaryMap, ir};
 
-use crate::compiler::codegen::{CompileContext, Symbol};
+use crate::compiler::codegen::{CompileContext, ImportKind, ImportedSymbol, Symbol};
+use crate::runtime::vm::thunks::RuntimeThunk;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompiledFunction {
@@ -83,6 +84,23 @@ fn direct_relocation_target(
                 .map(Target::Symbol)
                 .ok_or_else(|| "unknown code symbol namespace in relocation".to_string())
         }
+        FinalizedRelocTarget::ExternalName(ir::ExternalName::LibCall(libcall)) => {
+            let thunk = match libcall {
+                ir::LibCall::CeilF64 => RuntimeThunk::Thunk_fl_ceiling,
+                ir::LibCall::FloorF64 => RuntimeThunk::Thunk_fl_floor,
+                ir::LibCall::TruncF64 => RuntimeThunk::Thunk_fl_truncate,
+                ir::LibCall::NearestF64 => RuntimeThunk::Thunk_fl_round,
+                _ => {
+                    return Err(format!(
+                        "unsupported external relocation target: {libcall:?}"
+                    ));
+                }
+            };
+            Ok(Target::Symbol(Symbol::imported(
+                ImportKind::RuntimeThunk,
+                ImportedSymbol::new(thunk.id()),
+            )))
+        }
         FinalizedRelocTarget::ExternalName(name) => {
             Err(format!("unsupported external relocation target: {name:?}"))
         }
@@ -93,6 +111,14 @@ fn direct_relocation_target(
 fn trivial_i64_signature() -> ir::Signature {
     let mut sig = ir::Signature::new(cranelift_codegen::isa::CallConv::SystemV);
     sig.returns.push(ir::AbiParam::new(ir::types::I64));
+    sig
+}
+
+#[cfg(test)]
+fn trivial_f64_signature() -> ir::Signature {
+    let mut sig = ir::Signature::new(cranelift_codegen::isa::CallConv::SystemV);
+    sig.params.push(ir::AbiParam::new(ir::types::F64));
+    sig.returns.push(ir::AbiParam::new(ir::types::F64));
     sig
 }
 
@@ -167,6 +193,38 @@ mod tests {
     }
 
     #[test]
+    fn direct_compile_maps_f64_rounding_libcall() {
+        let isa = host_isa();
+        let mut cache = CompileContext::new();
+        cache.ctx.func = Function::with_name_signature(
+            cranelift_codegen::ir::UserFuncName::user(0, 2),
+            trivial_f64_signature(),
+        );
+
+        {
+            let mut builder = FunctionBuilder::new(&mut cache.ctx.func, &mut cache.builder_ctx);
+            let entry = builder.create_block();
+            builder.append_block_params_for_function_params(entry);
+            builder.switch_to_block(entry);
+            let input = builder.block_params(entry)[0];
+            let rounded = builder.ins().ceil(input);
+            builder.ins().return_(&[rounded]);
+            builder.seal_all_blocks();
+            builder.finalize();
+        }
+
+        let compiled = compile_function(&*isa, &mut cache).expect("compile f64 rounding function");
+
+        assert!(compiled.relocs.iter().any(|reloc| {
+            reloc.target
+                == Target::Symbol(Symbol::imported(
+                    ImportKind::RuntimeThunk,
+                    ImportedSymbol::new(RuntimeThunk::Thunk_fl_ceiling.id()),
+                ))
+        }));
+    }
+
+    #[test]
     fn direct_relocations_preserve_runtime_thunk_ids_without_names() {
         use crate::{
             compiler::codegen::{ImportKind, ImportedSymbol, Symbol},
@@ -191,5 +249,31 @@ mod tests {
                 ImportedSymbol::new(thunk_id),
             ))
         );
+    }
+
+    #[test]
+    fn direct_rounding_libcalls_use_runtime_thunks() {
+        let names = PrimaryMap::new();
+        let cases = [
+            (ir::LibCall::CeilF64, RuntimeThunk::Thunk_fl_ceiling),
+            (ir::LibCall::FloorF64, RuntimeThunk::Thunk_fl_floor),
+            (ir::LibCall::TruncF64, RuntimeThunk::Thunk_fl_truncate),
+            (ir::LibCall::NearestF64, RuntimeThunk::Thunk_fl_round),
+        ];
+
+        for (libcall, thunk) in cases {
+            let target = direct_relocation_target(
+                &names,
+                &FinalizedRelocTarget::ExternalName(ir::ExternalName::LibCall(libcall)),
+            )
+            .expect("rounding libcall should use a runtime thunk");
+            assert_eq!(
+                target,
+                Target::Symbol(Symbol::imported(
+                    ImportKind::RuntimeThunk,
+                    ImportedSymbol::new(thunk.id()),
+                ))
+            );
+        }
     }
 }

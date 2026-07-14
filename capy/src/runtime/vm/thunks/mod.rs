@@ -171,6 +171,12 @@ pub mod compiler {
         }
     }
 
+    impl PrimType for f64 {
+        fn clif_type() -> impl Iterator<Item = ir::Type> {
+            std::iter::once(ir::types::F64)
+        }
+    }
+
     impl PrimType for Value<'_> {
         fn clif_type() -> impl Iterator<Item = ir::Type> {
             std::iter::once(ir::types::I64)
@@ -750,6 +756,22 @@ thunks! {
         header_word: usize,
         size: usize) -> Value<'gc> {
         gc::alloc_with_header_word(ctx, header_word, size)
+    }
+
+    pub fn fl_ceiling(x: f64) -> f64 {
+        libm::ceil(x)
+    }
+
+    pub fn fl_floor(x: f64) -> f64 {
+        libm::floor(x)
+    }
+
+    pub fn fl_truncate(x: f64) -> f64 {
+        libm::trunc(x)
+    }
+
+    pub fn fl_round(x: f64) -> f64 {
+        libm::rint(x)
     }
 
 }
