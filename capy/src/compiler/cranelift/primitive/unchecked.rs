@@ -175,7 +175,6 @@ pub fn lower_is_flonum<'gc, 'a, 'f>(
     PrimValue::Comparison(ssa.is_flonum(val))
 }
 
-
 pub fn lower_fx_add_ovf<'gc, 'a, 'f>(
     ssa: &mut SsaBuilder<'gc, 'a, 'f>,
     args: &[Atom<'gc>],
@@ -322,7 +321,6 @@ pub fn lower_fx_modulo<'gc, 'a, 'f>(
     PrimValue::Value(fixnum_from_i32(ssa, result))
 }
 
-
 pub fn lower_fx_add_checked<'gc, 'a, 'f>(
     ssa: &mut SsaBuilder<'gc, 'a, 'f>,
     args: &[Atom<'gc>],
@@ -427,7 +425,11 @@ pub fn lower_fx_le_checked<'gc, 'a, 'f>(
     with_fixnums_2(ssa, args, source, |ssa, a0, a1| {
         let lhs = fixnum_i32(ssa, a0);
         let rhs = fixnum_i32(ssa, a1);
-        PrimValue::Comparison(ssa.builder.ins().icmp(IntCC::SignedLessThanOrEqual, lhs, rhs))
+        PrimValue::Comparison(
+            ssa.builder
+                .ins()
+                .icmp(IntCC::SignedLessThanOrEqual, lhs, rhs),
+        )
     })
 }
 
@@ -451,7 +453,11 @@ pub fn lower_fx_ge_checked<'gc, 'a, 'f>(
     with_fixnums_2(ssa, args, source, |ssa, a0, a1| {
         let lhs = fixnum_i32(ssa, a0);
         let rhs = fixnum_i32(ssa, a1);
-        PrimValue::Comparison(ssa.builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lhs, rhs))
+        PrimValue::Comparison(
+            ssa.builder
+                .ins()
+                .icmp(IntCC::SignedGreaterThanOrEqual, lhs, rhs),
+        )
     })
 }
 
@@ -833,7 +839,9 @@ pub fn lower_fl_add_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonums_2(ssa, args, source, |ssa, _a0, _a1| lower_fl_add(ssa, args, source))
+    with_flonums_2(ssa, args, source, |ssa, _a0, _a1| {
+        lower_fl_add(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_sub_checked<'gc, 'a, 'f>(
@@ -841,7 +849,9 @@ pub fn lower_fl_sub_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonums_2(ssa, args, source, |ssa, _a0, _a1| lower_fl_sub(ssa, args, source))
+    with_flonums_2(ssa, args, source, |ssa, _a0, _a1| {
+        lower_fl_sub(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_mul_checked<'gc, 'a, 'f>(
@@ -849,7 +859,9 @@ pub fn lower_fl_mul_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonums_2(ssa, args, source, |ssa, _a0, _a1| lower_fl_mul(ssa, args, source))
+    with_flonums_2(ssa, args, source, |ssa, _a0, _a1| {
+        lower_fl_mul(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_div_checked<'gc, 'a, 'f>(
@@ -857,7 +869,9 @@ pub fn lower_fl_div_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonums_2(ssa, args, source, |ssa, _a0, _a1| lower_fl_div(ssa, args, source))
+    with_flonums_2(ssa, args, source, |ssa, _a0, _a1| {
+        lower_fl_div(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_lt_checked<'gc, 'a, 'f>(
@@ -865,7 +879,9 @@ pub fn lower_fl_lt_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonums_2(ssa, args, source, |ssa, _a0, _a1| lower_fl_lt(ssa, args, source))
+    with_flonums_2(ssa, args, source, |ssa, _a0, _a1| {
+        lower_fl_lt(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_le_checked<'gc, 'a, 'f>(
@@ -873,7 +889,9 @@ pub fn lower_fl_le_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonums_2(ssa, args, source, |ssa, _a0, _a1| lower_fl_le(ssa, args, source))
+    with_flonums_2(ssa, args, source, |ssa, _a0, _a1| {
+        lower_fl_le(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_gt_checked<'gc, 'a, 'f>(
@@ -881,7 +899,9 @@ pub fn lower_fl_gt_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonums_2(ssa, args, source, |ssa, _a0, _a1| lower_fl_gt(ssa, args, source))
+    with_flonums_2(ssa, args, source, |ssa, _a0, _a1| {
+        lower_fl_gt(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_ge_checked<'gc, 'a, 'f>(
@@ -889,7 +909,9 @@ pub fn lower_fl_ge_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonums_2(ssa, args, source, |ssa, _a0, _a1| lower_fl_ge(ssa, args, source))
+    with_flonums_2(ssa, args, source, |ssa, _a0, _a1| {
+        lower_fl_ge(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_eq_checked<'gc, 'a, 'f>(
@@ -897,7 +919,9 @@ pub fn lower_fl_eq_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonums_2(ssa, args, source, |ssa, _a0, _a1| lower_fl_eq(ssa, args, source))
+    with_flonums_2(ssa, args, source, |ssa, _a0, _a1| {
+        lower_fl_eq(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_zero<'gc, 'a, 'f>(
@@ -947,7 +971,10 @@ pub fn lower_fl_infinite<'gc, 'a, 'f>(
     let raw = ssa.atom(args[0]);
     let f = flonum_f64(ssa, raw);
     let abs = ssa.builder.ins().fabs(f);
-    let inf = ssa.builder.ins().f64const(Ieee64::with_float(f64::INFINITY));
+    let inf = ssa
+        .builder
+        .ins()
+        .f64const(Ieee64::with_float(f64::INFINITY));
     PrimValue::Comparison(ssa.builder.ins().fcmp(FloatCC::Equal, abs, inf))
 }
 pub fn lower_fl_finite<'gc, 'a, 'f>(
@@ -958,7 +985,10 @@ pub fn lower_fl_finite<'gc, 'a, 'f>(
     let raw = ssa.atom(args[0]);
     let f = flonum_f64(ssa, raw);
     let abs = ssa.builder.ins().fabs(f);
-    let inf = ssa.builder.ins().f64const(Ieee64::with_float(f64::INFINITY));
+    let inf = ssa
+        .builder
+        .ins()
+        .f64const(Ieee64::with_float(f64::INFINITY));
     let is_inf = ssa.builder.ins().fcmp(FloatCC::Equal, abs, inf);
     let is_nan = ssa.builder.ins().fcmp(FloatCC::Unordered, f, f);
     let bad = ssa.builder.ins().bor(is_inf, is_nan);
@@ -1142,7 +1172,9 @@ pub fn lower_fl_zero_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonum_1(ssa, args, source, |ssa, _a0| lower_fl_zero(ssa, args, source))
+    with_flonum_1(ssa, args, source, |ssa, _a0| {
+        lower_fl_zero(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_positive_checked<'gc, 'a, 'f>(
@@ -1150,7 +1182,9 @@ pub fn lower_fl_positive_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonum_1(ssa, args, source, |ssa, _a0| lower_fl_positive(ssa, args, source))
+    with_flonum_1(ssa, args, source, |ssa, _a0| {
+        lower_fl_positive(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_negative_checked<'gc, 'a, 'f>(
@@ -1158,7 +1192,9 @@ pub fn lower_fl_negative_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonum_1(ssa, args, source, |ssa, _a0| lower_fl_negative(ssa, args, source))
+    with_flonum_1(ssa, args, source, |ssa, _a0| {
+        lower_fl_negative(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_nan_checked<'gc, 'a, 'f>(
@@ -1166,7 +1202,9 @@ pub fn lower_fl_nan_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonum_1(ssa, args, source, |ssa, _a0| lower_fl_nan(ssa, args, source))
+    with_flonum_1(ssa, args, source, |ssa, _a0| {
+        lower_fl_nan(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_infinite_checked<'gc, 'a, 'f>(
@@ -1174,7 +1212,9 @@ pub fn lower_fl_infinite_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonum_1(ssa, args, source, |ssa, _a0| lower_fl_infinite(ssa, args, source))
+    with_flonum_1(ssa, args, source, |ssa, _a0| {
+        lower_fl_infinite(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_finite_checked<'gc, 'a, 'f>(
@@ -1182,7 +1222,9 @@ pub fn lower_fl_finite_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonum_1(ssa, args, source, |ssa, _a0| lower_fl_finite(ssa, args, source))
+    with_flonum_1(ssa, args, source, |ssa, _a0| {
+        lower_fl_finite(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_abs_checked<'gc, 'a, 'f>(
@@ -1190,7 +1232,9 @@ pub fn lower_fl_abs_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonum_1(ssa, args, source, |ssa, _a0| lower_fl_abs(ssa, args, source))
+    with_flonum_1(ssa, args, source, |ssa, _a0| {
+        lower_fl_abs(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_floor_checked<'gc, 'a, 'f>(
@@ -1198,7 +1242,9 @@ pub fn lower_fl_floor_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonum_1(ssa, args, source, |ssa, _a0| lower_fl_floor(ssa, args, source))
+    with_flonum_1(ssa, args, source, |ssa, _a0| {
+        lower_fl_floor(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_ceiling_checked<'gc, 'a, 'f>(
@@ -1206,7 +1252,9 @@ pub fn lower_fl_ceiling_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonum_1(ssa, args, source, |ssa, _a0| lower_fl_ceiling(ssa, args, source))
+    with_flonum_1(ssa, args, source, |ssa, _a0| {
+        lower_fl_ceiling(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_truncate_checked<'gc, 'a, 'f>(
@@ -1214,7 +1262,9 @@ pub fn lower_fl_truncate_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonum_1(ssa, args, source, |ssa, _a0| lower_fl_truncate(ssa, args, source))
+    with_flonum_1(ssa, args, source, |ssa, _a0| {
+        lower_fl_truncate(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_round_checked<'gc, 'a, 'f>(
@@ -1222,7 +1272,9 @@ pub fn lower_fl_round_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonum_1(ssa, args, source, |ssa, _a0| lower_fl_round(ssa, args, source))
+    with_flonum_1(ssa, args, source, |ssa, _a0| {
+        lower_fl_round(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_sin_checked<'gc, 'a, 'f>(
@@ -1230,7 +1282,9 @@ pub fn lower_fl_sin_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonum_1(ssa, args, source, |ssa, _a0| lower_fl_sin(ssa, args, source))
+    with_flonum_1(ssa, args, source, |ssa, _a0| {
+        lower_fl_sin(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_cos_checked<'gc, 'a, 'f>(
@@ -1238,7 +1292,9 @@ pub fn lower_fl_cos_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonum_1(ssa, args, source, |ssa, _a0| lower_fl_cos(ssa, args, source))
+    with_flonum_1(ssa, args, source, |ssa, _a0| {
+        lower_fl_cos(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_tan_checked<'gc, 'a, 'f>(
@@ -1246,7 +1302,9 @@ pub fn lower_fl_tan_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonum_1(ssa, args, source, |ssa, _a0| lower_fl_tan(ssa, args, source))
+    with_flonum_1(ssa, args, source, |ssa, _a0| {
+        lower_fl_tan(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_exp_checked<'gc, 'a, 'f>(
@@ -1254,7 +1312,9 @@ pub fn lower_fl_exp_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonum_1(ssa, args, source, |ssa, _a0| lower_fl_exp(ssa, args, source))
+    with_flonum_1(ssa, args, source, |ssa, _a0| {
+        lower_fl_exp(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_log_checked<'gc, 'a, 'f>(
@@ -1262,7 +1322,9 @@ pub fn lower_fl_log_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonum_1(ssa, args, source, |ssa, _a0| lower_fl_log(ssa, args, source))
+    with_flonum_1(ssa, args, source, |ssa, _a0| {
+        lower_fl_log(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_asin_checked<'gc, 'a, 'f>(
@@ -1270,7 +1332,9 @@ pub fn lower_fl_asin_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonum_1(ssa, args, source, |ssa, _a0| lower_fl_asin(ssa, args, source))
+    with_flonum_1(ssa, args, source, |ssa, _a0| {
+        lower_fl_asin(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_acos_checked<'gc, 'a, 'f>(
@@ -1278,7 +1342,9 @@ pub fn lower_fl_acos_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonum_1(ssa, args, source, |ssa, _a0| lower_fl_acos(ssa, args, source))
+    with_flonum_1(ssa, args, source, |ssa, _a0| {
+        lower_fl_acos(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_sqrt_checked<'gc, 'a, 'f>(
@@ -1286,7 +1352,9 @@ pub fn lower_fl_sqrt_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonum_1(ssa, args, source, |ssa, _a0| lower_fl_sqrt(ssa, args, source))
+    with_flonum_1(ssa, args, source, |ssa, _a0| {
+        lower_fl_sqrt(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_atan_checked<'gc, 'a, 'f>(
@@ -1294,7 +1362,9 @@ pub fn lower_fl_atan_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonum_1(ssa, args, source, |ssa, _a0| lower_fl_atan(ssa, args, source))
+    with_flonum_1(ssa, args, source, |ssa, _a0| {
+        lower_fl_atan(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_min_checked<'gc, 'a, 'f>(
@@ -1302,7 +1372,9 @@ pub fn lower_fl_min_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonums_2(ssa, args, source, |ssa, _a0, _a1| lower_fl_min(ssa, args, source))
+    with_flonums_2(ssa, args, source, |ssa, _a0, _a1| {
+        lower_fl_min(ssa, args, source)
+    })
 }
 
 pub fn lower_fl_max_checked<'gc, 'a, 'f>(
@@ -1310,7 +1382,9 @@ pub fn lower_fl_max_checked<'gc, 'a, 'f>(
     args: &[Atom<'gc>],
     source: Value<'gc>,
 ) -> PrimValue {
-    with_flonums_2(ssa, args, source, |ssa, _a0, _a1| lower_fl_max(ssa, args, source))
+    with_flonums_2(ssa, args, source, |ssa, _a0, _a1| {
+        lower_fl_max(ssa, args, source)
+    })
 }
 
 pub fn lower_car_unchecked<'gc, 'a, 'f>(

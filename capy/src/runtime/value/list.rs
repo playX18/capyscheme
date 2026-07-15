@@ -546,17 +546,27 @@ impl<'gc> Value<'gc> {
     }
 
     pub fn append(self, mc: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
-        let x = self;
+        let mut current = self;
+        let mut head = Value::null();
+        let mut tail = Value::null();
 
-        fn lp<'gc>(ctx: Context<'gc>, x: Value<'gc>, obj: Value<'gc>) -> Value<'gc> {
-            if x.is_null() {
-                obj
+        while !current.is_null() {
+            let pair = Value::cons(mc, current.car(), Value::null());
+            if head.is_null() {
+                head = pair;
             } else {
-                Value::cons(ctx, x.car(), lp(ctx, x.cdr(), obj))
+                tail.set_cdr(mc, pair);
             }
+            tail = pair;
+            current = current.cdr();
         }
 
-        lp(mc, x, obj)
+        if tail.is_null() {
+            obj
+        } else {
+            tail.set_cdr(mc, obj);
+            head
+        }
     }
 
     pub fn list_append<T>(self, mc: Context<'gc>, iter: impl IntoIterator<Item = T>) -> Value<'gc>
@@ -913,6 +923,27 @@ impl<'gc> Iterator for ListIterator<'gc> {
         self.index += 1;
 
         Some(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::runtime::Scheme;
+
+    use super::Value;
+
+    #[test]
+    fn append_handles_long_lists_without_recursion() {
+        Scheme::new_uninit().enter(|ctx| {
+            let mut list = Value::null();
+            for value in (0..100_000).rev() {
+                list = Value::cons(ctx, Value::new(value), list);
+            }
+
+            let appended = list.append(ctx, Value::cons(ctx, Value::new(100_000), Value::null()));
+            assert_eq!(appended.list_length(), 100_001);
+            assert_eq!(appended.car(), Value::new(0));
+        });
     }
 }
 

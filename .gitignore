@@ -1,5 +1,9 @@
 /target
 
+/benchmarks/r7rs-benchmark.png
+/benchmarks/r7rs-report.html
+/benchmarks/r7rs-results.csv
+
 /.direnv
 .direnv/
 out

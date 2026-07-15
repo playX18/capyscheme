@@ -1247,7 +1247,6 @@ impl<'gc> Specializer<'gc> {
         successor
     }
 
-    
     fn finalize(
         &mut self,
         entry_new: BlockId,

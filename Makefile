@@ -96,8 +96,25 @@ SBBV_BENCH_BRAINFUCK_REPETITIONS ?= 10000
 SBBV_BENCH_EVAL_REPETITIONS ?= 250000
 SBBV_BENCH_LUA_REPETITIONS ?= 100000
 
+R7RS_BENCH_RUNS ?= 5
+R7RS_BENCHMARKS ?=
+R7RS_IMPLEMENTATIONS ?=
+R7RS_BENCH_TIMEOUT ?= 300
+R7RS_BENCH_REPORT ?= benchmarks/r7rs-report.html
+R7RS_BENCH_ARGS = $(foreach benchmark,$(R7RS_BENCHMARKS),--benchmark $(benchmark)) $(foreach implementation,$(R7RS_IMPLEMENTATIONS),--implementation $(implementation))
+CAPY_BIN ?= $(shell command -v capy 2>/dev/null || echo stage-0/capy)
+BENCHMARK_CAPY_DEP = $(if $(filter stage-0/capy,$(CAPY_BIN)),stage-0)
+
+.PHONY: benchmark-r7rs
+benchmark-r7rs: $(BENCHMARK_CAPY_DEP)
+	python3 benchmarks/r7rs.py \
+		--capy $(CAPY_BIN) \
+		--runs $(R7RS_BENCH_RUNS) \
+		--timeout $(R7RS_BENCH_TIMEOUT) \
+		--report $(R7RS_BENCH_REPORT) $(R7RS_BENCH_ARGS)
+
 .PHONY: benchmark-sbbv
-benchmark-sbbv: stage-0
+benchmark-sbbv: $(BENCHMARK_CAPY_DEP)
 	python3 benchmarks/sbbv.py \
 		--runs $(SBBV_BENCH_RUNS) \
 		--limits $(SBBV_BENCH_LIMITS) \

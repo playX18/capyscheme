@@ -216,7 +216,9 @@ fn fold_arith(op: ArithOp, a: &Type, b: &Type) -> Option<Value<'static>> {
         ArithOp::Sub => x.checked_sub(y)?,
         ArithOp::Mul => x.checked_mul(y)?,
     };
-    (FIXNUM_MIN..=FIXNUM_MAX).contains(&result).then(|| Value::from_i32(result as i32))
+    (FIXNUM_MIN..=FIXNUM_MAX)
+        .contains(&result)
+        .then(|| Value::from_i32(result as i32))
 }
 
 /// `a < b` for every possible pair of values, when provable.
@@ -430,10 +432,7 @@ pub(super) fn specialize_prim<'gc>(prim: Primitive, args: &[Type]) -> PrimSpec<'
         }
 
         Primitive::Div => {
-            if args.len() == 2
-                && args[0].is_definitely_flonum()
-                && args[1].is_definitely_flonum()
-            {
+            if args.len() == 2 && args[0].is_definitely_flonum() && args[1].is_definitely_flonum() {
                 return PrimSpec {
                     result: Type::kind(TypeKind::Flonum),
                     prim: Primitive::FlDivUnchecked,
@@ -803,6 +802,10 @@ pub(super) fn specialize_prim<'gc>(prim: Primitive, args: &[Type]) -> PrimSpec<'
 
         Primitive::Quotient | Primitive::Remainder | Primitive::Modulo => unchanged(Type::TOP),
 
+        Primitive::FxQuotient | Primitive::FxRemainder | Primitive::FxModulo => {
+            unchanged(Type::kind(TypeKind::Fixnum))
+        }
+
         Primitive::StringRef => PrimSpec {
             result: Type::kind(TypeKind::Char),
             prim,
@@ -1112,6 +1115,20 @@ mod tests {
         for prim in [Primitive::Quotient, Primitive::Remainder, Primitive::Modulo] {
             let spec = specialize_prim(prim, &[minimum.clone(), negative_one.clone()]);
             assert_eq!(spec.prim, prim);
+        }
+    }
+
+    #[test]
+    fn unchecked_fixnum_division_results_remain_fixnums() {
+        let fixnum = Type::kind(TypeKind::Fixnum);
+
+        for prim in [
+            Primitive::FxQuotient,
+            Primitive::FxRemainder,
+            Primitive::FxModulo,
+        ] {
+            let spec = specialize_prim(prim, &[fixnum.clone(), fixnum.clone()]);
+            assert_eq!(spec.result, Type::kind(TypeKind::Fixnum));
         }
     }
 

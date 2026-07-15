@@ -1,0 +1,3 @@
+[submodule "benchmarks/r7rs-benchmarks"]
+	path = benchmarks/r7rs-benchmarks
+	url = https://github.com/ecraven/r7rs-benchmarks

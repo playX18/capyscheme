@@ -1292,15 +1292,23 @@ impl Primitive {
             Self::SetCdrUnchecked => unchecked::lower_set_cdr_unchecked(ssa, args, source),
             Self::VectorRefUnchecked => unchecked::lower_vector_ref_unchecked(ssa, args, source),
             Self::VectorSetUnchecked => unchecked::lower_vector_set_unchecked(ssa, args, source),
-            Self::VectorLengthUnchecked => unchecked::lower_vector_length_unchecked(ssa, args, source),
+            Self::VectorLengthUnchecked => {
+                unchecked::lower_vector_length_unchecked(ssa, args, source)
+            }
             Self::CharToIntUnchecked => unchecked::lower_char_to_int_unchecked(ssa, args, source),
-            Self::StringLengthUnchecked => unchecked::lower_string_length_unchecked(ssa, args, source),
+            Self::StringLengthUnchecked => {
+                unchecked::lower_string_length_unchecked(ssa, args, source)
+            }
             Self::StringRefUnchecked => unchecked::lower_string_ref_unchecked(ssa, args, source),
             Self::FxQuotient => unchecked::lower_fx_quotient(ssa, args, source),
             Self::FxRemainder => unchecked::lower_fx_remainder(ssa, args, source),
             Self::FxModulo => unchecked::lower_fx_modulo(ssa, args, source),
-            Self::BytevectorLengthUnchecked => unchecked::lower_bytevector_length_unchecked(ssa, args, source),
-            Self::BytevectorU8RefUnchecked => unchecked::lower_bytevector_u8_ref_unchecked(ssa, args, source),
+            Self::BytevectorLengthUnchecked => {
+                unchecked::lower_bytevector_length_unchecked(ssa, args, source)
+            }
+            Self::BytevectorU8RefUnchecked => {
+                unchecked::lower_bytevector_u8_ref_unchecked(ssa, args, source)
+            }
         }
     }
 }
@@ -1593,50 +1601,143 @@ impl<'gc> PrimitiveLowerer<'gc> {
         map.insert(Symbol::from_str(ctx, "fx+").into(), Primitive::FxAdd);
         map.insert(Symbol::from_str(ctx, "fx-").into(), Primitive::FxSub);
         map.insert(Symbol::from_str(ctx, "fx*").into(), Primitive::FxMul);
-        map.insert(Symbol::from_str(ctx, "fx+/ovf?").into(), Primitive::FxAddOvf);
-        map.insert(Symbol::from_str(ctx, "fx-/ovf?").into(), Primitive::FxSubOvf);
-        map.insert(Symbol::from_str(ctx, "fx*/ovf?").into(), Primitive::FxMulOvf);
+        map.insert(
+            Symbol::from_str(ctx, "fx+/ovf?").into(),
+            Primitive::FxAddOvf,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fx-/ovf?").into(),
+            Primitive::FxSubOvf,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fx*/ovf?").into(),
+            Primitive::FxMulOvf,
+        );
         map.insert(Symbol::from_str(ctx, "fx<?").into(), Primitive::FxLt);
         map.insert(Symbol::from_str(ctx, "fx<=?").into(), Primitive::FxLe);
         map.insert(Symbol::from_str(ctx, "fx>?").into(), Primitive::FxGt);
         map.insert(Symbol::from_str(ctx, "fx>=?").into(), Primitive::FxGe);
-        map.insert(Symbol::from_str(ctx, "fx+/unchecked").into(), Primitive::FxAddUnchecked);
-        map.insert(Symbol::from_str(ctx, "fx-/unchecked").into(), Primitive::FxSubUnchecked);
-        map.insert(Symbol::from_str(ctx, "fx*/unchecked").into(), Primitive::FxMulUnchecked);
-        map.insert(Symbol::from_str(ctx, "fx+/ovf?/unchecked").into(), Primitive::FxAddOvfUnchecked);
-        map.insert(Symbol::from_str(ctx, "fx-/ovf?/unchecked").into(), Primitive::FxSubOvfUnchecked);
-        map.insert(Symbol::from_str(ctx, "fx*/ovf?/unchecked").into(), Primitive::FxMulOvfUnchecked);
-        map.insert(Symbol::from_str(ctx, "fx</unchecked").into(), Primitive::FxLtUnchecked);
-        map.insert(Symbol::from_str(ctx, "fx<=/unchecked").into(), Primitive::FxLeUnchecked);
-        map.insert(Symbol::from_str(ctx, "fx>/unchecked").into(), Primitive::FxGtUnchecked);
-        map.insert(Symbol::from_str(ctx, "fx>=/unchecked").into(), Primitive::FxGeUnchecked);
-        map.insert(Symbol::from_str(ctx, "fx=/unchecked").into(), Primitive::FxEqUUnchecked);
+        map.insert(
+            Symbol::from_str(ctx, "fx+/unchecked").into(),
+            Primitive::FxAddUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fx-/unchecked").into(),
+            Primitive::FxSubUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fx*/unchecked").into(),
+            Primitive::FxMulUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fx+/ovf?/unchecked").into(),
+            Primitive::FxAddOvfUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fx-/ovf?/unchecked").into(),
+            Primitive::FxSubOvfUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fx*/ovf?/unchecked").into(),
+            Primitive::FxMulOvfUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fx</unchecked").into(),
+            Primitive::FxLtUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fx<=/unchecked").into(),
+            Primitive::FxLeUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fx>/unchecked").into(),
+            Primitive::FxGtUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fx>=/unchecked").into(),
+            Primitive::FxGeUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fx=/unchecked").into(),
+            Primitive::FxEqUUnchecked,
+        );
         map.insert(Symbol::from_str(ctx, "fxand").into(), Primitive::FxAnd);
         map.insert(Symbol::from_str(ctx, "fxior").into(), Primitive::FxIor);
         map.insert(Symbol::from_str(ctx, "fxxor").into(), Primitive::FxXor);
         map.insert(Symbol::from_str(ctx, "fxnot").into(), Primitive::FxNot);
-        map.insert(Symbol::from_str(ctx, "fxarithmetic-shift-left").into(), Primitive::FxAshl);
-        map.insert(Symbol::from_str(ctx, "fxarithmetic-shift-right").into(), Primitive::FxAshr);
-        map.insert(Symbol::from_str(ctx, "fxand/unchecked").into(), Primitive::FxAndUnchecked);
-        map.insert(Symbol::from_str(ctx, "fxior/unchecked").into(), Primitive::FxIorUnchecked);
-        map.insert(Symbol::from_str(ctx, "fxxor/unchecked").into(), Primitive::FxXorUnchecked);
-        map.insert(Symbol::from_str(ctx, "fxnot/unchecked").into(), Primitive::FxNotUnchecked);
-        map.insert(Symbol::from_str(ctx, "fxarithmetic-shift-left/unchecked").into(), Primitive::FxAshlUnchecked);
-        map.insert(Symbol::from_str(ctx, "fxarithmetic-shift-right/unchecked").into(), Primitive::FxAshrUnchecked);
+        map.insert(
+            Symbol::from_str(ctx, "fxarithmetic-shift-left").into(),
+            Primitive::FxAshl,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fxarithmetic-shift-right").into(),
+            Primitive::FxAshr,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fxand/unchecked").into(),
+            Primitive::FxAndUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fxior/unchecked").into(),
+            Primitive::FxIorUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fxxor/unchecked").into(),
+            Primitive::FxXorUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fxnot/unchecked").into(),
+            Primitive::FxNotUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fxarithmetic-shift-left/unchecked").into(),
+            Primitive::FxAshlUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fxarithmetic-shift-right/unchecked").into(),
+            Primitive::FxAshrUnchecked,
+        );
         map.insert(Symbol::from_str(ctx, "fxzero?").into(), Primitive::FxZero);
-        map.insert(Symbol::from_str(ctx, "fxpositive?").into(), Primitive::FxPositive);
-        map.insert(Symbol::from_str(ctx, "fxnegative?").into(), Primitive::FxNegative);
+        map.insert(
+            Symbol::from_str(ctx, "fxpositive?").into(),
+            Primitive::FxPositive,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fxnegative?").into(),
+            Primitive::FxNegative,
+        );
         map.insert(Symbol::from_str(ctx, "fxodd?").into(), Primitive::FxOdd);
         map.insert(Symbol::from_str(ctx, "fxeven?").into(), Primitive::FxEven);
         map.insert(Symbol::from_str(ctx, "fxmin").into(), Primitive::FxMin);
         map.insert(Symbol::from_str(ctx, "fxmax").into(), Primitive::FxMax);
-        map.insert(Symbol::from_str(ctx, "fxzero?/unchecked").into(), Primitive::FxZeroUnchecked);
-        map.insert(Symbol::from_str(ctx, "fxpositive?/unchecked").into(), Primitive::FxPositiveUnchecked);
-        map.insert(Symbol::from_str(ctx, "fxnegative?/unchecked").into(), Primitive::FxNegativeUnchecked);
-        map.insert(Symbol::from_str(ctx, "fxodd?/unchecked").into(), Primitive::FxOddUnchecked);
-        map.insert(Symbol::from_str(ctx, "fxeven?/unchecked").into(), Primitive::FxEvenUnchecked);
-        map.insert(Symbol::from_str(ctx, "fxmin/unchecked").into(), Primitive::FxMinUnchecked);
-        map.insert(Symbol::from_str(ctx, "fxmax/unchecked").into(), Primitive::FxMaxUnchecked);
+        map.insert(
+            Symbol::from_str(ctx, "fxzero?/unchecked").into(),
+            Primitive::FxZeroUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fxpositive?/unchecked").into(),
+            Primitive::FxPositiveUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fxnegative?/unchecked").into(),
+            Primitive::FxNegativeUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fxodd?/unchecked").into(),
+            Primitive::FxOddUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fxeven?/unchecked").into(),
+            Primitive::FxEvenUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fxmin/unchecked").into(),
+            Primitive::FxMinUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fxmax/unchecked").into(),
+            Primitive::FxMaxUnchecked,
+        );
         map.insert(Symbol::from_str(ctx, "fl+").into(), Primitive::FlAdd);
         map.insert(Symbol::from_str(ctx, "fl-").into(), Primitive::FlSub);
         map.insert(Symbol::from_str(ctx, "fl*").into(), Primitive::FlMul);
@@ -1646,27 +1747,72 @@ impl<'gc> PrimitiveLowerer<'gc> {
         map.insert(Symbol::from_str(ctx, "fl>?").into(), Primitive::FlGt);
         map.insert(Symbol::from_str(ctx, "fl>=?").into(), Primitive::FlGe);
         map.insert(Symbol::from_str(ctx, "fl=?").into(), Primitive::FlEq);
-        map.insert(Symbol::from_str(ctx, "fl+/unchecked").into(), Primitive::FlAddUnchecked);
-        map.insert(Symbol::from_str(ctx, "fl-/unchecked").into(), Primitive::FlSubUnchecked);
-        map.insert(Symbol::from_str(ctx, "fl*/unchecked").into(), Primitive::FlMulUnchecked);
-        map.insert(Symbol::from_str(ctx, "fl//unchecked").into(), Primitive::FlDivUnchecked);
-        map.insert(Symbol::from_str(ctx, "fl</unchecked").into(), Primitive::FlLtUnchecked);
-        map.insert(Symbol::from_str(ctx, "fl<=/unchecked").into(), Primitive::FlLeUnchecked);
-        map.insert(Symbol::from_str(ctx, "fl>/unchecked").into(), Primitive::FlGtUnchecked);
-        map.insert(Symbol::from_str(ctx, "fl>=/unchecked").into(), Primitive::FlGeUnchecked);
-        map.insert(Symbol::from_str(ctx, "fl=/unchecked").into(), Primitive::FlEqUnchecked);
+        map.insert(
+            Symbol::from_str(ctx, "fl+/unchecked").into(),
+            Primitive::FlAddUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fl-/unchecked").into(),
+            Primitive::FlSubUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fl*/unchecked").into(),
+            Primitive::FlMulUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fl//unchecked").into(),
+            Primitive::FlDivUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fl</unchecked").into(),
+            Primitive::FlLtUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fl<=/unchecked").into(),
+            Primitive::FlLeUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fl>/unchecked").into(),
+            Primitive::FlGtUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fl>=/unchecked").into(),
+            Primitive::FlGeUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fl=/unchecked").into(),
+            Primitive::FlEqUnchecked,
+        );
         map.insert(Symbol::from_str(ctx, "flzero?").into(), Primitive::FlZero);
-        map.insert(Symbol::from_str(ctx, "flpositive?").into(), Primitive::FlPositive);
-        map.insert(Symbol::from_str(ctx, "flnegative?").into(), Primitive::FlNegative);
+        map.insert(
+            Symbol::from_str(ctx, "flpositive?").into(),
+            Primitive::FlPositive,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "flnegative?").into(),
+            Primitive::FlNegative,
+        );
         map.insert(Symbol::from_str(ctx, "flnan?").into(), Primitive::FlNan);
-        map.insert(Symbol::from_str(ctx, "flinfinite?").into(), Primitive::FlInfinite);
-        map.insert(Symbol::from_str(ctx, "flfinite?").into(), Primitive::FlFinite);
+        map.insert(
+            Symbol::from_str(ctx, "flinfinite?").into(),
+            Primitive::FlInfinite,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "flfinite?").into(),
+            Primitive::FlFinite,
+        );
         map.insert(Symbol::from_str(ctx, "flmin").into(), Primitive::FlMin);
         map.insert(Symbol::from_str(ctx, "flmax").into(), Primitive::FlMax);
         map.insert(Symbol::from_str(ctx, "flabs").into(), Primitive::FlAbs);
         map.insert(Symbol::from_str(ctx, "flfloor").into(), Primitive::FlFloor);
-        map.insert(Symbol::from_str(ctx, "flceiling").into(), Primitive::FlCeiling);
-        map.insert(Symbol::from_str(ctx, "fltruncate").into(), Primitive::FlTruncate);
+        map.insert(
+            Symbol::from_str(ctx, "flceiling").into(),
+            Primitive::FlCeiling,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fltruncate").into(),
+            Primitive::FlTruncate,
+        );
         map.insert(Symbol::from_str(ctx, "flround").into(), Primitive::FlRound);
         map.insert(Symbol::from_str(ctx, "flsin").into(), Primitive::FlSin);
         map.insert(Symbol::from_str(ctx, "flcos").into(), Primitive::FlCos);
@@ -1677,43 +1823,154 @@ impl<'gc> PrimitiveLowerer<'gc> {
         map.insert(Symbol::from_str(ctx, "flacos").into(), Primitive::FlAcos);
         map.insert(Symbol::from_str(ctx, "flsqrt").into(), Primitive::FlSqrt);
         map.insert(Symbol::from_str(ctx, "flatan").into(), Primitive::FlAtan);
-        map.insert(Symbol::from_str(ctx, "flzero?/unchecked").into(), Primitive::FlZeroUnchecked);
-        map.insert(Symbol::from_str(ctx, "flpositive?/unchecked").into(), Primitive::FlPositiveUnchecked);
-        map.insert(Symbol::from_str(ctx, "flnegative?/unchecked").into(), Primitive::FlNegativeUnchecked);
-        map.insert(Symbol::from_str(ctx, "flnan?/unchecked").into(), Primitive::FlNanUnchecked);
-        map.insert(Symbol::from_str(ctx, "flinfinite?/unchecked").into(), Primitive::FlInfiniteUnchecked);
-        map.insert(Symbol::from_str(ctx, "flfinite?/unchecked").into(), Primitive::FlFiniteUnchecked);
-        map.insert(Symbol::from_str(ctx, "flmin/unchecked").into(), Primitive::FlMinUnchecked);
-        map.insert(Symbol::from_str(ctx, "flmax/unchecked").into(), Primitive::FlMaxUnchecked);
-        map.insert(Symbol::from_str(ctx, "flabs/unchecked").into(), Primitive::FlAbsUnchecked);
-        map.insert(Symbol::from_str(ctx, "flfloor/unchecked").into(), Primitive::FlFloorUnchecked);
-        map.insert(Symbol::from_str(ctx, "flceiling/unchecked").into(), Primitive::FlCeilingUnchecked);
-        map.insert(Symbol::from_str(ctx, "fltruncate/unchecked").into(), Primitive::FlTruncateUnchecked);
-        map.insert(Symbol::from_str(ctx, "flround/unchecked").into(), Primitive::FlRoundUnchecked);
-        map.insert(Symbol::from_str(ctx, "flsin/unchecked").into(), Primitive::FlSinUnchecked);
-        map.insert(Symbol::from_str(ctx, "flcos/unchecked").into(), Primitive::FlCosUnchecked);
-        map.insert(Symbol::from_str(ctx, "fltan/unchecked").into(), Primitive::FlTanUnchecked);
-        map.insert(Symbol::from_str(ctx, "flexp/unchecked").into(), Primitive::FlExpUnchecked);
-        map.insert(Symbol::from_str(ctx, "fllog/unchecked").into(), Primitive::FlLogUnchecked);
-        map.insert(Symbol::from_str(ctx, "flasin/unchecked").into(), Primitive::FlAsinUnchecked);
-        map.insert(Symbol::from_str(ctx, "flacos/unchecked").into(), Primitive::FlAcosUnchecked);
-        map.insert(Symbol::from_str(ctx, "flsqrt/unchecked").into(), Primitive::FlSqrtUnchecked);
-        map.insert(Symbol::from_str(ctx, "flatan/unchecked").into(), Primitive::FlAtanUnchecked);
-        map.insert(Symbol::from_str(ctx, "car/unchecked").into(), Primitive::CarUnchecked);
-        map.insert(Symbol::from_str(ctx, "cdr/unchecked").into(), Primitive::CdrUnchecked);
-        map.insert(Symbol::from_str(ctx, "set-car!/unchecked").into(), Primitive::SetCarUnchecked);
-        map.insert(Symbol::from_str(ctx, "set-cdr!/unchecked").into(), Primitive::SetCdrUnchecked);
-        map.insert(Symbol::from_str(ctx, "vector-ref/unchecked").into(), Primitive::VectorRefUnchecked);
-        map.insert(Symbol::from_str(ctx, "vector-set!/unchecked").into(), Primitive::VectorSetUnchecked);
-        map.insert(Symbol::from_str(ctx, "vector-length/unchecked").into(), Primitive::VectorLengthUnchecked);
-        map.insert(Symbol::from_str(ctx, "char->integer/unchecked").into(), Primitive::CharToIntUnchecked);
-        map.insert(Symbol::from_str(ctx, "string-length/unchecked").into(), Primitive::StringLengthUnchecked);
-        map.insert(Symbol::from_str(ctx, "string-ref/unchecked").into(), Primitive::StringRefUnchecked);
-        map.insert(Symbol::from_str(ctx, "quotient/unchecked").into(), Primitive::FxQuotient);
-        map.insert(Symbol::from_str(ctx, "remainder/unchecked").into(), Primitive::FxRemainder);
-        map.insert(Symbol::from_str(ctx, "modulo/unchecked").into(), Primitive::FxModulo);
-        map.insert(Symbol::from_str(ctx, "bytevector-length/unchecked").into(), Primitive::BytevectorLengthUnchecked);
-        map.insert(Symbol::from_str(ctx, "bytevector-u8-ref/unchecked").into(), Primitive::BytevectorU8RefUnchecked);
+        map.insert(
+            Symbol::from_str(ctx, "flzero?/unchecked").into(),
+            Primitive::FlZeroUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "flpositive?/unchecked").into(),
+            Primitive::FlPositiveUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "flnegative?/unchecked").into(),
+            Primitive::FlNegativeUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "flnan?/unchecked").into(),
+            Primitive::FlNanUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "flinfinite?/unchecked").into(),
+            Primitive::FlInfiniteUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "flfinite?/unchecked").into(),
+            Primitive::FlFiniteUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "flmin/unchecked").into(),
+            Primitive::FlMinUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "flmax/unchecked").into(),
+            Primitive::FlMaxUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "flabs/unchecked").into(),
+            Primitive::FlAbsUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "flfloor/unchecked").into(),
+            Primitive::FlFloorUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "flceiling/unchecked").into(),
+            Primitive::FlCeilingUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fltruncate/unchecked").into(),
+            Primitive::FlTruncateUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "flround/unchecked").into(),
+            Primitive::FlRoundUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "flsin/unchecked").into(),
+            Primitive::FlSinUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "flcos/unchecked").into(),
+            Primitive::FlCosUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fltan/unchecked").into(),
+            Primitive::FlTanUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "flexp/unchecked").into(),
+            Primitive::FlExpUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "fllog/unchecked").into(),
+            Primitive::FlLogUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "flasin/unchecked").into(),
+            Primitive::FlAsinUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "flacos/unchecked").into(),
+            Primitive::FlAcosUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "flsqrt/unchecked").into(),
+            Primitive::FlSqrtUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "flatan/unchecked").into(),
+            Primitive::FlAtanUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "car/unchecked").into(),
+            Primitive::CarUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "cdr/unchecked").into(),
+            Primitive::CdrUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "set-car!/unchecked").into(),
+            Primitive::SetCarUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "set-cdr!/unchecked").into(),
+            Primitive::SetCdrUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "vector-ref/unchecked").into(),
+            Primitive::VectorRefUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "vector-set!/unchecked").into(),
+            Primitive::VectorSetUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "vector-length/unchecked").into(),
+            Primitive::VectorLengthUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "char->integer/unchecked").into(),
+            Primitive::CharToIntUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "string-length/unchecked").into(),
+            Primitive::StringLengthUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "string-ref/unchecked").into(),
+            Primitive::StringRefUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "quotient/unchecked").into(),
+            Primitive::FxQuotient,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "remainder/unchecked").into(),
+            Primitive::FxRemainder,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "modulo/unchecked").into(),
+            Primitive::FxModulo,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "bytevector-length/unchecked").into(),
+            Primitive::BytevectorLengthUnchecked,
+        );
+        map.insert(
+            Symbol::from_str(ctx, "bytevector-u8-ref/unchecked").into(),
+            Primitive::BytevectorU8RefUnchecked,
+        );
         map.insert(Symbol::from_str(ctx, "fxlogand").into(), Primitive::FxAnd);
         map.insert(Symbol::from_str(ctx, "fxlogior").into(), Primitive::FxIor);
         map.insert(Symbol::from_str(ctx, "fxlogxor").into(), Primitive::FxXor);

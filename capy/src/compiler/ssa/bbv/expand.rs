@@ -57,6 +57,7 @@ fn is_expandable(prim: Primitive, argc: usize) -> bool {
         Primitive::Plus
         | Primitive::Minus
         | Primitive::Times
+        | Primitive::Div
         | Primitive::Quotient
         | Primitive::Remainder
         | Primitive::Modulo
@@ -70,7 +71,7 @@ fn is_expandable(prim: Primitive, argc: usize) -> bool {
         | Primitive::VectorRef
         | Primitive::StringRef
         | Primitive::BytevectorU8Ref => argc == 2,
-        Primitive::Car | Primitive::Cdr => argc == 1,
+        Primitive::Abs | Primitive::Car | Primitive::Cdr => argc == 1,
         Primitive::VectorSet => argc == 3,
         _ => false,
     }
@@ -264,6 +265,7 @@ impl<'gc> Expander<'gc> {
             Primitive::Plus | Primitive::Minus | Primitive::Times => {
                 self.expand_arith(prim, env, head_instructions)
             }
+            Primitive::Div => self.expand_div(env, head_instructions),
             Primitive::Quotient | Primitive::Remainder => {
                 self.expand_fixnum_div(prim, env, head_instructions)
             }
@@ -274,6 +276,12 @@ impl<'gc> Expander<'gc> {
             | Primitive::NumericGte
             | Primitive::NumericEqual => self.expand_compare(prim, env, head_instructions),
             Primitive::Car | Primitive::Cdr => self.expand_car_cdr(prim, env, head_instructions),
+            Primitive::Abs => self.expand_unary_flonum(
+                Primitive::Abs,
+                Primitive::FlAbsUnchecked,
+                env,
+                head_instructions,
+            ),
             Primitive::SetCar | Primitive::SetCdr => {
                 self.expand_set_pair(prim, env, head_instructions)
             }
@@ -408,9 +416,17 @@ impl<'gc> Expander<'gc> {
         };
 
         let slow = self.op_block(env, prim, vec![x, y]);
+        let fl_prim = match prim {
+            Primitive::Plus => Primitive::FlAddUnchecked,
+            Primitive::Minus => Primitive::FlSubUnchecked,
+            Primitive::Times => Primitive::FlMulUnchecked,
+            _ => unreachable!("not an arithmetic primitive: {prim:?}"),
+        };
+        let fl_op = self.op_block(env, fl_prim, vec![x, y]);
+        let fl_y = self.guard_block(env, Primitive::IsFlonum, vec![y], fl_op, slow, GUARD_HINTS);
+        let fl_x = self.guard_block(env, Primitive::IsFlonum, vec![x], fl_y, slow, GUARD_HINTS);
 
-        // Fixnum-only expand diamond; overflow `#f` falls back to the generic thunk.
-        // Flonum fast paths come from type-lattice specialization, not expand.
+        // Fixnum overflow and non-numeric operands fall back to the generic thunk.
         let sum = self.fresh_value();
         let branch = branch_to(
             sum,
@@ -438,8 +454,29 @@ impl<'gc> Expander<'gc> {
             Primitive::IsFixnum,
             vec![x],
             fx_y,
-            slow,
+            fl_x,
             EVEN_HINTS,
+            head_instructions,
+        )
+    }
+
+    fn expand_div(
+        &mut self,
+        env: &SplitEnv<'gc>,
+        head_instructions: &mut Vec<Instruction<'gc>>,
+    ) -> Terminator<'gc> {
+        let (x, y) = (env.args[0], env.args[1]);
+        let slow = self.op_block(env, Primitive::Div, vec![x, y]);
+        let fl_op = self.op_block(env, Primitive::FlDivUnchecked, vec![x, y]);
+        let fl_y = self.guard_block(env, Primitive::IsFlonum, vec![y], fl_op, slow, GUARD_HINTS);
+
+        self.head_guard(
+            env,
+            Primitive::IsFlonum,
+            vec![x],
+            fl_y,
+            slow,
+            GUARD_HINTS,
             head_instructions,
         )
     }
@@ -458,17 +495,27 @@ impl<'gc> Expander<'gc> {
             Primitive::NumericGte => Primitive::FxGeUnchecked,
             _ => Primitive::FxEqUUnchecked,
         };
+        let fl_prim = match prim {
+            Primitive::NumericLt => Primitive::FlLtUnchecked,
+            Primitive::NumericLte => Primitive::FlLeUnchecked,
+            Primitive::NumericGt => Primitive::FlGtUnchecked,
+            Primitive::NumericGte => Primitive::FlGeUnchecked,
+            _ => Primitive::FlEqUnchecked,
+        };
 
         let slow = self.op_block(env, prim, vec![x, y]);
         let fx_op = self.op_block(env, fx_prim, vec![x, y]);
         let fx_y = self.guard_block(env, Primitive::IsFixnum, vec![y], fx_op, slow, GUARD_HINTS);
+        let fl_op = self.op_block(env, fl_prim, vec![x, y]);
+        let fl_y = self.guard_block(env, Primitive::IsFlonum, vec![y], fl_op, slow, GUARD_HINTS);
+        let fl_x = self.guard_block(env, Primitive::IsFlonum, vec![x], fl_y, slow, GUARD_HINTS);
 
         self.head_guard(
             env,
             Primitive::IsFixnum,
             vec![x],
             fx_y,
-            slow,
+            fl_x,
             EVEN_HINTS,
             head_instructions,
         )
@@ -1052,8 +1099,8 @@ mod tests {
         }]);
 
         let expanded = expand_procedure(procedure);
-        // head + slow + fx_op + fx_y + cont
-        assert_eq!(expanded.blocks.len(), 5);
+        // head + slow + fl_op + fl_y + fl_x + fx_op + fx_y + cont
+        assert_eq!(expanded.blocks.len(), 8);
 
         let head = expanded
             .blocks
@@ -1083,9 +1130,61 @@ mod tests {
         assert_eq!(count(Primitive::FxAddOvfUnchecked), 1);
         assert_eq!(count(Primitive::Plus), 1);
         assert_eq!(count(Primitive::IsFixnum), 2);
-        assert_eq!(count(Primitive::IsFlonum), 0);
+        assert_eq!(count(Primitive::IsFlonum), 2);
         assert_eq!(count(Primitive::FlAdd), 0);
-        assert_eq!(count(Primitive::FlAddUnchecked), 0);
+        assert_eq!(count(Primitive::FlAddUnchecked), 1);
+    }
+
+    #[test]
+    fn expand_div_abs_and_compare_build_flonum_fast_paths() {
+        let x = ValueId(1);
+        let y = ValueId(2);
+        let quotient = ValueId(3);
+        let absolute = ValueId(4);
+        let comparison = ValueId(5);
+        let procedure = test_procedure(vec![Block {
+            id: BlockId(0),
+            params: vec![x, y],
+            variadic: None,
+            instructions: vec![
+                Instruction::PrimCall {
+                    dst: quotient,
+                    prim: Primitive::Div,
+                    args: vec![Operand::Local(x), Operand::Local(y)],
+                    source: Value::new(false),
+                },
+                Instruction::PrimCall {
+                    dst: absolute,
+                    prim: Primitive::Abs,
+                    args: vec![Operand::Local(quotient)],
+                    source: Value::new(false),
+                },
+                Instruction::PrimCall {
+                    dst: comparison,
+                    prim: Primitive::NumericLt,
+                    args: vec![Operand::Local(absolute), Operand::Local(y)],
+                    source: Value::new(false),
+                },
+            ],
+            terminator: Terminator::TailCall {
+                callee: Operand::Local(comparison),
+                args: vec![],
+                source: Value::new(false),
+            },
+            source: Value::new(false),
+        }]);
+
+        let prims = collect_prims(&expand_procedure(procedure));
+        assert!(prims.contains(&Primitive::FlDivUnchecked));
+        assert!(prims.contains(&Primitive::FlAbsUnchecked));
+        assert!(prims.contains(&Primitive::FlLtUnchecked));
+        assert_eq!(
+            prims
+                .iter()
+                .filter(|candidate| **candidate == Primitive::IsFlonum)
+                .count(),
+            5
+        );
     }
 
     #[test]

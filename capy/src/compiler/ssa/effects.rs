@@ -326,7 +326,7 @@ pub fn analyze_procedure(procedure: &Procedure<'_>) -> ProcedureEffects {
 }
 
 /// Removes definitions whose values are unused and whose instructions have no
-/// observable effects. 
+/// observable effects.
 pub fn eliminate_dead_effect_free_instructions(mut procedure: Procedure<'_>) -> Procedure<'_> {
     loop {
         let mut uses = HashMap::<ValueId, usize>::new();
