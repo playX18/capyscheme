@@ -85,6 +85,8 @@
 - *(tree-il)* Add pattern matchers for IL - ([6da6f93](https://codeberg.org/playXE/capy/commit/6da6f9317a062942b46b64f3ee16d4eea46a12bd))
 - *(vm)* More debugging - ([b996149](https://codeberg.org/playXE/capy/commit/b996149c8353af5fed73e1edf49b95f195b80bcb))
 - *(vscode)* Add Capy Scheme LSP extension - ([6b95133](https://codeberg.org/playXE/capy/commit/6b95133a3aa859ee883017f2e34489cded9faa54))
+- Feat(sbbv): enhance fixnum and flonum operations with checked and unchecked variants
+. - ([ab6ff6a](https://codeberg.org/playXE/capy/commit/ab6ff6a1ceadfc2d48566e7eb2a508f1b2d0f968))
 - Static Basic Block Versioning - ([8e81b47](https://codeberg.org/playXE/capy/commit/8e81b479245679bfea07bfe7a67d67a784d0ec75))
 - Better debugging - ([e164763](https://codeberg.org/playXE/capy/commit/e164763d587efaad7671b092ce5ff7c82b80f9aa))
 -  feat: use graph CPS - ([522c412](https://codeberg.org/playXE/capy/commit/522c41248f5cb9095df5370d81493c0acfa35c74))
@@ -175,6 +177,7 @@
 - *(threading)* Wait for thread to be in %thread-join-data - ([da930e1](https://codeberg.org/playXE/capy/commit/da930e1fd842576699fb3af6abdfb23f2af1f5cc))
 - *(tree-il)* Fix tree-il->scheme for receive term - ([fdd819b](https://codeberg.org/playXE/capy/commit/fdd819bcecfd786cd1338c5be2b043af3da7bf10))
 - *(tree-il/primitives)* Expand values to values term - ([29de7f3](https://codeberg.org/playXE/capy/commit/29de7f31acfa3ebccfc809440da9abfa75f9f363))
+- Link libcalls for floats into thunks - ([5823725](https://codeberg.org/playXE/capy/commit/582372519f83ff8a23625e2322ffda4244f5edb5))
 - Remove chez and loko repos (used for exploration of psyntax) - ([b6dc2e8](https://codeberg.org/playXE/capy/commit/b6dc2e8e81f0801450941188298713af9ddf3f22))
 - Remove liear prefixes - ([8bab100](https://codeberg.org/playXE/capy/commit/8bab1009a773bd92d59f9162846a6c8168507085))
 - Imports - ([07142f3](https://codeberg.org/playXE/capy/commit/07142f36cc8fec77fd1f270be103a81a477c458c))
