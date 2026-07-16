@@ -85,6 +85,7 @@
 - *(tree-il)* Add pattern matchers for IL - ([6da6f93](https://codeberg.org/playXE/capy/commit/6da6f9317a062942b46b64f3ee16d4eea46a12bd))
 - *(vm)* More debugging - ([b996149](https://codeberg.org/playXE/capy/commit/b996149c8353af5fed73e1edf49b95f195b80bcb))
 - *(vscode)* Add Capy Scheme LSP extension - ([6b95133](https://codeberg.org/playXE/capy/commit/6b95133a3aa859ee883017f2e34489cded9faa54))
+- Add r7rs benchmark suite and improve SBBV - ([f27b0dc](https://codeberg.org/playXE/capy/commit/f27b0dc4ae7439190d4a61d718b3cad3523707f0))
 - Feat(sbbv): enhance fixnum and flonum operations with checked and unchecked variants
 . - ([ab6ff6a](https://codeberg.org/playXE/capy/commit/ab6ff6a1ceadfc2d48566e7eb2a508f1b2d0f968))
 - Static Basic Block Versioning - ([8e81b47](https://codeberg.org/playXE/capy/commit/8e81b479245679bfea07bfe7a67d67a784d0ec75))
