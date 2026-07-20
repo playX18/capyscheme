@@ -14,7 +14,7 @@ use std::{
     sync::{Arc, LazyLock, Mutex as StdMutex},
 };
 
-use asmkit::core::jit_allocator::Span;
+use asmkit::Span;
 use mmtk::{AllocationSemantics, util::ObjectReference};
 
 use crate::rsgc::object::{

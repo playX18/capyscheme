@@ -1,6 +1,6 @@
 use std::io;
 
-use asmkit::core::buffer::Reloc as AsmkitReloc;
+use asmkit::Reloc as AsmkitReloc;
 use cranelift_codegen::binemit::Reloc as CraneliftReloc;
 use mmtk::util::metadata::side_metadata::{
     global_side_metadata_vm_base_address, vo_bit_side_metadata_addr,

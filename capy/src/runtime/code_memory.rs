@@ -6,7 +6,7 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 
-use asmkit::core::jit_allocator::{JitAllocator, JitAllocatorOptions, Span};
+use asmkit::{JitAllocator, JitAllocatorOptions, Span};
 
 use crate::rsgc::mmtk::util::Address;
 
@@ -164,12 +164,9 @@ impl CodeMemory {
         bytes: &[u8],
     ) -> io::Result<()> {
         validate_patch_bounds(span, offset, bytes)?;
-        // SAFETY: Preconditions verified by the surrounding code
-        unsafe {
-            self.allocator
-                .copy_from_slice(span, offset, bytes)
-                .map_err(|err| io::Error::other(format!("failed to patch JIT memory: {err:?}")))?;
-        }
+        self.allocator
+            .copy_from_slice(span, offset, bytes)
+            .map_err(|err| io::Error::other(format!("failed to patch JIT memory: {err:?}")))?;
         Ok(())
     }
 
@@ -216,6 +213,9 @@ impl CodeMemory {
                 io::Error::other(format!("failed to release JIT memory: {err:?}"))
             })?;
         }
+        // Allocation already released; prevent asmkit 0.4 Span::Drop from
+        // attempting a second release.
+        std::mem::forget(span);
         #[cfg(test)]
         RELEASED_SPANS.fetch_add(1, Ordering::SeqCst);
         Ok(())

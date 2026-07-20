@@ -1,6 +1,6 @@
 use std::io::{self, Read, Write};
 
-use asmkit::core::buffer::Reloc as AsmkitReloc;
+use asmkit::Reloc as AsmkitReloc;
 use cranelift_codegen::binemit::Reloc as CraneliftReloc;
 
 use crate::runtime::value::CodeRelocation;

@@ -58,10 +58,8 @@ unsafe impl FinalizerQueue for CodeBlockFinalizerQueue {
             unsafe {
                 let gc_object = GcObject::from(object);
                 let code_block = gc_object.to_address().as_ref::<CodeBlock<'static>>();
-                if code_block.take_span_for_finalization().is_some() {
-                    // A dead CodeBlock can still have return addresses into its
-                    // executable span on native stacks. Mark the span finalized,
-                    // but keep the mapping valid until the process exits.
+                if let Some(span) = code_block.take_span_for_finalization() {
+                    std::mem::forget(span);
                 }
             }
         }

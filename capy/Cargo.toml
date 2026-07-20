@@ -48,7 +48,7 @@ sys-locale = "0.3.2"
 capy-derive.workspace = true
 cranelift-entity = "0.125.3"
 polling = "3.11.0"
-asmkit-rs = "0.3.1"
+asmkit-rs = { version = "0.4.0", features = ["jit", "x86", "aarch64"] }
 slotmap = "1.0.7"
 smallvec = "1.15.1"
 regalloc2 = "0.15.0"
