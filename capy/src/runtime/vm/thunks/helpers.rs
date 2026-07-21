@@ -1,6 +1,7 @@
 //! Shared helpers for thunk implementations.
 
-use super::{ThunkResult, make_assertion_violation};
+use super::make_assertion_violation;
+use crate::runtime::vm::thunk_raise;
 use crate::runtime::{
     Context, REGISTER_ARG_COUNT,
     value::{Closure, Number, Str, Value},
@@ -151,12 +152,9 @@ pub fn require_number<'gc>(
     op: Value<'gc>,
     message: &str,
     val: Value<'gc>,
-) -> Result<Number<'gc>, ThunkResult<'gc>> {
+) -> Result<Number<'gc>, Value<'gc>> {
     let Some(n) = val.number() else {
-        return Err(ThunkResult {
-            code: 1,
-            value: make_assertion_violation(ctx, op, Str::new(*ctx, message, true).into(), &[val]),
-        });
+        return Err(make_assertion_violation(ctx, op, Str::new(*ctx, message, true).into(), &[val]));
     };
     Ok(n)
 }
@@ -165,18 +163,15 @@ pub fn require_exact_integer<'gc>(
     ctx: Context<'gc>,
     op: Value<'gc>,
     val: Value<'gc>,
-) -> Result<Number<'gc>, ThunkResult<'gc>> {
+) -> Result<Number<'gc>, Value<'gc>> {
     let n = require_number(ctx, op, "not a number", val)?;
     if !n.is_exact_integer() {
-        return Err(ThunkResult {
-            code: 1,
-            value: make_assertion_violation(
+        return Err(make_assertion_violation(
                 ctx,
                 op,
                 Str::new(*ctx, "not an exact integer", true).into(),
                 &[val],
-            ),
-        });
+            ));
     }
     Ok(n)
 }
@@ -188,20 +183,17 @@ pub fn binop_numbers<'gc, F>(
     b: Value<'gc>,
     not_number_msg: &str,
     f: F,
-) -> ThunkResult<'gc>
+) -> Value<'gc>
 where
     F: FnOnce(Context<'gc>, Number<'gc>, Number<'gc>) -> Value<'gc>,
 {
     let a = match require_number(ctx, op, not_number_msg, a) {
         Ok(n) => n,
-        Err(r) => return r,
+        Err(e) => thunk_raise(ctx, e),
     };
     let b = match require_number(ctx, op, not_number_msg, b) {
         Ok(n) => n,
-        Err(r) => return r,
+        Err(e) => thunk_raise(ctx, e),
     };
-    ThunkResult {
-        code: 0,
-        value: f(ctx, a, b),
-    }
+    f(ctx, a, b)
 }

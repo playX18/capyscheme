@@ -29,8 +29,8 @@ use crate::{
     prelude::ClosureRef,
     runtime::{
         Context,
-        value::{Str, Symbol, Value},
-        vm::{ExecutionResult, call_scheme},
+        value::{ReturnCode, Str, Symbol, Value},
+        vm::{ExecutionResult, call_scheme, thunk_raise},
     },
 };
 
@@ -49,7 +49,7 @@ macro_rules! thunks {
         $(
             $(#[$attr])*
             #[unsafe(export_name=concat!("capy_thunks_", stringify!($name)))]
-            $v extern "C-unwind" fn $name<$gl>($($arg: $t),*) -> $ret $b
+            $v extern "C" fn $name<$gl>($($arg: $t),*) -> $ret $b
         )*
 
         pub struct ImportedThunks {
@@ -350,25 +350,25 @@ thunks! {
 
     pub fn lookup_bound(ctx: Context<'gc>,
         module: Value<'gc>,
-        name: Value<'gc>) -> ThunkResult<'gc> {
+        name: Value<'gc>) -> Value<'gc> {
         modules::lookup_bound(ctx, module, name)
     }
 
     pub fn lookup(ctx: Context<'gc>,
         module: Value<'gc>,
-        name: Value<'gc>) -> ThunkResult<'gc> {
+        name: Value<'gc>) -> Value<'gc> {
         modules::lookup(ctx, module, name)
     }
 
     pub fn lookup_bound_public(ctx: Context<'gc>,
         module: Value<'gc>,
-        name: Value<'gc>) -> ThunkResult<'gc> {
+        name: Value<'gc>) -> Value<'gc> {
         modules::lookup_bound_public(ctx, module, name)
     }
 
     pub fn lookup_bound_private(ctx: Context<'gc>,
         module: Value<'gc>,
-        name: Value<'gc>) -> ThunkResult<'gc> {
+        name: Value<'gc>) -> Value<'gc> {
         modules::lookup_bound_private(ctx, module, name)
     }
 
@@ -400,6 +400,19 @@ thunks! {
         gc::yieldpoint_block(ctx, rator, argc, arg0, arg1, arg2, arg3)
     }
 
+    /// Exit CPSed code back to the Rust `setjmp` in [`crate::runtime::vm::trampoline`].
+    pub fn scheme_longjmp(ctx: Context<'gc>, code: usize, value: Value<'gc>) -> () {
+        let code = match code {
+            x if x == ReturnCode::ReturnOk as usize => ReturnCode::ReturnOk,
+            x if x == ReturnCode::ReturnErr as usize => ReturnCode::ReturnErr,
+            x if x == ReturnCode::Raise as usize => ReturnCode::Raise,
+            x if x == ReturnCode::Continue as usize => ReturnCode::Continue,
+            _ => ReturnCode::ReturnErr,
+        };
+        // SAFETY: Only callable while an active Scheme entry has installed `exit_jmp`.
+        unsafe { crate::runtime::vm::scheme_longjmp(ctx, code, value) }
+    }
+
     pub fn reverse(ctx: Context<'gc>, list: Value<'gc>) -> Value<'gc> {
         pairs::reverse(ctx, list)
     }
@@ -416,163 +429,163 @@ thunks! {
         preds::is_rational(value)
     }
 
-    pub fn is_zero(ctx: Context<'gc>, value: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn is_zero(ctx: Context<'gc>, value: Value<'gc>) -> Value<'gc> {
         numbers::is_zero(ctx, value)
     }
 
-    pub fn negate(ctx: Context<'gc>, value: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn negate(ctx: Context<'gc>, value: Value<'gc>) -> Value<'gc> {
         numbers::negate(ctx, value)
     }
 
-    pub fn memv(ctx: Context<'gc>, key: Value<'gc>, list: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn memv(ctx: Context<'gc>, key: Value<'gc>, list: Value<'gc>) -> Value<'gc> {
         numbers::memv(ctx, key, list)
     }
 
-    pub fn memq(ctx: Context<'gc>, key: Value<'gc>, list: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn memq(ctx: Context<'gc>, key: Value<'gc>, list: Value<'gc>) -> Value<'gc> {
         numbers::memq(ctx, key, list)
     }
 
-    pub fn number_eq(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn number_eq(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
         numbers::number_eq(ctx, a, b)
     }
 
-    pub fn number_lt(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn number_lt(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
         numbers::number_lt(ctx, a, b)
     }
 
-    pub fn number_gt(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn number_gt(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
         numbers::number_gt(ctx, a, b)
     }
 
-    pub fn number_le(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn number_le(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
         numbers::number_le(ctx, a, b)
     }
 
-    pub fn number_ge(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn number_ge(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
         numbers::number_ge(ctx, a, b)
     }
 
-    pub fn string2symbol(ctx: Context<'gc>, s: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn string2symbol(ctx: Context<'gc>, s: Value<'gc>) -> Value<'gc> {
         misc::string2symbol(ctx, s)
     }
 
-    pub fn symbol2string(ctx: Context<'gc>, s: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn symbol2string(ctx: Context<'gc>, s: Value<'gc>) -> Value<'gc> {
         misc::symbol2string(ctx, s)
     }
 
-    pub fn number_plus(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn number_plus(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
         numbers::number_plus(ctx, a, b)
     }
 
-    pub fn number_minus(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn number_minus(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
         numbers::number_minus(ctx, a, b)
     }
 
-    pub fn number_times(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn number_times(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
         numbers::number_times(ctx, a, b)
     }
 
-    pub fn number_div(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn number_div(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
         numbers::number_div(ctx, a, b)
     }
 
-    pub fn quotient(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn quotient(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
         numbers::quotient(ctx, a, b)
     }
 
-    pub fn remainder(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn remainder(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
         numbers::remainder(ctx, a, b)
     }
 
-    pub fn modulo(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn modulo(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
         numbers::modulo(ctx, a, b)
     }
 
-    pub fn exact2inexact(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn exact2inexact(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
         numbers::exact2inexact(ctx, n)
     }
 
-    pub fn inexact_to_exact(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn inexact_to_exact(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
         numbers::inexact_to_exact(ctx, n)
     }
 
-    pub fn expt(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn expt(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
         numbers::expt(ctx, a, b)
     }
 
-    pub fn ash(ctx: Context<'gc>, n: Value<'gc>, count: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn ash(ctx: Context<'gc>, n: Value<'gc>, count: Value<'gc>) -> Value<'gc> {
         numbers::ash(ctx, n, count)
     }
 
-    pub fn logand(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn logand(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
         numbers::logand(ctx, a, b)
     }
 
-    pub fn logior(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn logior(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
         numbers::logior(ctx, a, b)
     }
 
-    pub fn logxor(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn logxor(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
         misc::logxor(ctx, a, b)
     }
 
-    pub fn lognot(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn lognot(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
         numbers::lognot(ctx, n)
     }
 
-    pub fn sqrt(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn sqrt(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
         numbers::sqrt(ctx, n)
     }
 
-    pub fn abs(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn abs(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
         numbers::abs(ctx, n)
     }
 
-    pub fn floor(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn floor(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
         numbers::floor(ctx, n)
     }
 
-    pub fn ceiling(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn ceiling(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
         numbers::ceiling(ctx, n)
     }
 
-    pub fn truncate(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn truncate(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
         numbers::truncate(ctx, n)
     }
 
-    pub fn sin(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn sin(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
         numbers::sin(ctx, n)
     }
 
-    pub fn cos(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn cos(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
         numbers::cos(ctx, n)
     }
 
-    pub fn tan(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn tan(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
         numbers::tan(ctx, n)
     }
 
-    pub fn asin(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn asin(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
         numbers::asin(ctx, n)
     }
 
-    pub fn acos(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn acos(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
         numbers::acos(ctx, n)
     }
 
-    pub fn atan(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn atan(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
         numbers::atan(ctx, n)
     }
 
-    pub fn exp(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn exp(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
         numbers::exp(ctx, n)
     }
 
-    pub fn log(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn log(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
         numbers::log(ctx, n)
     }
 
-    pub fn atan2(ctx: Context<'gc>, y: Value<'gc>, x: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn atan2(ctx: Context<'gc>, y: Value<'gc>, x: Value<'gc>) -> Value<'gc> {
         numbers::atan2(ctx, y, x)
     }
 
@@ -588,7 +601,7 @@ thunks! {
         preds::realp(v)
     }
 
-    pub fn nanp(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn nanp(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
         preds::nanp(ctx, v)
     }
 
@@ -596,76 +609,76 @@ thunks! {
         preds::integerp(ctx, v)
     }
 
-    pub fn exactp(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn exactp(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
         preds::exactp(ctx, v)
     }
 
-    pub fn inexactp(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn inexactp(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
         preds::inexactp(ctx, v)
     }
 
-    pub fn evenp(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn evenp(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
         numbers::evenp(ctx, v)
     }
 
-    pub fn oddp(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn oddp(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
         numbers::oddp(ctx, v)
     }
 
-    pub fn exact_integerp(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn exact_integerp(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
         preds::exact_integerp(ctx, v)
     }
 
-    pub fn char_to_integer(ctx: Context<'gc>, c: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn char_to_integer(ctx: Context<'gc>, c: Value<'gc>) -> Value<'gc> {
         misc::char_to_integer(ctx, c)
     }
 
-    pub fn integer_to_char(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn integer_to_char(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
         misc::integer_to_char(ctx, n)
     }
 
-    pub fn append(ctx: Context<'gc>, m1: Value<'gc>, m2: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn append(ctx: Context<'gc>, m1: Value<'gc>, m2: Value<'gc>) -> Value<'gc> {
         pairs::append(ctx, m1, m2)
     }
 
 
-    pub fn length(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn length(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
         pairs::length(ctx, v)
     }
 
-    pub fn make_vector(ctx: Context<'gc>, size: Value<'gc>, fill: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn make_vector(ctx: Context<'gc>, size: Value<'gc>, fill: Value<'gc>) -> Value<'gc> {
         vectors::make_vector(ctx, size, fill)
     }
 
-    pub fn make_tuple(ctx: Context<'gc>, size: Value<'gc>, fill: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn make_tuple(ctx: Context<'gc>, size: Value<'gc>, fill: Value<'gc>) -> Value<'gc> {
         vectors::make_tuple(ctx, size, fill)
     }
 
-    pub fn vector_ref(ctx: Context<'gc>, vec: Value<'gc>, index: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn vector_ref(ctx: Context<'gc>, vec: Value<'gc>, index: Value<'gc>) -> Value<'gc> {
         vectors::vector_ref(ctx, vec, index)
     }
 
-    pub fn string_ref(ctx: Context<'gc>, s: Value<'gc>, index: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn string_ref(ctx: Context<'gc>, s: Value<'gc>, index: Value<'gc>) -> Value<'gc> {
         misc::string_ref_value(ctx, s, index)
     }
 
-    pub fn string_ref_unchecked(ctx: Context<'gc>, s: Value<'gc>, index: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn string_ref_unchecked(ctx: Context<'gc>, s: Value<'gc>, index: Value<'gc>) -> Value<'gc> {
         misc::string_ref_unchecked_value(ctx, s, index)
     }
 
-    pub fn bytevector_length(ctx: Context<'gc>, bv: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn bytevector_length(ctx: Context<'gc>, bv: Value<'gc>) -> Value<'gc> {
         vectors::bytevector_length(ctx, bv)
     }
 
-    pub fn bytevector_u8_ref(ctx: Context<'gc>, bv: Value<'gc>, index: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn bytevector_u8_ref(ctx: Context<'gc>, bv: Value<'gc>, index: Value<'gc>) -> Value<'gc> {
         vectors::bytevector_u8_ref(ctx, bv, index)
     }
 
-    pub fn vector_set(ctx: Context<'gc>, vec: Value<'gc>, index: Value<'gc>, new_value: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn vector_set(ctx: Context<'gc>, vec: Value<'gc>, index: Value<'gc>, new_value: Value<'gc>) -> Value<'gc> {
         vectors::vector_set(ctx, vec, index, new_value)
     }
 
-    pub fn tuple_size(ctx: Context<'gc>, tup: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn tuple_size(ctx: Context<'gc>, tup: Value<'gc>) -> Value<'gc> {
         vectors::tuple_size(ctx, tup)
     }
 
@@ -681,7 +694,7 @@ thunks! {
     }
 
     pub fn set_attachments(ctx: Context<'gc>,
-        marks: Value<'gc>) -> ThunkResult<'gc> {
+        marks: Value<'gc>) -> Value<'gc> {
         misc::set_attachments(ctx, marks)
     }
 
@@ -727,7 +740,7 @@ thunks! {
 
     pub fn fxeq(ctx: Context<'gc>,
         x: Value<'gc>,
-        y: Value<'gc>) -> ThunkResult<'gc> {
+        y: Value<'gc>) -> Value<'gc> {
         numbers::fxeq(ctx, x, y)
     }
 
@@ -915,26 +928,23 @@ pub fn make_lexical_violation<'gc>(
     }
 }
 
-pub fn resolve_module<'gc>(ctx: Context<'gc>, name: Value<'gc>, public: bool) -> ThunkResult<'gc> {
+pub fn resolve_module<'gc>(ctx: Context<'gc>, name: Value<'gc>, public: bool) -> Value<'gc> {
     let Some(module) = crate::runtime::modules::resolve_module(ctx, name, false, false) else {
-        return ThunkResult {
-            code: 1,
-            value: undefined_violation(
+        thunk_raise(
+            ctx,
+            undefined_violation(
                 ctx,
                 Some(Symbol::from_str(ctx, "resolve-module").into()),
                 &format!("module '{name}' not found"),
                 &[name],
             ),
-        };
+        );
     };
 
-    ThunkResult {
-        code: 0,
-        value: if public {
-            module.public_interface.get().unwrap().into()
-        } else {
-            module.into()
-        },
+    if public {
+        module.public_interface.get().unwrap().into()
+    } else {
+        module.into()
     }
 }
 

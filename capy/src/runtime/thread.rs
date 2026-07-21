@@ -418,6 +418,12 @@ pub struct State<'gc> {
     pub(crate) accumulator: Cell<Value<'gc>>,
     pub(crate) current_marks: Cell<Value<'gc>>,
     pub(crate) winders: Cell<Value<'gc>>,
+    /// Active `setjmp` buffer for exiting CPSed code back to Rust; null when not in Scheme entry.
+    pub(crate) exit_jmp: Cell<*mut crate::runtime::vm::setjmp::JmpBuf>,
+    /// Staged return code for [`crate::runtime::vm::scheme_longjmp`].
+    pub(crate) exit_code: Cell<ReturnCode>,
+    /// Staged return value for [`crate::runtime::vm::scheme_longjmp`].
+    pub(crate) exit_value: Cell<Value<'gc>>,
     pub(crate) stats: ThreadStats,
 }
 
@@ -659,6 +665,7 @@ unsafe impl Trace for State<'_> {
         visitor.trace(&mut self.accumulator);
         visitor.trace(&mut self.current_marks);
         visitor.trace(&mut self.winders);
+        visitor.trace(&mut self.exit_value);
     }
 }
 
@@ -680,6 +687,9 @@ impl<'gc> State<'gc> {
             accumulator: Cell::new(Value::new(false)),
             current_marks: Cell::new(Value::null()),
             winders: Cell::new(Value::null()),
+            exit_jmp: Cell::new(std::ptr::null_mut()),
+            exit_code: Cell::new(ReturnCode::ReturnOk),
+            exit_value: Cell::new(Value::undefined()),
             stats: ThreadStats::new(),
         }
     }

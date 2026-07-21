@@ -403,32 +403,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         args: &[ir::Value],
     ) -> ir::Value {
         let call = self.builder.ins().call(thunk, args);
-
-        let code = self.builder.inst_results(call)[0];
-        let value = self.builder.inst_results(call)[1];
-
-        let is_error = self.builder.ins().icmp_imm(IntCC::NotEqual, code, 0);
-
-        let on_error = self.builder.create_block();
-        let on_success = self.builder.create_block();
-        self.builder.append_block_param(on_error, types::I64);
-        self.builder.append_block_param(on_success, types::I64);
-        self.builder.func.layout.set_cold(on_error);
-
-        self.builder.ins().brif(
-            is_error,
-            on_error,
-            &[BlockArg::Value(value)],
-            on_success,
-            &[BlockArg::Value(value)],
-        );
-        self.builder.switch_to_block(on_error);
-        {
-            let value = self.builder.block_params(on_error)[0];
-            self.raise_to_exception_handler(value);
-        }
-        self.builder.switch_to_block(on_success);
-        self.builder.block_params(on_success)[0]
+        self.builder.inst_results(call)[0]
     }
 
     pub fn debug_local(&mut self, lvar: LVarRef<'gc>, val: ir::Value) {

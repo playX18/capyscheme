@@ -1,4 +1,5 @@
-use super::{ThunkResult, make_assertion_violation};
+use super::make_assertion_violation;
+use crate::runtime::vm::thunk_raise;
 use crate::runtime::{
     Context,
     value::{Complex, Str, Symbol, Value},
@@ -32,77 +33,53 @@ pub fn realp<'gc>(v: Value<'gc>) -> bool {
     v.is_number() && !v.is::<Complex>()
 }
 
-pub fn nanp<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+pub fn nanp<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
     let Some(n) = v.number() else {
-        return ThunkResult {
-            code: 1,
-            value: make_assertion_violation(
+        thunk_raise(ctx, make_assertion_violation(
                 ctx,
                 Symbol::from_str(ctx, "nan?").into(),
                 Str::new(*ctx, "not a number", true).into(),
                 &[v],
-            ),
-        };
+            ));
     };
 
-    ThunkResult {
-        code: 0,
-        value: n.is_nan().into(),
-    }
+    n.is_nan().into()
 }
 
 pub fn integerp<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
     v.number().is_some_and(|n| n.is_integer())
 }
 
-pub fn exactp<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+pub fn exactp<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
     let Some(n) = v.number() else {
-        return ThunkResult {
-            code: 1,
-            value: make_assertion_violation(
+        thunk_raise(ctx, make_assertion_violation(
                 ctx,
                 Symbol::from_str(ctx, "exact?").into(),
                 Str::new(*ctx, "not a number", true).into(),
                 &[v],
-            ),
-        };
+            ));
     };
 
-    ThunkResult {
-        code: 0,
-        value: n.is_exact().into(),
-    }
+    n.is_exact().into()
 }
 
-pub fn inexactp<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+pub fn inexactp<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
     let Some(n) = v.number() else {
-        return ThunkResult {
-            code: 1,
-            value: make_assertion_violation(
+        thunk_raise(ctx, make_assertion_violation(
                 ctx,
                 Symbol::from_str(ctx, "inexact?").into(),
                 Str::new(*ctx, "not a number", true).into(),
                 &[v],
-            ),
-        };
+            ));
     };
 
-    ThunkResult {
-        code: 0,
-        value: (!n.is_exact()).into(),
-    }
+    (!n.is_exact()).into()
 }
 
-pub fn exact_integerp<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+pub fn exact_integerp<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
     let Some(n) = v.number() else {
-        return ThunkResult {
-            code: 0,
-            value: Value::new(false),
-        };
+        return Value::new(false);
     };
 
-    ThunkResult {
-        code: 0,
-        value: (n.is_exact_integer()).into(),
-    }
+    (n.is_exact_integer()).into()
 }

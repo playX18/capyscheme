@@ -1432,7 +1432,12 @@ impl<'gc> ModuleBuilder<'gc> {
         builder.ins().brif(is_cont, on_cont, &[], on_ret, &[]);
 
         builder.switch_to_block(on_ret);
-        builder.ins().return_(&[code, value]);
+        builder
+            .ins()
+            .call(thunks.scheme_longjmp, &[ctx, code, value]);
+        builder
+            .ins()
+            .trap(cranelift_codegen::ir::TrapCode::STACK_OVERFLOW);
 
         builder.switch_to_block(on_cont);
         let cdata = offset_of!(State, call_data) as i32;

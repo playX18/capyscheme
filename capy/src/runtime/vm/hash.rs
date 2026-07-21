@@ -326,16 +326,16 @@ pub mod hash_ops {
             Either::Left(ht) => match ht.typ() {
                 /* if these lookups fail something is seriously messed up */
                 HashTableType::Eq => {
-                    nctx.return_(lookup_bound_public(ctx, module, sym_eq(ctx).into()).value)
+                    nctx.return_(lookup_bound_public(ctx, module, sym_eq(ctx).into()))
                 }
                 HashTableType::Eqv => {
-                    nctx.return_(lookup_bound_public(ctx, module, sym_eqv(ctx).into()).value)
+                    nctx.return_(lookup_bound_public(ctx, module, sym_eqv(ctx).into()))
                 }
                 HashTableType::Equal => {
-                    nctx.return_(lookup_bound_public(ctx, module, sym_equal(ctx).into()).value)
+                    nctx.return_(lookup_bound_public(ctx, module, sym_equal(ctx).into()))
                 }
                 HashTableType::String => {
-                    nctx.return_(lookup_bound_public(ctx, module, sym_string(ctx).into()).value)
+                    nctx.return_(lookup_bound_public(ctx, module, sym_string(ctx).into()))
                 }
                 HashTableType::Generic(v) => {
                     let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_EQUIV_FUNC].get();
@@ -343,7 +343,7 @@ pub mod hash_ops {
                 }
             },
 
-            _ => nctx.return_(lookup_bound_public(ctx, module, sym_eq(ctx).into()).value),
+            _ => nctx.return_(lookup_bound_public(ctx, module, sym_eq(ctx).into())),
         }
     }
 

@@ -67,6 +67,8 @@ unsafe impl Trace for NativeProc {
 pub enum ReturnCode {
     ReturnOk = 0,
     ReturnErr = 1,
+    /// Non-continuable raise from a thunk; trampoline re-enters the exception handler.
+    Raise = 2,
     Continue = 3,
 }
 

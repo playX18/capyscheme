@@ -3,6 +3,9 @@ name = "capy"
 version.workspace = true
 edition.workspace = true
 
+[build-dependencies]
+cc = "1"
+
 [dependencies]
 tinyvec = { workspace = true, features = ["alloc"] }
 atomic.workspace = true

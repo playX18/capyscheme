@@ -102,7 +102,7 @@ fn fasl_reader_rejects_old_fasl_version() {
 #[test]
 fn fasl_relocation_records_roundtrip_all_current_target_families() {
     use super::reloc::{RelocKind, RelocTarget, Relocation, SideMetadataSlot};
-    use asmkit::core::buffer::Reloc as AsmkitReloc;
+    use asmkit::Reloc as AsmkitReloc;
     use cranelift_codegen::binemit::Reloc as CraneliftReloc;
 
     let relocations = vec![
@@ -660,7 +660,7 @@ fn fasl_reader_applies_asmkit_abs8_code_block_relocation() {
         reloc::{RelocKind, RelocTarget, Relocation, SideMetadataSlot},
     };
     use crate::runtime::{Scheme, value::CodeBlock};
-    use asmkit::core::buffer::Reloc as AsmkitReloc;
+    use asmkit::Reloc as AsmkitReloc;
     use mmtk::util::metadata::side_metadata::global_side_metadata_vm_base_address;
 
     let scm = Scheme::new_uninit();
@@ -715,7 +715,7 @@ fn fasl_reader_applies_asmkit_x86_pc_rel4_code_entry_relocation() {
         Scheme,
         value::{CodeBlock, Vector},
     };
-    use asmkit::core::buffer::Reloc as AsmkitReloc;
+    use asmkit::Reloc as AsmkitReloc;
 
     let scm = Scheme::new_uninit();
     scm.enter(|ctx| {

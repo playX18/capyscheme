@@ -1,4 +1,4 @@
-use super::ThunkResult;
+use crate::runtime::vm::thunk_raise;
 use crate::runtime::vm::exceptions::make_undefined_violation as undefined_violation;
 use crate::runtime::{
     Context,
@@ -15,7 +15,7 @@ pub fn lookup_bound<'gc>(
     ctx: Context<'gc>,
     module: Value<'gc>,
     name: Value<'gc>,
-) -> ThunkResult<'gc> {
+) -> Value<'gc> {
     assert!(name.is::<Symbol>());
     if !module.is::<Module>() {
         unreachable!("lookup-bound: not a module: {}", module);
@@ -23,16 +23,11 @@ pub fn lookup_bound<'gc>(
     let variable = module.downcast::<Module>().variable(ctx, name);
 
     let Some(variable) = variable else {
-        return ThunkResult {
-            code: 1,
-            value: undefined_violation(ctx, Some(name), "variable not found", &[name, module]),
-        };
+        thunk_raise(ctx, undefined_violation(ctx, Some(name), "variable not found", &[name, module]));
     };
 
     if variable.get() == Value::undefined() {
-        return ThunkResult {
-            code: 1,
-            value: undefined_violation(
+        thunk_raise(ctx, undefined_violation(
                 ctx,
                 Some(name),
                 &format!(
@@ -40,17 +35,13 @@ pub fn lookup_bound<'gc>(
                     module.downcast::<Module>().name.get()
                 ),
                 &[name, module],
-            ),
-        };
+            ));
     }
 
-    ThunkResult {
-        code: 0,
-        value: variable.into(),
-    }
+    variable.into()
 }
 
-pub fn lookup<'gc>(ctx: Context<'gc>, module: Value<'gc>, name: Value<'gc>) -> ThunkResult<'gc> {
+pub fn lookup<'gc>(ctx: Context<'gc>, module: Value<'gc>, name: Value<'gc>) -> Value<'gc> {
     let mut module = module;
     if module == Value::new(false) {
         module = crate::runtime::modules::current_module(ctx).get(ctx);
@@ -62,90 +53,60 @@ pub fn lookup<'gc>(ctx: Context<'gc>, module: Value<'gc>, name: Value<'gc>) -> T
         // SAFETY: Return address slot is valid — set up by the native calling convention
         let ret = unsafe { crate::runtime::vm::thunks::helpers::llvm_return_address() };
 
-        return ThunkResult {
-            code: 1,
-            value: undefined_violation(ctx, Some(name), "variable not found", &[name, module]),
-        };
+        thunk_raise(ctx, undefined_violation(ctx, Some(name), "variable not found", &[name, module]));
     };
 
-    ThunkResult {
-        code: 0,
-        value: var.into(),
-    }
+    var.into()
 }
 
 pub fn lookup_bound_public<'gc>(
     ctx: Context<'gc>,
     module: Value<'gc>,
     name: Value<'gc>,
-) -> ThunkResult<'gc> {
+) -> Value<'gc> {
     let module = super::resolve_module(ctx, module, true);
-    if module.code != 0 {
-        return module;
-    }
-
-    let var = lookup(ctx, module.value, name);
-    if var.code != 0 {
-        return var;
-    }
-
-    let var = var.value.downcast::<Variable>();
+    let var = lookup(ctx, module, name).downcast::<Variable>();
     if !var.is_bound() {
-        return ThunkResult {
-            code: 1,
-            value: undefined_violation(
+        thunk_raise(
+            ctx,
+            undefined_violation(
                 ctx,
                 Some(name),
                 &format!(
                     "variable not bound in module '{}'",
-                    module.value.downcast::<Module>().name.get()
+                    module.downcast::<Module>().name.get()
                 ),
-                &[name, module.value],
+                &[name, module],
             ),
-        };
+        );
     }
 
-    ThunkResult {
-        code: 0,
-        value: var.into(),
-    }
+    var.into()
 }
 
 pub fn lookup_bound_private<'gc>(
     ctx: Context<'gc>,
     module: Value<'gc>,
     name: Value<'gc>,
-) -> ThunkResult<'gc> {
+) -> Value<'gc> {
     let module = super::resolve_module(ctx, module, false);
-    if module.code != 0 {
-        return module;
-    }
-
-    let var = lookup(ctx, module.value, name);
-    if var.code != 0 {
-        return var;
-    }
-
-    let var = var.value.downcast::<Variable>();
+    let var = lookup(ctx, module, name).downcast::<Variable>();
     if !var.is_bound() {
-        return ThunkResult {
-            code: 1,
-            value: undefined_violation(
+        thunk_raise(
+            ctx,
+            undefined_violation(
                 ctx,
                 Some(name),
                 &format!(
                     "variable not bound in module '{}'",
-                    module.value.downcast::<Module>().name.get()
+                    module.downcast::<Module>().name.get()
                 ),
-                &[name, module.value],
+                &[name, module],
             ),
-        };
+        );
     }
 
-    ThunkResult {
-        code: 0,
-        value: var.into(),
-    }
+    var.into()
 }
 
 pub fn define<'gc>(ctx: Context<'gc>, name: Value<'gc>, value: Value<'gc>) -> Value<'gc> {

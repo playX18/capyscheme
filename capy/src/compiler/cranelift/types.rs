@@ -56,8 +56,6 @@ pub(crate) fn compiled_scheme_signature() -> ir::Signature {
     for _ in 0..COMPILED_ENTRY_ARG_COUNT {
         sig.params.push(ir::AbiParam::new(types::I64));
     }
-    sig.returns.push(ir::AbiParam::new(types::I64));
-    sig.returns.push(ir::AbiParam::new(types::I64));
     sig
 }
 

@@ -72,8 +72,6 @@ fn compiled_tail_signature() -> ir::Signature {
     for _ in 0..COMPILED_ENTRY_ARG_COUNT {
         sig.params.push(AbiParam::new(types::I64));
     }
-    sig.returns.push(AbiParam::new(types::I64));
-    sig.returns.push(AbiParam::new(types::I64));
     sig
 }
 
@@ -83,8 +81,6 @@ fn native_enter_signature() -> ir::Signature {
     for _ in 0..COMPILED_ENTRY_ARG_COUNT {
         sig.params.push(AbiParam::new(types::I64));
     }
-    sig.returns.push(AbiParam::new(types::I64));
-    sig.returns.push(AbiParam::new(types::I64));
     sig
 }
 
@@ -209,7 +205,6 @@ fn enter_scheme_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Con
 
     let sig = compiled_tail_signature();
     let sigref = builder.import_signature(sig);
-    let old_pinned = builder.ins().get_pinned_reg(types::I64);
     builder.ins().set_pinned_reg(ctx);
 
     let code = builder.ins().load(
@@ -218,15 +213,11 @@ fn enter_scheme_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Con
         rator,
         offset_of!(Closure, code) as i32,
     );
-    let call: ir::Inst =
-        builder
-            .ins()
-            .call_indirect(sigref, code, &[rator, argc, arg0, arg1, arg2, arg3]);
-
-    builder.ins().set_pinned_reg(old_pinned);
-    let code = builder.inst_results(call)[0];
-    let val = builder.inst_results(call)[1];
-    builder.ins().return_(&[code, val]);
+    builder
+        .ins()
+        .call_indirect(sigref, code, &[rator, argc, arg0, arg1, arg2, arg3]);
+    // Ok/Err exits via longjmp; falling through is a bug.
+    builder.ins().trap(ir::TrapCode::STACK_OVERFLOW);
 
     builder.seal_all_blocks();
     builder.finalize();
@@ -326,7 +317,20 @@ fn scheme_native_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Co
 
     builder.switch_to_block(on_ret);
     {
-        builder.ins().return_(&[code, value]);
+        let longjmp_sig = call_signature!(SystemV(
+            I64, /* ctx */
+            I64, /* code */
+            I64  /* value */
+        ));
+        let longjmp_sig = builder.import_signature(longjmp_sig);
+        let longjmp = builder.ins().iconst(
+            types::I64,
+            RuntimeThunk::Thunk_scheme_longjmp.address().as_usize() as i64,
+        );
+        builder
+            .ins()
+            .call_indirect(longjmp_sig, longjmp, &[ctx, code, value]);
+        builder.ins().trap(ir::TrapCode::STACK_OVERFLOW);
     }
     builder.switch_to_block(on_cont);
 
@@ -487,7 +491,20 @@ fn scheme_native_continuation_code(fctx: &mut FunctionBuilderContext, ctx: &mut 
     builder.switch_to_block(on_ret);
     {
         let val = builder.inst_results(call)[1];
-        builder.ins().return_(&[code, val]);
+        let longjmp_sig = call_signature!(SystemV(
+            I64, /* ctx */
+            I64, /* code */
+            I64  /* value */
+        ));
+        let longjmp_sig = builder.import_signature(longjmp_sig);
+        let longjmp = builder.ins().iconst(
+            types::I64,
+            RuntimeThunk::Thunk_scheme_longjmp.address().as_usize() as i64,
+        );
+        builder
+            .ins()
+            .call_indirect(longjmp_sig, longjmp, &[ctx, code, val]);
+        builder.ins().trap(ir::TrapCode::STACK_OVERFLOW);
     }
     builder.switch_to_block(on_cont);
 

@@ -40,6 +40,7 @@ pub mod memoize;
 pub mod persistent_map;
 pub mod persistent_set;
 pub mod records;
+pub mod setjmp;
 pub mod strings;
 pub mod syntax;
 pub mod threading;
@@ -47,6 +48,8 @@ pub mod throw;
 pub mod thunks;
 pub mod trampolines;
 pub mod vector;
+
+use setjmp::{JmpBuf, SchemeEntryFn, capy_longjmp, capy_with_setjmp};
 
 fn is_procedure(value: Value<'_>) -> bool {
     value
@@ -106,13 +109,14 @@ pub extern "C" fn call_scheme_with_k<'gc>(
             Value<'gc>,
             Value<'gc>,
             Value<'gc>,
-        ) -> NativeReturn<'gc> = std::mem::transmute(f);
+        ) = std::mem::transmute(f);
 
         let val = trampoline(ctx, rator, argc, regs[0], regs[1], regs[2], regs[3], f);
         drop(guard);
 
         match val.code {
             ReturnCode::Continue => unreachable!("cannot continue into native code"),
+            ReturnCode::Raise => unreachable!("Raise is handled inside trampoline"),
             ReturnCode::ReturnErr => ExecutionResult::Err(val.value),
             ReturnCode::ReturnOk => ExecutionResult::Ok(val.value),
         }
@@ -150,12 +154,13 @@ pub unsafe extern "C" fn continue_to<'gc>(
             Value<'gc>,
             Value<'gc>,
             Value<'gc>,
-        ) -> NativeReturn<'gc> = std::mem::transmute(f);
+        ) = std::mem::transmute(f);
 
         let val = trampoline(ctx, cont, argc, regs[0], regs[1], regs[2], regs[3], f);
         drop(guard);
         match val.code {
             ReturnCode::Continue => unreachable!("cannot continue into native code"),
+            ReturnCode::Raise => unreachable!("Raise is handled inside trampoline"),
             ReturnCode::ReturnErr => ExecutionResult::Err(val.value),
             ReturnCode::ReturnOk => ExecutionResult::Ok(val.value),
         }
@@ -190,6 +195,50 @@ impl Drop for NestedSchemeCallGuard<'_> {
     }
 }
 
+#[repr(C)]
+struct SchemeEnterArgs {
+    ctx: *const (),
+    rator: u64,
+    argc: usize,
+    arg0: u64,
+    arg1: u64,
+    arg2: u64,
+    arg3: u64,
+    enter: *const (),
+}
+
+/// C callback invoked under `setjmp` from [`capy_with_setjmp`].
+///
+/// # Safety
+///
+/// `data` must point at a live [`SchemeEnterArgs`] for the duration of the call.
+unsafe extern "C" fn scheme_enter_callback(data: *mut std::ffi::c_void) {
+    // SAFETY: `data` is the `SchemeEnterArgs` stacked in `trampoline`.
+    let args = unsafe { &*data.cast::<SchemeEnterArgs>() };
+    // SAFETY: `enter` was stored from a typed enter-trampoline pointer in `trampoline`.
+    let enter: extern "C-unwind" fn(
+        Context<'_>,
+        Value<'_>,
+        usize,
+        Value<'_>,
+        Value<'_>,
+        Value<'_>,
+        Value<'_>,
+    ) = unsafe { std::mem::transmute(args.enter) };
+    // SAFETY: pointer/bits were packed from live values in `trampoline`.
+    unsafe {
+        enter(
+            Context::from_ptr(args.ctx),
+            Value::from_raw(args.rator),
+            args.argc,
+            Value::from_raw(args.arg0),
+            Value::from_raw(args.arg1),
+            Value::from_raw(args.arg2),
+            Value::from_raw(args.arg3),
+        );
+    }
+}
+
 #[inline(never)]
 extern "C" fn trampoline<'a>(
     ctx: Context<'a>,
@@ -207,9 +256,81 @@ extern "C" fn trampoline<'a>(
         Value<'a>,
         Value<'a>,
         Value<'a>,
-    ) -> NativeReturn<'a>,
+    ),
 ) -> NativeReturn<'a> {
-    f(ctx, rator, argc, arg0, arg1, arg2, arg3)
+    let state = ctx.state();
+    let mut buf = JmpBuf::uninit();
+    let buf_ptr = buf.as_mut_ptr();
+    let prev = state.exit_jmp.replace(buf_ptr);
+
+    let mut args = SchemeEnterArgs {
+        ctx: ctx.as_ptr(),
+        rator: rator.bits(),
+        argc,
+        arg0: arg0.bits(),
+        arg1: arg1.bits(),
+        arg2: arg2.bits(),
+        arg3: arg3.bits(),
+        enter: f as *const (),
+    };
+    // SAFETY: `buf` and `args` live for this call; `capy_with_setjmp` returns only
+    // after `scheme_longjmp` restores this buffer.
+    let entry: SchemeEntryFn = scheme_enter_callback;
+    loop {
+        let rc = unsafe {
+            capy_with_setjmp(buf_ptr, entry, std::ptr::from_mut(&mut args).cast())
+        };
+        debug_assert_ne!(rc, 0, "scheme entry returned without longjmp");
+
+        match state.exit_code.get() {
+            ReturnCode::Raise => {
+                let err = state.exit_value.get();
+                let retk = thunks::control::default_retk(ctx);
+                let handler = thunks::control::exception_handler(ctx);
+                let undef = Value::undefined().bits();
+                args.rator = handler.bits();
+                args.argc = 2;
+                args.arg0 = retk.bits();
+                args.arg1 = err.bits();
+                args.arg2 = undef;
+                args.arg3 = undef;
+            }
+            code @ (ReturnCode::ReturnOk | ReturnCode::ReturnErr) => {
+                state.exit_jmp.set(prev);
+                return NativeReturn {
+                    code,
+                    value: state.exit_value.get(),
+                };
+            }
+            ReturnCode::Continue => {
+                unreachable!("cannot continue into native code")
+            }
+        }
+    }
+}
+
+/// Stage an Ok/Err/Raise result on `State` and `longjmp` back to the active Scheme entry.
+///
+/// # Safety
+///
+/// Must only be called while `state.exit_jmp` points at a live `setjmp` buffer installed
+/// by [`trampoline`].
+pub unsafe fn scheme_longjmp<'gc>(ctx: Context<'gc>, code: ReturnCode, value: Value<'gc>) -> ! {
+    let state = ctx.state();
+    state.exit_code.set(code);
+    state.exit_value.set(value);
+    let buf = state.exit_jmp.get();
+    debug_assert!(!buf.is_null(), "scheme_longjmp without active setjmp");
+    // SAFETY: `buf` is the live buffer from the enclosing `trampoline` setjmp.
+    unsafe { capy_longjmp(buf, 1) }
+}
+
+/// Non-continuable raise from a compiled-code thunk: drop locals first, then longjmp.
+///
+/// The Scheme entry [`trampoline`] re-enters the exception handler with `default_retk`.
+pub fn thunk_raise<'gc>(ctx: Context<'gc>, err: Value<'gc>) -> ! {
+    // SAFETY: Thunks are only called while an active Scheme entry has installed `exit_jmp`.
+    unsafe { scheme_longjmp(ctx, ReturnCode::Raise, err) }
 }
 
 pub(crate) extern "C-unwind" fn default_retk<'gc>(
