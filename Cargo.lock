@@ -299,6 +299,7 @@ dependencies = [
  "bytemuck",
  "capstone",
  "capy-derive",
+ "cc",
  "cranelift",
  "cranelift-codegen",
  "cranelift-entity 0.125.4",
