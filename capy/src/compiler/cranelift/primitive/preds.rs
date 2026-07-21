@@ -34,11 +34,11 @@ pub fn lower_is_boolean<'gc_, 'a, 'f>(
     _source: Value<'gc_>,
 ) -> PrimValue {
     let val = ssa.atom(args[0]);
-    let mask = ssa.builder.ins().band_imm(val, (!1u64) as i64);
+    let mask = ssa.builder.ins().band_imm_u(val, (!1u64) as i64);
     PrimValue::Comparison(
         ssa.builder
             .ins()
-            .icmp_imm(IntCC::Equal, mask, Value::VALUE_FALSE),
+            .icmp_imm_s(IntCC::Equal, mask, Value::VALUE_FALSE),
     )
 }
 
@@ -90,7 +90,7 @@ pub fn lower_is_exact_integer<'gc_, 'a, 'f>(
 ) -> PrimValue {
     let val = ssa.atom(args[0]);
 
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let check = ssa.handle_thunk_call_result(ssa.thunks.exact_integerp, &[ctx, val]);
 
     PrimValue::Value(check)
@@ -103,7 +103,7 @@ pub fn lower_is_integer<'gc_, 'a, 'f>(
 ) -> PrimValue {
     let val = ssa.atom(args[0]);
 
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let check = ssa.builder.ins().call(ssa.thunks.integerp, &[ctx, val]);
     PrimValue::Comparison(ssa.builder.inst_results(check)[0])
 }
@@ -130,8 +130,8 @@ pub fn lower_is_number<'gc_, 'a, 'f>(
     _source: Value<'gc_>,
 ) -> PrimValue {
     let val = ssa.atom(args[0]);
-    let mask = ssa.builder.ins().band_imm(val, Value::NUMBER_TAG);
-    let is_inline_num = ssa.builder.ins().icmp_imm(IntCC::NotEqual, mask, 0);
+    let mask = ssa.builder.ins().band_imm_u(val, Value::NUMBER_TAG);
+    let is_inline_num = ssa.builder.ins().icmp_imm_s(IntCC::NotEqual, mask, 0);
     let succ = ssa.builder.create_block();
     let check_heap = ssa.builder.create_block();
 
@@ -177,7 +177,7 @@ pub fn lower_is_nan<'gc_, 'a, 'f>(
     _source: Value<'gc_>,
 ) -> PrimValue {
     let val = ssa.atom(args[0]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let result = ssa.handle_thunk_call_result(ssa.thunks.nanp, &[ctx, val]);
     PrimValue::Value(result)
 }
@@ -211,7 +211,7 @@ pub fn lower_is_inexact<'gc_, 'a, 'f>(
     _source: Value<'gc_>,
 ) -> PrimValue {
     let val = ssa.atom(args[0]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let check = ssa.handle_thunk_call_result(ssa.thunks.inexactp, &[ctx, val]);
     PrimValue::Value(check)
 }
@@ -222,7 +222,7 @@ pub fn lower_is_exact<'gc_, 'a, 'f>(
     _source: Value<'gc_>,
 ) -> PrimValue {
     let val = ssa.atom(args[0]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let check = ssa.handle_thunk_call_result(ssa.thunks.exactp, &[ctx, val]);
     PrimValue::Value(check)
 }

@@ -34,7 +34,7 @@ use std::{
 };
 
 pub(crate) const REGISTER_ARG_COUNT: usize = 4;
-pub(crate) const COMPILED_ENTRY_ARG_COUNT: usize = REGISTER_ARG_COUNT + 2;
+pub(crate) const COMPILED_ENTRY_ARG_COUNT: usize = REGISTER_ARG_COUNT + 3;
 
 #[derive(Clone, Copy)]
 #[repr(transparent)]

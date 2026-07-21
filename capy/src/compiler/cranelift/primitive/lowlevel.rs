@@ -37,7 +37,7 @@ pub fn lower_refptr<'gc_, 'a, 'f>(
     let addr = ssa.builder.ins().iadd(val, offset);
     PrimValue::Value(ssa.builder.ins().load(
         types::I64,
-        ir::MemFlags::trusted().with_can_move(),
+        ir::MemFlagsData::trusted().with_can_move(),
         addr,
         0,
     ))
@@ -51,7 +51,7 @@ pub fn lower_usize_to_value<'gc_, 'a, 'f>(
     let val = ssa.atom(args[0]);
     let val = ssa.ireduce(types::I32, val);
     let val = ssa.zextend(types::I64, val);
-    let val = ssa.builder.ins().bor_imm(val, Value::NUMBER_TAG);
+    let val = ssa.builder.ins().bor_imm_u(val, Value::NUMBER_TAG);
     PrimValue::Value(val)
 }
 

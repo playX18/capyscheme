@@ -30,7 +30,7 @@ pub fn lower_make_tuple<'gc_, 'a, 'f>(
     args: &[Atom<'gc_>],
     _source: Value<'gc_>,
 ) -> PrimValue {
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let size = ssa.atom(args[0]);
     let fill = if args.len() > 1 {
         ssa.atom(args[1])
@@ -50,7 +50,7 @@ pub fn lower_make_vector<'gc_, 'a, 'f>(
     args: &[Atom<'gc_>],
     _source: Value<'gc_>,
 ) -> PrimValue {
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let size = ssa.atom(args[0]);
     let fill = if args.len() == 2 {
         ssa.atom(args[1])
@@ -72,11 +72,11 @@ pub fn lower_string_length<'gc_, 'a, 'f>(
     let str = ssa.atom(args[0]);
     let len = ssa.builder.ins().load(
         types::I64,
-        ir::MemFlags::trusted().with_can_move(),
+        ir::MemFlagsData::trusted().with_can_move(),
         str,
         offset_of!(Str, length) as i32,
     );
-    let fixnum = ssa.builder.ins().bor_imm(len, Value::NUMBER_TAG);
+    let fixnum = ssa.builder.ins().bor_imm_u(len, Value::NUMBER_TAG);
     PrimValue::Value(fixnum)
 }
 
@@ -87,7 +87,7 @@ pub fn lower_string_ref<'gc_, 'a, 'f>(
 ) -> PrimValue {
     let s = ssa.atom(args[0]);
     let ix = ssa.atom(args[1]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let result = ssa.handle_thunk_call_result(ssa.thunks.string_ref, &[ctx, s, ix]);
     PrimValue::Value(result)
 }
@@ -98,7 +98,7 @@ pub fn lower_integer_to_char<'gc_, 'a, 'f>(
     _source: Value<'gc_>,
 ) -> PrimValue {
     let val = ssa.atom(args[0]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let result = ssa.handle_thunk_call_result(ssa.thunks.integer_to_char, &[ctx, val]);
     PrimValue::Value(result)
 }
@@ -109,7 +109,7 @@ pub fn lower_char_to_integer<'gc_, 'a, 'f>(
     _source: Value<'gc_>,
 ) -> PrimValue {
     let val = ssa.atom(args[0]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let result = ssa.handle_thunk_call_result(ssa.thunks.char_to_integer, &[ctx, val]);
     PrimValue::Value(result)
 }
@@ -133,7 +133,7 @@ pub fn lower_symbol_to_string<'gc_, 'a, 'f>(
     _source: Value<'gc_>,
 ) -> PrimValue {
     let sym = ssa.atom(args[0]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let result = ssa.handle_thunk_call_result(ssa.thunks.symbol2string, &[ctx, sym]);
     PrimValue::Value(result)
 }
@@ -144,7 +144,7 @@ pub fn lower_string_to_symbol<'gc_, 'a, 'f>(
     _source: Value<'gc_>,
 ) -> PrimValue {
     let str = ssa.atom(args[0]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let result = ssa.handle_thunk_call_result(ssa.thunks.string2symbol, &[ctx, str]);
     PrimValue::Value(result)
 }
@@ -157,7 +157,7 @@ pub fn lower_push_cframe<'gc_, 'a, 'f>(
     let key = ssa.atom(args[0]);
     let value = ssa.atom(args[1]);
     let retk = ssa.atom(args[2]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let res = ssa
         .builder
         .ins()
@@ -170,7 +170,7 @@ pub fn lower_current_continuation_marks<'gc_, 'a, 'f>(
     _args: &[Atom<'gc_>],
     _source: Value<'gc_>,
 ) -> PrimValue {
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let result = ssa
         .builder
         .ins()
@@ -185,7 +185,7 @@ pub fn lower_set_attachments<'gc_, 'a, 'f>(
 ) -> PrimValue {
     let attachments = ssa.atom(args[0]);
 
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let res = ssa.handle_thunk_call_result(ssa.thunks.set_attachments, &[ctx, attachments]);
     PrimValue::Value(res)
 }
@@ -195,12 +195,12 @@ pub fn lower_winders<'gc_, 'a, 'f>(
     args: &[Atom<'gc_>],
     _source: Value<'gc_>,
 ) -> PrimValue {
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
 
     if args.is_empty() {
         let winders = ssa.builder.ins().load(
             types::I64,
-            ir::MemFlags::trusted().with_can_move(),
+            ir::MemFlagsData::trusted().with_can_move(),
             ctx,
             (Context::OFFSET_OF_STATE + offset_of!(State, winders)) as i32,
         );
@@ -209,7 +209,7 @@ pub fn lower_winders<'gc_, 'a, 'f>(
 
     let new_winders = ssa.atom(args[0]);
     ssa.builder.ins().store(
-        ir::MemFlags::trusted(),
+        ir::MemFlagsData::trusted(),
         new_winders,
         ctx,
         (Context::OFFSET_OF_STATE + offset_of!(State, winders)) as i32,
@@ -227,7 +227,7 @@ pub fn lower_make_syntax<'gc_, 'a, 'f>(
     let module = ssa.atom(args[2]);
     let source = ssa.atom(args[3]);
     let properties = ssa.atom(args[4]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let result = ssa.builder.ins().call(
         ssa.thunks.make_syntax,
         &[ctx, exp, wrap, module, source, properties],
@@ -240,7 +240,7 @@ pub fn lower_default_retk<'gc_, 'a, 'f>(
     _args: &[Atom<'gc_>],
     _source: Value<'gc_>,
 ) -> PrimValue {
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let result = ssa.builder.ins().call(ssa.thunks.default_retk, &[ctx]);
     PrimValue::Value(ssa.builder.inst_results(result)[0])
 }

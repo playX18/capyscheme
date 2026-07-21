@@ -49,12 +49,11 @@ parking_lot = "0.12.5"
 icu = { version = "2.0.0", features = ["compiled_data"] }
 sys-locale = "0.3.2"
 capy-derive.workspace = true
-cranelift-entity = "0.125.3"
+cranelift-entity = { git = "https://github.com/playX18/wasmtime", branch = "ap/ghc-callconv" }
 polling = "3.11.0"
 asmkit-rs = { version = "0.4.0", features = ["jit", "x86", "aarch64"] }
 slotmap = "1.0.7"
 smallvec = "1.15.1"
-regalloc2 = "0.15.0"
 serde.workspace = true
 flate2 = "1.1.9"
 capstone.workspace = true

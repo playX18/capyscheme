@@ -1,4 +1,7 @@
-use std::{collections::HashMap, mem::offset_of};
+use std::{
+    collections::HashMap,
+    mem::{offset_of, size_of},
+};
 
 use crate::rsgc::{
     Gc,
@@ -12,6 +15,7 @@ use crate::{
         cps::graph::Atom,
         cranelift::{
             MAX_RAISE_ARITY, RegisterCallArgs, RestSource, SsaBuilder, VarDef, primitive::PrimValue,
+            scheme_call_values,
         },
         ssa::{
             Block as SsaBlock, BranchTarget, ClosureKind, CodeId, Instruction, Operand, Procedure,
@@ -20,7 +24,7 @@ use crate::{
     },
     expander::core::{LVarRef, fresh_lvar},
     runtime::{
-        Context, REGISTER_ARG_COUNT, State,
+        COMPILED_ENTRY_ARG_COUNT, Context, REGISTER_ARG_COUNT, State,
         value::CodeBlock,
         value::{Closure, Symbol, Value},
         vm::exceptions::RaiseKind,
@@ -147,7 +151,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         let data = self
             .module_builder
             .declare_runtime_data_in_func(data, self.builder.func);
-        self.builder.ins().global_value(typ, data)
+        self.builder.ins().symbol_value(typ, data)
     }
 
     pub fn import_data(&mut self, data: DataSymbol) -> ir::GlobalValue {
@@ -159,21 +163,21 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
 
     pub(crate) fn data_slot_address(&mut self, data: DataSymbol) -> ir::Value {
         let global_value = self.import_data(data);
-        self.builder.ins().global_value(types::I64, global_value)
+        self.builder.ins().symbol_value(types::I64, global_value)
     }
 
     pub(crate) fn load_data_value(&mut self, data: DataSymbol) -> ir::Value {
         let addr = self.data_slot_address(data);
         self.builder
             .ins()
-            .load(types::I64, ir::MemFlags::trusted().with_can_move(), addr, 0)
+            .load(types::I64, ir::MemFlagsData::trusted().with_can_move(), addr, 0)
     }
 
     pub(crate) fn store_data_value(&mut self, data: DataSymbol, value: ir::Value) {
         let addr = self.data_slot_address(data);
         self.builder
             .ins()
-            .store(ir::MemFlags::trusted().with_can_move(), value, addr, 0);
+            .store(ir::MemFlagsData::trusted().with_can_move(), value, addr, 0);
     }
 
     fn load_function_entrypoint(&mut self, function: FunctionSymbol) -> ir::Value {
@@ -208,10 +212,10 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
     }
 
     fn state_ptr(&mut self) -> ir::Value {
-        let ctx = self.builder.ins().get_pinned_reg(types::I64);
+        let ctx = self.ctx;
         self.builder
             .ins()
-            .iadd_imm(ctx, Context::OFFSET_OF_STATE as i64)
+            .iadd_imm_s(ctx, Context::OFFSET_OF_STATE as i64)
     }
 
     fn overflow_base_from_argc(&mut self, argc: ir::Value) -> ir::Value {
@@ -231,9 +235,9 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
 
         self.builder.ins().load(
             types::I64,
-            ir::MemFlags::trusted().with_can_move(),
+            ir::MemFlagsData::trusted().with_can_move(),
             overflow,
-            ((index - REGISTER_ARG_COUNT) * std::mem::size_of::<Value>()) as i32,
+            ((index - REGISTER_ARG_COUNT) * size_of::<Value>()) as i32,
         )
     }
 
@@ -241,8 +245,14 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         &mut self,
         rator: ir::Value,
         args: RegisterCallArgs,
-    ) -> [ir::Value; REGISTER_ARG_COUNT + 2] {
+    ) -> [ir::Value; COMPILED_ENTRY_ARG_COUNT] {
+        scheme_call_values(self.ctx, rator, args.argc, args.args)
+    }
+
+    fn call_block_args(&mut self, rator: ir::Value, args: RegisterCallArgs) -> Vec<BlockArg> {
+        // Exit / self-rec blocks carry ctx,rator,argc,args.
         [
+            self.ctx,
             rator,
             args.argc,
             args.args[0],
@@ -250,13 +260,9 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
             args.args[2],
             args.args[3],
         ]
-    }
-
-    fn call_block_args(&mut self, rator: ir::Value, args: RegisterCallArgs) -> Vec<BlockArg> {
-        self.call_values(rator, args)
-            .into_iter()
-            .map(BlockArg::Value)
-            .collect()
+        .into_iter()
+        .map(BlockArg::Value)
+        .collect()
     }
 
     fn emit_wrong_arity_trampoline_call(
@@ -276,18 +282,15 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
             .builder
             .ins()
             .iconst(types::I64, Value::undefined().bits() as i64);
-        self.builder.ins().return_call_indirect(
-            self.sig_call,
-            target,
-            &[
-                self.rator,
-                actual_argc,
-                retk_or_zero,
-                got,
-                expected,
-                undefined,
-            ],
-        );
+        let call_args = RegisterCallArgs {
+            argc: actual_argc,
+            args: [retk_or_zero, got, expected, undefined],
+            overflow: self.builder.ins().iconst(types::I64, 0),
+        };
+        let values = self.call_values(self.rator, call_args);
+        self.builder
+            .ins()
+            .return_call_indirect(self.sig_call, target, &values);
     }
 
     pub fn entrypoint(&mut self, argc: ir::Value, args: [ir::Value; REGISTER_ARG_COUNT]) {
@@ -326,7 +329,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         let exact = self
             .builder
             .ins()
-            .icmp_imm(IntCC::Equal, argc, expected_argc as i64);
+            .icmp_imm_s(IntCC::Equal, argc, expected_argc as i64);
         let succ = self.builder.create_block();
         let err = self.builder.create_block();
         self.builder.func.layout.set_cold(err);
@@ -337,7 +340,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
             let got = if first_arg == 0 {
                 argc
             } else {
-                self.builder.ins().iadd_imm(argc, -(first_arg as i64))
+                self.builder.ins().iadd_imm_s(argc, -(first_arg as i64))
             };
             let expected = params.len() as isize;
             let retk_or_zero = return_cont
@@ -366,7 +369,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         match self.target_return_cont() {
             Some(return_cont) => self.var(return_cont),
             None => {
-                let ctx = self.builder.ins().get_pinned_reg(types::I64);
+                let ctx = self.ctx;
                 let call = self.builder.ins().call(self.thunks.default_retk, &[ctx]);
                 self.builder.inst_results(call)[0]
             }
@@ -394,7 +397,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
     ) -> ir::Value {
         const INLINE_ALLOC_LIMIT: usize = 8 * 1024;
         const HEADER_SIZE: usize = size_of::<HeapObjectHeader>();
-        let ctx = self.builder.ins().get_pinned_reg(types::I64);
+        let ctx = self.ctx;
         let slowpath = self.builder.create_block();
         let merge = self.builder.create_block();
         self.builder.append_block_param(merge, types::I64);
@@ -404,7 +407,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
             Some(var_alloc_size) if con_alloc_size != 0 => self
                 .builder
                 .ins()
-                .iadd_imm(var_alloc_size, con_alloc_size as i64),
+                .iadd_imm_s(var_alloc_size, con_alloc_size as i64),
             Some(var_alloc_size) => var_alloc_size,
             None => self.builder.ins().iconst(types::I64, con_alloc_size as i64),
         };
@@ -414,7 +417,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
             self.builder.ins().jump(slowpath, &[]);
         } else if let Some(var_alloc_size) = var_alloc_size {
             let remaining = inline_payload_limit - con_alloc_size;
-            let is_small = self.builder.ins().icmp_imm(
+            let is_small = self.builder.ins().icmp_imm_s(
                 IntCC::UnsignedLessThan,
                 var_alloc_size,
                 remaining as i64,
@@ -466,22 +469,22 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
     ) {
         let cursor = self.builder.ins().load(
             types::I64,
-            ir::MemFlags::trusted(),
+            ir::MemFlagsData::trusted(),
             ctx,
             Thread::LAB_OFFSET_CURSOR as i32,
         );
         let limit = self.builder.ins().load(
             types::I64,
-            ir::MemFlags::trusted().with_can_move(),
+            ir::MemFlagsData::trusted().with_can_move(),
             ctx,
             Thread::LAB_OFFSET_LIMIT as i32,
         );
-        let aligned_payload_size = self.builder.ins().iadd_imm(payload_size, 7);
-        let aligned_payload_size = self.builder.ins().band_imm(aligned_payload_size, !7);
+        let aligned_payload_size = self.builder.ins().iadd_imm_s(payload_size, 7);
+        let aligned_payload_size = self.builder.ins().band_imm_u(aligned_payload_size, !7);
         let total_size = self
             .builder
             .ins()
-            .iadd_imm(aligned_payload_size, size_of::<HeapObjectHeader>() as i64);
+            .iadd_imm_s(aligned_payload_size, size_of::<HeapObjectHeader>() as i64);
         let alloc_end = self.builder.ins().iadd(cursor, total_size);
         let fits = self
             .builder
@@ -492,7 +495,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
 
         self.builder.switch_to_block(commit);
         self.builder.ins().store(
-            ir::MemFlags::trusted(),
+            ir::MemFlagsData::trusted(),
             alloc_end,
             ctx,
             Thread::LAB_OFFSET_CURSOR as i32,
@@ -503,11 +506,11 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         };
         self.builder
             .ins()
-            .store(ir::MemFlags::trusted(), header_word, cursor, 0);
+            .store(ir::MemFlagsData::trusted(), header_word, cursor, 0);
         let object = self
             .builder
             .ins()
-            .iadd_imm(cursor, OBJECT_REF_OFFSET as i64);
+            .iadd_imm_s(cursor, OBJECT_REF_OFFSET as i64);
         self.emit_set_vo_bit(object);
         self.builder.ins().jump(merge, &[BlockArg::Value(object)]);
     }
@@ -529,31 +532,31 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
 
         let metadata = self.builder.ins().load(
             types::I64,
-            ir::MemFlags::trusted().with_can_move(),
+            ir::MemFlagsData::trusted().with_can_move(),
             code_block,
             offset_of!(CodeBlock, metadata) as i32,
         );
         let nfree = self.builder.ins().iconst(types::I64, free_count as i64);
         self.builder.ins().store(
-            ir::MemFlags::trusted(),
+            ir::MemFlagsData::trusted(),
             entrypoint,
             closure,
             offset_of!(Closure, code) as i32,
         );
         self.builder.ins().store(
-            ir::MemFlags::trusted(),
+            ir::MemFlagsData::trusted(),
             code_block,
             closure,
             offset_of!(Closure, code_block) as i32,
         );
         self.builder.ins().store(
-            ir::MemFlags::trusted(),
+            ir::MemFlagsData::trusted(),
             metadata,
             closure,
             offset_of!(Closure, meta) as i32,
         );
         self.builder.ins().store(
-            ir::MemFlags::trusted(),
+            ir::MemFlagsData::trusted(),
             nfree,
             closure,
             offset_of!(Closure, nfree) as i32,
@@ -565,7 +568,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
             .iconst(types::I64, Value::undefined().bits() as i64);
         for i in 0..free_count {
             self.builder.ins().store(
-                ir::MemFlags::trusted(),
+                ir::MemFlagsData::trusted(),
                 undefined,
                 closure,
                 Closure::DATA_OFFSET as i32 + (i * size_of::<Value>()) as i32,
@@ -586,11 +589,15 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
             .builder
             .ins()
             .iconst(types::I64, Value::undefined().bits() as i64);
-        self.builder.ins().return_call_indirect(
-            self.sig_call,
-            target,
-            &[err, undefined, retk, undefined, undefined, undefined],
-        )
+        let call_args = RegisterCallArgs {
+            argc: undefined,
+            args: [retk, undefined, undefined, undefined],
+            overflow: self.builder.ins().iconst(types::I64, 0),
+        };
+        let values = self.call_values(err, call_args);
+        self.builder
+            .ins()
+            .return_call_indirect(self.sig_call, target, &values)
     }
 
     fn load_arguments(
@@ -601,12 +608,12 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
     ) {
         let (params, rest) = self.target_params();
 
-        let ctx = self.builder.ins().get_pinned_reg(types::I64);
+        let ctx = self.ctx;
 
         let state = self.state_ptr();
         /* reset the runstack to the state it was before call */
         self.builder.ins().store(
-            ir::MemFlags::trusted().with_can_move(),
+            ir::MemFlagsData::trusted().with_can_move(),
             overflow,
             state,
             offset_of!(State, runstack) as i32,
@@ -617,7 +624,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         if let Some(return_cont) = self.target_return_cont() {
             let retk = self.raw_arg_at(args, overflow, 0);
             first_arg = 1;
-            num_rands = self.builder.ins().iadd_imm(num_rands, -1);
+            num_rands = self.builder.ins().iadd_imm_s(num_rands, -1);
 
             self.debug_local(return_cont, retk);
 
@@ -638,7 +645,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
 
         if !params.is_empty() {
             if let Some(rest) = rest {
-                let not_enough = self.builder.ins().icmp_imm(
+                let not_enough = self.builder.ins().icmp_imm_s(
                     IntCC::UnsignedLessThan,
                     num_rands,
                     params.len() as i64,
@@ -664,7 +671,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                         self.debug_local(*param, value);
                     }
 
-                    let need_cons = self.builder.ins().icmp_imm(
+                    let need_cons = self.builder.ins().icmp_imm_s(
                         IntCC::NotEqual,
                         num_rands,
                         params.len() as i64,
@@ -721,7 +728,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                 let exact =
                     self.builder
                         .ins()
-                        .icmp_imm(IntCC::Equal, num_rands, params.len() as i64);
+                        .icmp_imm_s(IntCC::Equal, num_rands, params.len() as i64);
 
                 let succ = self.builder.create_block();
                 let err = self.builder.create_block();
@@ -754,7 +761,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
 
                 self.builder.append_block_param(succ, types::I64);
 
-                let need_cons = self.builder.ins().icmp_imm(IntCC::NotEqual, num_rands, 0);
+                let need_cons = self.builder.ins().icmp_imm_s(IntCC::NotEqual, num_rands, 0);
 
                 self.builder
                     .ins()
@@ -793,7 +800,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
 
                 self.builder.func.layout.set_cold(err);
 
-                let nonzero = self.builder.ins().icmp_imm(IntCC::NotEqual, num_rands, 0);
+                let nonzero = self.builder.ins().icmp_imm_s(IntCC::NotEqual, num_rands, 0);
 
                 self.builder.ins().brif(nonzero, err, &[], succ, &[]);
 
@@ -821,16 +828,16 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
             let state = self.state_ptr();
             let runstack = self.builder.ins().load(
                 types::I64,
-                ir::MemFlags::trusted().with_can_move(),
+                ir::MemFlagsData::trusted().with_can_move(),
                 state,
                 offset_of!(State, runstack) as i32,
             );
-            let new_runstack = self.builder.ins().iadd_imm(
+            let new_runstack = self.builder.ins().iadd_imm_s(
                 runstack,
-                (overflow_count * std::mem::size_of::<Value>()) as i64,
+                (overflow_count * size_of::<Value>()) as i64,
             );
             self.builder.ins().store(
-                ir::MemFlags::trusted().with_can_move(),
+                ir::MemFlagsData::trusted().with_can_move(),
                 new_runstack,
                 state,
                 offset_of!(State, runstack) as i32,
@@ -844,10 +851,10 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                 regs[i] = *arg;
             } else {
                 self.builder.ins().store(
-                    ir::MemFlags::trusted().with_can_move(),
+                    ir::MemFlagsData::trusted().with_can_move(),
                     *arg,
                     overflow,
-                    ((i - REGISTER_ARG_COUNT) * std::mem::size_of::<Value>()) as i32,
+                    ((i - REGISTER_ARG_COUNT) * size_of::<Value>()) as i32,
                 );
             }
         }
@@ -869,10 +876,10 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
 
                 let global_value = self.import_data(data_id);
 
-                let addr = self.builder.ins().global_value(types::I64, global_value);
+                let addr = self.builder.ins().symbol_value(types::I64, global_value);
                 self.builder.ins().load(
                     types::I64,
-                    ir::MemFlags::trusted().with_can_move(),
+                    ir::MemFlagsData::trusted().with_can_move(),
                     addr,
                     0,
                 )
@@ -979,13 +986,13 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         let source = self.rest_source(rest);
         self.builder
             .ins()
-            .iadd_imm(source.argc, -((source.first_rest + skip) as i64))
+            .iadd_imm_s(source.argc, -((source.first_rest + skip) as i64))
     }
 
     fn fixnum_from_usize_value(&mut self, value: ir::Value) -> ir::Value {
         let value = self.ireduce(types::I32, value);
         let value = self.zextend(types::I64, value);
-        self.builder.ins().bor_imm(value, Value::NUMBER_TAG)
+        self.builder.ins().bor_imm_u(value, Value::NUMBER_TAG)
     }
 
     fn emit_atom(&mut self, atom: Operand<'gc>) -> ir::Value {
@@ -1003,14 +1010,14 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                     let val = self.ssa_var(var);
                     self.builder
                         .ins()
-                        .icmp_imm(IntCC::NotEqual, val, Value::VALUE_FALSE)
+                        .icmp_imm_s(IntCC::NotEqual, val, Value::VALUE_FALSE)
                 }
             },
             Operand::Constant(_) => {
                 let val = self.emit_atom(atom);
                 self.builder
                     .ins()
-                    .icmp_imm(IntCC::NotEqual, val, Value::VALUE_FALSE)
+                    .icmp_imm_s(IntCC::NotEqual, val, Value::VALUE_FALSE)
             }
         }
     }
@@ -1086,7 +1093,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                 let closure = self.emit_atom(*closure);
                 let value = self.builder.ins().load(
                     types::I64,
-                    ir::MemFlags::trusted().with_can_move(),
+                    ir::MemFlagsData::trusted().with_can_move(),
                     closure,
                     Closure::DATA_OFFSET as i32 + (*index * 8) as i32,
                 );
@@ -1100,7 +1107,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                 let closure = self.emit_atom(*closure);
                 let value = self.emit_atom(*value);
                 self.builder.ins().store(
-                    ir::MemFlags::trusted().with_can_move(),
+                    ir::MemFlagsData::trusted().with_can_move(),
                     value,
                     closure,
                     Closure::DATA_OFFSET as i32 + (*index * 8) as i32,
@@ -1159,7 +1166,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
             Instruction::RestToList { dst, rest, source } => {
                 self.set_debug_loc(*source);
                 let rest_source = self.rest_source(*rest);
-                let ctx = self.builder.ins().get_pinned_reg(types::I64);
+                let ctx = self.ctx;
                 let from = self
                     .builder
                     .ins()
@@ -1217,12 +1224,12 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                 let rest_source = self.rest_source(*rest);
                 let threshold = (rest_source.first_rest + *skip) as i64;
                 let val = match predicate {
-                    RestPredicate::Null => VarDef::Comparison(self.builder.ins().icmp_imm(
+                    RestPredicate::Null => VarDef::Comparison(self.builder.ins().icmp_imm_s(
                         IntCC::Equal,
                         rest_source.argc,
                         threshold,
                     )),
-                    RestPredicate::Pair => VarDef::Comparison(self.builder.ins().icmp_imm(
+                    RestPredicate::Pair => VarDef::Comparison(self.builder.ins().icmp_imm_s(
                         IntCC::UnsignedGreaterThan,
                         rest_source.argc,
                         threshold,
@@ -1265,7 +1272,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         self.builder.switch_to_block(get_closure_code);
         let code = self.builder.ins().load(
             types::I64,
-            ir::MemFlags::trusted().with_can_move(),
+            ir::MemFlagsData::trusted().with_can_move(),
             callee,
             offset_of!(Closure, code) as i32,
         );
@@ -1279,7 +1286,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         let closure = self.emit_atom(callee);
         let code = self.builder.ins().load(
             types::I64,
-            ir::MemFlags::trusted().with_can_move(),
+            ir::MemFlagsData::trusted().with_can_move(),
             closure,
             offset_of!(Closure, code) as i32,
         );
@@ -1305,7 +1312,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         let mut call_args = self.prepare_call_args(&rands);
 
         if self.module_builder.stacktraces {
-            let ctx = self.builder.ins().get_pinned_reg(types::I64);
+            let ctx = self.ctx;
             let src_info = self.atom(Atom::Constant(source));
             let rator = self.closure_from_callee(callee);
 
@@ -1567,7 +1574,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                     .ins()
                     .brif(is_char, switch_block, &[], type_miss_block, &[]);
                 self.builder.switch_to_block(switch_block);
-                let value = self.builder.ins().ushr_imm(value, 16);
+                let value = self.builder.ins().ushr_imm_u(value, 16);
                 self.builder.ins().ireduce(types::I32, value)
             }
             SwitchKind::Eq | SwitchKind::Fixnum | SwitchKind::Numeric => {
@@ -1586,14 +1593,14 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                 self.builder.switch_to_block(switch_block);
                 let hash = self.builder.ins().load(
                     types::I64,
-                    ir::MemFlags::trusted().with_can_move(),
+                    ir::MemFlagsData::trusted().with_can_move(),
                     value,
                     offset_of!(Symbol, hash) as i32,
                 );
                 if mask == u64::MAX {
                     hash
                 } else {
-                    self.builder.ins().band_imm(hash, mask as i64)
+                    self.builder.ins().band_imm_u(hash, mask as i64)
                 }
             }
         };
@@ -1687,7 +1694,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
             self.emit_branch_target(procedure, default);
             return;
         };
-        let ctx = self.builder.ins().get_pinned_reg(types::I64);
+        let ctx = self.ctx;
         let constant = self.atom(Atom::Constant(Value::new(value)));
         let _ = self.handle_thunk_call_result(self.thunks.fxeq, &[ctx, scrutinee, constant]);
         self.emit_branch_target(procedure, default);
@@ -1699,7 +1706,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         scrutinee: ir::Value,
         default: &BranchTarget<'gc>,
     ) {
-        let ctx = self.builder.ins().get_pinned_reg(types::I64);
+        let ctx = self.ctx;
         let _ = self.handle_thunk_call_result(self.thunks.char_to_integer, &[ctx, scrutinee]);
         self.emit_branch_target(procedure, default);
     }
@@ -1711,7 +1718,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         cases: &[crate::compiler::ssa::SwitchCase<'gc>],
         default: &BranchTarget<'gc>,
     ) {
-        let ctx = self.builder.ins().get_pinned_reg(types::I64);
+        let ctx = self.ctx;
         for case in cases {
             let SwitchCaseValue::Integer(value) = case.value else {
                 continue;
@@ -1734,17 +1741,18 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         self.builder.switch_to_block(self.exit_block);
 
         let code = self.builder.block_params(self.exit_block)[0];
-        let rator = self.builder.block_params(self.exit_block)[1];
-        let argc = self.builder.block_params(self.exit_block)[2];
-        let arg0 = self.builder.block_params(self.exit_block)[3];
-        let arg1 = self.builder.block_params(self.exit_block)[4];
-        let arg2 = self.builder.block_params(self.exit_block)[5];
-        let arg3 = self.builder.block_params(self.exit_block)[6];
+        let ctx = self.builder.block_params(self.exit_block)[1];
+        let rator = self.builder.block_params(self.exit_block)[2];
+        let argc = self.builder.block_params(self.exit_block)[3];
+        let arg0 = self.builder.block_params(self.exit_block)[4];
+        let arg1 = self.builder.block_params(self.exit_block)[5];
+        let arg2 = self.builder.block_params(self.exit_block)[6];
+        let arg3 = self.builder.block_params(self.exit_block)[7];
 
         self.builder.ins().return_call_indirect(
             self.sig_call,
             code,
-            &[rator, argc, arg0, arg1, arg2, arg3],
+            &[ctx, rator, argc, arg0, arg1, arg2, arg3],
         );
 
         self.builder.seal_all_blocks();
@@ -1766,13 +1774,13 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         argc: ir::Value,
         args: [ir::Value; REGISTER_ARG_COUNT],
     ) {
-        let ctx = self.builder.ins().get_pinned_reg(types::I64);
+        let ctx = self.ctx;
 
         let thread = ctx;
 
         let yieldpoint = self.builder.ins().load(
             types::I32,
-            ir::MemFlags::trusted(),
+            ir::MemFlagsData::trusted(),
             thread,
             Thread::TAKE_YIELDPOINT_OFFSET as i32,
         );
@@ -1780,14 +1788,14 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         let on_no_yieldpoint = self.builder.create_block();
         self.builder.func.layout.set_cold(on_yieldpoint);
 
-        let take_yieldpoint = self.builder.ins().icmp_imm(IntCC::NotEqual, yieldpoint, 0);
+        let take_yieldpoint = self.builder.ins().icmp_imm_s(IntCC::NotEqual, yieldpoint, 0);
 
         self.builder
             .ins()
             .brif(take_yieldpoint, on_yieldpoint, &[], on_no_yieldpoint, &[]);
         self.builder.switch_to_block(on_yieldpoint);
         {
-            let ctx = self.builder.ins().get_pinned_reg(types::I64);
+            let ctx = self.ctx;
             self.builder.ins().call(
                 self.thunks.yieldpoint_block,
                 &[ctx, rator, argc, args[0], args[1], args[2], args[3]],

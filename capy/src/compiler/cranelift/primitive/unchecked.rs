@@ -9,7 +9,6 @@ use crate::runtime::vm::exceptions::RaiseKind;
 use cranelift::prelude::FloatCC;
 use cranelift::prelude::InstBuilder;
 use cranelift::prelude::IntCC;
-use cranelift::prelude::MemFlags;
 use cranelift::prelude::types;
 use cranelift_codegen::ir;
 use cranelift_codegen::ir::BlockArg;
@@ -23,7 +22,7 @@ fn fixnum_i32<'gc, 'a, 'f>(ssa: &mut SsaBuilder<'gc, 'a, 'f>, v: ir::Value) -> i
 
 fn fixnum_from_i32<'gc, 'a, 'f>(ssa: &mut SsaBuilder<'gc, 'a, 'f>, v: ir::Value) -> ir::Value {
     let wide = ssa.builder.ins().sextend(types::I64, v);
-    ssa.builder.ins().bor_imm(wide, Value::NUMBER_TAG)
+    ssa.builder.ins().bor_imm_u(wide, Value::NUMBER_TAG)
 }
 
 fn flonum_f64<'gc, 'a, 'f>(ssa: &mut SsaBuilder<'gc, 'a, 'f>, v: ir::Value) -> ir::Value {
@@ -34,14 +33,14 @@ fn flonum_f64<'gc, 'a, 'f>(ssa: &mut SsaBuilder<'gc, 'a, 'f>, v: ir::Value) -> i
     let value_bits = ssa.builder.ins().isub(v, f64_encode_off);
     ssa.builder
         .ins()
-        .bitcast(types::F64, MemFlags::new(), value_bits)
+        .bitcast(types::F64, ir::MemFlagsData::new(), value_bits)
 }
 
 fn flonum_from_f64<'gc, 'a, 'f>(ssa: &mut SsaBuilder<'gc, 'a, 'f>, v: ir::Value) -> ir::Value {
-    let bits = ssa.builder.ins().bitcast(types::I64, MemFlags::new(), v);
+    let bits = ssa.builder.ins().bitcast(types::I64, ir::MemFlagsData::new(), v);
     ssa.builder
         .ins()
-        .iadd_imm(bits, Value::DOUBLE_ENCODE_OFFSET as i64)
+        .iadd_imm_s(bits, Value::DOUBLE_ENCODE_OFFSET as i64)
 }
 
 fn false_value<'gc, 'a, 'f>(ssa: &mut SsaBuilder<'gc, 'a, 'f>) -> ir::Value {
@@ -609,7 +608,7 @@ pub fn lower_fx_zero<'gc, 'a, 'f>(
 ) -> PrimValue {
     let a0 = ssa.atom(args[0]);
     let x = fixnum_i32(ssa, a0);
-    let z = ssa.builder.ins().icmp_imm(IntCC::Equal, x, 0);
+    let z = ssa.builder.ins().icmp_imm_s(IntCC::Equal, x, 0);
     PrimValue::Comparison(z)
 }
 pub fn lower_fx_positive<'gc, 'a, 'f>(
@@ -619,7 +618,7 @@ pub fn lower_fx_positive<'gc, 'a, 'f>(
 ) -> PrimValue {
     let a0 = ssa.atom(args[0]);
     let x = fixnum_i32(ssa, a0);
-    let z = ssa.builder.ins().icmp_imm(IntCC::SignedGreaterThan, x, 0);
+    let z = ssa.builder.ins().icmp_imm_s(IntCC::SignedGreaterThan, x, 0);
     PrimValue::Comparison(z)
 }
 pub fn lower_fx_negative<'gc, 'a, 'f>(
@@ -629,7 +628,7 @@ pub fn lower_fx_negative<'gc, 'a, 'f>(
 ) -> PrimValue {
     let a0 = ssa.atom(args[0]);
     let x = fixnum_i32(ssa, a0);
-    let z = ssa.builder.ins().icmp_imm(IntCC::SignedLessThan, x, 0);
+    let z = ssa.builder.ins().icmp_imm_s(IntCC::SignedLessThan, x, 0);
     PrimValue::Comparison(z)
 }
 pub fn lower_fx_odd<'gc, 'a, 'f>(
@@ -639,8 +638,8 @@ pub fn lower_fx_odd<'gc, 'a, 'f>(
 ) -> PrimValue {
     let a0 = ssa.atom(args[0]);
     let x = fixnum_i32(ssa, a0);
-    let masked = ssa.builder.ins().band_imm(x, 1);
-    let z = ssa.builder.ins().icmp_imm(IntCC::Equal, masked, 1);
+    let masked = ssa.builder.ins().band_imm_u(x, 1);
+    let z = ssa.builder.ins().icmp_imm_s(IntCC::Equal, masked, 1);
     PrimValue::Comparison(z)
 }
 pub fn lower_fx_even<'gc, 'a, 'f>(
@@ -650,8 +649,8 @@ pub fn lower_fx_even<'gc, 'a, 'f>(
 ) -> PrimValue {
     let a0 = ssa.atom(args[0]);
     let x = fixnum_i32(ssa, a0);
-    let masked = ssa.builder.ins().band_imm(x, 1);
-    let z = ssa.builder.ins().icmp_imm(IntCC::Equal, masked, 0);
+    let masked = ssa.builder.ins().band_imm_u(x, 1);
+    let z = ssa.builder.ins().icmp_imm_s(IntCC::Equal, masked, 0);
     PrimValue::Comparison(z)
 }
 pub fn lower_fx_min<'gc, 'a, 'f>(
@@ -686,7 +685,7 @@ pub fn lower_fx_zero_checked<'gc, 'a, 'f>(
 ) -> PrimValue {
     with_fixnum_1(ssa, args, source, |ssa, a0| {
         let x = fixnum_i32(ssa, a0);
-        let z = ssa.builder.ins().icmp_imm(IntCC::Equal, x, 0);
+        let z = ssa.builder.ins().icmp_imm_s(IntCC::Equal, x, 0);
         PrimValue::Comparison(z)
     })
 }
@@ -698,7 +697,7 @@ pub fn lower_fx_positive_checked<'gc, 'a, 'f>(
 ) -> PrimValue {
     with_fixnum_1(ssa, args, source, |ssa, a0| {
         let x = fixnum_i32(ssa, a0);
-        let z = ssa.builder.ins().icmp_imm(IntCC::SignedGreaterThan, x, 0);
+        let z = ssa.builder.ins().icmp_imm_s(IntCC::SignedGreaterThan, x, 0);
         PrimValue::Comparison(z)
     })
 }
@@ -710,7 +709,7 @@ pub fn lower_fx_negative_checked<'gc, 'a, 'f>(
 ) -> PrimValue {
     with_fixnum_1(ssa, args, source, |ssa, a0| {
         let x = fixnum_i32(ssa, a0);
-        let z = ssa.builder.ins().icmp_imm(IntCC::SignedLessThan, x, 0);
+        let z = ssa.builder.ins().icmp_imm_s(IntCC::SignedLessThan, x, 0);
         PrimValue::Comparison(z)
     })
 }
@@ -722,8 +721,8 @@ pub fn lower_fx_odd_checked<'gc, 'a, 'f>(
 ) -> PrimValue {
     with_fixnum_1(ssa, args, source, |ssa, a0| {
         let x = fixnum_i32(ssa, a0);
-        let masked = ssa.builder.ins().band_imm(x, 1);
-        let z = ssa.builder.ins().icmp_imm(IntCC::Equal, masked, 1);
+        let masked = ssa.builder.ins().band_imm_u(x, 1);
+        let z = ssa.builder.ins().icmp_imm_s(IntCC::Equal, masked, 1);
         PrimValue::Comparison(z)
     })
 }
@@ -735,8 +734,8 @@ pub fn lower_fx_even_checked<'gc, 'a, 'f>(
 ) -> PrimValue {
     with_fixnum_1(ssa, args, source, |ssa, a0| {
         let x = fixnum_i32(ssa, a0);
-        let masked = ssa.builder.ins().band_imm(x, 1);
-        let z = ssa.builder.ins().icmp_imm(IntCC::Equal, masked, 0);
+        let masked = ssa.builder.ins().band_imm_u(x, 1);
+        let z = ssa.builder.ins().icmp_imm_s(IntCC::Equal, masked, 0);
         PrimValue::Comparison(z)
     })
 }
@@ -1085,7 +1084,7 @@ pub fn lower_fl_sin<'gc, 'a, 'f>(
     _source: Value<'gc>,
 ) -> PrimValue {
     let raw = ssa.atom(args[0]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let result = ssa.handle_thunk_call_result(ssa.thunks.sin, &[ctx, raw]);
     PrimValue::Value(result)
 }
@@ -1096,7 +1095,7 @@ pub fn lower_fl_cos<'gc, 'a, 'f>(
     _source: Value<'gc>,
 ) -> PrimValue {
     let raw = ssa.atom(args[0]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let result = ssa.handle_thunk_call_result(ssa.thunks.cos, &[ctx, raw]);
     PrimValue::Value(result)
 }
@@ -1107,7 +1106,7 @@ pub fn lower_fl_tan<'gc, 'a, 'f>(
     _source: Value<'gc>,
 ) -> PrimValue {
     let raw = ssa.atom(args[0]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let result = ssa.handle_thunk_call_result(ssa.thunks.tan, &[ctx, raw]);
     PrimValue::Value(result)
 }
@@ -1118,7 +1117,7 @@ pub fn lower_fl_exp<'gc, 'a, 'f>(
     _source: Value<'gc>,
 ) -> PrimValue {
     let raw = ssa.atom(args[0]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let result = ssa.handle_thunk_call_result(ssa.thunks.exp, &[ctx, raw]);
     PrimValue::Value(result)
 }
@@ -1129,7 +1128,7 @@ pub fn lower_fl_log<'gc, 'a, 'f>(
     _source: Value<'gc>,
 ) -> PrimValue {
     let raw = ssa.atom(args[0]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let result = ssa.handle_thunk_call_result(ssa.thunks.log, &[ctx, raw]);
     PrimValue::Value(result)
 }
@@ -1140,7 +1139,7 @@ pub fn lower_fl_asin<'gc, 'a, 'f>(
     _source: Value<'gc>,
 ) -> PrimValue {
     let raw = ssa.atom(args[0]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let result = ssa.handle_thunk_call_result(ssa.thunks.asin, &[ctx, raw]);
     PrimValue::Value(result)
 }
@@ -1151,7 +1150,7 @@ pub fn lower_fl_acos<'gc, 'a, 'f>(
     _source: Value<'gc>,
 ) -> PrimValue {
     let raw = ssa.atom(args[0]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let result = ssa.handle_thunk_call_result(ssa.thunks.acos, &[ctx, raw]);
     PrimValue::Value(result)
 }
@@ -1162,7 +1161,7 @@ pub fn lower_fl_atan<'gc, 'a, 'f>(
     _source: Value<'gc>,
 ) -> PrimValue {
     let raw = ssa.atom(args[0]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let result = ssa.handle_thunk_call_result(ssa.thunks.atan, &[ctx, raw]);
     PrimValue::Value(result)
 }
@@ -1395,7 +1394,7 @@ pub fn lower_car_unchecked<'gc, 'a, 'f>(
     let pair = ssa.atom(args[0]);
     PrimValue::Value(ssa.builder.ins().load(
         types::I64,
-        ir::MemFlags::trusted().with_can_move(),
+        ir::MemFlagsData::trusted().with_can_move(),
         pair,
         offset_of!(Pair, car) as i32,
     ))
@@ -1409,7 +1408,7 @@ pub fn lower_cdr_unchecked<'gc, 'a, 'f>(
     let pair = ssa.atom(args[0]);
     PrimValue::Value(ssa.builder.ins().load(
         types::I64,
-        ir::MemFlags::trusted().with_can_move(),
+        ir::MemFlagsData::trusted().with_can_move(),
         pair,
         offset_of!(Pair, cdr) as i32,
     ))
@@ -1424,7 +1423,7 @@ pub fn lower_set_car_unchecked<'gc, 'a, 'f>(
     let new_car = ssa.atom(args[1]);
     ssa.pre_write_barrier(pair, offset_of!(Pair, car) as i32, new_car);
     ssa.builder.ins().store(
-        ir::MemFlags::trusted(),
+        ir::MemFlagsData::trusted(),
         new_car,
         pair,
         offset_of!(Pair, car) as i32,
@@ -1446,7 +1445,7 @@ pub fn lower_set_cdr_unchecked<'gc, 'a, 'f>(
     let new_cdr = ssa.atom(args[1]);
     ssa.pre_write_barrier(pair, offset_of!(Pair, cdr) as i32, new_cdr);
     ssa.builder.ins().store(
-        ir::MemFlags::trusted(),
+        ir::MemFlagsData::trusted(),
         new_cdr,
         pair,
         offset_of!(Pair, cdr) as i32,
@@ -1467,7 +1466,7 @@ pub fn lower_vector_length_unchecked<'gc, 'a, 'f>(
     let vec = ssa.atom(args[0]);
     let len = ssa.builder.ins().load(
         types::I64,
-        ir::MemFlags::trusted().with_can_move(),
+        ir::MemFlagsData::trusted().with_can_move(),
         vec,
         offset_of!(Vector, length) as i32,
     );
@@ -1484,15 +1483,15 @@ pub fn lower_vector_ref_unchecked<'gc, 'a, 'f>(
     // Match the checked path: reduce to i32 then widen before address math.
     let ix32 = fixnum_i32(ssa, ix_raw);
     let ix = ssa.zextend(types::I64, ix32);
-    let ix_offset = ssa.builder.ins().imul_imm(ix, size_of::<Value>() as i64);
+    let ix_offset = ssa.builder.ins().imul_imm_s(ix, size_of::<Value>() as i64);
     let data_ptr = ssa
         .builder
         .ins()
-        .iadd_imm(vec, offset_of!(Vector, data) as i64);
+        .iadd_imm_s(vec, offset_of!(Vector, data) as i64);
     let elem_ptr = ssa.builder.ins().iadd(data_ptr, ix_offset);
     let elem = ssa.builder.ins().load(
         types::I64,
-        ir::MemFlags::trusted().with_can_move(),
+        ir::MemFlagsData::trusted().with_can_move(),
         elem_ptr,
         0,
     );
@@ -1509,16 +1508,16 @@ pub fn lower_vector_set_unchecked<'gc, 'a, 'f>(
     let ix32 = fixnum_i32(ssa, ix_raw);
     let ix = ssa.zextend(types::I64, ix32);
     let val = ssa.atom(args[2]);
-    let ix_offset = ssa.builder.ins().imul_imm(ix, size_of::<Value>() as i64);
+    let ix_offset = ssa.builder.ins().imul_imm_s(ix, size_of::<Value>() as i64);
     let data_ptr = ssa
         .builder
         .ins()
-        .iadd_imm(vec, offset_of!(Vector, data) as i64);
+        .iadd_imm_s(vec, offset_of!(Vector, data) as i64);
     let elem_ptr = ssa.builder.ins().iadd(data_ptr, ix_offset);
     ssa.pre_write_barrier(vec, offset_of!(Vector, data) as i32, val);
     ssa.builder
         .ins()
-        .store(ir::MemFlags::trusted(), val, elem_ptr, 0);
+        .store(ir::MemFlagsData::trusted(), val, elem_ptr, 0);
     ssa.post_write_barrier(vec, offset_of!(Vector, data) as i32, val);
     PrimValue::Value(
         ssa.builder
@@ -1533,7 +1532,7 @@ pub fn lower_char_to_int_unchecked<'gc, 'a, 'f>(
     _source: Value<'gc>,
 ) -> PrimValue {
     let ch = ssa.atom(args[0]);
-    let code = ssa.builder.ins().ushr_imm(ch, 16);
+    let code = ssa.builder.ins().ushr_imm_u(ch, 16);
     let code_i32 = ssa.builder.ins().ireduce(types::I32, code);
     PrimValue::Value(fixnum_from_i32(ssa, code_i32))
 }
@@ -1556,13 +1555,13 @@ pub fn lower_string_ref_unchecked<'gc, 'a, 'f>(
 
     let stringbuf = ssa.builder.ins().load(
         types::I64,
-        ir::MemFlags::trusted().with_can_move(),
+        ir::MemFlagsData::trusted().with_can_move(),
         str_val,
         offset_of!(Str, stringbuf) as i32,
     );
     let start = ssa.builder.ins().load(
         types::I64,
-        ir::MemFlags::trusted().with_can_move(),
+        ir::MemFlagsData::trusted().with_can_move(),
         str_val,
         offset_of!(Str, start) as i32,
     );
@@ -1572,7 +1571,7 @@ pub fn lower_string_ref_unchecked<'gc, 'a, 'f>(
     let data_base = ssa
         .builder
         .ins()
-        .iadd_imm(stringbuf, size_of::<Stringbuf>() as i64);
+        .iadd_imm_s(stringbuf, size_of::<Stringbuf>() as i64);
 
     let narrow_bb = ssa.builder.create_block();
     let wide_bb = ssa.builder.create_block();
@@ -1590,9 +1589,9 @@ pub fn lower_string_ref_unchecked<'gc, 'a, 'f>(
         let ch_byte =
             ssa.builder
                 .ins()
-                .load(types::I8, ir::MemFlags::trusted().with_can_move(), addr, 0);
+                .load(types::I8, ir::MemFlagsData::trusted().with_can_move(), addr, 0);
         let ch_i64 = ssa.builder.ins().uextend(types::I64, ch_byte);
-        let shifted = ssa.builder.ins().ishl_imm(ch_i64, 16);
+        let shifted = ssa.builder.ins().ishl_imm_u(ch_i64, 16);
         let char_tag = ssa.builder.ins().iconst(types::I64, Value::CHAR_TAG);
         let result = ssa.builder.ins().bor(shifted, char_tag);
         ssa.builder.ins().jump(join, &[BlockArg::Value(result)]);
@@ -1600,14 +1599,14 @@ pub fn lower_string_ref_unchecked<'gc, 'a, 'f>(
 
     ssa.builder.switch_to_block(wide_bb);
     {
-        let wide_off = ssa.builder.ins().imul_imm(abs_ix, size_of::<char>() as i64);
+        let wide_off = ssa.builder.ins().imul_imm_s(abs_ix, size_of::<char>() as i64);
         let addr = ssa.builder.ins().iadd(data_base, wide_off);
         let ch_i32 =
             ssa.builder
                 .ins()
-                .load(types::I32, ir::MemFlags::trusted().with_can_move(), addr, 0);
+                .load(types::I32, ir::MemFlagsData::trusted().with_can_move(), addr, 0);
         let ch_i64 = ssa.builder.ins().uextend(types::I64, ch_i32);
-        let shifted = ssa.builder.ins().ishl_imm(ch_i64, 16);
+        let shifted = ssa.builder.ins().ishl_imm_u(ch_i64, 16);
         let char_tag = ssa.builder.ins().iconst(types::I64, Value::CHAR_TAG);
         let result = ssa.builder.ins().bor(shifted, char_tag);
         ssa.builder.ins().jump(join, &[BlockArg::Value(result)]);
@@ -1625,7 +1624,7 @@ pub fn lower_bytevector_length_unchecked<'gc, 'a, 'f>(
     let bv = ssa.atom(args[0]);
     let len = ssa.builder.ins().load(
         types::I64,
-        ir::MemFlags::trusted().with_can_move(),
+        ir::MemFlagsData::trusted().with_can_move(),
         bv,
         offset_of!(ByteVector, len) as i32,
     );
@@ -1645,12 +1644,12 @@ pub fn lower_bytevector_u8_ref_unchecked<'gc, 'a, 'f>(
     let data_base = ssa
         .builder
         .ins()
-        .iadd_imm(bv, size_of::<ByteVector>() as i64);
+        .iadd_imm_s(bv, size_of::<ByteVector>() as i64);
     let addr = ssa.builder.ins().iadd(data_base, index_i64);
     let byte = ssa
         .builder
         .ins()
-        .load(types::I8, ir::MemFlags::trusted().with_can_move(), addr, 0);
+        .load(types::I8, ir::MemFlagsData::trusted().with_can_move(), addr, 0);
     let byte_i64 = ssa.builder.ins().uextend(types::I64, byte);
-    PrimValue::Value(ssa.builder.ins().bor_imm(byte_i64, Value::NUMBER_TAG))
+    PrimValue::Value(ssa.builder.ins().bor_imm_u(byte_i64, Value::NUMBER_TAG))
 }

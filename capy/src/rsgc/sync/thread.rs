@@ -295,6 +295,12 @@ impl Thread {
     }
 
     fn enter_native_blocked(&self) {
+        // Record SP before blocking so GC's conservative native-stack scan
+        // covers Rust frames that hold Values (e.g. NativeCallContext::retk).
+        // Without this, a stale scan_sp from an earlier shallower frame skips
+        // those slots; movable objects can relocate while the stack copy goes
+        // stale and later Continue jumps through an interior/dangling rator.
+        self.record_gc_scan_sp();
         let guard = self.monitor.lock();
         self.status_word
             .update::<ThreadStateField>(ThreadState::InNative);

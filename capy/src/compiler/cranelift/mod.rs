@@ -24,6 +24,7 @@ pub fn declare_function(
         name: cranelift_codegen::ir::ExternalName::user(name_ref),
         signature,
         colocated,
+        patchable: false,
     })
 }
 
@@ -60,8 +61,8 @@ pub fn host_isa() -> Arc<dyn TargetIsa> {
         .set("enable_heap_access_spectre_mitigation", "false")
         .unwrap();
     shared_builder.set("opt_level", "speed_and_size").unwrap();
-    shared_builder.enable("preserve_frame_pointers").unwrap();
-    shared_builder.enable("enable_pinned_reg").unwrap();
+    // GHC uses %rbp as an argument register (STG Sp); do not force a frame pointer.
+    shared_builder.set("preserve_frame_pointers", "false").unwrap();
     shared_builder.enable("enable_alias_analysis").unwrap();
 
     let shared_flags = Flags::new(shared_builder);
@@ -153,7 +154,9 @@ pub mod traits;
 mod types;
 
 pub(crate) use translate::AllocationHeaderPreset;
-pub(crate) use types::{MAX_RAISE_ARITY, compiled_scheme_signature, overflow_base_from_argc};
+pub(crate) use types::{
+    MAX_RAISE_ARITY, compiled_scheme_signature, overflow_base_from_argc, scheme_call_values,
+};
 pub use types::{RegisterCallArgs, RestSource, VarDef};
 
 fn declare_direct_function(
@@ -744,7 +747,7 @@ impl<'gc> ModuleBuilder<'gc> {
                 ssa.translate_procedure(&declared.procedure);
                 ssa.finalize();
                 ssa.builder.seal_all_blocks();
-                ssa.builder.finalize();
+                ssa.builder.finalize(isa.frontend_config());
                 ssa.func_debug_cx
             };
 
@@ -1110,15 +1113,16 @@ impl<'gc> ModuleBuilder<'gc> {
     ) {
         context.func.signature = compiled_scheme_signature();
         let mut builder = FunctionBuilder::new(&mut context.func, fctx);
+        let mem_tm = ir::MemFlagsData::trusted().with_can_move();
         let thunks = self.import_thunks(builder.func);
 
         let entry = builder.create_block();
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
 
-        let err = builder.block_params(entry)[0];
-        let retk_or_zero = builder.block_params(entry)[2];
-        let ctx = builder.ins().get_pinned_reg(clif_types::I64);
+        let ctx = builder.block_params(entry)[0];
+        let err = builder.block_params(entry)[1];
+        let retk_or_zero = builder.block_params(entry)[3];
 
         let load_default_retk = builder.create_block();
         let got_retk = builder.create_block();
@@ -1127,7 +1131,7 @@ impl<'gc> ModuleBuilder<'gc> {
 
         let is_zero = builder
             .ins()
-            .icmp_imm(ir::condcodes::IntCC::Equal, retk_or_zero, 0);
+            .icmp_imm_s(ir::condcodes::IntCC::Equal, retk_or_zero, 0);
         builder.ins().brif(
             is_zero,
             load_default_retk,
@@ -1149,7 +1153,7 @@ impl<'gc> ModuleBuilder<'gc> {
         let handler = builder.inst_results(handler)[0];
         let handler_code = builder.ins().load(
             clif_types::I64,
-            ir::MemFlags::trusted().with_can_move(),
+            mem_tm,
             handler,
             offset_of!(Closure, code) as i32,
         );
@@ -1161,10 +1165,10 @@ impl<'gc> ModuleBuilder<'gc> {
         builder.ins().return_call_indirect(
             sig_call,
             handler_code,
-            &[handler, argc, retk, err, undefined, undefined],
+            &[ctx, handler, argc, retk, err, undefined, undefined],
         );
         builder.seal_all_blocks();
-        builder.finalize();
+        builder.finalize(host_isa().frontend_config());
     }
 
     fn build_wrong_arity_trampoline(
@@ -1174,23 +1178,24 @@ impl<'gc> ModuleBuilder<'gc> {
     ) {
         context.func.signature = compiled_scheme_signature();
         let mut builder = FunctionBuilder::new(&mut context.func, fctx);
+        let mem_tm = ir::MemFlagsData::trusted().with_can_move();
         let thunks = self.import_thunks(builder.func);
 
         let entry = builder.create_block();
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
 
-        let rator = builder.block_params(entry)[0];
-        let actual_argc = builder.block_params(entry)[1];
-        let retk_or_zero = builder.block_params(entry)[2];
-        let got = builder.block_params(entry)[3];
-        let expected = builder.block_params(entry)[4];
+        let ctx = builder.block_params(entry)[0];
+        let rator = builder.block_params(entry)[1];
+        let actual_argc = builder.block_params(entry)[2];
+        let retk_or_zero = builder.block_params(entry)[3];
+        let got = builder.block_params(entry)[4];
+        let expected = builder.block_params(entry)[5];
 
-        let ctx = builder.ins().get_pinned_reg(clif_types::I64);
-        let state = builder.ins().iadd_imm(ctx, Context::OFFSET_OF_STATE as i64);
+        let state = builder.ins().iadd_imm_s(ctx, Context::OFFSET_OF_STATE as i64);
         let overflow = overflow_base_from_argc(&mut builder, state, actual_argc);
         builder.ins().store(
-            ir::MemFlags::trusted().with_can_move(),
+            mem_tm,
             overflow,
             state,
             offset_of!(State, runstack) as i32,
@@ -1228,7 +1233,7 @@ impl<'gc> ModuleBuilder<'gc> {
 
         let is_zero = builder
             .ins()
-            .icmp_imm(ir::condcodes::IntCC::Equal, retk_or_zero, 0);
+            .icmp_imm_s(ir::condcodes::IntCC::Equal, retk_or_zero, 0);
         builder.ins().brif(
             is_zero,
             load_default_retk,
@@ -1250,7 +1255,7 @@ impl<'gc> ModuleBuilder<'gc> {
         let handler = builder.inst_results(handler)[0];
         let handler_code = builder.ins().load(
             clif_types::I64,
-            ir::MemFlags::trusted().with_can_move(),
+            mem_tm,
             handler,
             offset_of!(Closure, code) as i32,
         );
@@ -1259,10 +1264,18 @@ impl<'gc> ModuleBuilder<'gc> {
         builder.ins().return_call_indirect(
             sig_call,
             handler_code,
-            &[handler, handler_argc, retk, condition, undefined, undefined],
+            &[
+                ctx,
+                handler,
+                handler_argc,
+                retk,
+                condition,
+                undefined,
+                undefined,
+            ],
         );
         builder.seal_all_blocks();
-        builder.finalize();
+        builder.finalize(host_isa().frontend_config());
     }
 
     fn build_raise_trampoline(
@@ -1272,21 +1285,22 @@ impl<'gc> ModuleBuilder<'gc> {
     ) {
         context.func.signature = compiled_scheme_signature();
         let mut builder = FunctionBuilder::new(&mut context.func, fctx);
+        let mem_tm = ir::MemFlagsData::trusted().with_can_move();
         let thunks = self.import_thunks(builder.func);
 
         let entry = builder.create_block();
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
 
-        let code = builder.block_params(entry)[0];
-        let argc = builder.block_params(entry)[1];
-        let arg0 = builder.block_params(entry)[2];
-        let arg1 = builder.block_params(entry)[3];
-        let arg2 = builder.block_params(entry)[4];
-        let arg3 = builder.block_params(entry)[5];
+        let ctx = builder.block_params(entry)[0];
+        let code = builder.block_params(entry)[1];
+        let argc = builder.block_params(entry)[2];
+        let arg0 = builder.block_params(entry)[3];
+        let arg1 = builder.block_params(entry)[4];
+        let arg2 = builder.block_params(entry)[5];
+        let arg3 = builder.block_params(entry)[6];
 
-        let ctx = builder.ins().get_pinned_reg(clif_types::I64);
-        let state = builder.ins().iadd_imm(ctx, Context::OFFSET_OF_STATE as i64);
+        let state = builder.ins().iadd_imm_s(ctx, Context::OFFSET_OF_STATE as i64);
         let overflow = overflow_base_from_argc(&mut builder, state, argc);
         let from = builder.ins().iconst(clif_types::I64, 1);
         let condition = builder.ins().call(
@@ -1295,7 +1309,7 @@ impl<'gc> ModuleBuilder<'gc> {
         );
         let condition = builder.inst_results(condition)[0];
         builder.ins().store(
-            ir::MemFlags::trusted().with_can_move(),
+            mem_tm,
             overflow,
             state,
             offset_of!(State, runstack) as i32,
@@ -1305,7 +1319,7 @@ impl<'gc> ModuleBuilder<'gc> {
         let handler = builder.inst_results(handler)[0];
         let handler_code = builder.ins().load(
             clif_types::I64,
-            ir::MemFlags::trusted().with_can_move(),
+            mem_tm,
             handler,
             offset_of!(Closure, code) as i32,
         );
@@ -1317,10 +1331,10 @@ impl<'gc> ModuleBuilder<'gc> {
         builder.ins().return_call_indirect(
             sig_call,
             handler_code,
-            &[handler, argc, arg0, condition, undefined, undefined],
+            &[ctx, handler, argc, arg0, condition, undefined, undefined],
         );
         builder.seal_all_blocks();
-        builder.finalize();
+        builder.finalize(host_isa().frontend_config());
     }
 
     fn build_generic_apply_trampoline(
@@ -1347,28 +1361,29 @@ impl<'gc> ModuleBuilder<'gc> {
     ) {
         context.func.signature = compiled_scheme_signature();
         let mut builder = FunctionBuilder::new(&mut context.func, fctx);
+        let mem_tm = ir::MemFlagsData::trusted().with_can_move();
         let thunks = self.import_thunks(builder.func);
 
         let entry = builder.create_block();
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
 
-        let generic = builder.block_params(entry)[0];
-        let argc = builder.block_params(entry)[1];
-        let arg0 = builder.block_params(entry)[2];
-        let arg1 = builder.block_params(entry)[3];
-        let arg2 = builder.block_params(entry)[4];
-        let arg3 = builder.block_params(entry)[5];
+        let ctx = builder.block_params(entry)[0];
+        let generic = builder.block_params(entry)[1];
+        let argc = builder.block_params(entry)[2];
+        let arg0 = builder.block_params(entry)[3];
+        let arg1 = builder.block_params(entry)[4];
+        let arg2 = builder.block_params(entry)[5];
+        let arg3 = builder.block_params(entry)[6];
 
-        let ctx = builder.ins().get_pinned_reg(clif_types::I64);
-        let state = builder.ins().iadd_imm(ctx, Context::OFFSET_OF_STATE as i64);
-        let value_tag = builder.ins().band_imm(generic, Value::NOT_CELL_MASK);
+        let state = builder.ins().iadd_imm_s(ctx, Context::OFFSET_OF_STATE as i64);
+        let value_tag = builder.ins().band_imm_u(generic, Value::NOT_CELL_MASK);
         let is_cell = builder
             .ins()
-            .icmp_imm(ir::condcodes::IntCC::Equal, value_tag, 0);
+            .icmp_imm_s(ir::condcodes::IntCC::Equal, value_tag, 0);
         let non_zero = builder
             .ins()
-            .icmp_imm(ir::condcodes::IntCC::NotEqual, generic, 0);
+            .icmp_imm_s(ir::condcodes::IntCC::NotEqual, generic, 0);
         let is_heap_object = builder.ins().band(is_cell, non_zero);
         let check_closure_tag = builder.create_block();
         let closure_call = builder.create_block();
@@ -1380,12 +1395,12 @@ impl<'gc> ModuleBuilder<'gc> {
         builder.switch_to_block(check_closure_tag);
         let header = builder.ins().load(
             clif_types::I64,
-            ir::MemFlags::trusted().with_can_move(),
+            mem_tm,
             generic,
             OBJECT_HEADER_OFFSET as i32,
         );
-        let object_class_id = builder.ins().band_imm(header, 0x00ff_ffff);
-        let is_closure = builder.ins().icmp_imm(
+        let object_class_id = builder.ins().band_imm_u(header, 0x00ff_ffff);
+        let is_closure = builder.ins().icmp_imm_s(
             ir::condcodes::IntCC::Equal,
             object_class_id,
             builtin_class_ids::CLOSURE as i64,
@@ -1397,7 +1412,7 @@ impl<'gc> ModuleBuilder<'gc> {
         builder.switch_to_block(closure_call);
         let code = builder.ins().load(
             clif_types::I64,
-            ir::MemFlags::trusted().with_can_move(),
+            mem_tm,
             generic,
             offset_of!(Closure, code) as i32,
         );
@@ -1405,7 +1420,7 @@ impl<'gc> ModuleBuilder<'gc> {
         builder.ins().return_call_indirect(
             sig_call,
             code,
-            &[generic, argc, arg0, arg1, arg2, arg3],
+            &[ctx, generic, argc, arg0, arg1, arg2, arg3],
         );
 
         builder.switch_to_block(generic_call);
@@ -1424,7 +1439,7 @@ impl<'gc> ModuleBuilder<'gc> {
 
         let on_ret = builder.create_block();
         let on_cont = builder.create_block();
-        let is_cont = builder.ins().icmp_imm(
+        let is_cont = builder.ins().icmp_imm_s(
             ir::condcodes::IntCC::Equal,
             code,
             ReturnCode::Continue as i64,
@@ -1443,37 +1458,37 @@ impl<'gc> ModuleBuilder<'gc> {
         let cdata = offset_of!(State, call_data) as i32;
         let rator = builder.ins().load(
             clif_types::I64,
-            ir::MemFlags::trusted().with_can_move(),
+            mem_tm,
             state,
             cdata + offset_of!(CallData, rator) as i32,
         );
         let argc = builder.ins().load(
             clif_types::I64,
-            ir::MemFlags::trusted().with_can_move(),
+            mem_tm,
             state,
             cdata + offset_of!(CallData, argc) as i32,
         );
         let arg0 = builder.ins().load(
             clif_types::I64,
-            ir::MemFlags::trusted().with_can_move(),
+            mem_tm,
             state,
             cdata + offset_of!(CallData, arg0) as i32,
         );
         let arg1 = builder.ins().load(
             clif_types::I64,
-            ir::MemFlags::trusted().with_can_move(),
+            mem_tm,
             state,
             cdata + offset_of!(CallData, arg1) as i32,
         );
         let arg2 = builder.ins().load(
             clif_types::I64,
-            ir::MemFlags::trusted().with_can_move(),
+            mem_tm,
             state,
             cdata + offset_of!(CallData, arg2) as i32,
         );
         let arg3 = builder.ins().load(
             clif_types::I64,
-            ir::MemFlags::trusted().with_can_move(),
+            mem_tm,
             state,
             cdata + offset_of!(CallData, arg3) as i32,
         );
@@ -1482,13 +1497,13 @@ impl<'gc> ModuleBuilder<'gc> {
             .ins()
             .iconst(clif_types::I64, Value::undefined().bits() as i64);
         builder.ins().store(
-            ir::MemFlags::trusted().with_can_move(),
+            mem_tm,
             undefined,
             state,
             cdata + offset_of!(CallData, rator) as i32,
         );
         builder.ins().store(
-            ir::MemFlags::trusted().with_can_move(),
+            mem_tm,
             zero,
             state,
             cdata + offset_of!(CallData, argc) as i32,
@@ -1500,7 +1515,7 @@ impl<'gc> ModuleBuilder<'gc> {
             offset_of!(CallData, arg3),
         ] {
             builder.ins().store(
-                ir::MemFlags::trusted().with_can_move(),
+                mem_tm,
                 undefined,
                 state,
                 cdata + offset as i32,
@@ -1509,7 +1524,7 @@ impl<'gc> ModuleBuilder<'gc> {
 
         let body_code = builder.ins().load(
             clif_types::I64,
-            ir::MemFlags::trusted().with_can_move(),
+            mem_tm,
             rator,
             offset_of!(Closure, code) as i32,
         );
@@ -1517,11 +1532,11 @@ impl<'gc> ModuleBuilder<'gc> {
         builder.ins().return_call_indirect(
             sig_call,
             body_code,
-            &[rator, argc, arg0, arg1, arg2, arg3],
+            &[ctx, rator, argc, arg0, arg1, arg2, arg3],
         );
 
         builder.seal_all_blocks();
-        builder.finalize();
+        builder.finalize(host_isa().frontend_config());
     }
 
     fn constant_indices(&mut self) -> HashMap<DataSymbol, u32> {
@@ -1657,6 +1672,8 @@ pub struct SsaBuilder<'gc, 'a, 'f> {
     /// application sites are present in a function/continuation.
     pub app_block: Option<ir::Block>,
 
+    /// Runtime context pointer (GHC arg 0).
+    pub ctx: ir::Value,
     pub rator: ir::Value,
     pub thunks: ImportedThunks,
 
@@ -1676,16 +1693,18 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         mut func_debug_cx: FunctionDebugContext<'gc>,
     ) -> Self {
         builder.func.dfg.collect_debug_info();
+
         let entry = builder.create_block();
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
-        let rator = builder.block_params(entry)[0];
-        let argc = builder.block_params(entry)[1];
+        let ctx = builder.block_params(entry)[0];
+        let rator = builder.block_params(entry)[1];
+        let argc = builder.block_params(entry)[2];
         let args = [
-            builder.block_params(entry)[2],
             builder.block_params(entry)[3],
             builder.block_params(entry)[4],
             builder.block_params(entry)[5],
+            builder.block_params(entry)[6],
         ];
 
         let variables = HashMap::new();
@@ -1696,39 +1715,44 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         let exit_block = builder.create_block();
 
         builder.append_block_param(exit_block, clif_types::I64); /* code */
+        builder.append_block_param(exit_block, clif_types::I64); /* ctx */
         builder.append_block_param(exit_block, clif_types::I64); /* rator */
         builder.append_block_param(exit_block, clif_types::I64); /* argc */
         for _ in 0..REGISTER_ARG_COUNT {
             builder.append_block_param(exit_block, clif_types::I64);
         }
 
-        builder.set_val_label(rator, func_debug_cx.internal_variable(0));
-        builder.set_val_label(argc, func_debug_cx.internal_variable(1));
+        builder.set_val_label(ctx, func_debug_cx.internal_variable(0));
+        builder.set_val_label(rator, func_debug_cx.internal_variable(1));
+        builder.set_val_label(argc, func_debug_cx.internal_variable(2));
         for (index, arg) in args.iter().copied().enumerate() {
-            builder.set_val_label(arg, func_debug_cx.internal_variable((index + 2) as u32));
+            builder.set_val_label(arg, func_debug_cx.internal_variable((index + 3) as u32));
         }
 
         let entry_block = builder.create_block();
         builder.append_block_params_for_function_params(entry_block);
-        let entry_args = std::iter::once(rator)
+        let entry_args = std::iter::once(ctx)
+            .chain(std::iter::once(rator))
             .chain(std::iter::once(argc))
             .chain(args)
             .map(BlockArg::Value)
             .collect::<Vec<_>>();
         builder.ins().jump(entry_block, &entry_args);
         builder.switch_to_block(entry_block);
-        let entry_rator = builder.block_params(entry_block)[0];
-        let entry_argc = builder.block_params(entry_block)[1];
+        let entry_ctx = builder.block_params(entry_block)[0];
+        let entry_rator = builder.block_params(entry_block)[1];
+        let entry_argc = builder.block_params(entry_block)[2];
         let entry_args = [
-            builder.block_params(entry_block)[2],
             builder.block_params(entry_block)[3],
             builder.block_params(entry_block)[4],
             builder.block_params(entry_block)[5],
+            builder.block_params(entry_block)[6],
         ];
-        builder.set_val_label(entry_rator, func_debug_cx.internal_variable(0));
-        builder.set_val_label(entry_argc, func_debug_cx.internal_variable(1));
+        builder.set_val_label(entry_ctx, func_debug_cx.internal_variable(0));
+        builder.set_val_label(entry_rator, func_debug_cx.internal_variable(1));
+        builder.set_val_label(entry_argc, func_debug_cx.internal_variable(2));
         for (index, arg) in entry_args.iter().copied().enumerate() {
-            builder.set_val_label(arg, func_debug_cx.internal_variable((index + 2) as u32));
+            builder.set_val_label(arg, func_debug_cx.internal_variable((index + 3) as u32));
         }
 
         let mut this = Self {
@@ -1737,6 +1761,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
             target,
             exit_block,
             app_block: None,
+            ctx: entry_ctx,
             rator: entry_rator,
             func_debug_cx,
             entry_block,

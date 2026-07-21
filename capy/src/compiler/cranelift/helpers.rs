@@ -1,6 +1,6 @@
 use std::mem::{offset_of, size_of};
 
-use cranelift::prelude::{InstBuilder, IntCC, MemFlags, types};
+use cranelift::prelude::{InstBuilder, IntCC, types};
 use cranelift_codegen::ir::{self, BlockArg};
 
 use crate::{
@@ -17,7 +17,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
     pub fn to_boolean(&mut self, v: ir::Value) -> ir::Value {
         self.builder
             .ins()
-            .icmp_imm(IntCC::NotEqual, v, Value::new(false).bits() as i64)
+            .icmp_imm_s(IntCC::NotEqual, v, Value::new(false).bits() as i64)
     }
 
     pub fn cons(&mut self, a: ir::Value, b: ir::Value) -> ir::Value {
@@ -27,13 +27,13 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
             None,
         );
         self.builder.ins().store(
-            ir::MemFlags::trusted(),
+            ir::MemFlagsData::trusted(),
             a,
             pair,
             offset_of!(Pair, car) as i32,
         );
         self.builder.ins().store(
-            ir::MemFlags::trusted(),
+            ir::MemFlagsData::trusted(),
             b,
             pair,
             offset_of!(Pair, cdr) as i32,
@@ -68,13 +68,13 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
             let value_f64 = self
                 .builder
                 .ins()
-                .bitcast(types::F64, MemFlags::new(), value_bits);
+                .bitcast(types::F64, ir::MemFlagsData::new(), value_bits);
             let res = fastpath(self, value_f64);
-            let res = self.builder.ins().bitcast(types::I64, MemFlags::new(), res);
+            let res = self.builder.ins().bitcast(types::I64, ir::MemFlagsData::new(), res);
             let res = self
                 .builder
                 .ins()
-                .iadd_imm(res, Value::DOUBLE_ENCODE_OFFSET as i64);
+                .iadd_imm_s(res, Value::DOUBLE_ENCODE_OFFSET as i64);
             self.builder.ins().jump(join, &[BlockArg::Value(res)]);
         }
         self.builder.switch_to_block(slowpath_bb);
@@ -88,19 +88,19 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
     }
 
     pub fn is_int32(&mut self, v: ir::Value) -> ir::Value {
-        let tag = self.builder.ins().band_imm(v, Value::NUMBER_TAG);
+        let tag = self.builder.ins().band_imm_u(v, Value::NUMBER_TAG);
         self.builder
             .ins()
-            .icmp_imm(IntCC::Equal, tag, Value::NUMBER_TAG)
+            .icmp_imm_s(IntCC::Equal, tag, Value::NUMBER_TAG)
     }
 
     pub fn is_flonum(&mut self, v: ir::Value) -> ir::Value {
-        let tag = self.builder.ins().band_imm(v, Value::NUMBER_TAG);
-        let is_inline_number = self.builder.ins().icmp_imm(IntCC::NotEqual, tag, 0);
+        let tag = self.builder.ins().band_imm_u(v, Value::NUMBER_TAG);
+        let is_inline_number = self.builder.ins().icmp_imm_s(IntCC::NotEqual, tag, 0);
         let not_i32 = self
             .builder
             .ins()
-            .icmp_imm(IntCC::NotEqual, tag, Value::NUMBER_TAG);
+            .icmp_imm_s(IntCC::NotEqual, tag, Value::NUMBER_TAG);
         self.builder.ins().band(is_inline_number, not_i32)
     }
 
@@ -108,7 +108,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         let offset = Vector::OFFSET_OF_DATA as i32 + (ix as i32 * 8);
         self.builder.ins().load(
             types::I64,
-            ir::MemFlags::trusted().with_can_move(),
+            ir::MemFlagsData::trusted().with_can_move(),
             vec,
             offset,
         )
@@ -118,31 +118,31 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         let offset = Vector::OFFSET_OF_DATA as i32 + (ix as i32 * 8);
         self.builder
             .ins()
-            .store(ir::MemFlags::trusted().with_can_move(), value, vec, offset);
+            .store(ir::MemFlagsData::trusted().with_can_move(), value, vec, offset);
     }
 
     pub fn vector_ref(&mut self, vec: ir::Value, ix: ir::Value) -> ir::Value {
-        let mut offset = self.builder.ins().imul_imm(ix, 8);
+        let mut offset = self.builder.ins().imul_imm_s(ix, 8);
         offset = self
             .builder
             .ins()
-            .iadd_imm(offset, Vector::OFFSET_OF_DATA as i64);
+            .iadd_imm_s(offset, Vector::OFFSET_OF_DATA as i64);
         let addr = self.builder.ins().iadd(vec, offset);
         self.builder
             .ins()
-            .load(types::I64, ir::MemFlags::trusted().with_can_move(), addr, 0)
+            .load(types::I64, ir::MemFlagsData::trusted().with_can_move(), addr, 0)
     }
 
     pub fn vector_set(&mut self, vec: ir::Value, ix: ir::Value, value: ir::Value) {
-        let mut offset = self.builder.ins().imul_imm(ix, 8);
+        let mut offset = self.builder.ins().imul_imm_s(ix, 8);
         offset = self
             .builder
             .ins()
-            .iadd_imm(offset, Vector::OFFSET_OF_DATA as i64);
+            .iadd_imm_s(offset, Vector::OFFSET_OF_DATA as i64);
         let addr = self.builder.ins().iadd(vec, offset);
         self.builder
             .ins()
-            .store(ir::MemFlags::trusted().with_can_move(), value, addr, 0);
+            .store(ir::MemFlagsData::trusted().with_can_move(), value, addr, 0);
     }
 
     pub fn branch_if_int32(
@@ -153,25 +153,25 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         else_: ir::Block,
         else_args: &[BlockArg],
     ) {
-        let tag = self.builder.ins().band_imm(v, Value::NUMBER_TAG);
+        let tag = self.builder.ins().band_imm_u(v, Value::NUMBER_TAG);
         let is_int = self
             .builder
             .ins()
-            .icmp_imm(IntCC::Equal, tag, Value::NUMBER_TAG);
+            .icmp_imm_s(IntCC::Equal, tag, Value::NUMBER_TAG);
         self.builder
             .ins()
             .brif(is_int, then, then_args, else_, else_args);
     }
 
     pub fn is_immediate(&mut self, v: ir::Value) -> ir::Value {
-        let tag = self.builder.ins().band_imm(v, Value::NOT_CELL_MASK);
-        self.builder.ins().icmp_imm(IntCC::NotEqual, tag, 0)
+        let tag = self.builder.ins().band_imm_u(v, Value::NOT_CELL_MASK);
+        self.builder.ins().icmp_imm_s(IntCC::NotEqual, tag, 0)
     }
 
     pub fn is_heap_object(&mut self, v: ir::Value) -> ir::Value {
-        let tag = self.builder.ins().band_imm(v, Value::NOT_CELL_MASK);
-        let non_zero = self.builder.ins().icmp_imm(IntCC::NotEqual, v, 0);
-        let is_cell = self.builder.ins().icmp_imm(IntCC::Equal, tag, 0);
+        let tag = self.builder.ins().band_imm_u(v, Value::NOT_CELL_MASK);
+        let non_zero = self.builder.ins().icmp_imm_s(IntCC::NotEqual, v, 0);
+        let is_cell = self.builder.ins().icmp_imm_s(IntCC::Equal, tag, 0);
 
         self.builder.ins().band(is_cell, non_zero)
     }
@@ -191,55 +191,55 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
     pub fn has_specific_class_id(&mut self, v: ir::Value, class_id: u32) -> ir::Value {
         match class_id {
             builtin_class_ids::BOOL => {
-                let mask = self.builder.ins().band_imm(v, !1);
+                let mask = self.builder.ins().band_imm_u(v, !1);
                 self.builder
                     .ins()
-                    .icmp_imm(IntCC::Equal, mask, Value::VALUE_FALSE)
+                    .icmp_imm_s(IntCC::Equal, mask, Value::VALUE_FALSE)
             }
             builtin_class_ids::CHAR => {
-                let mask = self.builder.ins().band_imm(v, Value::CHAR_MASK);
+                let mask = self.builder.ins().band_imm_u(v, Value::CHAR_MASK);
                 self.builder
                     .ins()
-                    .icmp_imm(IntCC::Equal, mask, Value::CHAR_TAG)
+                    .icmp_imm_s(IntCC::Equal, mask, Value::CHAR_TAG)
             }
             builtin_class_ids::NULL => {
                 self.builder
                     .ins()
-                    .icmp_imm(IntCC::Equal, v, Value::VALUE_NULL)
+                    .icmp_imm_s(IntCC::Equal, v, Value::VALUE_NULL)
             }
             builtin_class_ids::EOF => {
                 self.builder
                     .ins()
-                    .icmp_imm(IntCC::Equal, v, Value::VALUE_EOF)
+                    .icmp_imm_s(IntCC::Equal, v, Value::VALUE_EOF)
             }
             builtin_class_ids::VOID => {
                 self.builder
                     .ins()
-                    .icmp_imm(IntCC::Equal, v, Value::VALUE_VOID)
+                    .icmp_imm_s(IntCC::Equal, v, Value::VALUE_VOID)
             }
             builtin_class_ids::UNSPECIFIED => {
                 self.builder
                     .ins()
-                    .icmp_imm(IntCC::Equal, v, Value::VALUE_UNSPECIFIED)
+                    .icmp_imm_s(IntCC::Equal, v, Value::VALUE_UNSPECIFIED)
             }
             builtin_class_ids::UNDEFINED => {
                 self.builder
                     .ins()
-                    .icmp_imm(IntCC::Equal, v, Value::VALUE_UNDEFINED)
+                    .icmp_imm_s(IntCC::Equal, v, Value::VALUE_UNDEFINED)
             }
             builtin_class_ids::FIXNUM => {
-                let tag = self.builder.ins().band_imm(v, Value::NUMBER_TAG);
+                let tag = self.builder.ins().band_imm_u(v, Value::NUMBER_TAG);
                 self.builder
                     .ins()
-                    .icmp_imm(IntCC::Equal, tag, Value::NUMBER_TAG)
+                    .icmp_imm_s(IntCC::Equal, tag, Value::NUMBER_TAG)
             }
             builtin_class_ids::FLONUM => {
-                let number_tag = self.builder.ins().band_imm(v, Value::NUMBER_TAG);
-                let is_number = self.builder.ins().icmp_imm(IntCC::NotEqual, number_tag, 0);
+                let number_tag = self.builder.ins().band_imm_u(v, Value::NUMBER_TAG);
+                let is_number = self.builder.ins().icmp_imm_s(IntCC::NotEqual, number_tag, 0);
                 let is_fixnum =
                     self.builder
                         .ins()
-                        .icmp_imm(IntCC::Equal, number_tag, Value::NUMBER_TAG);
+                        .icmp_imm_s(IntCC::Equal, number_tag, Value::NUMBER_TAG);
                 let not_fixnum = self.builder.ins().bnot(is_fixnum);
                 self.builder.ins().band(is_number, not_fixnum)
             }
@@ -269,20 +269,20 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         self.builder.switch_to_block(heap_object);
         let header = self.builder.ins().load(
             types::I64,
-            ir::MemFlags::trusted().with_can_move(),
+            ir::MemFlagsData::trusted().with_can_move(),
             v,
             OBJECT_HEADER_OFFSET as i32,
         );
-        let object_class_id = self.builder.ins().band_imm(header, CLASS_ID_MASK);
+        let object_class_id = self.builder.ins().band_imm_u(header, CLASS_ID_MASK);
         let mut matches =
             self.builder
                 .ins()
-                .icmp_imm(IntCC::Equal, object_class_id, class_ids[0] as i64);
+                .icmp_imm_s(IntCC::Equal, object_class_id, class_ids[0] as i64);
         for class_id in &class_ids[1..] {
             let next = self
                 .builder
                 .ins()
-                .icmp_imm(IntCC::Equal, object_class_id, *class_id as i64);
+                .icmp_imm_s(IntCC::Equal, object_class_id, *class_id as i64);
             matches = self.builder.ins().bor(matches, next);
         }
         self.builder.ins().jump(join, &[BlockArg::Value(matches)]);
@@ -468,21 +468,21 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         let meta_base_address = self
             .builder
             .ins()
-            .global_value(types::I64, vo_bit_side_metadata);
+            .symbol_value(types::I64, vo_bit_side_metadata);
         let meta_base_address = self.builder.ins().load(
             types::I64,
-            ir::MemFlags::trusted().with_can_move(),
+            ir::MemFlagsData::trusted().with_can_move(),
             meta_base_address,
             0,
         );
-        let shifted_addr = self.builder.ins().ushr_imm(object_ref, 6);
+        let shifted_addr = self.builder.ins().ushr_imm_u(object_ref, 6);
         let meta_addr = self.builder.ins().iadd(meta_base_address, shifted_addr);
-        let shift = self.builder.ins().ushr_imm(object_ref, 3);
-        let shift = self.builder.ins().band_imm(shift, 0b111);
+        let shift = self.builder.ins().ushr_imm_u(object_ref, 3);
+        let shift = self.builder.ins().band_imm_u(shift, 0b111);
 
         let byte_val = self.builder.ins().load(
             types::I8,
-            ir::MemFlags::trusted().with_can_move(),
+            ir::MemFlagsData::trusted().with_can_move(),
             meta_addr,
             0,
         );
@@ -493,7 +493,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         let new_byte = self.builder.ins().ireduce(types::I8, new_byte_i64);
         self.builder
             .ins()
-            .store(ir::MemFlags::trusted(), new_byte, meta_addr, 0);
+            .store(ir::MemFlagsData::trusted(), new_byte, meta_addr, 0);
     }
 
     pub fn pre_write_barrier(&mut self, src: ir::Value, offset: i32, target: ir::Value) {
@@ -515,34 +515,34 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                     let meta_base_address = self
                         .builder
                         .ins()
-                        .global_value(types::I64, global_side_metadata);
+                        .symbol_value(types::I64, global_side_metadata);
                     let meta_base_address = self.builder.ins().load(
                         types::I64,
-                        ir::MemFlags::trusted().with_can_move(),
+                        ir::MemFlagsData::trusted().with_can_move(),
                         meta_base_address,
                         0,
                     );
-                    let shifted_addr = self.builder.ins().ushr_imm(src, 6);
+                    let shifted_addr = self.builder.ins().ushr_imm_u(src, 6);
                     let meta_addr = self.builder.ins().iadd(meta_base_address, shifted_addr);
-                    let shift = self.builder.ins().ushr_imm(src, 3);
-                    let shift = self.builder.ins().band_imm(shift, 0b111);
+                    let shift = self.builder.ins().ushr_imm_u(src, 3);
+                    let shift = self.builder.ins().band_imm_u(shift, 0b111);
 
                     let byte_val = self.builder.ins().load(
                         types::I8,
-                        ir::MemFlags::trusted().with_can_move(),
+                        ir::MemFlagsData::trusted().with_can_move(),
                         meta_addr,
                         0,
                     );
 
                     let shifted_val = self.builder.ins().ushr(byte_val, shift);
-                    let masked = self.builder.ins().band_imm(shifted_val, 1);
-                    let is_set = self.builder.ins().icmp_imm(IntCC::Equal, masked, 1);
+                    let masked = self.builder.ins().band_imm_u(shifted_val, 1);
+                    let is_set = self.builder.ins().icmp_imm_s(IntCC::Equal, masked, 1);
 
                     self.builder.ins().brif(is_set, slowpath, &[], done, &[]);
                 }
                 self.builder.switch_to_block(slowpath);
                 {
-                    let ctx = self.builder.ins().get_pinned_reg(types::I64);
+                    let ctx = self.ctx;
                     let offset = self.builder.ins().iconst(types::I32, offset as i64);
                     self.builder.ins().call(
                         self.thunks.post_write_barrier_slow,
@@ -552,7 +552,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                 }
                 self.builder.switch_to_block(done);
                 /*
-                let ctx = self.builder.ins().get_pinned_reg(types::I64);
+                let ctx = self.ctx;
                 let offset = self.builder.ins().iconst(types::I32, offset as i64);
                 self.builder
                     .ins()
@@ -582,34 +582,34 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                     let meta_base_address = self
                         .builder
                         .ins()
-                        .global_value(types::I64, global_side_metadata);
+                        .symbol_value(types::I64, global_side_metadata);
                     let meta_base_address = self.builder.ins().load(
                         types::I64,
-                        ir::MemFlags::trusted().with_can_move(),
+                        ir::MemFlagsData::trusted().with_can_move(),
                         meta_base_address,
                         0,
                     );
-                    let shifted_addr = self.builder.ins().ushr_imm(src, 6);
+                    let shifted_addr = self.builder.ins().ushr_imm_u(src, 6);
                     let meta_addr = self.builder.ins().iadd(meta_base_address, shifted_addr);
-                    let shift = self.builder.ins().ushr_imm(src, 3);
-                    let shift = self.builder.ins().band_imm(shift, 0b111);
+                    let shift = self.builder.ins().ushr_imm_u(src, 3);
+                    let shift = self.builder.ins().band_imm_u(shift, 0b111);
 
                     let byte_val = self.builder.ins().load(
                         types::I8,
-                        ir::MemFlags::trusted().with_can_move(),
+                        ir::MemFlagsData::trusted().with_can_move(),
                         meta_addr,
                         0,
                     );
 
                     let shifted_val = self.builder.ins().ushr(byte_val, shift);
-                    let masked = self.builder.ins().band_imm(shifted_val, 1);
-                    let is_set = self.builder.ins().icmp_imm(IntCC::Equal, masked, 1);
+                    let masked = self.builder.ins().band_imm_u(shifted_val, 1);
+                    let is_set = self.builder.ins().icmp_imm_s(IntCC::Equal, masked, 1);
 
                     self.builder.ins().brif(is_set, slowpath, &[], done, &[]);
                 }
                 self.builder.switch_to_block(slowpath);
                 {
-                    let ctx = self.builder.ins().get_pinned_reg(types::I64);
+                    let ctx = self.ctx;
                     let offset = self.builder.ins().iconst(types::I32, offset as i64);
                     self.builder.ins().call(
                         self.thunks.post_write_barrier_slow,
@@ -640,34 +640,34 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                     let meta_base_address = self
                         .builder
                         .ins()
-                        .global_value(types::I64, global_side_metadata);
+                        .symbol_value(types::I64, global_side_metadata);
                     let meta_base_address = self.builder.ins().load(
                         types::I64,
-                        ir::MemFlags::trusted().with_can_move(),
+                        ir::MemFlagsData::trusted().with_can_move(),
                         meta_base_address,
                         0,
                     );
-                    let shifted_addr = self.builder.ins().ushr_imm(src, 6);
+                    let shifted_addr = self.builder.ins().ushr_imm_u(src, 6);
                     let meta_addr = self.builder.ins().iadd(meta_base_address, shifted_addr);
-                    let shift = self.builder.ins().ushr_imm(src, 3);
-                    let shift = self.builder.ins().band_imm(shift, 0b111);
+                    let shift = self.builder.ins().ushr_imm_u(src, 3);
+                    let shift = self.builder.ins().band_imm_u(shift, 0b111);
                     let shift = self.builder.ins().ireduce(types::I8, shift);
                     let byte_val = self.builder.ins().load(
                         types::I8,
-                        ir::MemFlags::trusted().with_can_move(),
+                        ir::MemFlagsData::trusted().with_can_move(),
                         meta_addr,
                         0,
                     );
 
                     let shifted_val = self.builder.ins().ushr(byte_val, shift);
-                    let masked = self.builder.ins().band_imm(shifted_val, 1);
-                    let is_set = self.builder.ins().icmp_imm(IntCC::Equal, masked, 1);
+                    let masked = self.builder.ins().band_imm_u(shifted_val, 1);
+                    let is_set = self.builder.ins().icmp_imm_s(IntCC::Equal, masked, 1);
 
                     self.builder.ins().brif(is_set, slowpath, &[], done, &[]);
                 }
                 self.builder.switch_to_block(slowpath);
                 {
-                    let ctx = self.builder.ins().get_pinned_reg(types::I64);
+                    let ctx = self.ctx;
                     self.builder.ins().call(
                         self.thunks.post_write_barrier_at_slot,
                         &[ctx, src, slot, target],
@@ -675,7 +675,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                     self.builder.ins().jump(done, &[]);
                 }
                 self.builder.switch_to_block(done); /*
-                let ctx = self.builder.ins().get_pinned_reg(types::I64);
+                let ctx = self.ctx;
                 self.builder.ins().call(
                 self.thunks.pre_write_barrier_at_slot,
                 &[ctx, src, slot, target],
@@ -705,34 +705,34 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                     let meta_base_address = self
                         .builder
                         .ins()
-                        .global_value(types::I64, global_side_metadata);
+                        .symbol_value(types::I64, global_side_metadata);
                     let meta_base_address = self.builder.ins().load(
                         types::I64,
-                        ir::MemFlags::trusted().with_can_move(),
+                        ir::MemFlagsData::trusted().with_can_move(),
                         meta_base_address,
                         0,
                     );
-                    let shifted_addr = self.builder.ins().ushr_imm(src, 6);
+                    let shifted_addr = self.builder.ins().ushr_imm_u(src, 6);
                     let meta_addr = self.builder.ins().iadd(meta_base_address, shifted_addr);
-                    let shift = self.builder.ins().ushr_imm(src, 3);
-                    let shift = self.builder.ins().band_imm(shift, 0b111);
+                    let shift = self.builder.ins().ushr_imm_u(src, 3);
+                    let shift = self.builder.ins().band_imm_u(shift, 0b111);
                     let shift = self.builder.ins().ireduce(types::I8, shift);
                     let byte_val = self.builder.ins().load(
                         types::I8,
-                        ir::MemFlags::trusted().with_can_move(),
+                        ir::MemFlagsData::trusted().with_can_move(),
                         meta_addr,
                         0,
                     );
 
                     let shifted_val = self.builder.ins().ushr(byte_val, shift);
-                    let masked = self.builder.ins().band_imm(shifted_val, 1);
-                    let is_set = self.builder.ins().icmp_imm(IntCC::Equal, masked, 1);
+                    let masked = self.builder.ins().band_imm_u(shifted_val, 1);
+                    let is_set = self.builder.ins().icmp_imm_s(IntCC::Equal, masked, 1);
 
                     self.builder.ins().brif(is_set, slowpath, &[], done, &[]);
                 }
                 self.builder.switch_to_block(slowpath);
                 {
-                    let ctx = self.builder.ins().get_pinned_reg(types::I64);
+                    let ctx = self.ctx;
                     self.builder.ins().call(
                         self.thunks.post_write_barrier_at_slot,
                         &[ctx, src, slot, target],

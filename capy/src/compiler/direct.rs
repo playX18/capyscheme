@@ -146,7 +146,7 @@ mod tests {
             let value = builder.ins().iconst(types::I64, 42);
             builder.ins().return_(&[value]);
             builder.seal_all_blocks();
-            builder.finalize();
+            builder.finalize(crate::compiler::codegen::host_isa().frontend_config());
         }
 
         let compiled = compile_function(&*isa, &mut cache).expect("compile trivial function");
@@ -179,7 +179,7 @@ mod tests {
             let result = builder.inst_results(call)[0];
             builder.ins().return_(&[result]);
             builder.seal_all_blocks();
-            builder.finalize();
+            builder.finalize(crate::compiler::codegen::host_isa().frontend_config());
         }
 
         let compiled = compile_function(&*isa, &mut cache).expect("compile imported call");
@@ -210,7 +210,7 @@ mod tests {
             let rounded = builder.ins().ceil(input);
             builder.ins().return_(&[rounded]);
             builder.seal_all_blocks();
-            builder.finalize();
+            builder.finalize(crate::compiler::codegen::host_isa().frontend_config());
         }
 
         let compiled = compile_function(&*isa, &mut cache).expect("compile f64 rounding function");

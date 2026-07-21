@@ -31,9 +31,9 @@ pub(crate) fn overflow_base_from_argc(
     state: ir::Value,
     argc: ir::Value,
 ) -> ir::Value {
-    let overflow_count = builder.ins().iadd_imm(argc, -(REGISTER_ARG_COUNT as i64));
+    let overflow_count = builder.ins().iadd_imm_s(argc, -(REGISTER_ARG_COUNT as i64));
     let zero = builder.ins().iconst(types::I64, 0);
-    let has_overflow = builder.ins().icmp_imm(
+    let has_overflow = builder.ins().icmp_imm_s(
         ir::condcodes::IntCC::UnsignedGreaterThan,
         argc,
         REGISTER_ARG_COUNT as i64,
@@ -41,10 +41,11 @@ pub(crate) fn overflow_base_from_argc(
     let overflow_count = builder.ins().select(has_overflow, overflow_count, zero);
     let overflow_bytes = builder
         .ins()
-        .imul_imm(overflow_count, size_of::<Value>() as i64);
+        .imul_imm_s(overflow_count, size_of::<Value>() as i64);
+    let flags = crate::compiler::cranelift::ir::MemFlagsData::trusted().with_can_move();
     let runstack = builder.ins().load(
         types::I64,
-        ir::MemFlags::trusted().with_can_move(),
+        flags,
         state,
         offset_of!(State, runstack) as i32,
     );
@@ -52,11 +53,21 @@ pub(crate) fn overflow_base_from_argc(
 }
 
 pub(crate) fn compiled_scheme_signature() -> ir::Signature {
-    let mut sig = ir::Signature::new(CallConv::Tail);
+    let mut sig = ir::Signature::new(CallConv::Ghc);
     for _ in 0..COMPILED_ENTRY_ARG_COUNT {
         sig.params.push(ir::AbiParam::new(types::I64));
     }
     sig
+}
+
+/// Pack Scheme GHC call arguments: ctx, rator, argc, arg0..arg3.
+pub(crate) fn scheme_call_values(
+    ctx: ir::Value,
+    rator: ir::Value,
+    argc: ir::Value,
+    args: [ir::Value; REGISTER_ARG_COUNT],
+) -> [ir::Value; COMPILED_ENTRY_ARG_COUNT] {
+    [ctx, rator, argc, args[0], args[1], args[2], args[3]]
 }
 
 pub(crate) const MAX_RAISE_ARITY: usize = 4;

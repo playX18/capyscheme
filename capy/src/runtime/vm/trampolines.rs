@@ -19,7 +19,7 @@ use crate::runtime::{
     symbols::{RuntimeData, RuntimeThunk},
 };
 use cranelift::prelude::{
-    AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder, MemFlags, types,
+    AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder, types,
 };
 use cranelift_codegen::{
     Context,
@@ -67,8 +67,8 @@ pub struct Trampolines {
     pub debug_scheme_trampoline_size: usize,
 }
 
-fn compiled_tail_signature() -> ir::Signature {
-    let mut sig = ir::Signature::new(CallConv::Tail);
+fn compiled_ghc_signature() -> ir::Signature {
+    let mut sig = ir::Signature::new(CallConv::Ghc);
     for _ in 0..COMPILED_ENTRY_ARG_COUNT {
         sig.params.push(AbiParam::new(types::I64));
     }
@@ -76,8 +76,8 @@ fn compiled_tail_signature() -> ir::Signature {
 }
 
 fn native_enter_signature() -> ir::Signature {
+    // SysV entry from Rust: ctx, rator, argc, arg0..arg3 (same 7 values as GHC).
     let mut sig = ir::Signature::new(CallConv::SystemV);
-    sig.params.push(AbiParam::new(types::I64)); // ctx
     for _ in 0..COMPILED_ENTRY_ARG_COUNT {
         sig.params.push(AbiParam::new(types::I64));
     }
@@ -89,9 +89,10 @@ fn overflow_base(
     state: ir::Value,
     argc: ir::Value,
 ) -> ir::Value {
-    let overflow_count = builder.ins().iadd_imm(argc, -(REGISTER_ARG_COUNT as i64));
+    let mem = ir::MemFlagsData::new();
+    let overflow_count = builder.ins().iadd_imm_s(argc, -(REGISTER_ARG_COUNT as i64));
     let zero = builder.ins().iconst(types::I64, 0);
-    let has_overflow = builder.ins().icmp_imm(
+    let has_overflow = builder.ins().icmp_imm_s(
         ir::condcodes::IntCC::UnsignedGreaterThan,
         argc,
         REGISTER_ARG_COUNT as i64,
@@ -99,10 +100,10 @@ fn overflow_base(
     let overflow_count = builder.ins().select(has_overflow, overflow_count, zero);
     let overflow_bytes = builder
         .ins()
-        .imul_imm(overflow_count, size_of::<Value>() as i64);
+        .imul_imm_s(overflow_count, size_of::<Value>() as i64);
     let runstack = builder.ins().load(
         types::I64,
-        MemFlags::new(),
+        mem,
         state,
         offset_of!(State, runstack) as i32,
     );
@@ -117,7 +118,8 @@ fn copy_register_arg_if_present(
     native_base: ir::Value,
     native_index: usize,
 ) {
-    let present = builder.ins().icmp_imm(
+    let mem = ir::MemFlagsData::new();
+    let present = builder.ins().icmp_imm_s(
         ir::condcodes::IntCC::UnsignedGreaterThan,
         argc,
         logical_index as i64,
@@ -127,7 +129,7 @@ fn copy_register_arg_if_present(
     builder.ins().brif(present, store, &[], done, &[]);
     builder.switch_to_block(store);
     builder.ins().store(
-        MemFlags::new(),
+        mem,
         arg,
         native_base,
         (native_index * size_of::<Value>()) as i32,
@@ -143,7 +145,8 @@ fn copy_overflow_args(
     native_base: ir::Value,
     native_index_delta: i64,
 ) {
-    let has_overflow = builder.ins().icmp_imm(
+    let mem = ir::MemFlagsData::new();
+    let has_overflow = builder.ins().icmp_imm_s(
         ir::condcodes::IntCC::UnsignedGreaterThan,
         argc,
         REGISTER_ARG_COUNT as i64,
@@ -160,22 +163,22 @@ fn copy_overflow_args(
     );
     builder.switch_to_block(loop_block);
     let next_index = builder.block_params(loop_block)[0];
-    let index = builder.ins().iadd_imm(next_index, -1);
-    let src_offset = builder.ins().iadd_imm(index, -(REGISTER_ARG_COUNT as i64));
+    let index = builder.ins().iadd_imm_s(next_index, -1);
+    let src_offset = builder.ins().iadd_imm_s(index, -(REGISTER_ARG_COUNT as i64));
     let src_offset = builder
         .ins()
-        .imul_imm(src_offset, size_of::<Value>() as i64);
+        .imul_imm_s(src_offset, size_of::<Value>() as i64);
     let src = builder.ins().iadd(overflow_base, src_offset);
-    let value = builder.ins().load(types::I64, MemFlags::new(), src, 0);
+    let value = builder.ins().load(types::I64, mem, src, 0);
 
-    let dst_offset = builder.ins().iadd_imm(index, native_index_delta);
+    let dst_offset = builder.ins().iadd_imm_s(index, native_index_delta);
     let dst_offset = builder
         .ins()
-        .imul_imm(dst_offset, size_of::<Value>() as i64);
+        .imul_imm_s(dst_offset, size_of::<Value>() as i64);
     let dst = builder.ins().iadd(native_base, dst_offset);
-    builder.ins().store(MemFlags::new(), value, dst, 0);
+    builder.ins().store(mem, value, dst, 0);
 
-    let more = builder.ins().icmp_imm(
+    let more = builder.ins().icmp_imm_s(
         ir::condcodes::IntCC::UnsignedGreaterThan,
         index,
         REGISTER_ARG_COUNT as i64,
@@ -186,14 +189,115 @@ fn copy_overflow_args(
     builder.switch_to_block(done);
 }
 
+/// GHC-convention enter body (unused on x86_64; kept for non-x86 helpers).
+#[cfg(not(target_arch = "x86_64"))]
+#[allow(dead_code)]
+fn enter_scheme_ghc_body(fctx: &mut FunctionBuilderContext, ctx: &mut Context) {
+    let mut builder = FunctionBuilder::new(&mut ctx.func, fctx);
+    let mem = ir::MemFlagsData::new();
+
+    let entry = builder.create_block();
+    builder.append_block_params_for_function_params(entry);
+    builder.switch_to_block(entry);
+
+    let ctx_v = builder.block_params(entry)[0];
+    let rator = builder.block_params(entry)[1];
+    let argc = builder.block_params(entry)[2];
+    let arg0 = builder.block_params(entry)[3];
+    let arg1 = builder.block_params(entry)[4];
+    let arg2 = builder.block_params(entry)[5];
+    let arg3 = builder.block_params(entry)[6];
+
+    let sig = compiled_ghc_signature();
+    let sigref = builder.import_signature(sig);
+    let code = builder.ins().load(
+        types::I64,
+        mem,
+        rator,
+        offset_of!(Closure, code) as i32,
+    );
+    builder.ins().return_call_indirect(
+        sigref,
+        code,
+        &[ctx_v, rator, argc, arg0, arg1, arg2, arg3],
+    );
+
+    builder.seal_all_blocks();
+    builder.finalize(host_isa().frontend_config());
+}
+
+/// SystemV → GHC enter (aarch64/riscv64).
+#[cfg(not(target_arch = "x86_64"))]
 fn enter_scheme_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Context) {
     let mut builder = FunctionBuilder::new(&mut ctx.func, fctx);
 
     let entry = builder.create_block();
+    builder.append_block_params_for_function_params(entry);
+    builder.switch_to_block(entry);
+
+    let ctx_v = builder.block_params(entry)[0];
+    let rator = builder.block_params(entry)[1];
+    let argc = builder.block_params(entry)[2];
+    let arg0 = builder.block_params(entry)[3];
+    let arg1 = builder.block_params(entry)[4];
+    let arg2 = builder.block_params(entry)[5];
+    let arg3 = builder.block_params(entry)[6];
+
+    let sig = compiled_ghc_signature();
+    let sigref = builder.import_signature(sig);
+    let code = builder.ins().load(
+        types::I64,
+        ir::MemFlagsData::new(),
+        rator,
+        offset_of!(Closure, code) as i32,
+    );
+    builder.ins().call_indirect(
+        sigref,
+        code,
+        &[ctx_v, rator, argc, arg0, arg1, arg2, arg3],
+    );
+    builder.ins().trap(ir::TrapCode::STACK_OVERFLOW);
+
+    builder.seal_all_blocks();
+    builder.finalize(host_isa().frontend_config());
+}
+
+/// x86_64 SysV → GHC remap stub that jumps directly into Scheme code.
+///
+/// Remap SysV args into STG pins, load `Closure.code` from rator (`%rbp`), and `jmp`.
+#[cfg(target_arch = "x86_64")]
+fn build_enter_sysv_to_ghc_stub(memory: &mut CodeMemory) -> CodeAllocation {
+    // SysV: rdi,rsi,rdx,rcx,r8,r9,[rsp+8] = ctx,rator,argc,arg0,arg1,arg2,arg3
+    // GHC:  r13,rbp,r12,rbx,r14,rsi,rdi = ctx,rator,argc,arg0,arg1,arg2,arg3
+    let code_off = offset_of!(Closure, code) as i32;
+    assert!(
+        (-128..128).contains(&code_off),
+        "Closure::code offset must fit in disp8 for enter stub"
+    );
+    let mut code = Vec::with_capacity(48);
+    code.extend_from_slice(&[0x49, 0x89, 0xfd]); // mov r13, rdi  ; ctx
+    code.extend_from_slice(&[0x48, 0x89, 0xf5]); // mov rbp, rsi  ; rator
+    code.extend_from_slice(&[0x49, 0x89, 0xd4]); // mov r12, rdx  ; argc
+    code.extend_from_slice(&[0x48, 0x89, 0xcb]); // mov rbx, rcx  ; arg0
+    code.extend_from_slice(&[0x4d, 0x89, 0xc6]); // mov r14, r8   ; arg1
+    code.extend_from_slice(&[0x4c, 0x89, 0xce]); // mov rsi, r9   ; arg2
+    code.extend_from_slice(&[0x48, 0x8b, 0x7c, 0x24, 0x08]); // mov rdi, [rsp+8] ; arg3
+    // mov rax, qword ptr [rbp + code_off]
+    code.extend_from_slice(&[0x48, 0x8b, 0x45, code_off as u8]);
+    code.extend_from_slice(&[0xff, 0xe0]); // jmp rax
+    memory
+        .allocate_copy(&code)
+        .expect("failed to allocate SysV→GHC enter stub")
+}
+
+/// Trampoline from Scheme code to native procedure. Generated exactly once and is used for every native function.
+fn scheme_native_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Context) {
+    let mut builder = FunctionBuilder::new(&mut ctx.func, fctx);
+    let mem = ir::MemFlagsData::new();
+
+    let entry = builder.create_block();
 
     builder.append_block_params_for_function_params(entry);
-
-    builder.switch_to_block(entry);
 
     let ctx = builder.block_params(entry)[0];
     let rator = builder.block_params(entry)[1];
@@ -203,44 +307,7 @@ fn enter_scheme_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Con
     let arg2 = builder.block_params(entry)[5];
     let arg3 = builder.block_params(entry)[6];
 
-    let sig = compiled_tail_signature();
-    let sigref = builder.import_signature(sig);
-    builder.ins().set_pinned_reg(ctx);
-
-    let code = builder.ins().load(
-        types::I64,
-        MemFlags::new(),
-        rator,
-        offset_of!(Closure, code) as i32,
-    );
-    builder
-        .ins()
-        .call_indirect(sigref, code, &[rator, argc, arg0, arg1, arg2, arg3]);
-    // Ok/Err exits via longjmp; falling through is a bug.
-    builder.ins().trap(ir::TrapCode::STACK_OVERFLOW);
-
-    builder.seal_all_blocks();
-    builder.finalize();
-}
-
-/// Trampoline from Scheme code to native procedure. Generated exactly once and is used for every native function.
-fn scheme_native_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Context) {
-    let mut builder = FunctionBuilder::new(&mut ctx.func, fctx);
-
-    let entry = builder.create_block();
-
-    builder.append_block_params_for_function_params(entry);
-
-    let rator = builder.block_params(entry)[0];
-    let argc = builder.block_params(entry)[1];
-    let arg0 = builder.block_params(entry)[2];
-    let arg1 = builder.block_params(entry)[3];
-    let arg2 = builder.block_params(entry)[4];
-    let arg3 = builder.block_params(entry)[5];
-
     builder.switch_to_block(entry);
-    let ret_addr = builder.ins().get_return_address(types::I64);
-    let ctx = builder.ins().get_pinned_reg(types::I64);
     let retk = arg0;
 
     let sig = call_signature!(SystemV(
@@ -254,44 +321,31 @@ fn scheme_native_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Co
 
     let state = builder
         .ins()
-        .iadd_imm(ctx, crate::runtime::thread::Context::OFFSET_OF_STATE as i64);
+        .iadd_imm_s(ctx, crate::runtime::thread::Context::OFFSET_OF_STATE as i64);
     let native_data = builder.ins().load(
         types::I64,
-        MemFlags::new(),
+        mem,
         rator,
         Closure::DATA_OFFSET as i32,
     );
 
     let proc = builder.ins().load(
         types::I64,
-        MemFlags::new(),
+        mem,
         native_data,
         offset_of!(NativeProc, proc) as i32,
     );
 
-    /*let state = builder.ins().load(
-        types::I64,
-        MemFlags::new(),
-        ctx,
-        offset_of!(RtCtx, state) as i32,
-    );*/
-    builder.ins().store(
-        MemFlags::new(),
-        ret_addr,
-        state,
-        offset_of!(State, last_ret_addr) as i32,
-    );
-    //let c = builder.ins().icmp_imm(IntCC::UnsignedLessThan, state, 100);
-    //builder.ins().trapnz(c, TrapCode::HEAP_OUT_OF_BOUNDS);
+    // GHC is FP-less (Sp is %rbp), so `get_return_address` is unavailable.
     let overflow_base = overflow_base(&mut builder, state, argc);
     let native_base = overflow_base;
     copy_overflow_args(&mut builder, argc, overflow_base, native_base, -1);
     copy_register_arg_if_present(&mut builder, argc, arg1, 1, native_base, 0);
     copy_register_arg_if_present(&mut builder, argc, arg2, 2, native_base, 1);
     copy_register_arg_if_present(&mut builder, argc, arg3, 3, native_base, 2);
-    let num_rands = builder.ins().iadd_imm(argc, -1);
+    let num_rands = builder.ins().iadd_imm_s(argc, -1);
     builder.ins().store(
-        MemFlags::new(),
+        mem,
         native_base,
         state,
         offset_of!(State, runstack) as i32,
@@ -307,7 +361,7 @@ fn scheme_native_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Co
     let on_ret = builder.create_block();
     let on_cont = builder.create_block();
 
-    let is_cont = builder.ins().icmp_imm(
+    let is_cont = builder.ins().icmp_imm_s(
         ir::condcodes::IntCC::Equal,
         code,
         ReturnCode::Continue as i64,
@@ -334,44 +388,44 @@ fn scheme_native_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Co
     }
     builder.switch_to_block(on_cont);
 
-    let sig_call = compiled_tail_signature();
+    let sig_call = compiled_ghc_signature();
     let sig_call = builder.import_signature(sig_call);
 
     {
         let cdata = offset_of!(State, call_data) as i32;
         let rator = builder.ins().load(
             types::I64,
-            MemFlags::new(),
+            mem,
             state,
             cdata + offset_of!(CallData, rator) as i32,
         );
         let argc = builder.ins().load(
             types::I64,
-            MemFlags::new(),
+            mem,
             state,
             cdata + offset_of!(CallData, argc) as i32,
         );
         let arg0 = builder.ins().load(
             types::I64,
-            MemFlags::new(),
+            mem,
             state,
             cdata + offset_of!(CallData, arg0) as i32,
         );
         let arg1 = builder.ins().load(
             types::I64,
-            MemFlags::new(),
+            mem,
             state,
             cdata + offset_of!(CallData, arg1) as i32,
         );
         let arg2 = builder.ins().load(
             types::I64,
-            MemFlags::new(),
+            mem,
             state,
             cdata + offset_of!(CallData, arg2) as i32,
         );
         let arg3 = builder.ins().load(
             types::I64,
-            MemFlags::new(),
+            mem,
             state,
             cdata + offset_of!(CallData, arg3) as i32,
         );
@@ -380,13 +434,13 @@ fn scheme_native_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Co
             .ins()
             .iconst(types::I64, Value::undefined().bits() as i64);
         builder.ins().store(
-            MemFlags::new(),
+            mem,
             undefined,
             state,
             cdata + offset_of!(CallData, rator) as i32,
         );
         builder.ins().store(
-            MemFlags::new(),
+            mem,
             zero,
             state,
             cdata + offset_of!(CallData, argc) as i32,
@@ -399,38 +453,42 @@ fn scheme_native_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Co
         ] {
             builder
                 .ins()
-                .store(MemFlags::new(), undefined, state, cdata + offset as i32);
+                .store(mem, undefined, state, cdata + offset as i32);
         }
 
         let code = builder.ins().load(
             types::I64,
-            MemFlags::new(),
+            mem,
             rator,
             offset_of!(Closure, code) as i32,
         );
 
         builder
             .ins()
-            .return_call_indirect(sig_call, code, &[rator, argc, arg0, arg1, arg2, arg3]);
+            .return_call_indirect(sig_call, code, &[ctx, rator, argc, arg0, arg1, arg2, arg3]);
     }
+
+    builder.seal_all_blocks();
+    builder.finalize(host_isa().frontend_config());
 }
 
 fn scheme_native_continuation_code(fctx: &mut FunctionBuilderContext, ctx: &mut Context) {
     let mut builder = FunctionBuilder::new(&mut ctx.func, fctx);
+    let mem = ir::MemFlagsData::new();
 
     let entry = builder.create_block();
 
     builder.append_block_params_for_function_params(entry);
 
-    let rator = builder.block_params(entry)[0];
-    let argc = builder.block_params(entry)[1];
-    let arg0 = builder.block_params(entry)[2];
-    let arg1 = builder.block_params(entry)[3];
-    let arg2 = builder.block_params(entry)[4];
-    let arg3 = builder.block_params(entry)[5];
+    let ctx = builder.block_params(entry)[0];
+    let rator = builder.block_params(entry)[1];
+    let argc = builder.block_params(entry)[2];
+    let arg0 = builder.block_params(entry)[3];
+    let arg1 = builder.block_params(entry)[4];
+    let arg2 = builder.block_params(entry)[5];
+    let arg3 = builder.block_params(entry)[6];
 
     builder.switch_to_block(entry);
-    let ctx = builder.ins().get_pinned_reg(types::I64);
 
     let sig = call_signature!(SystemV(
         I64, /* ctx */
@@ -442,17 +500,17 @@ fn scheme_native_continuation_code(fctx: &mut FunctionBuilderContext, ctx: &mut 
 
     let state = builder
         .ins()
-        .iadd_imm(ctx, crate::runtime::thread::Context::OFFSET_OF_STATE as i64);
+        .iadd_imm_s(ctx, crate::runtime::thread::Context::OFFSET_OF_STATE as i64);
     let native_data = builder.ins().load(
         types::I64,
-        MemFlags::new(),
+        mem,
         rator,
         Closure::DATA_OFFSET as i32,
     );
 
     let proc = builder.ins().load(
         types::I64,
-        MemFlags::new(),
+        mem,
         native_data,
         offset_of!(NativeProc, proc) as i32,
     );
@@ -465,7 +523,7 @@ fn scheme_native_continuation_code(fctx: &mut FunctionBuilderContext, ctx: &mut 
     copy_register_arg_if_present(&mut builder, argc, arg2, 2, native_base, 2);
     copy_register_arg_if_present(&mut builder, argc, arg3, 3, native_base, 3);
     builder.ins().store(
-        MemFlags::new(),
+        mem,
         native_base,
         state,
         offset_of!(State, runstack) as i32,
@@ -480,7 +538,7 @@ fn scheme_native_continuation_code(fctx: &mut FunctionBuilderContext, ctx: &mut 
     let on_ret = builder.create_block();
     let on_cont = builder.create_block();
 
-    let is_cont = builder.ins().icmp_imm(
+    let is_cont = builder.ins().icmp_imm_s(
         ir::condcodes::IntCC::Equal,
         code,
         ReturnCode::Continue as i64,
@@ -508,44 +566,44 @@ fn scheme_native_continuation_code(fctx: &mut FunctionBuilderContext, ctx: &mut 
     }
     builder.switch_to_block(on_cont);
 
-    let sig_call = compiled_tail_signature();
+    let sig_call = compiled_ghc_signature();
     let sig_call = builder.import_signature(sig_call);
 
     {
         let cdata = offset_of!(State, call_data) as i32;
         let rator = builder.ins().load(
             types::I64,
-            MemFlags::new(),
+            mem,
             state,
             cdata + offset_of!(CallData, rator) as i32,
         );
         let argc = builder.ins().load(
             types::I64,
-            MemFlags::new(),
+            mem,
             state,
             cdata + offset_of!(CallData, argc) as i32,
         );
         let arg0 = builder.ins().load(
             types::I64,
-            MemFlags::new(),
+            mem,
             state,
             cdata + offset_of!(CallData, arg0) as i32,
         );
         let arg1 = builder.ins().load(
             types::I64,
-            MemFlags::new(),
+            mem,
             state,
             cdata + offset_of!(CallData, arg1) as i32,
         );
         let arg2 = builder.ins().load(
             types::I64,
-            MemFlags::new(),
+            mem,
             state,
             cdata + offset_of!(CallData, arg2) as i32,
         );
         let arg3 = builder.ins().load(
             types::I64,
-            MemFlags::new(),
+            mem,
             state,
             cdata + offset_of!(CallData, arg3) as i32,
         );
@@ -554,13 +612,13 @@ fn scheme_native_continuation_code(fctx: &mut FunctionBuilderContext, ctx: &mut 
             .ins()
             .iconst(types::I64, Value::undefined().bits() as i64);
         builder.ins().store(
-            MemFlags::new(),
+            mem,
             undefined,
             state,
             cdata + offset_of!(CallData, rator) as i32,
         );
         builder.ins().store(
-            MemFlags::new(),
+            mem,
             zero,
             state,
             cdata + offset_of!(CallData, argc) as i32,
@@ -573,68 +631,71 @@ fn scheme_native_continuation_code(fctx: &mut FunctionBuilderContext, ctx: &mut 
         ] {
             builder
                 .ins()
-                .store(MemFlags::new(), undefined, state, cdata + offset as i32);
+                .store(mem, undefined, state, cdata + offset as i32);
         }
 
         let code = builder.ins().load(
             types::I64,
-            MemFlags::new(),
+            mem,
             rator,
             offset_of!(Closure, code) as i32,
         );
 
         builder
             .ins()
-            .return_call_indirect(sig_call, code, &[rator, argc, arg0, arg1, arg2, arg3]);
+            .return_call_indirect(sig_call, code, &[ctx, rator, argc, arg0, arg1, arg2, arg3]);
     }
+
+    builder.seal_all_blocks();
+    builder.finalize(host_isa().frontend_config());
 }
 
 fn debug_scheme_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Context) {
     let mut builder = FunctionBuilder::new(&mut ctx.func, fctx);
+    let mem = ir::MemFlagsData::new();
 
     let entry = builder.create_block();
     builder.append_block_params_for_function_params(entry);
     builder.switch_to_block(entry);
 
-    let rator = builder.block_params(entry)[0];
-    let argc = builder.block_params(entry)[1];
-    let arg0 = builder.block_params(entry)[2];
-    let arg1 = builder.block_params(entry)[3];
-    let arg2 = builder.block_params(entry)[4];
-    let arg3 = builder.block_params(entry)[5];
-
-    let ctx = builder.ins().get_pinned_reg(types::I64);
+    let ctx = builder.block_params(entry)[0];
+    let rator = builder.block_params(entry)[1];
+    let argc = builder.block_params(entry)[2];
+    let arg0 = builder.block_params(entry)[3];
+    let arg1 = builder.block_params(entry)[4];
+    let arg2 = builder.block_params(entry)[5];
+    let arg3 = builder.block_params(entry)[6];
     let state = builder
         .ins()
-        .iadd_imm(ctx, crate::runtime::thread::Context::OFFSET_OF_STATE as i64);
+        .iadd_imm_s(ctx, crate::runtime::thread::Context::OFFSET_OF_STATE as i64);
     let overflow = overflow_base(&mut builder, state, argc);
 
     let code_block = builder.ins().load(
         types::I64,
-        MemFlags::new(),
+        mem,
         rator,
         offset_of!(Closure, code_block) as i32,
     );
     let real_code = builder.ins().load(
         types::I64,
-        MemFlags::new(),
+        mem,
         code_block,
         offset_of!(CodeBlock, entrypoint) as i32,
     );
     let flags = builder.ins().load(
         types::I32,
-        MemFlags::new(),
+        mem,
         code_block,
         offset_of!(CodeBlock, flags) as i32,
     );
-    let continuation_flag = builder.ins().band_imm(flags, 1);
+    let continuation_flag = builder.ins().band_imm_u(flags, 1);
     let is_continuation =
         builder
             .ins()
-            .icmp_imm(ir::condcodes::IntCC::NotEqual, continuation_flag, 0);
+            .icmp_imm_s(ir::condcodes::IntCC::NotEqual, continuation_flag, 0);
     let has_retk = builder
         .ins()
-        .icmp_imm(ir::condcodes::IntCC::UnsignedGreaterThan, argc, 0);
+        .icmp_imm_s(ir::condcodes::IntCC::UnsignedGreaterThan, argc, 0);
 
     let check_continuation = builder.create_block();
     let push_frame = builder.create_block();
@@ -688,16 +749,16 @@ fn debug_scheme_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Con
 
     builder.switch_to_block(call_real);
     let new_arg0 = builder.block_params(call_real)[0];
-    let sig_call = compiled_tail_signature();
+    let sig_call = compiled_ghc_signature();
     let sig_call = builder.import_signature(sig_call);
     builder.ins().return_call_indirect(
         sig_call,
         real_code,
-        &[rator, argc, new_arg0, arg1, arg2, arg3],
+        &[ctx, rator, argc, new_arg0, arg1, arg2, arg3],
     );
 
     builder.seal_all_blocks();
-    builder.finalize();
+    builder.finalize(host_isa().frontend_config());
 }
 
 impl Trampolines {
@@ -705,6 +766,9 @@ impl Trampolines {
         let isa = host_isa();
         let mut memory = CodeMemory::new();
 
+        #[cfg(target_arch = "x86_64")]
+        let enter_scheme_trampoline = build_enter_sysv_to_ghc_stub(&mut memory);
+        #[cfg(not(target_arch = "x86_64"))]
         let enter_scheme_trampoline = compile_trampoline(
             &mut memory,
             &*isa,
@@ -716,21 +780,21 @@ impl Trampolines {
             &mut memory,
             &*isa,
             1,
-            compiled_tail_signature(),
+            compiled_ghc_signature(),
             scheme_native_trampoline_code,
         );
         let native_continuation_trampoline = compile_trampoline(
             &mut memory,
             &*isa,
             2,
-            compiled_tail_signature(),
+            compiled_ghc_signature(),
             scheme_native_continuation_code,
         );
         let debug_scheme_trampoline = compile_trampoline(
             &mut memory,
             &*isa,
             3,
-            compiled_tail_signature(),
+            compiled_ghc_signature(),
             debug_scheme_trampoline_code,
         );
 
@@ -1133,13 +1197,15 @@ mod tests {
 
     fn runtime_data_pointer_code(fctx: &mut FunctionBuilderContext, ctx: &mut Context) {
         let mut builder = FunctionBuilder::new(&mut ctx.func, fctx);
+    let mem = ir::MemFlagsData::new();
+    let mem_tm = ir::MemFlagsData::trusted().with_can_move();
         let entry = builder.create_block();
         builder.switch_to_block(entry);
         let global = declare_runtime_data(builder.func, RuntimeData::PairHeaderWord);
-        let address = builder.ins().global_value(types::I64, global);
+        let address = builder.ins().symbol_value(types::I64, global);
         builder.ins().return_(&[address]);
         builder.seal_all_blocks();
-        builder.finalize();
+        builder.finalize(host_isa().frontend_config());
     }
 
     #[test]

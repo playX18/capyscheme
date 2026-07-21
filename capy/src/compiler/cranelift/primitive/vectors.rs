@@ -50,7 +50,7 @@ pub fn lower_vector<'gc_, 'a, 'f>(
     );
     let len = ssa.builder.ins().iconst(types::I64, args.len() as i64);
     ssa.builder.ins().store(
-        ir::MemFlags::trusted(),
+        ir::MemFlagsData::trusted(),
         len,
         vec,
         offset_of!(Vector, length) as i32,
@@ -58,7 +58,7 @@ pub fn lower_vector<'gc_, 'a, 'f>(
     for (i, &arg) in args.iter().enumerate() {
         let arg = ssa.atom(arg);
         ssa.builder.ins().store(
-            ir::MemFlags::trusted(),
+            ir::MemFlagsData::trusted(),
             arg,
             vec,
             offset_of!(Vector, data) as i32 + i as i32 * size_of::<Value>() as i32,
@@ -87,7 +87,7 @@ pub fn lower_tuple<'gc_, 'a, 'f>(
     for (i, &arg) in args.iter().enumerate() {
         let arg = ssa.atom(arg);
         ssa.builder.ins().store(
-            ir::MemFlags::trusted(),
+            ir::MemFlagsData::trusted(),
             arg,
             tup,
             offset_of!(Tuple, data) as i32 + i as i32 * size_of::<Value>() as i32,
@@ -117,15 +117,15 @@ pub fn lower_vector_ref<'gc_, 'a, 'f>(
                 ix,
                 ulen,
                 |ssa, ix, _slowpath| {
-                    let ix_offset = ssa.builder.ins().imul_imm(ix, size_of::<Value>() as i64);
+                    let ix_offset = ssa.builder.ins().imul_imm_s(ix, size_of::<Value>() as i64);
                     let data_ptr = ssa
                         .builder
                         .ins()
-                        .iadd_imm(vec, offset_of!(Vector, data) as i64);
+                        .iadd_imm_s(vec, offset_of!(Vector, data) as i64);
                     let elem_ptr = ssa.builder.ins().iadd(data_ptr, ix_offset);
                     let elem = ssa.builder.ins().load(
                         types::I64,
-                        ir::MemFlags::trusted().with_can_move(),
+                        ir::MemFlagsData::trusted().with_can_move(),
                         elem_ptr,
                         0,
                     );
@@ -137,7 +137,7 @@ pub fn lower_vector_ref<'gc_, 'a, 'f>(
             );
         },
         |ssa, _| {
-            let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+            let ctx = ssa.ctx;
             let result = ssa.handle_thunk_call_result(ssa.thunks.vector_ref, &[ctx, vec, ix]);
             ssa.builder.ins().jump(merge, &[BlockArg::Value(result)]);
         },
@@ -167,16 +167,16 @@ pub fn lower_vector_set<'gc_, 'a, 'f>(
                 ix,
                 ulen,
                 |ssa, ix, _slowpath| {
-                    let ix_offset = ssa.builder.ins().imul_imm(ix, size_of::<Value>() as i64);
+                    let ix_offset = ssa.builder.ins().imul_imm_s(ix, size_of::<Value>() as i64);
                     let data_ptr = ssa
                         .builder
                         .ins()
-                        .iadd_imm(vec, offset_of!(Vector, data) as i64);
+                        .iadd_imm_s(vec, offset_of!(Vector, data) as i64);
                     let elem_ptr = ssa.builder.ins().iadd(data_ptr, ix_offset);
                     ssa.pre_write_barrier_n(vec, elem_ptr, new_val);
                     ssa.builder
                         .ins()
-                        .store(ir::MemFlags::trusted(), new_val, elem_ptr, 0);
+                        .store(ir::MemFlagsData::trusted(), new_val, elem_ptr, 0);
                     ssa.post_write_barrier_n(vec, elem_ptr, new_val);
                     ssa.builder.ins().jump(merge, &[]);
                 },
@@ -186,7 +186,7 @@ pub fn lower_vector_set<'gc_, 'a, 'f>(
             );
         },
         |ssa, _| {
-            let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+            let ctx = ssa.ctx;
             let _ = ssa.handle_thunk_call_result(ssa.thunks.vector_set, &[ctx, vec, ix, new_val]);
             ssa.builder.ins().jump(merge, &[]);
         },
@@ -206,7 +206,7 @@ pub fn lower_tuple_size<'gc_, 'a, 'f>(
     _source: Value<'gc_>,
 ) -> PrimValue {
     let arg = ssa.atom(args[0]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let size = ssa.handle_thunk_call_result(ssa.thunks.tuple_size, &[ctx, arg]);
     PrimValue::Value(size)
 }
@@ -220,16 +220,16 @@ pub fn lower_tuple_ref<'gc_, 'a, 'f>(
     let ix = ssa.atom(args[1]);
 
     let ix = ssa.ireduce(types::I32, ix);
-    let offset = ssa.builder.ins().imul_imm(ix, size_of::<Value>() as i64);
+    let offset = ssa.builder.ins().imul_imm_s(ix, size_of::<Value>() as i64);
     let offset = ssa
         .builder
         .ins()
-        .iadd_imm(offset, offset_of!(Tuple, data) as i32 as i64);
+        .iadd_imm_s(offset, offset_of!(Tuple, data) as i32 as i64);
     let offset = ssa.zextend(types::I64, offset);
     let addr = ssa.builder.ins().iadd(tuple, offset);
     PrimValue::Value(ssa.builder.ins().load(
         types::I64,
-        ir::MemFlags::trusted().with_can_move(),
+        ir::MemFlagsData::trusted().with_can_move(),
         addr,
         0,
     ))
@@ -245,17 +245,17 @@ pub fn lower_tuple_set<'gc_, 'a, 'f>(
     let value = ssa.atom(args[2]);
 
     let ix = ssa.ireduce(types::I32, ix);
-    let offset = ssa.builder.ins().imul_imm(ix, size_of::<Value>() as i64);
+    let offset = ssa.builder.ins().imul_imm_s(ix, size_of::<Value>() as i64);
     let offset = ssa
         .builder
         .ins()
-        .iadd_imm(offset, offset_of!(Tuple, data) as i32 as i64);
+        .iadd_imm_s(offset, offset_of!(Tuple, data) as i32 as i64);
     let offset = ssa.zextend(types::I64, offset);
     let addr = ssa.builder.ins().iadd(tuple, offset);
     ssa.pre_write_barrier_n(tuple, addr, value);
     ssa.builder
         .ins()
-        .store(ir::MemFlags::trusted(), value, addr, 0);
+        .store(ir::MemFlagsData::trusted(), value, addr, 0);
     ssa.post_write_barrier_n(tuple, addr, value);
     PrimValue::Value(
         ssa.builder
@@ -282,7 +282,7 @@ pub fn lower_bytevector_length<'gc_, 'a, 'f>(
     _source: Value<'gc_>,
 ) -> PrimValue {
     let bv = ssa.atom(args[0]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let result = ssa.handle_thunk_call_result(ssa.thunks.bytevector_length, &[ctx, bv]);
     PrimValue::Value(result)
 }
@@ -310,16 +310,16 @@ pub fn lower_bytevector_u8_ref<'gc_, 'a, 'f>(
                     let data_base = ssa
                         .builder
                         .ins()
-                        .iadd_imm(bv, size_of::<ByteVector>() as i64);
+                        .iadd_imm_s(bv, size_of::<ByteVector>() as i64);
                     let addr = ssa.builder.ins().iadd(data_base, ix);
                     let byte = ssa.builder.ins().load(
                         types::I8,
-                        ir::MemFlags::trusted().with_can_move(),
+                        ir::MemFlagsData::trusted().with_can_move(),
                         addr,
                         0,
                     );
                     let byte_i64 = ssa.builder.ins().uextend(types::I64, byte);
-                    let result = ssa.builder.ins().bor_imm(byte_i64, Value::NUMBER_TAG);
+                    let result = ssa.builder.ins().bor_imm_u(byte_i64, Value::NUMBER_TAG);
                     ssa.builder.ins().jump(merge, &[BlockArg::Value(result)]);
                 },
                 |ssa, _| {
@@ -328,7 +328,7 @@ pub fn lower_bytevector_u8_ref<'gc_, 'a, 'f>(
             );
         },
         |ssa, _| {
-            let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+            let ctx = ssa.ctx;
             let result = ssa.handle_thunk_call_result(ssa.thunks.bytevector_u8_ref, &[ctx, bv, ix]);
             ssa.builder.ins().jump(merge, &[BlockArg::Value(result)]);
         },

@@ -19,7 +19,7 @@ pub fn lower_set_car<'gc_, 'a, 'f>(
     let new_car = ssa.atom(args[1]);
     ssa.pre_write_barrier(pair, offset_of!(Pair, car) as i32, new_car);
     ssa.builder.ins().store(
-        ir::MemFlags::trusted(),
+        ir::MemFlagsData::trusted(),
         new_car,
         pair,
         offset_of!(Pair, car) as i32,
@@ -41,7 +41,7 @@ pub fn lower_set_cdr<'gc_, 'a, 'f>(
     let new_cdr = ssa.atom(args[1]);
     ssa.pre_write_barrier(pair, offset_of!(Pair, cdr) as i32, new_cdr);
     ssa.builder.ins().store(
-        ir::MemFlags::trusted(),
+        ir::MemFlagsData::trusted(),
         new_cdr,
         pair,
         offset_of!(Pair, cdr) as i32,
@@ -72,7 +72,7 @@ pub fn lower_reverse<'gc_, 'a, 'f>(
     _source: Value<'gc_>,
 ) -> PrimValue {
     let list = ssa.atom(args[0]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let call = ssa.builder.ins().call(ssa.thunks.reverse, &[ctx, list]);
 
     PrimValue::Value(ssa.builder.inst_results(call)[0])
@@ -160,7 +160,7 @@ pub fn lower_append<'gc_, 'a, 'f>(
 ) -> PrimValue {
     let ls1 = ssa.atom(args[0]);
     let ls2 = ssa.atom(args[1]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let result = ssa.handle_thunk_call_result(ssa.thunks.append, &[ctx, ls1, ls2]);
 
     PrimValue::Value(result)
@@ -189,7 +189,7 @@ pub fn lower_memq<'gc_, 'a, 'f>(
 ) -> PrimValue {
     let item = ssa.atom(args[0]);
     let list = ssa.atom(args[1]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let result = ssa.handle_thunk_call_result(ssa.thunks.memq, &[ctx, item, list]);
     PrimValue::Value(result)
 }
@@ -201,7 +201,7 @@ pub fn lower_memv<'gc_, 'a, 'f>(
 ) -> PrimValue {
     let item = ssa.atom(args[0]);
     let list = ssa.atom(args[1]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
     let result = ssa.handle_thunk_call_result(ssa.thunks.memv, &[ctx, item, list]);
     PrimValue::Value(result)
 }
@@ -228,7 +228,7 @@ pub fn lower_car<'gc_, 'a, 'f>(
 
     PrimValue::Value(ssa.builder.ins().load(
         types::I64,
-        ir::MemFlags::trusted().with_can_move(),
+        ir::MemFlagsData::trusted().with_can_move(),
         pair,
         offset_of!(Pair, car) as i32,
     ))
@@ -256,7 +256,7 @@ pub fn lower_cdr<'gc_, 'a, 'f>(
 
     PrimValue::Value(ssa.builder.ins().load(
         types::I64,
-        ir::MemFlags::trusted().with_can_move(),
+        ir::MemFlagsData::trusted().with_can_move(),
         pair,
         offset_of!(Pair, cdr) as i32,
     ))
@@ -268,7 +268,7 @@ pub fn lower_length<'gc_, 'a, 'f>(
     _source: Value<'gc_>,
 ) -> PrimValue {
     let val = ssa.atom(args[0]);
-    let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+    let ctx = ssa.ctx;
 
     let result = ssa.handle_thunk_call_result(ssa.thunks.length, &[ctx, val]);
     PrimValue::Value(result)
