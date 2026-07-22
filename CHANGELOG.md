@@ -85,6 +85,8 @@
 - *(tree-il)* Add pattern matchers for IL - ([6da6f93](https://codeberg.org/playXE/capy/commit/6da6f9317a062942b46b64f3ee16d4eea46a12bd))
 - *(vm)* More debugging - ([b996149](https://codeberg.org/playXE/capy/commit/b996149c8353af5fed73e1edf49b95f195b80bcb))
 - *(vscode)* Add Capy Scheme LSP extension - ([6b95133](https://codeberg.org/playXE/capy/commit/6b95133a3aa859ee883017f2e34489cded9faa54))
+- GHC callconv - ([8c45d3c](https://codeberg.org/playXE/capy/commit/8c45d3c4a25f53fc8a638e8dba1d13d830e12185))
+- Setjmp/longjmp trampolines to exit/enter Scheme code (simpler callconv) - ([5036be9](https://codeberg.org/playXE/capy/commit/5036be93a960fc889fde20284ddd05bef1f23a31))
 - Add r7rs benchmark suite and improve SBBV - ([f27b0dc](https://codeberg.org/playXE/capy/commit/f27b0dc4ae7439190d4a61d718b3cad3523707f0))
 - Feat(sbbv): enhance fixnum and flonum operations with checked and unchecked variants
 . - ([ab6ff6a](https://codeberg.org/playXE/capy/commit/ab6ff6a1ceadfc2d48566e7eb2a508f1b2d0f968))
@@ -315,6 +317,8 @@
 
 - *(ci)* Always generate nightly changelog - ([a337d40](https://codeberg.org/playXE/capy/commit/a337d4061f39815e396db267910fa9f816c54984))
 - *(clippy)* Remove lint suppressions - ([45edac1](https://codeberg.org/playXE/capy/commit/45edac16a46149399299bc3ebf6622364a1ba547))
+- Update Cargo.lock - ([e9e8efe](https://codeberg.org/playXE/capy/commit/e9e8efe71df584097dbfe387e2f09ac9bfa54ee4))
+- Update to asmkit 0.4 - ([9b36b39](https://codeberg.org/playXE/capy/commit/9b36b39fab19b7cd4d6d1cadd5957a3340cb72e9))
 - Update README - ([7ffd453](https://codeberg.org/playXE/capy/commit/7ffd45333451e41851f0fbf5f68d08f89ecd6571))
 - Remove nobacktrace from makefile - ([2627e5a](https://codeberg.org/playXE/capy/commit/2627e5a7a2633af1af68f7f793e801f13bf3087e))
 - Remove nobacktrace directive from source code - ([ad68041](https://codeberg.org/playXE/capy/commit/ad68041777e55d65402ebfad6aa70244d6ceb1c3))
