@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     compiler::{
@@ -17,23 +17,29 @@ use crate::{
 
 use super::{
     Block, BlockId, BranchTarget, ClosureKind, CodeId, GraphCodeId, Instruction, Operand,
-    Procedure, ProcedureKind, Program, Terminator, ValueId, finish_procedure,
+    Procedure, ProcedureKind, Program, Terminator, UVar, finish_procedure,
 };
 
 pub fn lower_graph<'gc>(graph: &Graph<'gc>, reify: &GraphReifyInfo) -> Program<'gc> {
     let mut procedures = Vec::new();
 
     for function in reify.functions.iter().copied() {
-        procedures.push(finish_procedure(lower_function(graph, reify, function)));
+        let _p = crate::utils::pass_profile::ProfileScope::new("cfg.lower.function");
+        let lowered = {
+            let _c = crate::utils::pass_profile::ProfileScope::new("cfg.lower.convert");
+            lower_function(graph, reify, function)
+        };
+        procedures.push(finish_procedure(lowered));
     }
 
     for continuation in reify.continuations.iter().copied() {
         if graph[continuation].is_reified {
-            procedures.push(finish_procedure(lower_continuation(
-                graph,
-                reify,
-                continuation,
-            )));
+            let _p = crate::utils::pass_profile::ProfileScope::new("cfg.lower.continuation");
+            let lowered = {
+                let _c = crate::utils::pass_profile::ProfileScope::new("cfg.lower.convert");
+                lower_continuation(graph, reify, continuation)
+            };
+            procedures.push(finish_procedure(lowered));
         }
     }
 
@@ -54,20 +60,14 @@ fn lower_function<'gc>(
         .expect("graph function should have a return continuation");
     let source_free_vars = binder_set_to_vec(reify.free_vars.function(function));
     let mut builder = ProcedureBuilder::new(graph, reify);
-    let binding = builder.value(data.var);
-    let return_cont = builder.value(return_cont);
-    let params = builder.values(graph.bound_vars_slice(&data.vars));
-    let variadic = data.variadic.map(|var| builder.value(var));
-    let free_vars = builder.values(&source_free_vars);
+    let binding = builder.uvar(data.var);
+    let return_cont = builder.uvar(return_cont);
+    let params = builder.uvars(graph.bound_vars_slice(&data.vars));
+    let variadic = data.variadic.map(|var| builder.uvar(var));
+    let free_vars = builder.uvars(&source_free_vars);
     let entry = BlockId(0);
     let instructions = closure_refs(&mut builder, binding, &source_free_vars);
-    builder.convert_block(
-        entry,
-        params_with_variadic(params.clone(), variadic),
-        variadic,
-        instructions,
-        data.body,
-    );
+    builder.convert_block(entry, instructions, data.body);
     let (blocks, sources) = builder.finish();
 
     Procedure {
@@ -99,19 +99,13 @@ fn lower_continuation<'gc>(
     );
     let source_free_vars = binder_set_to_vec(reify.free_vars.continuation(continuation));
     let mut builder = ProcedureBuilder::new(graph, reify);
-    let binding = builder.value(data.var);
-    let params = builder.values(graph.bound_vars_slice(&data.vars));
-    let variadic = data.variadic.map(|var| builder.value(var));
-    let free_vars = builder.values(&source_free_vars);
+    let binding = builder.uvar(data.var);
+    let params = builder.uvars(graph.bound_vars_slice(&data.vars));
+    let variadic = data.variadic.map(|var| builder.uvar(var));
+    let free_vars = builder.uvars(&source_free_vars);
     let entry = BlockId(0);
     let instructions = closure_refs(&mut builder, binding, &source_free_vars);
-    builder.convert_block(
-        entry,
-        params_with_variadic(params.clone(), variadic),
-        variadic,
-        instructions,
-        data.body,
-    );
+    builder.convert_block(entry, instructions, data.body);
     let (blocks, sources) = builder.finish();
 
     Procedure {
@@ -144,21 +138,16 @@ fn binder_set_to_vec(vars: &BinderSet) -> Vec<BoundVar> {
     vars.iter().collect()
 }
 
-fn params_with_variadic(mut args: Vec<ValueId>, variadic: Option<ValueId>) -> Vec<ValueId> {
-    args.extend(variadic);
-    args
-}
-
 fn closure_refs<'gc>(
     builder: &mut ProcedureBuilder<'_, 'gc>,
-    binding: ValueId,
+    binding: UVar,
     free_vars: &[BoundVar],
 ) -> Vec<Instruction<'gc>> {
     free_vars
         .iter()
         .enumerate()
         .map(|(index, free_var)| Instruction::ClosureRef {
-            dst: builder.value(*free_var),
+            dst: builder.uvar(*free_var),
             closure: Operand::Local(binding),
             index,
         })
@@ -170,10 +159,12 @@ struct ProcedureBuilder<'a, 'gc> {
     reify: &'a GraphReifyInfo,
     blocks: Vec<Block<'gc>>,
     local_blocks: HashMap<BoundVar, BlockId>,
-    values: HashMap<BoundVar, ValueId>,
+    /// Contified continuation formals (and optional rest), for Assign-on-continue.
+    local_formals: HashMap<BoundVar, (Vec<UVar>, Option<UVar>)>,
+    values: HashMap<BoundVar, UVar>,
     known_literals: HashMap<BoundVar, Value<'gc>>,
-    sources: HashMap<ValueId, LVarRef<'gc>>,
-    next_value: u32,
+    sources: HashMap<UVar, LVarRef<'gc>>,
+    next_uvar: u32,
     next_block: usize,
 }
 
@@ -184,36 +175,43 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
             reify,
             blocks: Vec::new(),
             local_blocks: HashMap::new(),
+            local_formals: HashMap::new(),
             values: HashMap::new(),
             known_literals: HashMap::new(),
             sources: HashMap::new(),
-            next_value: 0,
+            next_uvar: 0,
             next_block: 1,
         }
     }
 
-    fn finish(mut self) -> (Vec<Block<'gc>>, HashMap<ValueId, LVarRef<'gc>>) {
+    fn finish(mut self) -> (Vec<Block<'gc>>, HashMap<UVar, LVarRef<'gc>>) {
         self.blocks.sort_by_key(|block| block.id.0);
         (self.blocks, self.sources)
     }
 
-    fn value(&mut self, var: BoundVar) -> ValueId {
+    fn uvar(&mut self, var: BoundVar) -> UVar {
         if let Some(id) = self.values.get(&var).copied() {
             return id;
         }
-        let id = ValueId(self.next_value);
-        self.next_value += 1;
+        let id = UVar(self.next_uvar);
+        self.next_uvar += 1;
         self.values.insert(var, id);
         self.sources.insert(id, self.graph[var].var);
         id
     }
 
-    fn values(&mut self, vars: &[BoundVar]) -> Vec<ValueId> {
-        vars.iter().copied().map(|var| self.value(var)).collect()
+    fn fresh_temp(&mut self) -> UVar {
+        let id = UVar(self.next_uvar);
+        self.next_uvar += 1;
+        id
+    }
+
+    fn uvars(&mut self, vars: &[BoundVar]) -> Vec<UVar> {
+        vars.iter().copied().map(|var| self.uvar(var)).collect()
     }
 
     fn atom(&mut self, var: FreeVar) -> Operand<'gc> {
-        Operand::Local(self.value(self.graph.free_binder(var)))
+        Operand::Local(self.uvar(self.graph.free_binder(var)))
     }
 
     fn atoms(&mut self, vars: &FreeVars) -> Vec<Operand<'gc>> {
@@ -253,21 +251,17 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
     fn convert_block(
         &mut self,
         id: BlockId,
-        params: Vec<ValueId>,
-        variadic: Option<ValueId>,
         mut instructions: Vec<Instruction<'gc>>,
         link: Subterm,
     ) {
         let term = self
             .graph
             .read_term_link(link)
-            .unwrap_or_else(|| panic!("dead graph term link while lowering to SSA: {link}"));
+            .unwrap_or_else(|| panic!("dead graph term link while lowering to CFG: {link}"));
         let source = self.graph[term].source;
         let terminator = self.convert_term(term, &mut instructions);
         self.blocks.push(Block {
             id,
-            params,
-            variadic,
             instructions,
             terminator,
             source,
@@ -285,7 +279,7 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
                 let expr = self
                     .graph
                     .read_expr_link(expr)
-                    .unwrap_or_else(|| panic!("dead graph expression link while lowering to SSA"));
+                    .unwrap_or_else(|| panic!("dead graph expression link while lowering to CFG"));
                 self.convert_expr(var, expr, instructions);
                 self.convert_term_link(body, instructions)
             }
@@ -295,7 +289,7 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
                 for function in functions.iter().copied() {
                     let free_vars = binder_set_to_vec(self.reify.free_vars.function(function));
                     instructions.push(Instruction::MakeClosure {
-                        dst: self.value(self.graph[function].var),
+                        dst: self.uvar(self.graph[function].var),
                         code: graph_code_id(self.graph, function),
                         kind: ClosureKind::Function,
                         free_count: free_vars.len(),
@@ -303,7 +297,7 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
                 }
 
                 for function in functions {
-                    let closure = self.value(self.graph[function].var);
+                    let closure = self.uvar(self.graph[function].var);
                     let free_vars = binder_set_to_vec(self.reify.free_vars.function(function));
                     emit_closure_sets(self, instructions, closure, &free_vars);
                 }
@@ -321,7 +315,7 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
                     let free_vars =
                         binder_set_to_vec(self.reify.free_vars.continuation(continuation));
                     instructions.push(Instruction::MakeClosure {
-                        dst: self.value(self.graph[continuation].var),
+                        dst: self.uvar(self.graph[continuation].var),
                         code: graph_code_id(self.graph, continuation),
                         kind: ClosureKind::Continuation,
                         free_count: free_vars.len(),
@@ -329,7 +323,7 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
                 }
 
                 for continuation in reified_conts {
-                    let closure = self.value(self.graph[continuation].var);
+                    let closure = self.uvar(self.graph[continuation].var);
                     let free_vars =
                         binder_set_to_vec(self.reify.free_vars.continuation(continuation));
                     emit_closure_sets(self, instructions, closure, &free_vars);
@@ -337,21 +331,17 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
 
                 for continuation in &local_conts {
                     let id = self.alloc_block();
-                    self.local_blocks.insert(self.graph[*continuation].var, id);
+                    let data = self.graph[*continuation];
+                    self.local_blocks.insert(data.var, id);
+                    let formals = self.uvars(self.graph.bound_vars_slice(&data.vars));
+                    let variadic = data.variadic.map(|var| self.uvar(var));
+                    self.local_formals.insert(data.var, (formals, variadic));
                 }
 
                 for continuation in local_conts {
                     let data = self.graph[continuation];
                     let id = self.local_blocks[&data.var];
-                    let params = self.values(self.graph.bound_vars_slice(&data.vars));
-                    let variadic = data.variadic.map(|var| self.value(var));
-                    self.convert_block(
-                        id,
-                        params_with_variadic(params, variadic),
-                        variadic,
-                        vec![],
-                        data.body,
-                    );
+                    self.convert_block(id, vec![], data.body);
                 }
 
                 self.convert_term_link(body, instructions)
@@ -359,14 +349,18 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
 
             TermKind::Continue(cont, args) => {
                 let target = self.graph.free_binder(cont);
-                if let Some(block) = self.local_blocks.get(&target) {
-                    Terminator::Jump {
-                        target: *block,
-                        args: self.atoms(&args),
-                    }
+                if let Some(block) = self.local_blocks.get(&target).copied() {
+                    let args = self.atoms(&args);
+                    let (formals, variadic) = self
+                        .local_formals
+                        .get(&target)
+                        .cloned()
+                        .unwrap_or_else(|| (vec![], None));
+                    emit_parallel_assign(self, instructions, &formals, variadic, &args);
+                    Terminator::Jump { target: block }
                 } else {
                     Terminator::TailCall {
-                        callee: Operand::Local(self.value(target)),
+                        callee: Operand::Local(self.uvar(target)),
                         args: self.atoms(&args),
                         source: data.source,
                     }
@@ -403,7 +397,7 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
         let term = self
             .graph
             .read_term_link(link)
-            .unwrap_or_else(|| panic!("dead graph term link while lowering to SSA: {link}"));
+            .unwrap_or_else(|| panic!("dead graph term link while lowering to CFG: {link}"));
         self.convert_term(term, instructions)
     }
 
@@ -415,7 +409,7 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
     ) {
         match self.graph[expr].kind {
             ExprKind::Literal(value) => {
-                let dst = self.value(binding);
+                let dst = self.uvar(binding);
                 self.known_literals.insert(binding, value);
                 instructions.push(Instruction::Const { dst, value });
             }
@@ -424,7 +418,7 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
                 let prim = Primitive::from_name(&name)
                     .unwrap_or_else(|| panic!("undefined primitive: {prim}"));
                 let args = self.atoms_for_prim(prim, &args);
-                let dst = self.value(binding);
+                let dst = self.uvar(binding);
                 instructions.push(Instruction::PrimCall {
                     dst,
                     prim,
@@ -441,10 +435,10 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
         }
 
         let block = self.alloc_block();
-        self.convert_block(block, vec![], None, vec![], link);
+        self.convert_block(block, vec![], link);
         BranchTarget::Local {
             block,
-            args: vec![],
+            edge_assigns: vec![],
         }
     }
 
@@ -459,16 +453,137 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
     fn continuation_target(&mut self, continuation: ContVar, args: FreeVars) -> BranchTarget<'gc> {
         let continuation = self.graph.free_binder(continuation);
         let args = self.atoms(&args);
-        if let Some(block) = self.local_blocks.get(&continuation) {
-            BranchTarget::Local {
-                block: *block,
-                args,
-            }
+        if let Some(block) = self.local_blocks.get(&continuation).copied() {
+            // Push Assigns into a helper block, then jump to the cont.
+            let helper = self.alloc_block();
+            let (formals, variadic) = self
+                .local_formals
+                .get(&continuation)
+                .cloned()
+                .unwrap_or_else(|| (vec![], None));
+            let mut instructions = Vec::new();
+            emit_parallel_assign(self, &mut instructions, &formals, variadic, &args);
+            let source = Value::new(false);
+            self.blocks.push(Block {
+                id: helper,
+                instructions,
+                terminator: Terminator::Jump { target: block },
+                source,
+            });
+            BranchTarget::Local { block: helper, edge_assigns: vec![] }
         } else {
             BranchTarget::Reified {
-                continuation: Operand::Local(self.value(continuation)),
+                continuation: Operand::Local(self.uvar(continuation)),
                 args,
             }
+        }
+    }
+}
+
+/// Classical parallel-copy decomposition into sequential `Assign`s, plus
+/// contified rest-list materialization.
+///
+/// Fixed formals are assigned in parallel (via temps so cyclic permutations
+/// cannot livelock). When `variadic` is set, excess arguments are consed into
+/// a proper list (right-fold) and assigned to the rest uvar — matching the old
+/// SSA `jump_to_block` behavior. Truncating extras into the rest slot was a
+/// CFG-migration bug that left module-export loops with a scalar/`()` instead
+/// of a name list.
+fn emit_parallel_assign<'gc>(
+    builder: &mut ProcedureBuilder<'_, 'gc>,
+    instructions: &mut Vec<Instruction<'gc>>,
+    formals: &[UVar],
+    variadic: Option<UVar>,
+    args: &[Operand<'gc>],
+) {
+    let fixed_count = formals.len();
+    let fixed_args = if args.len() >= fixed_count {
+        &args[..fixed_count]
+    } else {
+        // Undercall: pad missing fixed args with null (arity errors for
+        // contified jumps are rare vs procedure entry; keep lowering total).
+        // The parallel-assign helper below pads when sources are short.
+        args
+    };
+    emit_parallel_moves(builder, instructions, formals, fixed_args);
+
+    let Some(rest) = variadic else {
+        return;
+    };
+
+    // Right-fold cons over the excess arguments into `rest`.
+    let mut list = Operand::Constant(Value::null());
+    for arg in args.get(fixed_count..).unwrap_or(&[]).iter().rev().copied() {
+        let dst = builder.fresh_temp();
+        instructions.push(Instruction::PrimCall {
+            dst,
+            prim: Primitive::Cons,
+            args: vec![arg, list],
+            source: Value::new(false),
+        });
+        list = Operand::Local(dst);
+    }
+    instructions.push(Instruction::Assign {
+        dst: rest,
+        src: list,
+    });
+}
+
+/// Parallel `destinations ← sources` via temp staging (handles cycles).
+fn emit_parallel_moves<'gc>(
+    builder: &mut ProcedureBuilder<'_, 'gc>,
+    instructions: &mut Vec<Instruction<'gc>>,
+    destinations: &[UVar],
+    sources: &[Operand<'gc>],
+) {
+    if destinations.is_empty() {
+        return;
+    }
+
+    let mut srcs = sources.to_vec();
+    while srcs.len() < destinations.len() {
+        srcs.push(Operand::Constant(Value::null()));
+    }
+    if srcs.len() > destinations.len() {
+        srcs.truncate(destinations.len());
+    }
+
+    let mut temps = Vec::with_capacity(destinations.len());
+    for src in &srcs {
+        match *src {
+            Operand::Local(var) => temps.push(var),
+            Operand::Constant(_) => {
+                let temp = builder.fresh_temp();
+                instructions.push(Instruction::Assign {
+                    dst: temp,
+                    src: *src,
+                });
+                temps.push(temp);
+            }
+        }
+    }
+
+    let dest_set: HashSet<UVar> = destinations.iter().copied().collect();
+    let mut staged = temps;
+    for (index, src) in srcs.iter().enumerate() {
+        if let Operand::Local(var) = *src
+            && dest_set.contains(&var)
+        {
+            let temp = builder.fresh_temp();
+            instructions.push(Instruction::Assign {
+                dst: temp,
+                src: Operand::Local(var),
+            });
+            staged[index] = temp;
+        }
+    }
+
+    for (dst, src) in destinations.iter().copied().zip(staged) {
+        if dst != src {
+            instructions.push(Instruction::Assign {
+                dst,
+                src: Operand::Local(src),
+            });
         }
     }
 }
@@ -485,14 +600,14 @@ fn live_functions<'gc>(graph: &Graph<'gc>, functions: &FunctionLinks) -> Vec<Fun
 fn emit_closure_sets<'gc>(
     builder: &mut ProcedureBuilder<'_, 'gc>,
     instructions: &mut Vec<Instruction<'gc>>,
-    closure: ValueId,
+    closure: UVar,
     free_vars: &[BoundVar],
 ) {
     for (index, free_var) in free_vars.iter().enumerate() {
         instructions.push(Instruction::ClosureSet {
             closure: Operand::Local(closure),
             index,
-            value: Operand::Local(builder.value(*free_var)),
+            value: Operand::Local(builder.uvar(*free_var)),
         });
     }
 }

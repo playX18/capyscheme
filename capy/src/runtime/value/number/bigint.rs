@@ -192,7 +192,6 @@ impl<'gc> BigInt<'gc> {
                 _phantom: PhantomData,
             });
 
-            // Initialize words to 0
             let bigint_data_ptr = (*bigint.as_mut_ptr()).words.as_mut_ptr();
             bigint_data_ptr.copy_from_nonoverlapping(words.as_ptr(), words.len());
 
@@ -235,7 +234,6 @@ impl<'gc> BigInt<'gc> {
                 _phantom: PhantomData,
             });
 
-            // Initialize words to 0
             let bigint_data_ptr = (*bigint.as_mut_ptr()).words.as_mut_ptr();
             bigint_data_ptr.write_bytes(0, count);
 
@@ -1025,7 +1023,6 @@ impl<'gc> BigInt<'gc> {
         let mut temp = self.words_slice().to_vec();
         let radix = base.radix() as u64;
 
-        // Remove leading zeros
         while let Some(&0) = temp.last() {
             temp.pop();
         }
@@ -1116,7 +1113,6 @@ impl<'gc> BigInt<'gc> {
             }
         }
 
-        // Remove any trailing zeros
         while let Some(&0) = words.last() {
             words.pop();
         }

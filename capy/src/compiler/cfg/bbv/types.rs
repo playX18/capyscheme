@@ -1,9 +1,10 @@
 //! SBBV type lattice: motley types with fixnum/length intervals and symbolic
 //! vector-length bounds (ECOOP'24 Section 3.3).
 
-use crate::compiler::ssa::ValueId;
+use crate::compiler::cfg::ValueId;
 use std::collections::HashMap;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 
 pub(super) const FIXNUM_MIN: i64 = i32::MIN as i64;
 pub(super) const FIXNUM_MAX: i64 = i32::MAX as i64;
@@ -78,9 +79,9 @@ pub(super) const ALL_KINDS: u32 = (1 << TypeKind::COUNT) - 1;
 /// Interval endpoint: concrete integer, symbolic `[[v]] - offset`, or sentinels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Bound {
-    /// Smallest representable fixnum (Gambit `>=`).
+    /// Smallest representable fixnum.
     Min,
-    /// Largest representable fixnum (Gambit `<=`).
+    /// Largest representable fixnum.
     Max,
     Int(i64),
     /// `[[value]] - offset` where offset >= 0.
@@ -237,7 +238,7 @@ pub(super) enum CmpOp {
 }
 
 /// Motley type: kind bitset plus optional fixnum/length intervals.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct Type {
     pub(super) kinds: u32,
     pub(super) fixnum_range: Option<Interval>,
@@ -457,9 +458,30 @@ pub(super) fn intersect_types(a: Type, b: Type) -> Type {
 }
 
 /// Per-value type environment for SBBV specialization.
+///
+/// Alias equivalence classes track mutable-uvar copies (`Assign`): members
+/// share one type description until a defining write detaches its destination.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct TypeContext {
     pub(super) types: HashMap<ValueId, Type>,
+    alias_parent: HashMap<ValueId, ValueId>,
+}
+
+impl Hash for TypeContext {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let mut types: Vec<_> = self.types.iter().collect();
+        types.sort_by_key(|(id, _)| id.0);
+        for (id, ty) in types {
+            id.0.hash(state);
+            ty.hash(state);
+        }
+        let mut aliases = self.alias_members();
+        aliases.sort_by_key(|(member, rep)| (member.0, rep.0));
+        for (member, rep) in aliases {
+            member.0.hash(state);
+            rep.0.hash(state);
+        }
+    }
 }
 
 impl TypeContext {
@@ -467,35 +489,177 @@ impl TypeContext {
         Self::default()
     }
 
-    pub(super) fn get(&self, id: ValueId) -> Type {
-        self.types.get(&id).cloned().unwrap_or(Type::TOP)
+    fn find_readonly(&self, mut id: ValueId) -> ValueId {
+        while let Some(&parent) = self.alias_parent.get(&id) {
+            if parent == id {
+                break;
+            }
+            id = parent;
+        }
+        id
     }
 
-    pub(super) fn set(&mut self, id: ValueId, ty: Type) {
-        if ty.is_empty() {
-            self.types.remove(&id);
-        } else {
+    fn find(&mut self, id: ValueId) -> ValueId {
+        let root = self.find_readonly(id);
+        let mut current = id;
+        while let Some(&parent) = self.alias_parent.get(&current) {
+            if parent == current {
+                break;
+            }
+            current = parent;
+        }
+        let mut node = id;
+        while node != root {
+            let parent = self.alias_parent.get(&node).copied().unwrap_or(node);
+            self.alias_parent.insert(node, root);
+            if parent == node {
+                break;
+            }
+            node = parent;
+        }
+        root
+    }
+
+    fn alias_members(&self) -> Vec<(ValueId, ValueId)> {
+        let mut ids: Vec<_> = self
+            .types
+            .keys()
+            .chain(self.alias_parent.keys())
+            .copied()
+            .collect();
+        ids.sort_by_key(|id| id.0);
+        ids.dedup();
+        ids.into_iter()
+            .filter_map(|id| {
+                let rep = self.find_readonly(id);
+                (rep != id).then_some((id, rep))
+            })
+            .collect()
+    }
+
+    pub(super) fn get(&self, id: ValueId) -> Type {
+        let rep = self.find_readonly(id);
+        self.types.get(&rep).cloned().unwrap_or(Type::TOP)
+    }
+
+    /// Break `id` out of its alias class before a defining write.
+    pub(super) fn detach(&mut self, id: ValueId) {
+        let rep = self.find(id);
+        if rep == id {
+            return;
+        }
+        let ty = self.get(id);
+        self.alias_parent.remove(&id);
+        if !ty.is_empty() {
             self.types.insert(id, ty);
         }
     }
 
+    /// Copy `src`'s type into `dst` and union their alias classes.
+    pub(super) fn assign_copy(&mut self, dst: ValueId, src: ValueId) {
+        self.detach(dst);
+        let ty = self.get(src);
+        self.set(dst, ty);
+        self.union_alias(dst, src);
+    }
+
+    fn union_alias(&mut self, left: ValueId, right: ValueId) {
+        let left_rep = self.find(left);
+        let right_rep = self.find(right);
+        if left_rep == right_rep {
+            return;
+        }
+        let merged = union_types(self.get(left_rep), self.get(right_rep), false);
+        let (rep, other) = if left_rep.0 <= right_rep.0 {
+            (left_rep, right_rep)
+        } else {
+            (right_rep, left_rep)
+        };
+        self.types.remove(&other);
+        self.alias_parent.insert(other, rep);
+        self.alias_parent.entry(rep).or_insert(rep);
+        if merged.is_empty() {
+            self.set_on_rep(rep, Type::BOT);
+        } else {
+            self.types.insert(rep, merged);
+        }
+    }
+
+    fn set_on_rep(&mut self, rep: ValueId, ty: Type) {
+        if ty.is_empty() {
+            let members: Vec<ValueId> = self
+                .types
+                .keys()
+                .chain(self.alias_parent.keys())
+                .copied()
+                .filter(|id| self.find_readonly(*id) == rep)
+                .collect();
+            for id in members {
+                self.types.remove(&id);
+                self.alias_parent.remove(&id);
+            }
+            return;
+        }
+
+        // Types live only on the representative; members resolve via find().
+        self.types.insert(rep, ty);
+        self.alias_parent.entry(rep).or_insert(rep);
+    }
+
+    pub(super) fn set(&mut self, id: ValueId, ty: Type) {
+        let rep = self.find(id);
+        self.set_on_rep(rep, ty);
+    }
+
+    /// Project onto the live-in set as a per-uvar type environment.
+    ///
+    /// Alias edges are intentionally dropped: they are an intra-block
+    /// propagation aid for `Assign`, not part of the block-entry version
+    /// key. Carrying them across edges over-versions joins (two paths with
+    /// the same live types but different copy history look distinct) and can
+    /// incorrectly share updates across paths that never aliased.
+    pub(super) fn canonical(&self, live: &std::collections::HashSet<ValueId>) -> Self {
+        let mut out = Self::new();
+        let mut live_sorted: Vec<_> = live.iter().copied().collect();
+        live_sorted.sort_by_key(|id| id.0);
+        for id in live_sorted {
+            let ty = self.get(id);
+            if !ty.is_empty() {
+                out.types.insert(id, ty);
+            }
+        }
+        out
+    }
+
     pub(super) fn union(&self, other: &Self, widen: bool) -> Self {
-        let mut out = self.clone();
-        for (id, ty) in &other.types {
-            let merged = union_types(out.get(*id), ty.clone(), widen);
-            out.set(*id, merged);
+        let ids: std::collections::HashSet<_> = self
+            .types
+            .keys()
+            .chain(other.types.keys())
+            .copied()
+            .collect();
+        let mut out = Self::new();
+        for id in ids {
+            let merged = union_types(self.get(id), other.get(id), widen);
+            if !merged.is_empty() {
+                out.set(id, merged);
+            }
         }
         out
     }
 
     pub(super) fn intersect(&self, other: &Self) -> Self {
-        let ids: std::collections::HashSet<_> =
-            self.types.keys().chain(other.types.keys()).collect();
+        let ids: std::collections::HashSet<_> = self
+            .types
+            .keys()
+            .chain(other.types.keys())
+            .copied()
+            .collect();
         let mut out = Self::new();
         for id in ids {
-            let ty = intersect_types(self.get(*id), other.get(*id));
+            let ty = intersect_types(self.get(id), other.get(id));
             if !ty.is_empty() {
-                out.set(*id, ty);
+                out.set(id, ty);
             }
         }
         out
@@ -635,23 +799,32 @@ impl fmt::Display for Type {
 
 impl fmt::Display for TypeContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.types.is_empty() {
-            return write!(f, "{{}}");
-        }
         let mut ids: Vec<_> = self.types.keys().copied().collect();
         ids.sort_by_key(|id| id.0);
+        if ids.is_empty() && self.alias_members().is_empty() {
+            return write!(f, "{{}}");
+        }
         write!(f, "{{")?;
         for (idx, id) in ids.iter().enumerate() {
             if idx > 0 {
                 write!(f, ", ")?;
             }
-            write!(f, "v{}={}", id.0, self.types[id])?;
+            write!(f, "v{}={}", id.0, self.get(*id))?;
+        }
+        let aliases: Vec<_> = self
+            .alias_members()
+            .into_iter()
+            .map(|(member, rep)| format!("v{}~v{}", member.0, rep.0))
+            .collect();
+        if !aliases.is_empty() {
+            if !ids.is_empty() {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", aliases.join(", "))?;
         }
         write!(f, "}}")
     }
 }
-
-// --- bound/interval helpers (paper Section 3.3) ---
 
 fn val_lo(b: Bound) -> i64 {
     match b {
@@ -934,6 +1107,7 @@ fn typed_kinds(bits: u32) -> impl Iterator<Item = TypeKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler::cfg::UVar;
 
     impl Interval {
         fn fixnum_int(lo: i64, hi: i64) -> Self {
@@ -971,7 +1145,7 @@ mod tests {
 
     #[test]
     fn interval_add_symbolic_lower() {
-        let v = ValueId(7);
+        let v = UVar(7);
         let a = Interval {
             lo: Bound::VecLenMinus(v, 2),
             hi: Bound::VecLenMinus(v, 0),
@@ -983,7 +1157,7 @@ mod tests {
 
     #[test]
     fn interval_add_symbolic_upper() {
-        let v = ValueId(7);
+        let v = UVar(7);
         // [[v]]-2 + 1 = [[v]]-1; the offset absorbs the constant.
         let a = Interval {
             lo: Bound::VecLenMinus(v, 2),
@@ -996,7 +1170,7 @@ mod tests {
 
     #[test]
     fn interval_add_symbolic_upper_overflows() {
-        let v = ValueId(7);
+        let v = UVar(7);
         // [[v]]-0 + 1 = [[v]]+1 may exceed the fixnum range, so the upper
         // bound degrades to overflow.
         let a = Interval {
@@ -1010,7 +1184,7 @@ mod tests {
 
     #[test]
     fn symbolic_interval_with_decreasing_offsets_is_not_empty() {
-        let vector = ValueId(7);
+        let vector = UVar(7);
         let interval = Interval {
             lo: Bound::VecLenMinus(vector, 2),
             hi: Bound::VecLenMinus(vector, 0),
@@ -1021,7 +1195,7 @@ mod tests {
 
     #[test]
     fn symbolic_interval_with_increasing_offsets_is_empty() {
-        let vector = ValueId(7);
+        let vector = UVar(7);
         let interval = Interval {
             lo: Bound::VecLenMinus(vector, 0),
             hi: Bound::VecLenMinus(vector, 2),
@@ -1032,7 +1206,7 @@ mod tests {
 
     #[test]
     fn interval_subtracts_from_symbolic_bounds() {
-        let vector = ValueId(7);
+        let vector = UVar(7);
         let difference = Interval {
             lo: Bound::VecLenMinus(vector, 0),
             hi: Bound::VecLenMinus(vector, 0),
@@ -1045,7 +1219,7 @@ mod tests {
 
     #[test]
     fn interval_symbolic_subtraction_preserves_possible_overflow() {
-        let vector = ValueId(7);
+        let vector = UVar(7);
         let difference = Interval {
             lo: Bound::VecLenMinus(vector, 0),
             hi: Bound::VecLenMinus(vector, 0),
@@ -1057,7 +1231,7 @@ mod tests {
 
     #[test]
     fn interval_mul_preserves_symbolic_range() {
-        let vector = ValueId(7);
+        let vector = UVar(7);
         let product = Interval {
             lo: Bound::VecLenMinus(vector, 2),
             hi: Bound::VecLenMinus(vector, 0),
@@ -1070,7 +1244,7 @@ mod tests {
 
     #[test]
     fn interval_union_uses_safe_mixed_lower_bound() {
-        let vector = ValueId(7);
+        let vector = UVar(7);
         let symbolic = Interval {
             lo: Bound::VecLenMinus(vector, 2),
             hi: Bound::VecLenMinus(vector, 0),
@@ -1083,7 +1257,7 @@ mod tests {
 
     #[test]
     fn interval_union_preserves_same_vector_relation() {
-        let vector = ValueId(7);
+        let vector = UVar(7);
         let left = Interval {
             lo: Bound::VecLenMinus(vector, 2),
             hi: Bound::VecLenMinus(vector, 1),
@@ -1101,12 +1275,12 @@ mod tests {
     #[test]
     fn interval_union_generalizes_different_vector_bounds() {
         let left = Interval {
-            lo: Bound::VecLenMinus(ValueId(7), 1),
-            hi: Bound::VecLenMinus(ValueId(7), 0),
+            lo: Bound::VecLenMinus(UVar(7), 1),
+            hi: Bound::VecLenMinus(UVar(7), 0),
         };
         let right = Interval {
-            lo: Bound::VecLenMinus(ValueId(8), 1),
-            hi: Bound::VecLenMinus(ValueId(8), 0),
+            lo: Bound::VecLenMinus(UVar(8), 1),
+            hi: Bound::VecLenMinus(UVar(8), 0),
         };
         let union = left.union(right, false);
 
@@ -1116,7 +1290,7 @@ mod tests {
 
     #[test]
     fn interval_intersection_preserves_same_vector_relation() {
-        let vector = ValueId(7);
+        let vector = UVar(7);
         let left = Interval {
             lo: Bound::VecLenMinus(vector, 3),
             hi: Bound::VecLenMinus(vector, 0),
@@ -1133,7 +1307,7 @@ mod tests {
 
     #[test]
     fn interval_widens_changing_symbolic_bounds() {
-        let vector = ValueId(7);
+        let vector = UVar(7);
         let left = Interval {
             lo: Bound::VecLenMinus(vector, 1),
             hi: Bound::VecLenMinus(vector, 1),
@@ -1226,8 +1400,8 @@ mod tests {
     #[test]
     fn context_narrow_for_predicate() {
         let mut ctx = TypeContext::new();
-        let x = ValueId(1);
-        let y = ValueId(2);
+        let x = UVar(1);
+        let y = UVar(2);
         ctx.set(x, Type::fixnum_int(0, 10));
         ctx.set(y, Type::fixnum_int(0, 10));
 
@@ -1253,8 +1427,8 @@ mod tests {
     #[test]
     fn context_narrow_gt_assigns_original_operands() {
         let mut ctx = TypeContext::new();
-        let x = ValueId(1);
-        let y = ValueId(2);
+        let x = UVar(1);
+        let y = UVar(2);
         ctx.set(x, Type::fixnum_int(0, 10));
         ctx.set(y, Type::fixnum_int(5, 20));
 
@@ -1276,6 +1450,62 @@ mod tests {
             false_ctx.get(y).fixnum_range,
             Some(Interval::fixnum_int(5, 20))
         );
+    }
+
+    #[test]
+    fn assign_copy_unions_alias_classes() {
+        let mut ctx = TypeContext::new();
+        let src = UVar(1);
+        let dst = UVar(2);
+        ctx.set(src, Type::fixnum_int(0, 10));
+        ctx.assign_copy(dst, src);
+        assert_eq!(ctx.get(dst), Type::fixnum_int(0, 10));
+        ctx.set(src, Type::fixnum_int(1, 1));
+        assert_eq!(ctx.get(dst), Type::fixnum_int(1, 1));
+    }
+
+    #[test]
+    fn detach_breaks_alias_class_before_definition() {
+        let mut ctx = TypeContext::new();
+        let src = UVar(1);
+        let dst = UVar(2);
+        ctx.set(src, Type::fixnum_int(0, 10));
+        ctx.assign_copy(dst, src);
+        ctx.detach(dst);
+        ctx.set(dst, Type::kind(TypeKind::Pair));
+        assert_eq!(ctx.get(src), Type::fixnum_int(0, 10));
+        assert!(ctx.get(dst).is_definitely_pair());
+    }
+
+    #[test]
+    fn canonical_restricts_to_live_set() {
+        let mut ctx = TypeContext::new();
+        let live = UVar(1);
+        let dead = UVar(2);
+        ctx.set(live, Type::fixnum_int(0, 0));
+        ctx.set(dead, Type::kind(TypeKind::Pair));
+        let live_in = std::collections::HashSet::from([live]);
+        let restricted = ctx.canonical(&live_in);
+        assert_eq!(restricted.get(live), Type::fixnum_int(0, 0));
+        assert_eq!(restricted.get(dead), Type::TOP);
+        assert!(!restricted.types.contains_key(&dead));
+    }
+
+    #[test]
+    fn canonical_drops_alias_edges() {
+        let mut ctx = TypeContext::new();
+        let src = UVar(1);
+        let dst = UVar(2);
+        ctx.set(src, Type::fixnum_int(0, 10));
+        ctx.assign_copy(dst, src);
+        let live_in = std::collections::HashSet::from([src, dst]);
+        let mut restricted = ctx.canonical(&live_in);
+        assert_eq!(restricted.get(src), Type::fixnum_int(0, 10));
+        assert_eq!(restricted.get(dst), Type::fixnum_int(0, 10));
+        assert!(restricted.alias_members().is_empty());
+        restricted.set(src, Type::fixnum_int(1, 1));
+        // Independent after projection: updating src must not touch dst.
+        assert_eq!(restricted.get(dst), Type::fixnum_int(0, 10));
     }
 
     #[test]

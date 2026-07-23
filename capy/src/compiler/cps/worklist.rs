@@ -1,4 +1,4 @@
-//! Foster-style worklist queues for graphical CPS optimization.
+//! Worklist queues for graphical CPS optimization.
 
 use std::collections::{BTreeSet, VecDeque};
 
@@ -14,8 +14,7 @@ macro_rules! verbose_log {
 
 /// FIFO worklist queue.
 ///
-/// This mirrors Foster's `WorklistQ`: add new items to the right and take
-/// pending items from the left.
+/// New items are added to the right; pending items are taken from the left.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorklistQueue<T> {
     items: VecDeque<T>,
@@ -79,10 +78,6 @@ impl<T> FromIterator<T> for WorklistQueue<T> {
 }
 
 /// Mutable graph optimizer worklist state.
-///
-/// This intentionally tracks only graph-level identities. Pass-specific maps
-/// for known values or aliases should live beside this queue in the pass that
-/// owns those facts.
 #[derive(Clone, Debug, Default)]
 pub struct GraphWorklist {
     pending_subterms: WorklistQueue<Subterm>,

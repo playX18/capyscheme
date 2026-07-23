@@ -11,13 +11,16 @@ use super::effects::{EffectFlags, terminator_effects};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BlockId(pub usize);
 
+/// Mutable local home. May be written multiple times.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ValueId(pub u32);
+pub struct UVar(pub u32);
+
+pub use UVar as ValueId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Operand<'gc> {
     Constant(Value<'gc>),
-    Local(ValueId),
+    Local(UVar),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,15 +54,15 @@ pub struct Program<'gc> {
 pub struct Procedure<'gc> {
     pub code: CodeId,
     pub kind: ProcedureKind,
-    pub binding: ValueId,
+    pub binding: UVar,
     pub name: Value<'gc>,
     pub source: Value<'gc>,
     pub meta: Value<'gc>,
-    pub return_cont: Option<ValueId>,
-    pub params: Vec<ValueId>,
-    pub variadic: Option<ValueId>,
-    pub free_vars: Vec<ValueId>,
-    pub sources: HashMap<ValueId, LVarRef<'gc>>,
+    pub return_cont: Option<UVar>,
+    pub params: Vec<UVar>,
+    pub variadic: Option<UVar>,
+    pub free_vars: Vec<UVar>,
+    pub sources: HashMap<UVar, LVarRef<'gc>>,
     pub entry: BlockId,
     pub blocks: Vec<Block<'gc>>,
 }
@@ -67,19 +70,14 @@ pub struct Procedure<'gc> {
 #[derive(Debug, Clone)]
 pub struct Block<'gc> {
     pub id: BlockId,
-    pub params: Vec<ValueId>,
-    pub variadic: Option<ValueId>,
     pub instructions: Vec<Instruction<'gc>>,
     pub terminator: Terminator<'gc>,
     pub source: Value<'gc>,
 }
 
 impl<'gc> Block<'gc> {
-    /// Whether `id` appears as an SSA use in this block's body or terminator.
-    ///
-    /// Used when deciding whether a variadic block parameter must be materialized
-    /// as a rest list on an incoming edge (as opposed to passing `'()`).
-    pub fn uses_local(&self, id: ValueId) -> bool {
+    /// Whether `id` appears as a use in this block's body or terminator.
+    pub fn uses_local(&self, id: UVar) -> bool {
         let is_use = |atom: &Operand<'gc>| matches!(atom, Operand::Local(v) if *v == id);
         self.instructions
             .iter()
@@ -97,18 +95,23 @@ pub enum RestPredicate {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction<'gc> {
+    /// Copy `src` into mutable home `dst`.
+    Assign {
+        dst: UVar,
+        src: Operand<'gc>,
+    },
     Const {
-        dst: ValueId,
+        dst: UVar,
         value: Value<'gc>,
     },
     MakeClosure {
-        dst: ValueId,
+        dst: UVar,
         code: CodeId,
         kind: ClosureKind,
         free_count: usize,
     },
     ClosureRef {
-        dst: ValueId,
+        dst: UVar,
         closure: Operand<'gc>,
         index: usize,
     },
@@ -118,42 +121,42 @@ pub enum Instruction<'gc> {
         value: Operand<'gc>,
     },
     CacheRef {
-        dst: ValueId,
+        dst: UVar,
         cache_key: Operand<'gc>,
         source: Value<'gc>,
     },
     CacheSet {
-        dst: ValueId,
+        dst: UVar,
         cache_key: Operand<'gc>,
         value: Operand<'gc>,
         source: Value<'gc>,
     },
     PrimCall {
-        dst: ValueId,
+        dst: UVar,
         prim: Primitive,
         args: Vec<Operand<'gc>>,
         source: Value<'gc>,
     },
     RestToList {
-        dst: ValueId,
-        rest: ValueId,
+        dst: UVar,
+        rest: UVar,
         source: Value<'gc>,
     },
     RestRef {
-        dst: ValueId,
-        rest: ValueId,
+        dst: UVar,
+        rest: UVar,
         index: usize,
         source: Value<'gc>,
     },
     RestLength {
-        dst: ValueId,
-        rest: ValueId,
+        dst: UVar,
+        rest: UVar,
         skip: usize,
         source: Value<'gc>,
     },
     RestPredicate {
-        dst: ValueId,
-        rest: ValueId,
+        dst: UVar,
+        rest: UVar,
         predicate: RestPredicate,
         skip: usize,
         source: Value<'gc>,
@@ -164,7 +167,10 @@ pub enum Instruction<'gc> {
 pub enum BranchTarget<'gc> {
     Local {
         block: BlockId,
-        args: Vec<Operand<'gc>>,
+        /// Instructions to run on this edge before entering `block` (contified
+        /// parallel assigns / rest cons). Kept on the edge instead of a helper
+        /// block so SBBV and Cranelift see one fewer jump per continue.
+        edge_assigns: Vec<Instruction<'gc>>,
     },
     Reified {
         continuation: Operand<'gc>,
@@ -214,10 +220,21 @@ pub enum Terminator<'gc> {
     },
     Jump {
         target: BlockId,
-        args: Vec<Operand<'gc>>,
     },
     Branch {
         test: Operand<'gc>,
+        consequent: BranchTarget<'gc>,
+        alternative: BranchTarget<'gc>,
+        hints: [BranchHint; 2],
+    },
+    /// Predicate/compare fused with the branch that tests its result.
+    ///
+    /// Formed by SBBV specialize from a single-use comparison or type-test
+    /// `PrimCall` + `Branch`, so Cranelift can emit `icmp`/`fcmp`/predicate
+    /// checks + `brif` without materializing a Scheme bool.
+    BranchPrim {
+        prim: Primitive,
+        args: Vec<Operand<'gc>>,
         consequent: BranchTarget<'gc>,
         alternative: BranchTarget<'gc>,
         hints: [BranchHint; 2],
@@ -231,9 +248,10 @@ pub enum Terminator<'gc> {
 }
 
 impl<'gc> Instruction<'gc> {
-    pub fn def(&self) -> Option<ValueId> {
+    pub fn def(&self) -> Option<UVar> {
         match self {
-            Self::Const { dst, .. }
+            Self::Assign { dst, .. }
+            | Self::Const { dst, .. }
             | Self::MakeClosure { dst, .. }
             | Self::ClosureRef { dst, .. }
             | Self::CacheRef { dst, .. }
@@ -247,24 +265,16 @@ impl<'gc> Instruction<'gc> {
         }
     }
 
-    pub fn defs(&self) -> SmallVec<[ValueId; 2]> {
-        match self {
-            Self::Const { dst, .. }
-            | Self::MakeClosure { dst, .. }
-            | Self::ClosureRef { dst, .. }
-            | Self::CacheRef { dst, .. }
-            | Self::CacheSet { dst, .. }
-            | Self::PrimCall { dst, .. }
-            | Self::RestToList { dst, .. }
-            | Self::RestRef { dst, .. }
-            | Self::RestLength { dst, .. }
-            | Self::RestPredicate { dst, .. } => smallvec![*dst],
-            Self::ClosureSet { .. } => SmallVec::new(),
+    pub fn defs(&self) -> SmallVec<[UVar; 2]> {
+        match self.def() {
+            Some(dst) => smallvec![dst],
+            None => SmallVec::new(),
         }
     }
 
     pub fn uses(&self) -> Vec<Operand<'gc>> {
         match self {
+            Self::Assign { src, .. } => vec![*src],
             Self::Const { .. } => vec![],
             Self::MakeClosure { .. } => vec![],
             Self::ClosureRef { closure, .. } => vec![*closure],
@@ -292,7 +302,13 @@ impl<'gc> BranchTarget<'gc> {
 
     pub fn uses(&self) -> Vec<Operand<'gc>> {
         match self {
-            Self::Local { args, .. } => args.clone(),
+            Self::Local { edge_assigns, .. } => {
+                let mut uses = Vec::new();
+                for instruction in edge_assigns {
+                    uses.extend(instruction.uses());
+                }
+                uses
+            }
             Self::Reified { continuation, args } => {
                 let mut uses = Vec::with_capacity(args.len() + 1);
                 uses.push(*continuation);
@@ -328,7 +344,7 @@ impl<'gc> Terminator<'gc> {
                 uses
             }
             Self::Raise { args, .. } => args.clone(),
-            Self::Jump { args, .. } => args.clone(),
+            Self::Jump { .. } => vec![],
             Self::Branch {
                 test,
                 consequent,
@@ -338,6 +354,19 @@ impl<'gc> Terminator<'gc> {
                 let mut uses =
                     Vec::with_capacity(1 + consequent.uses().len() + alternative.uses().len());
                 uses.push(*test);
+                uses.extend(consequent.uses());
+                uses.extend(alternative.uses());
+                uses
+            }
+            Self::BranchPrim {
+                args,
+                consequent,
+                alternative,
+                ..
+            } => {
+                let mut uses =
+                    Vec::with_capacity(args.len() + consequent.uses().len() + alternative.uses().len());
+                uses.extend(args.iter().copied());
                 uses.extend(consequent.uses());
                 uses.extend(alternative.uses());
                 uses
@@ -371,8 +400,13 @@ impl<'gc> Terminator<'gc> {
         }
         match self {
             Self::Call { .. } | Self::TailCall { .. } | Self::Raise { .. } => vec![],
-            Self::Jump { target, .. } => vec![*target],
+            Self::Jump { target } => vec![*target],
             Self::Branch {
+                consequent,
+                alternative,
+                ..
+            }
+            | Self::BranchPrim {
                 consequent,
                 alternative,
                 ..
@@ -394,15 +428,11 @@ mod tests {
     use super::*;
 
     fn empty_block(
-        params: Vec<ValueId>,
-        variadic: Option<ValueId>,
         instructions: Vec<Instruction<'static>>,
         terminator: Terminator<'static>,
     ) -> Block<'static> {
         Block {
             id: BlockId(0),
-            params,
-            variadic,
             instructions,
             terminator,
             source: Value::new(false),
@@ -411,12 +441,9 @@ mod tests {
 
     #[test]
     fn uses_local_detects_closure_set_of_variadic() {
-        // gf42-shaped block: rest-only param captured into a closure free slot.
-        let rest = ValueId(1);
-        let closure = ValueId(2);
+        let rest = UVar(1);
+        let closure = UVar(2);
         let block = empty_block(
-            vec![rest],
-            Some(rest),
             vec![
                 Instruction::MakeClosure {
                     dst: closure,
@@ -438,31 +465,31 @@ mod tests {
         );
         assert!(block.uses_local(rest));
         assert!(block.uses_local(closure));
-        assert!(!block.uses_local(ValueId(99)));
+        assert!(!block.uses_local(UVar(99)));
     }
 
     #[test]
-    fn uses_local_detects_variadic_passed_on_jump() {
-        let rest = ValueId(1);
+    fn uses_local_detects_assign_of_variadic() {
+        let rest = UVar(1);
+        let dst = UVar(2);
         let block = empty_block(
-            vec![rest],
-            Some(rest),
-            vec![],
+            vec![Instruction::Assign {
+                dst,
+                src: Operand::Local(rest),
+            }],
             Terminator::Jump {
                 target: BlockId(1),
-                args: vec![Operand::Local(rest)],
             },
         );
         assert!(block.uses_local(rest));
+        assert!(!block.uses_local(dst));
     }
 
     #[test]
     fn uses_local_false_when_variadic_is_dead() {
-        let fixed = ValueId(1);
-        let rest = ValueId(2);
+        let fixed = UVar(1);
+        let rest = UVar(2);
         let block = empty_block(
-            vec![fixed, rest],
-            Some(rest),
             vec![],
             Terminator::TailCall {
                 callee: Operand::Local(fixed),
@@ -476,7 +503,7 @@ mod tests {
 
     #[test]
     fn rest_to_list_uses_includes_rest() {
-        let rest = ValueId(3);
+        let rest = UVar(3);
         let instruction = Instruction::RestToList {
             dst: rest,
             rest,
@@ -487,10 +514,8 @@ mod tests {
 
     #[test]
     fn uses_local_detects_rest_to_list() {
-        let rest = ValueId(4);
+        let rest = UVar(4);
         let block = empty_block(
-            vec![rest],
-            Some(rest),
             vec![Instruction::RestToList {
                 dst: rest,
                 rest,
@@ -498,7 +523,6 @@ mod tests {
             }],
             Terminator::Jump {
                 target: BlockId(1),
-                args: vec![],
             },
         );
         assert!(block.uses_local(rest));

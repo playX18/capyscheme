@@ -463,9 +463,6 @@ impl HeuristicState {
 
         self.active_cycle = None;
         let cycle_time_seconds = cycle_time.as_secs_f64();
-        // Successful cycles feed both the average and the trend predictor used
-        // by adaptive mode.  The timestamp is the cycle start, matching the
-        // question "how long would a cycle starting at future time T take?".
         self.gc_cycle_time_history.add(cycle_time_seconds);
         self.gc_cycle_time_predictor.add(
             elapsed_seconds(self.time_origin, cycle_started_at),

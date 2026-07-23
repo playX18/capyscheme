@@ -7,7 +7,7 @@ use std::{
 use cranelift_entity::{EntitySet, SecondaryMap};
 
 use crate::{
-    compiler::ssa::Program,
+    compiler::cfg::Program,
     runtime::{Context, value::Value},
     utils::pass_profile::ProfileScope,
 };
@@ -163,7 +163,7 @@ pub fn optimize_graph_func_to_ssa<'gc>(
     drop(graph_reify_profile);
 
     let mut ssa_profile = ProfileScope::new("compiler.lower.gcps.ssa");
-    let ssa = crate::compiler::ssa::lower::lower_graph(&program.graph, &graph_reify);
+    let ssa = crate::compiler::cfg::lower::lower_graph(&program.graph, &graph_reify);
     if ssa_profile.is_enabled() {
         ssa_profile.field("procedures", ssa.procedures.len());
     }

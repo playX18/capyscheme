@@ -1,4 +1,4 @@
-//! Compatibility facade for Cranelift code generation helpers.
+//! Cranelift code generation helpers.
 
 pub use crate::compiler::{
     cranelift::{

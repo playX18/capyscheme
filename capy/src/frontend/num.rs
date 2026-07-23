@@ -464,7 +464,6 @@ impl<'a> NumberParser<'a> {
         // Parse prefix (exactness and radix)
         let prefix = self.parse_prefix()?;
 
-        // Parse the main number part
         self.parse_number_with_prefix(prefix)
     }
 
@@ -571,7 +570,6 @@ impl<'a> NumberParser<'a> {
             return self.parse_decimal_number(prefix);
         }
 
-        // Parse as integer
         self.parse_integer_number(prefix)
     }
 
@@ -603,7 +601,6 @@ impl<'a> NumberParser<'a> {
         let remaining = &self.input[self.pos..];
         let radix = prefix.radix.base();
 
-        // Handle sign
         let (sign, digits) = if let Some(digits) = remaining.strip_prefix('+') {
             (1, digits)
         } else if let Some(digits) = remaining.strip_prefix('-') {
@@ -616,7 +613,6 @@ impl<'a> NumberParser<'a> {
             return Err(NumberParseError::EmptyNumber);
         }
 
-        // Validate digits for the given radix
         for ch in digits.chars() {
             if !self.is_valid_digit(ch, radix) {
                 return Err(NumberParseError::InvalidDigit(ch, radix));
@@ -663,7 +659,6 @@ impl<'a> NumberParser<'a> {
         let numerator_str = parts[0];
         let denominator_str = parts[1];
 
-        // Parse numerator
         let (num_sign, num_digits) = if let Some(digits) = numerator_str.strip_prefix('+') {
             (1, digits)
         } else if let Some(digits) = numerator_str.strip_prefix('-') {
@@ -672,14 +667,12 @@ impl<'a> NumberParser<'a> {
             (1, numerator_str)
         };
 
-        // Validate numerator digits
         for ch in num_digits.chars() {
             if !self.is_valid_digit(ch, radix) {
                 return Err(NumberParseError::InvalidDigit(ch, radix));
             }
         }
 
-        // Validate denominator digits
         for ch in denominator_str.chars() {
             if !self.is_valid_digit(ch, radix) {
                 return Err(NumberParseError::InvalidDigit(ch, radix));
@@ -727,7 +720,6 @@ impl<'a> NumberParser<'a> {
             ));
         }
 
-        // Parse as floating point number
         let float_val = remaining
             .parse::<f64>()
             .map_err(|_| NumberParseError::InvalidFormat(remaining.to_string()))?;
@@ -824,12 +816,10 @@ impl<'a> NumberParser<'a> {
                 (real_is_exact, imag_is_exact)
             };
 
-            // Parse real part
             let real_val = real_part.parse::<f64>().map_err(|_| {
                 NumberParseError::InvalidComplex(format!("Invalid real part: {}", real_part))
             })?;
 
-            // Handle different combinations of exactness
             match (real_is_exact, imag_is_exact) {
                 (true, true) => {
                     // Both exact - create ExactComplex
@@ -929,7 +919,6 @@ impl<'a> NumberParser<'a> {
                 });
             }
 
-            // Parse the imaginary part
             let imag_val = without_i
                 .parse::<f64>()
                 .map_err(|_| NumberParseError::InvalidComplex(remaining.to_string()))?;

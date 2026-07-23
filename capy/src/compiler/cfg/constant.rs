@@ -33,9 +33,6 @@ impl ConstantHoister {
             max_value = max_value.max(value.0);
         }
         for block in &procedure.blocks {
-            for value in block.params.iter().chain(block.variadic.iter()).copied() {
-                max_value = max_value.max(value.0);
-            }
             for instruction in &block.instructions {
                 for def in instruction.defs() {
                     max_value = max_value.max(def.0);
@@ -53,8 +50,8 @@ impl ConstantHoister {
         }
     }
 
-    fn fresh_value(&mut self) -> ValueId {
-        let value = ValueId(self.next_value);
+    fn fresh_value(&mut self) -> UVar {
+        let value = UVar(self.next_value);
         self.next_value += 1;
         value
     }
@@ -91,6 +88,10 @@ impl ConstantHoister {
         instructions: &mut Vec<Instruction<'gc>>,
     ) -> Instruction<'gc> {
         match instruction {
+            Instruction::Assign { dst, src } => Instruction::Assign {
+                dst,
+                src: self.atom(src, instructions),
+            },
             Instruction::Const { .. }
             | Instruction::MakeClosure { .. }
             | Instruction::CacheRef { .. }
@@ -137,10 +138,7 @@ impl ConstantHoister {
         instructions: &mut Vec<Instruction<'gc>>,
     ) -> BranchTarget<'gc> {
         match target {
-            BranchTarget::Local { block, args } => BranchTarget::Local {
-                block,
-                args: self.atoms(args, instructions),
-            },
+            BranchTarget::Local { block, edge_assigns } => BranchTarget::Local { block, edge_assigns },
             BranchTarget::Reified { continuation, args } => BranchTarget::Reified {
                 continuation: self.atom(continuation, instructions),
                 args: self.atoms(args, instructions),
@@ -179,10 +177,7 @@ impl ConstantHoister {
                 args: self.atoms(args, instructions),
                 source,
             },
-            Terminator::Jump { target, args } => Terminator::Jump {
-                target,
-                args: self.atoms(args, instructions),
-            },
+            Terminator::Jump { target } => Terminator::Jump { target },
             Terminator::Branch {
                 test,
                 consequent,
@@ -190,6 +185,19 @@ impl ConstantHoister {
                 hints,
             } => Terminator::Branch {
                 test: self.atom(test, instructions),
+                consequent: self.branch_target(consequent, instructions),
+                alternative: self.branch_target(alternative, instructions),
+                hints,
+            },
+            Terminator::BranchPrim {
+                prim,
+                args,
+                consequent,
+                alternative,
+                hints,
+            } => Terminator::BranchPrim {
+                prim,
+                args: self.atoms(args, instructions),
                 consequent: self.branch_target(consequent, instructions),
                 alternative: self.branch_target(alternative, instructions),
                 hints,
@@ -215,7 +223,7 @@ impl ConstantHoister {
     }
 }
 
-pub(super) fn local_values<'gc>(uses: Vec<Operand<'gc>>) -> impl Iterator<Item = ValueId> {
+pub(super) fn local_values<'gc>(uses: Vec<Operand<'gc>>) -> impl Iterator<Item = UVar> {
     uses.into_iter().filter_map(|atom| match atom {
         Operand::Local(value) => Some(value),
         Operand::Constant(_) => None,

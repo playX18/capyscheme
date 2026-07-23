@@ -331,7 +331,6 @@ pub fn lower_numeric_equal<'gc_, 'a, 'f>(
         let _ = ssa.atom(args[0]);
         return PrimValue::Comparison(ssa.builder.ins().iconst(types::I8, 1));
     } else if args.len() == 2 {
-        // handle 2 args without introducing more blocks
         let lhs = ssa.atom(args[0]);
         let rhs = ssa.atom(args[1]);
         let eq = emit_icmp(ssa, lhs, rhs, IntCC::Equal);
@@ -360,7 +359,6 @@ pub fn lower_numeric_lt<'gc_, 'a, 'f>(
         let _ = ssa.atom(args[0]);
         return PrimValue::Comparison(ssa.builder.ins().iconst(types::I8, 1));
     } else if args.len() == 2 {
-        // handle 2 args without introducing more blocks
         let lhs = ssa.atom(args[0]);
         let rhs = ssa.atom(args[1]);
         let lt = emit_icmp(ssa, lhs, rhs, IntCC::SignedLessThan);
@@ -389,7 +387,6 @@ pub fn lower_numeric_gt<'gc_, 'a, 'f>(
         let _ = ssa.atom(args[0]);
         return PrimValue::Comparison(ssa.builder.ins().iconst(types::I8, 1));
     } else if args.len() == 2 {
-        // handle 2 args without introducing more blocks
         let lhs = ssa.atom(args[0]);
         let rhs = ssa.atom(args[1]);
         let gt = emit_icmp(ssa, lhs, rhs, IntCC::SignedGreaterThan);
@@ -419,7 +416,6 @@ pub fn lower_numeric_gte<'gc_, 'a, 'f>(
         let _ = ssa.atom(args[0]);
         return PrimValue::Comparison(ssa.builder.ins().iconst(types::I8, 1));
     } else if args.len() == 2 {
-        // handle 2 args without introducing more blocks
         let lhs = ssa.atom(args[0]);
         let rhs = ssa.atom(args[1]);
         let gte = emit_icmp(ssa, lhs, rhs, IntCC::SignedGreaterThanOrEqual);
@@ -450,7 +446,6 @@ pub fn lower_numeric_lte<'gc_, 'a, 'f>(
         let _ = ssa.atom(args[0]);
         return PrimValue::Comparison(ssa.builder.ins().iconst(types::I8, 1));
     } else if args.len() == 2 {
-        // handle 2 args without introducing more blocks
         let lhs = ssa.atom(args[0]);
         let rhs = ssa.atom(args[1]);
         let ctx = ssa.ctx;

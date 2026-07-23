@@ -1,8 +1,4 @@
-//! Global SSA effect analysis.
-//!
-//! The representation combines B3-style structural effects with Guile-style
-//! dependency/causation sets.  The vocabulary is global; facts are computed
-//! per instruction when a consumer requests them.
+//! Global CFG effect analysis.
 
 use super::{BlockId, Instruction, Procedure, Terminator, ValueId};
 use crate::compiler::cranelift::primitive::Primitive;
@@ -76,7 +72,7 @@ impl EffectFlags {
     }
 }
 
-/// Guile-style effects: the low-level memory ranges above describe aliasing;
+/// Semantic effects: the low-level memory ranges above describe aliasing;
 /// these bits describe semantic dependencies and observable causes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
@@ -301,7 +297,7 @@ pub struct ProcedureEffects {
     pub blocks: HashMap<BlockId, BlockEffects>,
 }
 
-/// Runs the on-demand pass and returns one effect fact per SSA instruction and
+/// Runs the on-demand pass and returns one effect fact per CFG instruction and
 /// terminator.  No procedure-wide summary is inferred here: callers that need
 /// interprocedural information can build it explicitly from these facts.
 pub fn analyze_procedure(procedure: &Procedure<'_>) -> ProcedureEffects {
@@ -364,7 +360,7 @@ pub fn eliminate_dead_effect_free_instructions(mut procedure: Procedure<'_>) -> 
 
 pub fn instruction_effects(instruction: &Instruction<'_>) -> Effects {
     match instruction {
-        Instruction::Const { .. } => Effects::pure(),
+        Instruction::Assign { .. } | Instruction::Const { .. } => Effects::pure(),
         Instruction::MakeClosure { .. } | Instruction::RestToList { .. } => Effects::allocate(),
         Instruction::ClosureRef { .. } | Instruction::CacheRef { .. } => {
             Effects::read(MemoryRegion::Heap, SemanticEffects::UNKNOWN)
@@ -385,9 +381,10 @@ pub fn terminator_effects(terminator: &Terminator<'_>) -> Effects {
     match terminator {
         Terminator::Raise { .. } => Effects::raise(),
         Terminator::Call { .. } | Terminator::TailCall { .. } => Effects::for_call(),
-        Terminator::Jump { .. } | Terminator::Branch { .. } | Terminator::Switch { .. } => {
-            Effects::pure()
-        }
+        Terminator::Jump { .. }
+        | Terminator::Branch { .. }
+        | Terminator::BranchPrim { .. }
+        | Terminator::Switch { .. } => Effects::pure(),
     }
 }
 

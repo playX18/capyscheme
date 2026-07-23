@@ -50,7 +50,6 @@ impl TaskThread {
                 guard.store(false, Ordering::Relaxed); // Reset the flag
                 drop(guard);
 
-                // Process all available tasks
                 let mut shutdown_requested = false;
                 loop {
                     match receiver.recv_timeout(Duration::from_millis(100)) {

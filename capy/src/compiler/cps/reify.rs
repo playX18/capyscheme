@@ -33,7 +33,6 @@ pub struct GraphReifyInfo {
 
 /// Collect graph CPS closures, free variables, and heap-allocated continuations.
 ///
-/// This mirrors tree CPS reification, but keeps all facts in graph entity form.
 /// Function free variables are recorded for every live function except that the
 /// entry function is forced to have no free variables. Continuations are marked
 /// reified when they are used as values, captured by a function closure, or

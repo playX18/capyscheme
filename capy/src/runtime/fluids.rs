@@ -109,7 +109,6 @@ impl<'gc> Cache<'gc> {
             let index = (slot + i) & CACHE_MASK;
             let entry = self.entries[index].get();
 
-            // Update existing key
             if entry.key == key {
                 Gc::write(mc, self)[index].unlock().set(CacheEntry {
                     key,
@@ -138,7 +137,6 @@ impl<'gc> Cache<'gc> {
             let index = (slot + i) & CACHE_MASK;
             let entry = self.entries[index].get();
 
-            // Update existing key
             if entry.key == key {
                 Gc::write(mc, self)[index].unlock().set(CacheEntry {
                     key,
@@ -501,7 +499,6 @@ macro_rules! fluid {
             #[unsafe(export_name = concat!("CAPY_TLS_", stringify!($name)))]
             $v static [<$name: upper>]: ::std::sync::OnceLock<
                 $crate::rsgc::global::Global<$crate::rsgc::Rootable!($crate::runtime::fluids::FluidRef<'_>)>> = ::std::sync::OnceLock::new();
-
 
             #[unsafe(export_name = concat!("capy_tls_", stringify!($name)))]
             $v fn [<$name: snake>]<'gc>(ctx: $crate::runtime::Context<'gc>) -> $crate::runtime::fluids::FluidRef<'gc> {

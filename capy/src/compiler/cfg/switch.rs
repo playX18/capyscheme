@@ -146,32 +146,37 @@ fn switch_chain_next_block<'gc>(
     predecessors: &HashMap<BlockId, usize>,
     next: &BranchTarget<'gc>,
 ) -> Option<(BlockId, Vec<BlockId>)> {
-    let BranchTarget::Local { block, args } = next else {
+    let BranchTarget::Local {
+        block,
+        edge_assigns,
+    } = next
+    else {
         return None;
     };
-    if !args.is_empty() || predecessors.get(block).copied().unwrap_or(0) != 1 {
+    if !edge_assigns.is_empty() {
+        return None;
+    }
+    if predecessors.get(block).copied().unwrap_or(0) != 1 {
         return None;
     }
 
     let mut block = *block;
     let mut skipped_blocks = Vec::new();
+    let mut visited = HashSet::new();
     loop {
+        if !visited.insert(block) {
+            // Empty jump cycle — stop rather than spinning forever.
+            return None;
+        }
         let current = blocks[&block];
         if switch_node(blocks, predecessors, current, false).is_some() {
             return Some((block, skipped_blocks));
         }
 
-        let Terminator::Jump {
-            target,
-            args: jump_args,
-        } = &current.terminator
-        else {
+        let Terminator::Jump { target } = &current.terminator else {
             return Some((block, skipped_blocks));
         };
-        if !current.params.is_empty()
-            || current.variadic.is_some()
-            || !current.instructions.is_empty()
-            || !jump_args.is_empty()
+        if !current.instructions.is_empty()
             || predecessors.get(target).copied().unwrap_or(0) != 1
         {
             return Some((block, skipped_blocks));
@@ -212,7 +217,7 @@ fn switch_jump_branch_node<'gc>(
     block: &Block<'gc>,
     allow_prefix: bool,
 ) -> Option<SwitchNode<'gc>> {
-    let Terminator::Jump { target, args } = &block.terminator else {
+    let Terminator::Jump { target } = &block.terminator else {
         return None;
     };
     if predecessors.get(target).copied().unwrap_or(0) != 1 {
@@ -232,29 +237,11 @@ fn switch_jump_branch_node<'gc>(
     else {
         return None;
     };
-    let test = branch_test_jump_arg(branch, *branch_test, args)?;
 
-    let mut node = switch_test_node(block, test, consequent, alternative, allow_prefix)?;
+    // Mutable uvars: the test home is shared; no edge-arg remapping.
+    let mut node = switch_test_node(block, *branch_test, consequent, alternative, allow_prefix)?;
     node.removed_blocks.push(*target);
     Some(node)
-}
-
-fn branch_test_jump_arg<'gc>(
-    branch: &Block<'gc>,
-    branch_test: ValueId,
-    args: &[Operand<'gc>],
-) -> Option<ValueId> {
-    let fixed_param_count = branch
-        .params
-        .len()
-        .saturating_sub(usize::from(branch.variadic.is_some()));
-    let index = branch.params[..fixed_param_count]
-        .iter()
-        .position(|param| *param == branch_test)?;
-    let Operand::Local(test) = args.get(index).copied()? else {
-        return None;
-    };
-    Some(test)
 }
 
 fn switch_test_node<'gc>(
@@ -608,7 +595,7 @@ fn branch_target_mentions_removed<'gc>(
     target: &BranchTarget<'gc>,
     removed: &HashSet<BlockId>,
 ) -> bool {
-    matches!(target, BranchTarget::Local { block, .. } if removed.contains(block))
+    matches!(target, BranchTarget::Local { block, edge_assigns } if removed.contains(block))
 }
 
 fn switch_removed_defs<'gc>(
@@ -621,8 +608,6 @@ fn switch_removed_defs<'gc>(
 
     for block in chain_blocks.iter().copied().skip(1) {
         if let Some(block) = blocks.get(&block) {
-            defs.extend(block.params.iter().copied());
-            defs.extend(block.variadic);
             defs.extend(block.instructions.iter().flat_map(Instruction::defs));
         }
     }

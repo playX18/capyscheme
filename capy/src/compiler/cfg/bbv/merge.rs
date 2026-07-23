@@ -11,9 +11,8 @@ use std::collections::HashSet;
 ///
 /// Two versions are "most similar" when they agree on the most live-ins; those
 /// are the cheapest to merge because the join loses the least precision. The
-/// paper's heuristic compares types, not interval endpoints, so changing an
-/// integer range within one runtime kind does not make a loop look
-/// polymorphic.
+/// heuristic compares types, not interval endpoints, so changing an integer
+/// range within one runtime kind does not make a loop look polymorphic.
 fn similarity(a: &TypeContext, b: &TypeContext) -> usize {
     let ids: HashSet<_> = a.types.keys().chain(b.types.keys()).collect();
     ids.into_iter()
@@ -61,8 +60,8 @@ pub(super) fn select_version_to_merge_with(active: &[TypeContext], incoming_inde
 
 /// Joins two contexts by unioning the type of every live-in value.
 ///
-/// `widen` applies interval widening on the joined ranges to guarantee
-/// termination of the specialization fixpoint.
+/// Alias equivalence classes are not preserved across merges: the joined
+/// version starts with independent facts per uvar.
 pub(super) fn merge_contexts(ctx1: &TypeContext, ctx2: &TypeContext, widen: bool) -> TypeContext {
     let ids: HashSet<_> = ctx1.types.keys().chain(ctx2.types.keys()).collect();
     let mut merged = TypeContext::new();

@@ -4264,7 +4264,6 @@ fn i32_to_raidx(n: i32, radix: u8) -> String {
     // Use a character map for digits.
     const CHARS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
 
-    // Handle negative numbers.
     let is_negative = n < 0;
     // Work with the absolute value as a u32.
     // This is safe because i32::MIN.abs() fits in u32.

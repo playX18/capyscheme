@@ -1,34 +1,19 @@
 //! SBBV specialization driver (ECOOP'24 Algorithms 1–5, Sections 2–3).
 //!
-//! [`specialize_procedure`] follows the paper worklist: `reach` is Algorithm 2
-//! (`BlockNewVersion`) and always materializes a fresh version for an unseen
-//! context; Algorithm 1 merges only when a version is popped and the live count
-//! exceeds the limit. Widened merge results are reused for covered incoming
-//! contexts so interval loops still converge. Type predicates fold to constants,
-//! checked primitives collapse to unchecked variants when the context proves the
-//! guard, and branches whose outcome is statically known become unconditional
-//! jumps.
-//!
-//! # Maintaining SSA
-//!
-//! Every cloned block gets fresh [`ValueId`]s for the values it defines, with a
-//! per-walk `old -> new` substitution threaded along control-flow edges so that
-//! successor versions reference the correct incoming definitions. Procedure
-//! level values (parameters, free variables, `binding`, `return_cont`) are
-//! shared across all versions and are never renamed. Values that escape their
-//! defining block without being carried as block parameters are resolved
-//! through the incoming edge's substitution; at a merge point that fuses
-//! several incoming edges the substitution of the first materialized edge is
-//! used, which is exact when such escaping values are block parameters (as they
-//! are for the CPS-contified join points this IR produces).
+//! Versions share the original uvar homes and are keyed by typing contexts
+//! projected onto block live-ins (plus alias equivalence classes). Type
+//! predicates fold to constants, checked primitives collapse to unchecked
+//! variants when the context proves the guard, and branches whose outcome is
+//! statically known become unconditional jumps.
 
+use super::liveness::compute_live_in;
 use super::types::{
     Bound, CmpOp, Interval, Type, TypeContext, TypeKind, exclude_kind, union_types,
 };
 use super::{infer, merge};
 use crate::compiler::cranelift::primitive::Primitive;
-use crate::compiler::ssa::graph::backedges;
-use crate::compiler::ssa::{
+use crate::compiler::cfg::graph::backedges;
+use crate::compiler::cfg::{
     Block, BlockId, BranchTarget, Instruction, Operand, Procedure, RestPredicate, SwitchCase,
     SwitchCaseValue, SwitchKind, Terminator, ValueId,
 };
@@ -78,7 +63,6 @@ pub struct BlockAnnotation {
 
 struct VersionInfo {
     ctx: TypeContext,
-    subst: HashMap<ValueId, ValueId>,
 }
 
 #[derive(Clone)]
@@ -86,20 +70,18 @@ struct Task {
     orig: BlockId,
     new: BlockId,
     ctx: TypeContext,
-    subst: HashMap<ValueId, ValueId>,
 }
 
 struct Specializer<'gc> {
     orig_blocks: HashMap<BlockId, Block<'gc>>,
-    block_params: HashMap<BlockId, Vec<ValueId>>,
-    proc_values: HashSet<ValueId>,
+    live_in: HashMap<BlockId, HashSet<ValueId>>,
     entry_orig: BlockId,
     entry_new: Option<BlockId>,
 
     versions_of: HashMap<BlockId, Vec<BlockId>>,
     version_orig: HashMap<BlockId, BlockId>,
     all_versions: HashMap<BlockId, VersionInfo>,
-    version_by_key: HashMap<(BlockId, String), BlockId>,
+    version_by_key: HashMap<(BlockId, TypeContext), BlockId>,
     replacement: HashMap<BlockId, BlockId>,
     merge_targets: HashSet<BlockId>,
     edges: HashSet<(BlockId, BlockId)>,
@@ -112,12 +94,12 @@ struct Specializer<'gc> {
 
     out_blocks: HashMap<BlockId, Block<'gc>>,
     annotations: HashMap<BlockId, BlockAnnotation>,
+    record_annotations: bool,
     queue: VecDeque<Task>,
     pending: HashMap<BlockId, Task>,
     queued: HashSet<BlockId>,
 
     next_block: usize,
-    next_value: u32,
     version_limit: usize,
 }
 
@@ -126,7 +108,10 @@ pub(super) fn specialize_procedure<'gc>(
     procedure: Procedure<'gc>,
     version_limit: usize,
 ) -> (Procedure<'gc>, HashMap<BlockId, BlockAnnotation>) {
-    let mut specializer = Specializer::new(&procedure, version_limit.max(1));
+    let record_annotations = cfg!(test)
+        || crate::compiler::dump::sbbv_dump_stage_enabled("post-specialize")
+        || crate::compiler::dump::sbbv_dump_stage_enabled("all");
+    let mut specializer = Specializer::new(&procedure, version_limit.max(1), record_annotations);
     if let Some((entry, blocks, annotations)) = specializer.run() {
         (
             Procedure {
@@ -142,25 +127,16 @@ pub(super) fn specialize_procedure<'gc>(
 }
 
 impl<'gc> Specializer<'gc> {
-    fn new(procedure: &Procedure<'gc>, version_limit: usize) -> Self {
+    fn new(procedure: &Procedure<'gc>, version_limit: usize, record_annotations: bool) -> Self {
         let mut orig_blocks = HashMap::new();
-        let mut block_params = HashMap::new();
         for block in &procedure.blocks {
-            block_params.insert(block.id, block.params.clone());
             orig_blocks.insert(block.id, block.clone());
         }
-
-        let mut proc_values = HashSet::new();
-        proc_values.insert(procedure.binding);
-        proc_values.extend(procedure.return_cont);
-        proc_values.extend(procedure.params.iter().copied());
-        proc_values.extend(procedure.variadic);
-        proc_values.extend(procedure.free_vars.iter().copied());
+        let live_in = compute_live_in(procedure);
 
         Self {
             orig_blocks,
-            block_params,
-            proc_values,
+            live_in,
             entry_orig: procedure.entry,
             entry_new: None,
             versions_of: HashMap::new(),
@@ -178,11 +154,11 @@ impl<'gc> Specializer<'gc> {
             recurrent_versions: HashMap::new(),
             out_blocks: HashMap::new(),
             annotations: HashMap::new(),
+            record_annotations,
             queue: VecDeque::new(),
             pending: HashMap::new(),
             queued: HashSet::new(),
             next_block: max_block_id(procedure) + 1,
-            next_value: max_value_id(procedure) + 1,
             version_limit,
         }
     }
@@ -192,7 +168,7 @@ impl<'gc> Specializer<'gc> {
             return None;
         }
 
-        let entry_new = self.reach(self.entry_orig, TypeContext::new(), HashMap::new(), None);
+        let entry_new = self.reach(self.entry_orig, TypeContext::new(), None);
         self.entry_new = Some(entry_new);
         loop {
             self.ensure_version_limit_tasks();
@@ -241,21 +217,11 @@ impl<'gc> Specializer<'gc> {
         Some(self.finalize(entry_new))
     }
 
-    // --- fresh identifiers -------------------------------------------------
-
-    fn fresh_value(&mut self) -> ValueId {
-        let value = ValueId(self.next_value);
-        self.next_value += 1;
-        value
-    }
-
     fn fresh_block(&mut self) -> BlockId {
         let block = BlockId(self.next_block);
         self.next_block += 1;
         block
     }
-
-    // --- version management ------------------------------------------------
 
     fn resolve(&self, mut id: BlockId) -> BlockId {
         while let Some(next) = self.replacement.get(&id) {
@@ -264,27 +230,21 @@ impl<'gc> Specializer<'gc> {
         id
     }
 
-    fn ctx_key(&self, orig: BlockId, ctx: &TypeContext) -> String {
-        // `thread_live_ins` makes original block parameters the complete set
-        // of non-procedure values that can be used across an incoming edge.
-        // The key therefore projects the full context onto those parameters;
-        // the full context remains stored for merging and specialization.
-        let params = self.block_params.get(&orig).cloned().unwrap_or_default();
-        params
-            .iter()
-            .map(|param| ctx.get(*param).to_string())
-            .collect::<Vec<_>>()
-            .join(";")
+    fn ctx_key(&self, orig: BlockId, ctx: &TypeContext) -> TypeContext {
+        match self.live_in.get(&orig) {
+            Some(live) => ctx.canonical(live),
+            None => TypeContext::new(),
+        }
     }
 
     fn context_covers(&self, orig: BlockId, broader: &TypeContext, narrower: &TypeContext) -> bool {
-        self.block_params
+        self.live_in
             .get(&orig)
             .into_iter()
             .flatten()
-            .all(|param| {
-                let broader_type = broader.get(*param);
-                union_types(broader_type.clone(), narrower.get(*param), false) == broader_type
+            .all(|value| {
+                let broader_type = broader.get(*value);
+                union_types(broader_type.clone(), narrower.get(*value), false) == broader_type
             })
     }
 
@@ -347,15 +307,13 @@ impl<'gc> Specializer<'gc> {
         &mut self,
         orig: BlockId,
         ctx: TypeContext,
-        key: String,
-        subst: HashMap<ValueId, ValueId>,
+        key: TypeContext,
     ) -> BlockId {
         let new = self.fresh_block();
         self.all_versions.insert(
             new,
             VersionInfo {
                 ctx: ctx.clone(),
-                subst: subst.clone(),
             },
         );
         self.versions_of.entry(orig).or_default().push(new);
@@ -366,7 +324,6 @@ impl<'gc> Specializer<'gc> {
             orig,
             new,
             ctx,
-            subst,
         };
         self.pending.insert(new, task.clone());
         self.queued.insert(new);
@@ -374,18 +331,10 @@ impl<'gc> Specializer<'gc> {
         new
     }
 
-    /// Returns the specialized block for `orig` under `ctx` (Algorithm 2).
-    ///
-    /// Matches the paper's `BlockNewVersion`: an unseen context always creates a
-    /// fresh version and enqueues it. Version-limit maintenance happens later on
-    /// queue pop (Algorithm 1), not here. After a widened merge exists, reuse it
-    /// for any covered incoming context so interval loops converge without
-    /// recreating precise ranges that the merge already subsumes.
     fn reach(
         &mut self,
         orig: BlockId,
         ctx: TypeContext,
-        subst: HashMap<ValueId, ValueId>,
         source: Option<BlockId>,
     ) -> BlockId {
         let source_orig =
@@ -393,11 +342,11 @@ impl<'gc> Specializer<'gc> {
         let is_backedge =
             source_orig.is_some_and(|source| self.backedges.contains(&(source, orig)));
         if is_backedge {
-            return self.reach_loop_header(orig, ctx, subst, source);
+            return self.reach_loop_header(orig, ctx, source);
         }
         let is_loop_header = self.backedges.iter().any(|(_, header)| *header == orig);
         if is_loop_header && let Some(entry) = self.loop_entry_versions.get(&orig).copied() {
-            return self.reach_loop_entry(orig, entry, ctx, subst, source);
+            return self.reach_loop_entry(orig, entry, ctx, source);
         }
 
         let key = self.ctx_key(orig, &ctx);
@@ -418,7 +367,7 @@ impl<'gc> Specializer<'gc> {
                 if let Some(id) = covering {
                     id
                 } else {
-                    self.create_version(orig, ctx, key.clone(), subst)
+                    self.create_version(orig, ctx, key.clone())
                 }
             }
         };
@@ -440,7 +389,6 @@ impl<'gc> Specializer<'gc> {
         orig: BlockId,
         entry: BlockId,
         ctx: TypeContext,
-        subst: HashMap<ValueId, ValueId>,
         source: Option<BlockId>,
     ) -> BlockId {
         let entry = self.resolve(entry);
@@ -448,7 +396,7 @@ impl<'gc> Specializer<'gc> {
             entry
         } else {
             let widened = merge::merge_contexts(&self.all_versions[&entry].ctx, &ctx, true);
-            let new = self.replace_loop_version(orig, entry, widened, subst);
+            let new = self.replace_loop_version(orig, entry, widened);
             self.loop_entry_versions.insert(orig, new);
             new
         };
@@ -460,7 +408,6 @@ impl<'gc> Specializer<'gc> {
         &mut self,
         orig: BlockId,
         ctx: TypeContext,
-        subst: HashMap<ValueId, ValueId>,
         source: Option<BlockId>,
     ) -> BlockId {
         let recurrent = self
@@ -476,7 +423,7 @@ impl<'gc> Specializer<'gc> {
             if self.context_covers(orig, &self.all_versions[&recurrent].ctx, &ctx) {
                 recurrent
             } else {
-                self.widen_recurrent_version(orig, recurrent, ctx, subst)
+                self.widen_recurrent_version(orig, recurrent, ctx)
             }
         } else {
             let recurrent_ctx = self
@@ -488,7 +435,7 @@ impl<'gc> Specializer<'gc> {
                 .map(|entry| merge::merge_contexts(&self.all_versions[&entry].ctx, &ctx, true))
                 .unwrap_or(ctx);
             let key = self.ctx_key(orig, &recurrent_ctx);
-            let id = self.create_version(orig, recurrent_ctx, key, subst);
+            let id = self.create_version(orig, recurrent_ctx, key);
             self.merge_targets.insert(id);
             self.recurrent_versions.entry(orig).or_default().push(id);
             id
@@ -508,11 +455,11 @@ impl<'gc> Specializer<'gc> {
     }
 
     fn same_kind_shape(&self, orig: BlockId, first: &TypeContext, second: &TypeContext) -> bool {
-        self.block_params
+        self.live_in
             .get(&orig)
             .into_iter()
             .flatten()
-            .all(|param| first.get(*param).kinds == second.get(*param).kinds)
+            .all(|value| first.get(*value).kinds == second.get(*value).kinds)
     }
 
     fn widen_recurrent_version(
@@ -520,10 +467,9 @@ impl<'gc> Specializer<'gc> {
         orig: BlockId,
         old: BlockId,
         ctx: TypeContext,
-        subst: HashMap<ValueId, ValueId>,
     ) -> BlockId {
         let widened = merge::merge_contexts(&self.all_versions[&old].ctx, &ctx, true);
-        let new = self.replace_loop_version(orig, old, widened, subst);
+        let new = self.replace_loop_version(orig, old, widened);
         self.merge_targets.insert(new);
         if let Some(versions) = self.recurrent_versions.get_mut(&orig) {
             for version in versions {
@@ -540,10 +486,9 @@ impl<'gc> Specializer<'gc> {
         orig: BlockId,
         old: BlockId,
         ctx: TypeContext,
-        subst: HashMap<ValueId, ValueId>,
     ) -> BlockId {
         let key = self.ctx_key(orig, &ctx);
-        let new = self.create_version(orig, ctx, key, subst);
+        let new = self.create_version(orig, ctx, key);
         self.replacement.insert(old, new);
         self.reachability_dirty.set(true);
         self.pending.remove(&old);
@@ -600,17 +545,7 @@ impl<'gc> Specializer<'gc> {
         let merged_key = self.ctx_key(orig, &merged_ctx);
         let merged_id = match self.version_by_key.get(&(orig, merged_key.clone())) {
             Some(id) => self.resolve(*id),
-            None => {
-                // `thread_live_ins` normally makes this empty mapping
-                // unnecessary, but preserve a materialized edge substitution
-                // when the original IR still has a dominated free use.
-                let subst = if !self.all_versions[&first].subst.is_empty() {
-                    self.all_versions[&first].subst.clone()
-                } else {
-                    self.all_versions[&second].subst.clone()
-                };
-                self.create_version(orig, merged_ctx, merged_key, subst)
-            }
+            None => self.create_version(orig, merged_ctx, merged_key),
         };
         self.merge_targets.insert(merged_id);
 
@@ -645,7 +580,6 @@ impl<'gc> Specializer<'gc> {
             orig,
             new,
             ctx: version.ctx.clone(),
-            subst: version.subst.clone(),
         };
         self.pending.insert(new, task.clone());
         self.queued.insert(new);
@@ -682,7 +616,6 @@ impl<'gc> Specializer<'gc> {
                             orig: *orig,
                             new: *id,
                             ctx: version.ctx.clone(),
-                            subst: version.subst.clone(),
                         },
                     ))
                 })
@@ -716,12 +649,10 @@ impl<'gc> Specializer<'gc> {
             }
 
             let (id, ctx) = active[0].clone();
-            let subst = self.all_versions[&id].subst.clone();
             let task = Task {
                 orig,
                 new: id,
                 ctx,
-                subst,
             };
             self.pending.insert(id, task.clone());
             self.queued.insert(id);
@@ -729,66 +660,35 @@ impl<'gc> Specializer<'gc> {
         }
     }
 
-    // --- block walking -----------------------------------------------------
-
     fn walk_block(&mut self, task: Task) {
         let block = self.orig_blocks[&task.orig].clone();
         let mut ctx = task.ctx.clone();
-        let mut map = task.subst.clone();
         let mut pred_of: HashMap<ValueId, Predicate> = HashMap::new();
-
-        let mut new_params = Vec::with_capacity(block.params.len());
-        for param in &block.params {
-            let new_param = if self.proc_values.contains(param) {
-                *param
-            } else {
-                self.fresh_value()
-            };
-            map.insert(*param, new_param);
-            new_params.push(new_param);
-        }
-        // The rest formal is already the last entry in `params` (see
-        // `params_with_variadic`); reuse that rename so CLIF binding and
-        // body uses stay the same ValueId.
-        let new_variadic = block.variadic.map(|variadic| {
-            if let Some(&renamed) = map.get(&variadic) {
-                renamed
-            } else if self.proc_values.contains(&variadic) {
-                variadic
-            } else {
-                let renamed = self.fresh_value();
-                map.insert(variadic, renamed);
-                renamed
-            }
-        });
-
         let mut new_instructions = Vec::with_capacity(block.instructions.len());
+
         for instruction in &block.instructions {
-            self.walk_instruction(
-                instruction,
-                &mut ctx,
-                &mut map,
-                &mut pred_of,
-                &mut new_instructions,
-            );
+            self.walk_instruction(instruction, &mut ctx, &mut pred_of, &mut new_instructions);
         }
 
-        let terminator = self.walk_terminator(&block.terminator, &ctx, &map, &pred_of, task.new);
+        let terminator =
+            self.walk_terminator(&block.terminator, &ctx, &pred_of, task.new, &mut new_instructions);
         let successors = terminator.successors();
 
         self.annotations.insert(
             task.new,
             BlockAnnotation {
                 orig: task.orig,
-                ctx: format!("{}", task.ctx),
+                ctx: if self.record_annotations {
+                    format!("{}", task.ctx)
+                } else {
+                    String::new()
+                },
             },
         );
         self.out_blocks.insert(
             task.new,
             Block {
                 id: task.new,
-                params: new_params,
-                variadic: new_variadic,
                 instructions: new_instructions,
                 terminator,
                 source: block.source,
@@ -806,19 +706,24 @@ impl<'gc> Specializer<'gc> {
         &mut self,
         instruction: &Instruction<'gc>,
         ctx: &mut TypeContext,
-        map: &mut HashMap<ValueId, ValueId>,
         pred_of: &mut HashMap<ValueId, Predicate>,
         out: &mut Vec<Instruction<'gc>>,
     ) {
         match instruction {
+            Instruction::Assign { dst, src } => {
+                match src {
+                    Operand::Local(src_id) => ctx.assign_copy(*dst, *src_id),
+                    Operand::Constant(value) => {
+                        ctx.detach(*dst);
+                        ctx.set(*dst, infer::type_of_constant(*value));
+                    }
+                }
+                out.push(instruction.clone());
+            }
             Instruction::Const { dst, value } => {
-                let new_dst = self.fresh_value();
-                map.insert(*dst, new_dst);
+                ctx.detach(*dst);
                 ctx.set(*dst, infer::type_of_constant(*value));
-                out.push(Instruction::Const {
-                    dst: new_dst,
-                    value: *value,
-                });
+                out.push(instruction.clone());
             }
             Instruction::PrimCall {
                 dst,
@@ -828,11 +733,8 @@ impl<'gc> Specializer<'gc> {
             } => {
                 let arg_types: Vec<Type> = args.iter().map(|arg| atom_type(arg, ctx)).collect();
                 let spec = infer::specialize_prim(*prim, &arg_types);
-                let new_dst = self.fresh_value();
-                map.insert(*dst, new_dst);
+                ctx.detach(*dst);
 
-                // Vector lengths get a symbolic `[[v]]` interval so that
-                // narrowing `i < len` proves `i` in bounds of `v`.
                 if spec.prim == Primitive::VectorLengthUnchecked
                     || spec.prim == Primitive::StringLengthUnchecked
                     || spec.prim == Primitive::BytevectorLengthUnchecked
@@ -876,98 +778,41 @@ impl<'gc> Specializer<'gc> {
 
                 if let Some(value) = spec.fold {
                     out.push(Instruction::Const {
-                        dst: new_dst,
+                        dst: *dst,
                         value,
                     });
                 } else {
                     out.push(Instruction::PrimCall {
-                        dst: new_dst,
+                        dst: *dst,
                         prim: spec.prim,
-                        args: remap_atoms(map, args),
+                        args: args.clone(),
                         source: *source,
                     });
                 }
             }
-            Instruction::MakeClosure {
-                dst,
-                code,
-                kind,
-                free_count,
-            } => {
-                let new_dst = self.fresh_value();
-                map.insert(*dst, new_dst);
+            Instruction::MakeClosure { dst, .. } => {
+                ctx.detach(*dst);
                 ctx.set(*dst, Type::kind(TypeKind::Procedure));
-                out.push(Instruction::MakeClosure {
-                    dst: new_dst,
-                    code: *code,
-                    kind: *kind,
-                    free_count: *free_count,
-                });
+                out.push(instruction.clone());
             }
-            Instruction::ClosureRef {
-                dst,
-                closure,
-                index,
-            } => {
-                let closure = remap_atom(map, closure);
-                let new_dst = self.fresh_value();
-                map.insert(*dst, new_dst);
+            Instruction::ClosureRef { dst, .. } => {
+                ctx.detach(*dst);
                 ctx.set(*dst, Type::TOP);
-                out.push(Instruction::ClosureRef {
-                    dst: new_dst,
-                    closure,
-                    index: *index,
-                });
+                out.push(instruction.clone());
             }
-            Instruction::ClosureSet {
-                closure,
-                index,
-                value,
-            } => {
-                out.push(Instruction::ClosureSet {
-                    closure: remap_atom(map, closure),
-                    index: *index,
-                    value: remap_atom(map, value),
-                });
-            }
-            Instruction::CacheRef {
-                dst,
-                cache_key,
-                source,
-            } => {
-                let cache_key = remap_atom(map, cache_key);
-                let new_dst = self.fresh_value();
-                map.insert(*dst, new_dst);
+            Instruction::ClosureSet { .. } => out.push(instruction.clone()),
+            Instruction::CacheRef { dst, .. } => {
+                ctx.detach(*dst);
                 ctx.set(*dst, Type::TOP);
-                out.push(Instruction::CacheRef {
-                    dst: new_dst,
-                    cache_key,
-                    source: *source,
-                });
+                out.push(instruction.clone());
             }
-            Instruction::CacheSet {
-                dst,
-                cache_key,
-                value,
-                source,
-            } => {
-                let cache_key = remap_atom(map, cache_key);
-                let value = remap_atom(map, value);
-                let new_dst = self.fresh_value();
-                map.insert(*dst, new_dst);
+            Instruction::CacheSet { dst, .. } => {
+                ctx.detach(*dst);
                 ctx.set(*dst, Type::TOP);
-                out.push(Instruction::CacheSet {
-                    dst: new_dst,
-                    cache_key,
-                    value,
-                    source: *source,
-                });
+                out.push(instruction.clone());
             }
-            Instruction::RestToList { dst, rest, source } => {
-                let rest = remap_value(map, *rest);
-                let new_dst = self.fresh_value();
-                map.insert(*dst, new_dst);
-                // Materialized rest is always a proper list.
+            Instruction::RestToList { dst, .. } => {
+                ctx.detach(*dst);
                 ctx.set(
                     *dst,
                     Type {
@@ -977,66 +822,41 @@ impl<'gc> Specializer<'gc> {
                         singleton: None,
                     },
                 );
-                out.push(Instruction::RestToList {
-                    dst: new_dst,
-                    rest,
-                    source: *source,
-                });
+                out.push(instruction.clone());
             }
-            Instruction::RestRef {
-                dst,
-                rest,
-                index,
-                source,
-            } => {
-                let rest = remap_value(map, *rest);
-                let new_dst = self.fresh_value();
-                map.insert(*dst, new_dst);
+            Instruction::RestRef { dst, .. } => {
+                ctx.detach(*dst);
                 ctx.set(*dst, Type::TOP);
-                out.push(Instruction::RestRef {
-                    dst: new_dst,
-                    rest,
-                    index: *index,
-                    source: *source,
-                });
+                out.push(instruction.clone());
             }
             Instruction::RestLength {
                 dst,
                 rest,
                 skip,
-                source,
+                ..
             } => {
-                let rest = remap_value(map, *rest);
-                let new_dst = self.fresh_value();
-                map.insert(*dst, new_dst);
-                // Track that `rest` is a length-bearing value (like vector-length).
-                let mut rest_ty = ctx.get(rest);
+                ctx.detach(*dst);
+                let mut rest_ty = ctx.get(*rest);
                 if rest_ty.length_range.is_none() {
                     rest_ty.length_range = Some(Interval::TOP_LENGTH);
-                    ctx.set(rest, rest_ty);
+                    ctx.set(*rest, rest_ty);
                 }
-                if let Some(len) = length_singleton(&ctx.get(rest)) {
+                if let Some(len) = length_singleton(&ctx.get(*rest)) {
                     let n = (len - *skip as i64).max(0);
                     ctx.set(*dst, Type::constant(n));
                     out.push(Instruction::Const {
-                        dst: new_dst,
+                        dst: *dst,
                         value: Value::from_i32(n as i32),
                     });
                 } else {
-                    // Symbolic `[[rest]] - skip`, matching vector-length.
                     ctx.set(
                         *dst,
                         Type::fixnum(
-                            Bound::VecLenMinus(rest, *skip as i64),
-                            Bound::VecLenMinus(rest, *skip as i64),
+                            Bound::VecLenMinus(*rest, *skip as i64),
+                            Bound::VecLenMinus(*rest, *skip as i64),
                         ),
                     );
-                    out.push(Instruction::RestLength {
-                        dst: new_dst,
-                        rest,
-                        skip: *skip,
-                        source: *source,
-                    });
+                    out.push(instruction.clone());
                 }
             }
             Instruction::RestPredicate {
@@ -1044,12 +864,10 @@ impl<'gc> Specializer<'gc> {
                 rest,
                 predicate,
                 skip,
-                source,
+                ..
             } => {
-                let rest = remap_value(map, *rest);
-                let new_dst = self.fresh_value();
-                map.insert(*dst, new_dst);
-                match fold_rest_predicate(&ctx.get(rest), *predicate, *skip) {
+                ctx.detach(*dst);
+                match fold_rest_predicate(&ctx.get(*rest), *predicate, *skip) {
                     Some(value) => {
                         ctx.set(
                             *dst,
@@ -1065,19 +883,13 @@ impl<'gc> Specializer<'gc> {
                             },
                         );
                         out.push(Instruction::Const {
-                            dst: new_dst,
+                            dst: *dst,
                             value: Value::from_bool(value),
                         });
                     }
                     None => {
                         ctx.set(*dst, infer::boolean_type());
-                        out.push(Instruction::RestPredicate {
-                            dst: new_dst,
-                            rest,
-                            predicate: *predicate,
-                            skip: *skip,
-                            source: *source,
-                        });
+                        out.push(instruction.clone());
                     }
                 }
             }
@@ -1088,17 +900,16 @@ impl<'gc> Specializer<'gc> {
         &mut self,
         terminator: &Terminator<'gc>,
         ctx: &TypeContext,
-        map: &HashMap<ValueId, ValueId>,
         pred_of: &HashMap<ValueId, Predicate>,
         source: BlockId,
+        new_instructions: &mut Vec<Instruction<'gc>>,
     ) -> Terminator<'gc> {
         match terminator {
-            Terminator::Jump { target, args } => {
-                let successor_ctx = self.successor_ctx(*target, args, ctx);
-                let new_target = self.reach(*target, successor_ctx, map.clone(), Some(source));
+            Terminator::Jump { target } => {
+                let successor_ctx = self.successor_ctx(*target, ctx);
+                let new_target = self.reach(*target, successor_ctx, Some(source));
                 Terminator::Jump {
                     target: new_target,
-                    args: remap_atoms(map, args),
                 }
             }
             Terminator::Branch {
@@ -1110,25 +921,55 @@ impl<'gc> Specializer<'gc> {
                 let test_ty = atom_type(test, ctx);
                 match infer::truthiness(&test_ty) {
                     Some(true) => {
-                        if let Some(jump) = self.jump_if_local(consequent, ctx, map, source) {
+                        if let Some(jump) = self.jump_if_local(consequent, ctx, source) {
                             return jump;
                         }
                     }
                     Some(false) => {
-                        if let Some(jump) = self.jump_if_local(alternative, ctx, map, source) {
+                        if let Some(jump) = self.jump_if_local(alternative, ctx, source) {
                             return jump;
                         }
                     }
                     None => {}
                 }
 
-                let (true_ctx, false_ctx) = narrow_contexts(test, &test_ty, ctx, pred_of);
-                let consequent = self.walk_branch_target(consequent, &true_ctx, map, source);
-                let alternative = self.walk_branch_target(alternative, &false_ctx, map, source);
-                Terminator::Branch {
-                    test: remap_atom(map, test),
+                if let Some(fused) = try_fuse_branch_prim(
+                    test,
                     consequent,
                     alternative,
+                    *hints,
+                    ctx,
+                    pred_of,
+                    new_instructions,
+                    |target, arm_ctx| self.walk_branch_target(target, arm_ctx, source),
+                ) {
+                    return fused;
+                }
+
+                let (true_ctx, false_ctx) = narrow_contexts(test, &test_ty, ctx, pred_of);
+                let consequent = self.walk_branch_target(consequent, &true_ctx, source);
+                let alternative = self.walk_branch_target(alternative, &false_ctx, source);
+                Terminator::Branch {
+                    test: *test,
+                    consequent,
+                    alternative,
+                    hints: *hints,
+                }
+            }
+            Terminator::BranchPrim {
+                prim,
+                args,
+                consequent,
+                alternative,
+                hints,
+            } => {
+                // Rebuild a synthetic test local for narrowing when possible.
+                let (true_ctx, false_ctx) = narrow_branch_prim(*prim, args, ctx);
+                Terminator::BranchPrim {
+                    prim: *prim,
+                    args: args.clone(),
+                    consequent: self.walk_branch_target(consequent, &true_ctx, source),
+                    alternative: self.walk_branch_target(alternative, &false_ctx, source),
                     hints: *hints,
                 }
             }
@@ -1151,15 +992,15 @@ impl<'gc> Specializer<'gc> {
                         }
                         SwitchCase {
                             value: case.value,
-                            target: self.walk_branch_target(&case.target, &case_ctx, map, source),
+                            target: self.walk_branch_target(&case.target, &case_ctx, source),
                         }
                     })
                     .collect();
                 Terminator::Switch {
                     kind: *kind,
-                    scrutinee: remap_atom(map, scrutinee),
+                    scrutinee: *scrutinee,
                     cases: new_cases,
-                    default: self.walk_branch_target(default, ctx, map, source),
+                    default: self.walk_branch_target(default, ctx, source),
                 }
             }
             Terminator::Call {
@@ -1168,9 +1009,9 @@ impl<'gc> Specializer<'gc> {
                 args,
                 source,
             } => Terminator::Call {
-                callee: remap_atom(map, callee),
-                retk: remap_atom(map, retk),
-                args: remap_atoms(map, args),
+                callee: *callee,
+                retk: *retk,
+                args: args.clone(),
                 source: *source,
             },
             Terminator::TailCall {
@@ -1178,13 +1019,13 @@ impl<'gc> Specializer<'gc> {
                 args,
                 source,
             } => Terminator::TailCall {
-                callee: remap_atom(map, callee),
-                args: remap_atoms(map, args),
+                callee: *callee,
+                args: args.clone(),
                 source: *source,
             },
             Terminator::Raise { kind, args, source } => Terminator::Raise {
                 kind: *kind,
-                args: remap_atoms(map, args),
+                args: args.clone(),
                 source: *source,
             },
         }
@@ -1194,16 +1035,18 @@ impl<'gc> Specializer<'gc> {
         &mut self,
         target: &BranchTarget<'gc>,
         ctx: &TypeContext,
-        map: &HashMap<ValueId, ValueId>,
         source: BlockId,
     ) -> Option<Terminator<'gc>> {
         match target {
-            BranchTarget::Local { block, args } => {
-                let successor_ctx = self.successor_ctx(*block, args, ctx);
-                let new_target = self.reach(*block, successor_ctx, map.clone(), Some(source));
+            BranchTarget::Local { block, edge_assigns } => {
+                // Plain Jump cannot carry edge_assigns; refuse to fold.
+                if !edge_assigns.is_empty() {
+                    return None;
+                }
+                let successor_ctx = self.successor_ctx(*block, ctx);
+                let new_target = self.reach(*block, successor_ctx, Some(source));
                 Some(Terminator::Jump {
                     target: new_target,
-                    args: remap_atoms(map, args),
                 })
             }
             BranchTarget::Reified { .. } => None,
@@ -1214,37 +1057,29 @@ impl<'gc> Specializer<'gc> {
         &mut self,
         target: &BranchTarget<'gc>,
         ctx: &TypeContext,
-        map: &HashMap<ValueId, ValueId>,
         source: BlockId,
     ) -> BranchTarget<'gc> {
         match target {
-            BranchTarget::Local { block, args } => {
-                let successor_ctx = self.successor_ctx(*block, args, ctx);
-                let new_block = self.reach(*block, successor_ctx, map.clone(), Some(source));
+            BranchTarget::Local { block, edge_assigns } => {
+                let successor_ctx = self.successor_ctx(*block, ctx);
+                let new_block = self.reach(*block, successor_ctx, Some(source));
                 BranchTarget::Local {
                     block: new_block,
-                    args: remap_atoms(map, args),
+                    edge_assigns: edge_assigns.clone(),
                 }
             }
             BranchTarget::Reified { continuation, args } => BranchTarget::Reified {
-                continuation: remap_atom(map, continuation),
-                args: remap_atoms(map, args),
+                continuation: *continuation,
+                args: args.clone(),
             },
         }
     }
 
-    fn successor_ctx(
-        &self,
-        target: BlockId,
-        args: &[Operand<'gc>],
-        ctx: &TypeContext,
-    ) -> TypeContext {
-        let params = self.block_params.get(&target).cloned().unwrap_or_default();
-        let mut successor = TypeContext::new();
-        for (param, arg) in params.iter().zip(args.iter()) {
-            successor.set(*param, atom_type(arg, ctx));
+    fn successor_ctx(&self, target: BlockId, ctx: &TypeContext) -> TypeContext {
+        match self.live_in.get(&target) {
+            Some(live) => ctx.canonical(live),
+            None => TypeContext::new(),
         }
-        successor
     }
 
     fn finalize(
@@ -1307,21 +1142,6 @@ fn local_of(atom: Option<&Operand<'_>>) -> Option<ValueId> {
         Some(Operand::Local(id)) => Some(*id),
         _ => None,
     }
-}
-
-fn remap_value(map: &HashMap<ValueId, ValueId>, id: ValueId) -> ValueId {
-    map.get(&id).copied().unwrap_or(id)
-}
-
-fn remap_atom<'gc>(map: &HashMap<ValueId, ValueId>, atom: &Operand<'gc>) -> Operand<'gc> {
-    match atom {
-        Operand::Local(id) => Operand::Local(remap_value(map, *id)),
-        Operand::Constant(value) => Operand::Constant(*value),
-    }
-}
-
-fn remap_atoms<'gc>(map: &HashMap<ValueId, ValueId>, atoms: &[Operand<'gc>]) -> Vec<Operand<'gc>> {
-    atoms.iter().map(|atom| remap_atom(map, atom)).collect()
 }
 
 fn length_singleton(ty: &Type) -> Option<i64> {
@@ -1402,12 +1222,121 @@ fn map_branch_target_targets<'gc>(
     remap: &impl Fn(BlockId) -> BlockId,
 ) -> BranchTarget<'gc> {
     match target {
-        BranchTarget::Local { block, args } => BranchTarget::Local {
+        BranchTarget::Local { block, edge_assigns } => BranchTarget::Local {
             block: remap(block),
-            args,
+            edge_assigns,
         },
         reified @ BranchTarget::Reified { .. } => reified,
     }
+}
+
+fn narrow_branch_prim(prim: Primitive, args: &[Operand<'_>], ctx: &TypeContext) -> (TypeContext, TypeContext) {
+    if let Some(op) = infer::cmp_op(prim)
+        && let (Some(lhs), Some(rhs)) = (local_of(args.first()), local_of(args.get(1)))
+    {
+        return ctx.narrow_for_predicate(op, lhs, rhs);
+    }
+    if infer::is_type_test(prim)
+        && let Some(arg) = local_of(args.first())
+    {
+        return infer::narrow_type_test(prim, arg, ctx)
+            .unwrap_or_else(|| (ctx.clone(), ctx.clone()));
+    }
+    (ctx.clone(), ctx.clone())
+}
+
+/// Whether `prim` lowers to an i1 predicate suitable for fused `brif`.
+fn is_fusable_branch_prim(prim: Primitive) -> bool {
+    infer::cmp_op(prim).is_some()
+        || infer::is_type_test(prim)
+        || matches!(
+            prim,
+            Primitive::IsEq
+                | Primitive::IsEqv
+                | Primitive::IsEqual
+                | Primitive::IsEofObject
+                | Primitive::IsList
+                | Primitive::IsUnspecified
+                | Primitive::Not
+                | Primitive::IsNan
+                | Primitive::IsInexact
+                | Primitive::IsExact
+                | Primitive::IsInteger
+                | Primitive::IsRational
+        )
+}
+
+fn operand_uses_local(op: &Operand<'_>, local: ValueId) -> bool {
+    matches!(op, Operand::Local(id) if *id == local)
+}
+
+fn instruction_uses_local(instruction: &Instruction<'_>, local: ValueId) -> bool {
+    instruction
+        .uses()
+        .iter()
+        .any(|op| operand_uses_local(op, local))
+}
+
+/// Fuse single-use predicate/compare `PrimCall` + `Branch` into `BranchPrim`.
+fn try_fuse_branch_prim<'gc>(
+    test: &Operand<'gc>,
+    consequent: &BranchTarget<'gc>,
+    alternative: &BranchTarget<'gc>,
+    hints: [crate::compiler::cps::graph::BranchHint; 2],
+    ctx: &TypeContext,
+    pred_of: &HashMap<ValueId, Predicate>,
+    new_instructions: &mut Vec<Instruction<'gc>>,
+    mut walk_target: impl FnMut(&BranchTarget<'gc>, &TypeContext) -> BranchTarget<'gc>,
+) -> Option<Terminator<'gc>> {
+    let Operand::Local(dst) = *test else {
+        return None;
+    };
+
+    let idx = new_instructions.iter().rposition(|instruction| {
+        matches!(
+            instruction,
+            Instruction::PrimCall { dst: def, prim, .. }
+                if *def == dst && is_fusable_branch_prim(*prim)
+        )
+    })?;
+
+    // `dst` must not be used by later instructions (only the branch test).
+    if new_instructions[idx + 1..]
+        .iter()
+        .any(|instruction| instruction_uses_local(instruction, dst))
+    {
+        return None;
+    }
+    // Edge assigns on either arm must not mention `dst`.
+    for target in [consequent, alternative] {
+        if let BranchTarget::Local { edge_assigns, .. } = target
+            && edge_assigns
+                .iter()
+                .any(|instruction| instruction_uses_local(instruction, dst))
+        {
+            return None;
+        }
+    }
+
+    let Instruction::PrimCall { prim, args, .. } = new_instructions.remove(idx) else {
+        unreachable!("rposition matched PrimCall");
+    };
+
+    // Prefer pred_of narrowing (handles `not` inversion); fall back to prim/args.
+    let test_ty = ctx.get(dst);
+    let (true_ctx, false_ctx) = if pred_of.contains_key(&dst) {
+        narrow_contexts(test, &test_ty, ctx, pred_of)
+    } else {
+        narrow_branch_prim(prim, &args, ctx)
+    };
+
+    Some(Terminator::BranchPrim {
+        prim,
+        args,
+        consequent: walk_target(consequent, &true_ctx),
+        alternative: walk_target(alternative, &false_ctx),
+        hints,
+    })
 }
 
 fn map_terminator_targets<'gc>(
@@ -1415,9 +1344,8 @@ fn map_terminator_targets<'gc>(
     remap: &impl Fn(BlockId) -> BlockId,
 ) -> Terminator<'gc> {
     match terminator {
-        Terminator::Jump { target, args } => Terminator::Jump {
+        Terminator::Jump { target } => Terminator::Jump {
             target: remap(target),
-            args,
         },
         Terminator::Branch {
             test,
@@ -1426,6 +1354,19 @@ fn map_terminator_targets<'gc>(
             hints,
         } => Terminator::Branch {
             test,
+            consequent: map_branch_target_targets(consequent, remap),
+            alternative: map_branch_target_targets(alternative, remap),
+            hints,
+        },
+        Terminator::BranchPrim {
+            prim,
+            args,
+            consequent,
+            alternative,
+            hints,
+        } => Terminator::BranchPrim {
+            prim,
+            args,
             consequent: map_branch_target_targets(consequent, remap),
             alternative: map_branch_target_targets(alternative, remap),
             hints,
@@ -1475,9 +1416,6 @@ pub(super) fn max_value_id(procedure: &Procedure<'_>) -> u32 {
         max_value = max_value.max(value.0);
     }
     for block in &procedure.blocks {
-        for value in block.params.iter().chain(block.variadic.iter()).copied() {
-            max_value = max_value.max(value.0);
-        }
         for instruction in &block.instructions {
             for def in instruction.defs() {
                 max_value = max_value.max(def.0);
@@ -1501,10 +1439,10 @@ pub(super) fn max_value_id(procedure: &Procedure<'_>) -> u32 {
 mod tests {
     use super::*;
     use crate::compiler::cps::graph::BranchHint;
-    use crate::compiler::ssa::bbv::merge::{
+    use crate::compiler::cfg::bbv::merge::{
         merge_contexts, select_version_to_merge_with, select_versions_to_merge,
     };
-    use crate::compiler::ssa::{CodeId, GraphCodeId, ProcedureKind};
+    use crate::compiler::cfg::{CodeId, GraphCodeId, ProcedureKind};
     use crate::runtime::value::Value;
     use std::collections::HashMap;
 
@@ -1513,9 +1451,8 @@ mod tests {
         let input = ValueId(1);
         let is_fixnum = ValueId(2);
         let assertion_fails = ValueId(3);
-        let checked_input = ValueId(4);
-        let one = ValueId(5);
-        let sum = ValueId(6);
+        let one = ValueId(4);
+        let sum = ValueId(5);
         let source = Value::new(false);
         let procedure = Procedure {
             code: CodeId::GraphFunction(GraphCodeId(0)),
@@ -1533,8 +1470,6 @@ mod tests {
             blocks: vec![
                 Block {
                     id: BlockId(0),
-                    params: vec![input],
-                    variadic: None,
                     instructions: vec![
                         Instruction::PrimCall {
                             dst: is_fixnum,
@@ -1553,20 +1488,18 @@ mod tests {
                         test: Operand::Local(assertion_fails),
                         consequent: BranchTarget::Local {
                             block: BlockId(1),
-                            args: vec![],
-                        },
+                            edge_assigns: vec![]
+        },
                         alternative: BranchTarget::Local {
                             block: BlockId(2),
-                            args: vec![Operand::Local(input)],
-                        },
+                            edge_assigns: vec![]
+        },
                         hints: [BranchHint::Cold, BranchHint::Normal],
                     },
                     source,
                 },
                 Block {
                     id: BlockId(1),
-                    params: vec![],
-                    variadic: None,
                     instructions: vec![],
                     terminator: Terminator::Raise {
                         kind: crate::runtime::vm::exceptions::RaiseKind::AssertionViolation,
@@ -1577,8 +1510,6 @@ mod tests {
                 },
                 Block {
                     id: BlockId(2),
-                    params: vec![checked_input],
-                    variadic: None,
                     instructions: vec![
                         Instruction::Const {
                             dst: one,
@@ -1587,7 +1518,7 @@ mod tests {
                         Instruction::PrimCall {
                             dst: sum,
                             prim: Primitive::Plus,
-                            args: vec![Operand::Local(checked_input), Operand::Local(one)],
+                            args: vec![Operand::Local(input), Operand::Local(one)],
                             source,
                         },
                     ],
@@ -1698,10 +1629,9 @@ mod tests {
 
     #[test]
     fn monomorphic_interval_loop_merges_similar_contexts() {
-        let initial = ValueId(1);
-        let current = ValueId(2);
-        let one = ValueId(3);
-        let next = ValueId(4);
+        let current = ValueId(1);
+        let one = ValueId(2);
+        let next = ValueId(3);
         let source = Value::new(false);
         let procedure = Procedure {
             code: CodeId::GraphFunction(GraphCodeId(0)),
@@ -1719,22 +1649,17 @@ mod tests {
             blocks: vec![
                 Block {
                     id: BlockId(0),
-                    params: vec![],
-                    variadic: None,
                     instructions: vec![Instruction::Const {
-                        dst: initial,
+                        dst: current,
                         value: Value::from_i32(0),
                     }],
                     terminator: Terminator::Jump {
                         target: BlockId(1),
-                        args: vec![Operand::Local(initial)],
                     },
                     source,
                 },
                 Block {
                     id: BlockId(1),
-                    params: vec![current],
-                    variadic: None,
                     instructions: vec![
                         Instruction::Const {
                             dst: one,
@@ -1746,10 +1671,13 @@ mod tests {
                             args: vec![Operand::Local(current), Operand::Local(one)],
                             source,
                         },
+                        Instruction::Assign {
+                            dst: current,
+                            src: Operand::Local(next),
+                        },
                     ],
                     terminator: Terminator::Jump {
                         target: BlockId(1),
-                        args: vec![Operand::Local(next)],
                     },
                     source,
                 },
@@ -1784,9 +1712,6 @@ mod tests {
 
     #[test]
     fn multi_backedge_interval_loop_converges_under_version_limit() {
-        // Two entry edges into the header (0 and 10) plus a self-backedge that
-        // increments: Algorithm 2 may temporarily exceed the limit, then
-        // Algorithm 1 + widening must bring the header back within it.
         let condition = ValueId(1);
         let zero = ValueId(2);
         let ten = ValueId(3);
@@ -1810,8 +1735,6 @@ mod tests {
             blocks: vec![
                 Block {
                     id: BlockId(0),
-                    params: vec![condition],
-                    variadic: None,
                     instructions: vec![
                         Instruction::Const {
                             dst: zero,
@@ -1826,20 +1749,40 @@ mod tests {
                         test: Operand::Local(condition),
                         consequent: BranchTarget::Local {
                             block: BlockId(1),
-                            args: vec![Operand::Local(zero)],
-                        },
+                            edge_assigns: vec![]
+        },
                         alternative: BranchTarget::Local {
-                            block: BlockId(1),
-                            args: vec![Operand::Local(ten)],
-                        },
+                            block: BlockId(2),
+                            edge_assigns: vec![]
+        },
                         hints: [BranchHint::Normal, BranchHint::Normal],
                     },
                     source,
                 },
                 Block {
                     id: BlockId(1),
-                    params: vec![current],
-                    variadic: None,
+                    instructions: vec![Instruction::Assign {
+                        dst: current,
+                        src: Operand::Local(zero),
+                    }],
+                    terminator: Terminator::Jump {
+                        target: BlockId(3),
+                    },
+                    source,
+                },
+                Block {
+                    id: BlockId(2),
+                    instructions: vec![Instruction::Assign {
+                        dst: current,
+                        src: Operand::Local(ten),
+                    }],
+                    terminator: Terminator::Jump {
+                        target: BlockId(3),
+                    },
+                    source,
+                },
+                Block {
+                    id: BlockId(3),
                     instructions: vec![
                         Instruction::Const {
                             dst: one,
@@ -1851,10 +1794,13 @@ mod tests {
                             args: vec![Operand::Local(current), Operand::Local(one)],
                             source,
                         },
+                        Instruction::Assign {
+                            dst: current,
+                            src: Operand::Local(next),
+                        },
                     ],
                     terminator: Terminator::Jump {
-                        target: BlockId(1),
-                        args: vec![Operand::Local(next)],
+                        target: BlockId(3),
                     },
                     source,
                 },
@@ -1864,14 +1810,14 @@ mod tests {
         let (specialized, annotations) = specialize_procedure(procedure, 2);
         let header_versions = annotations
             .values()
-            .filter(|annotation| annotation.orig == BlockId(1))
+            .filter(|annotation| annotation.orig == BlockId(3))
             .count();
         assert!(
             header_versions <= 2,
             "expected ≤2 header versions, got {header_versions}: {:?}",
             annotations
                 .values()
-                .filter(|a| a.orig == BlockId(1))
+                .filter(|a| a.orig == BlockId(3))
                 .map(|a| a.ctx.clone())
                 .collect::<Vec<_>>()
         );
@@ -1881,10 +1827,10 @@ mod tests {
     #[test]
     fn polymorphic_loop_keeps_distinct_kind_versions() {
         let condition = ValueId(1);
-        let initial = ValueId(2);
-        let current = ValueId(3);
-        let next_fixnum = ValueId(4);
-        let next_char = ValueId(5);
+        let current = ValueId(2);
+        let next_fixnum = ValueId(3);
+        let next_char = ValueId(4);
+        let is_fixnum = ValueId(5);
         let source = Value::new(false);
         let procedure = Procedure {
             code: CodeId::GraphFunction(GraphCodeId(0)),
@@ -1902,62 +1848,68 @@ mod tests {
             blocks: vec![
                 Block {
                     id: BlockId(0),
-                    params: vec![condition],
-                    variadic: None,
                     instructions: vec![Instruction::Const {
-                        dst: initial,
+                        dst: current,
                         value: Value::from_i32(0),
                     }],
                     terminator: Terminator::Jump {
                         target: BlockId(1),
-                        args: vec![Operand::Local(initial)],
                     },
                     source,
                 },
                 Block {
                     id: BlockId(1),
-                    params: vec![current],
-                    variadic: None,
-                    instructions: vec![],
+                    instructions: vec![Instruction::PrimCall {
+                        dst: is_fixnum,
+                        prim: Primitive::IsFixnum,
+                        args: vec![Operand::Local(current)],
+                        source,
+                    }],
                     terminator: Terminator::Branch {
                         test: Operand::Local(condition),
                         consequent: BranchTarget::Local {
                             block: BlockId(2),
-                            args: vec![Operand::Local(current)],
-                        },
+                            edge_assigns: vec![]
+        },
                         alternative: BranchTarget::Local {
                             block: BlockId(3),
-                            args: vec![Operand::Local(current)],
-                        },
+                            edge_assigns: vec![]
+        },
                         hints: [BranchHint::Normal, BranchHint::Normal],
                     },
                     source,
                 },
                 Block {
                     id: BlockId(2),
-                    params: vec![current],
-                    variadic: None,
-                    instructions: vec![Instruction::Const {
-                        dst: next_fixnum,
-                        value: Value::from_i32(1),
-                    }],
+                    instructions: vec![
+                        Instruction::Const {
+                            dst: next_fixnum,
+                            value: Value::from_i32(1),
+                        },
+                        Instruction::Assign {
+                            dst: current,
+                            src: Operand::Local(next_fixnum),
+                        },
+                    ],
                     terminator: Terminator::Jump {
                         target: BlockId(1),
-                        args: vec![Operand::Local(next_fixnum)],
                     },
                     source,
                 },
                 Block {
                     id: BlockId(3),
-                    params: vec![current],
-                    variadic: None,
-                    instructions: vec![Instruction::Const {
-                        dst: next_char,
-                        value: Value::from_char('s'),
-                    }],
+                    instructions: vec![
+                        Instruction::Const {
+                            dst: next_char,
+                            value: Value::from_char('s'),
+                        },
+                        Instruction::Assign {
+                            dst: current,
+                            src: Operand::Local(next_char),
+                        },
+                    ],
                     terminator: Terminator::Jump {
                         target: BlockId(1),
-                        args: vec![Operand::Local(next_char)],
                     },
                     source,
                 },
@@ -1982,10 +1934,9 @@ mod tests {
     #[test]
     fn numeric_switch_case_does_not_assume_fixnum_representation() {
         let scrutinee = ValueId(1);
-        let case_value = ValueId(2);
-        let one = ValueId(3);
-        let sum = ValueId(4);
-        let result = ValueId(5);
+        let one = ValueId(2);
+        let sum = ValueId(3);
+        let result = ValueId(4);
         let source = Value::new(false);
         let procedure = Procedure {
             code: CodeId::GraphFunction(GraphCodeId(0)),
@@ -2003,8 +1954,6 @@ mod tests {
             blocks: vec![
                 Block {
                     id: BlockId(0),
-                    params: vec![scrutinee],
-                    variadic: None,
                     instructions: vec![],
                     terminator: Terminator::Switch {
                         kind: SwitchKind::Numeric,
@@ -2013,20 +1962,18 @@ mod tests {
                             value: SwitchCaseValue::Integer(1),
                             target: BranchTarget::Local {
                                 block: BlockId(1),
-                                args: vec![Operand::Local(scrutinee)],
-                            },
+                                edge_assigns: vec![]
+        },
                         }],
                         default: BranchTarget::Local {
                             block: BlockId(2),
-                            args: vec![Operand::Local(scrutinee)],
-                        },
+                            edge_assigns: vec![]
+        },
                     },
                     source,
                 },
                 Block {
                     id: BlockId(1),
-                    params: vec![case_value],
-                    variadic: None,
                     instructions: vec![
                         Instruction::Const {
                             dst: one,
@@ -2035,20 +1982,21 @@ mod tests {
                         Instruction::PrimCall {
                             dst: sum,
                             prim: Primitive::FxAddOvf,
-                            args: vec![Operand::Local(case_value), Operand::Local(one)],
+                            args: vec![Operand::Local(scrutinee), Operand::Local(one)],
                             source,
+                        },
+                        Instruction::Assign {
+                            dst: result,
+                            src: Operand::Local(sum),
                         },
                     ],
                     terminator: Terminator::Jump {
                         target: BlockId(2),
-                        args: vec![Operand::Local(sum)],
                     },
                     source,
                 },
                 Block {
                     id: BlockId(2),
-                    params: vec![result],
-                    variadic: None,
                     instructions: vec![],
                     terminator: Terminator::TailCall {
                         callee: Operand::Local(result),
@@ -2121,5 +2069,261 @@ mod tests {
             Some(true)
         );
         assert_eq!(fold_rest_predicate(&nonempty, RestPredicate::Null, 2), None);
+    }
+
+    #[test]
+    fn specialize_fuses_fx_lt_unchecked_into_branch_prim() {
+        let lhs = ValueId(1);
+        let rhs = ValueId(2);
+        let cmp = ValueId(3);
+        let source = Value::new(false);
+        let procedure = Procedure {
+            code: CodeId::GraphFunction(GraphCodeId(0)),
+            kind: ProcedureKind::Function,
+            binding: ValueId(0),
+            name: source,
+            source,
+            meta: source,
+            return_cont: None,
+            params: vec![lhs, rhs],
+            variadic: None,
+            free_vars: vec![],
+            sources: HashMap::new(),
+            entry: BlockId(0),
+            blocks: vec![
+                Block {
+                    id: BlockId(0),
+                    instructions: vec![Instruction::PrimCall {
+                        dst: cmp,
+                        prim: Primitive::FxLtUnchecked,
+                        args: vec![Operand::Local(lhs), Operand::Local(rhs)],
+                        source,
+                    }],
+                    terminator: Terminator::Branch {
+                        test: Operand::Local(cmp),
+                        consequent: BranchTarget::Local {
+                            block: BlockId(1),
+                            edge_assigns: vec![],
+                        },
+                        alternative: BranchTarget::Local {
+                            block: BlockId(2),
+                            edge_assigns: vec![],
+                        },
+                        hints: [BranchHint::Normal, BranchHint::Normal],
+                    },
+                    source,
+                },
+                Block {
+                    id: BlockId(1),
+                    instructions: vec![],
+                    terminator: Terminator::TailCall {
+                        callee: Operand::Local(lhs),
+                        args: vec![],
+                        source,
+                    },
+                    source,
+                },
+                Block {
+                    id: BlockId(2),
+                    instructions: vec![],
+                    terminator: Terminator::TailCall {
+                        callee: Operand::Local(rhs),
+                        args: vec![],
+                        source,
+                    },
+                    source,
+                },
+            ],
+        };
+
+        let (specialized, _) = specialize_procedure(procedure, 2);
+        let entry = specialized
+            .blocks
+            .iter()
+            .find(|block| block.id == specialized.entry)
+            .expect("entry block");
+        assert!(
+            !entry.instructions.iter().any(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::PrimCall {
+                        prim: Primitive::FxLtUnchecked,
+                        ..
+                    }
+                )
+            }),
+            "FxLtUnchecked PrimCall should be fused away: {:?}",
+            entry.instructions
+        );
+        assert!(
+            matches!(
+                &entry.terminator,
+                Terminator::BranchPrim {
+                    prim: Primitive::FxLtUnchecked,
+                    ..
+                }
+            ),
+            "expected BranchPrim FxLtUnchecked, got {:?}",
+            entry.terminator
+        );
+    }
+
+    #[test]
+    fn specialize_fuses_is_fixnum_and_numeric_lt_into_branch_prim() {
+        let x = ValueId(1);
+        let y = ValueId(2);
+        let is_fx = ValueId(3);
+        let cmp = ValueId(4);
+        let source = Value::new(false);
+
+        let type_test = Procedure {
+            code: CodeId::GraphFunction(GraphCodeId(0)),
+            kind: ProcedureKind::Function,
+            binding: ValueId(0),
+            name: source,
+            source,
+            meta: source,
+            return_cont: None,
+            params: vec![x],
+            variadic: None,
+            free_vars: vec![],
+            sources: HashMap::new(),
+            entry: BlockId(0),
+            blocks: vec![
+                Block {
+                    id: BlockId(0),
+                    instructions: vec![Instruction::PrimCall {
+                        dst: is_fx,
+                        prim: Primitive::IsFixnum,
+                        args: vec![Operand::Local(x)],
+                        source,
+                    }],
+                    terminator: Terminator::Branch {
+                        test: Operand::Local(is_fx),
+                        consequent: BranchTarget::Local {
+                            block: BlockId(1),
+                            edge_assigns: vec![],
+                        },
+                        alternative: BranchTarget::Local {
+                            block: BlockId(2),
+                            edge_assigns: vec![],
+                        },
+                        hints: [BranchHint::Normal, BranchHint::Normal],
+                    },
+                    source,
+                },
+                Block {
+                    id: BlockId(1),
+                    instructions: vec![],
+                    terminator: Terminator::TailCall {
+                        callee: Operand::Local(x),
+                        args: vec![],
+                        source,
+                    },
+                    source,
+                },
+                Block {
+                    id: BlockId(2),
+                    instructions: vec![],
+                    terminator: Terminator::TailCall {
+                        callee: Operand::Local(x),
+                        args: vec![],
+                        source,
+                    },
+                    source,
+                },
+            ],
+        };
+        let (specialized, _) = specialize_procedure(type_test, 2);
+        let entry = specialized
+            .blocks
+            .iter()
+            .find(|block| block.id == specialized.entry)
+            .expect("entry");
+        assert!(matches!(
+            &entry.terminator,
+            Terminator::BranchPrim {
+                prim: Primitive::IsFixnum,
+                ..
+            }
+        ));
+
+        let numeric = Procedure {
+            code: CodeId::GraphFunction(GraphCodeId(1)),
+            kind: ProcedureKind::Function,
+            binding: ValueId(0),
+            name: source,
+            source,
+            meta: source,
+            return_cont: None,
+            params: vec![x, y],
+            variadic: None,
+            free_vars: vec![],
+            sources: HashMap::new(),
+            entry: BlockId(0),
+            blocks: vec![
+                Block {
+                    id: BlockId(0),
+                    instructions: vec![Instruction::PrimCall {
+                        dst: cmp,
+                        prim: Primitive::NumericLt,
+                        args: vec![Operand::Local(x), Operand::Local(y)],
+                        source,
+                    }],
+                    terminator: Terminator::Branch {
+                        test: Operand::Local(cmp),
+                        consequent: BranchTarget::Local {
+                            block: BlockId(1),
+                            edge_assigns: vec![],
+                        },
+                        alternative: BranchTarget::Local {
+                            block: BlockId(2),
+                            edge_assigns: vec![],
+                        },
+                        hints: [BranchHint::Normal, BranchHint::Normal],
+                    },
+                    source,
+                },
+                Block {
+                    id: BlockId(1),
+                    instructions: vec![],
+                    terminator: Terminator::TailCall {
+                        callee: Operand::Local(x),
+                        args: vec![],
+                        source,
+                    },
+                    source,
+                },
+                Block {
+                    id: BlockId(2),
+                    instructions: vec![],
+                    terminator: Terminator::TailCall {
+                        callee: Operand::Local(y),
+                        args: vec![],
+                        source,
+                    },
+                    source,
+                },
+            ],
+        };
+        let (specialized, _) = specialize_procedure(numeric, 2);
+        let entry = specialized
+            .blocks
+            .iter()
+            .find(|block| block.id == specialized.entry)
+            .expect("entry");
+        // Specialize may rewrite NumericLt → FxLtUnchecked when types prove fixnum;
+        // either form must be fused into BranchPrim.
+        assert!(
+            matches!(
+                &entry.terminator,
+                Terminator::BranchPrim {
+                    prim: Primitive::NumericLt | Primitive::FxLtUnchecked | Primitive::FxLt,
+                    ..
+                }
+            ),
+            "expected fused numeric/fx compare branch, got {:?}",
+            entry.terminator
+        );
     }
 }

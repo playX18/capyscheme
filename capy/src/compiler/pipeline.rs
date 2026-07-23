@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::compiler::cps::optimize::optimize_graph_func_to_ssa;
 use crate::compiler::dump;
-use crate::compiler::ssa::Program;
+use crate::compiler::cfg::Program;
 use crate::expander::core::TermRef;
 use crate::expander::{
     assignment_elimination, compile_cps, eta_expand::eta_expand, fix_letrec::fix_letrec,
@@ -178,7 +178,7 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
     if options.dump_ssa {
         let _ = ctx;
         let path = dump::resolve_artifact_dump_path(destination, ".ssa.txt");
-        let mut rendered = crate::compiler::ssa::render_program(&lowered.ssa);
+        let mut rendered = crate::compiler::cfg::render_program(&lowered.ssa);
         rendered.push('\n');
         std::fs::write(&path, rendered).unwrap();
         dump::log_dump_path("SSA", &path);
@@ -191,7 +191,7 @@ mod tests {
     use crate::{
         compiler::{
             cranelift::primitive::Primitive,
-            ssa::{
+            cfg::{
                 Block, BlockId, CodeId, GraphCodeId, Operand, Procedure, ProcedureKind, Program,
                 Terminator, ValueId,
             },
@@ -263,8 +263,6 @@ mod tests {
                 entry: BlockId(0),
                 blocks: vec![Block {
                     id: BlockId(0),
-                    params: vec![p0],
-                    variadic: None,
                     instructions: vec![],
                     terminator: Terminator::TailCall {
                         callee: Operand::Local(p0),
@@ -333,8 +331,8 @@ mod tests {
             );
 
             let ssa = std::fs::read_to_string(dir.join("out.fasl.ssa.txt")).expect("SSA dump");
-            assert!(ssa.contains("function gf7 ssa-dump-test(v0) -> #f {"));
-            assert!(ssa.contains("block0(v0):"));
+            assert!(ssa.contains("function gf7 ssa-dump-test(u0) -> #f {"));
+            assert!(ssa.contains("block0:"));
 
             std::fs::remove_dir_all(&dir).unwrap();
         });
@@ -392,9 +390,7 @@ mod tests {
                 entry: BlockId(0),
                 blocks: vec![Block {
                     id: BlockId(0),
-                    params: vec![p0],
-                    variadic: None,
-                    instructions: vec![crate::compiler::ssa::Instruction::PrimCall {
+                    instructions: vec![crate::compiler::cfg::Instruction::PrimCall {
                         dst: tmp,
                         prim: Primitive::Car,
                         args: vec![Operand::Local(p0)],
@@ -413,12 +409,12 @@ mod tests {
                 procedures: vec![procedure],
             };
 
-            let rendered = crate::compiler::ssa::render_program(&program);
+            let rendered = crate::compiler::cfg::render_program(&program);
 
-            assert!(rendered.contains("function gf7 ssa-dump-test(v0) -> #f {"));
-            assert!(rendered.contains("block0(v0):"));
-            assert!(rendered.contains("v1 = car(v0)"));
-            assert!(rendered.contains("tail_call v1(v0)"));
+            assert!(rendered.contains("function gf7 ssa-dump-test(u0) -> #f {"));
+            assert!(rendered.contains("block0:"));
+            assert!(rendered.contains("u1 = car(u0)"));
+            assert!(rendered.contains("tail_call u1(u0)"));
         });
     }
 }

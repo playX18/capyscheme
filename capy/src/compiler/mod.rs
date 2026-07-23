@@ -1,4 +1,4 @@
-//! Native code compilation pipeline: CPS → SSA → Cranelift → machine code.
+//! Native code compilation pipeline: CPS → CFG → Cranelift → machine code.
 
 #[macro_export]
 macro_rules! call_signature {
@@ -56,7 +56,7 @@ mod dump;
 pub mod linkutils;
 mod object;
 mod pipeline;
-pub mod ssa;
+pub mod cfg;
 mod symbols;
 pub mod tree;
 

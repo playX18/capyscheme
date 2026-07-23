@@ -17,7 +17,7 @@ use crate::{
             MAX_RAISE_ARITY, RegisterCallArgs, RestSource, SsaBuilder, VarDef, primitive::PrimValue,
             scheme_call_values,
         },
-        ssa::{
+        cfg::{
             Block as SsaBlock, BranchTarget, ClosureKind, CodeId, Instruction, Operand, Procedure,
             ProcedureKind, RestPredicate, SwitchCaseValue, SwitchKind, Terminator, ValueId,
         },
@@ -31,7 +31,7 @@ use crate::{
     },
 };
 use cranelift::frontend::Switch;
-use cranelift::prelude::{InstBuilder, IntCC, types};
+use cranelift::prelude::{InstBuilder, IntCC, Variable, types};
 use cranelift_codegen::ir::{self, BlockArg};
 
 #[derive(Debug, Clone, Copy)]
@@ -117,6 +117,11 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
     }
 
     fn should_materialize_entry_rest(&self, _rest: LVarRef<'gc>) -> bool {
+        // Entry rest materialization is driven exclusively by `RestToList`
+        // (inserted by `cfg/rest.rs` when the rest uvar is used as a real list).
+        // RestRef/RestLength/RestPredicate read argc/regs via `rest_sources` and
+        // must not force a nursery cons here — that double-allocated when Rest*
+        // ops were present and wiped pre-CFG rewrite performance on GC benches.
         false
     }
 
@@ -888,6 +893,8 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
     }
 
     pub fn translate_procedure(&mut self, procedure: &Procedure<'gc>) {
+        self.declare_procedure_uvars(procedure);
+
         for block in &procedure.blocks {
             if block.id == procedure.entry {
                 self.block_map.insert(block.id, self.entry_block);
@@ -895,9 +902,6 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
             }
 
             let clif_block = self.builder.create_block();
-            for _ in &block.params {
-                self.builder.append_block_param(clif_block, types::I64);
-            }
             self.block_map.insert(block.id, clif_block);
         }
 
@@ -905,7 +909,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
             .blocks
             .iter()
             .find(|block| block.id == procedure.entry)
-            .expect("SSA procedure should contain its entry block");
+            .expect("CFG procedure should contain its entry block");
         self.lower_block(procedure, entry, true);
 
         for block in &procedure.blocks {
@@ -919,7 +923,57 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         }
     }
 
+    fn declare_procedure_uvars(&mut self, procedure: &Procedure<'gc>) {
+        let mut max_id = procedure.binding.0;
+        if let Some(return_cont) = procedure.return_cont {
+            max_id = max_id.max(return_cont.0);
+        }
+        for id in procedure
+            .params
+            .iter()
+            .chain(procedure.variadic.iter())
+            .chain(procedure.free_vars.iter())
+            .copied()
+        {
+            max_id = max_id.max(id.0);
+        }
+        for block in &procedure.blocks {
+            for instruction in &block.instructions {
+                for def in instruction.defs() {
+                    max_id = max_id.max(def.0);
+                }
+                for atom in instruction.uses() {
+                    if let Operand::Local(id) = atom {
+                        max_id = max_id.max(id.0);
+                    }
+                }
+            }
+            for atom in block.terminator.uses() {
+                if let Operand::Local(id) = atom {
+                    max_id = max_id.max(id.0);
+                }
+            }
+        }
+        for id in 0..=max_id {
+            self.ensure_uvar_declared(crate::compiler::cfg::UVar(id));
+        }
+    }
+
+    fn ensure_uvar_declared(&mut self, var: ValueId) -> Variable {
+        if let Some(clif_var) = self.declared_uvars.get(&var.0).copied() {
+            return clif_var;
+        }
+        let clif_var = self.builder.declare_var(types::I64);
+        self.declared_uvars.insert(var.0, clif_var);
+        clif_var
+    }
+
     fn lower_block(&mut self, procedure: &Procedure<'gc>, block: &SsaBlock<'gc>, is_entry: bool) {
+        // Comparison i1 flags are Cranelift SSA values local to the CLIF block
+        // that produced them. Scheme booleans live in Variables across edges.
+        self.ssa_variables
+            .retain(|_, def| matches!(def, VarDef::Value(_)));
+
         self.set_debug_loc(block.source);
         if is_entry {
             self.bind_ssa_var(procedure.binding, VarDef::Value(self.rator));
@@ -927,12 +981,6 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                 if let Some(def) = self.variables.get(source).copied() {
                     self.bind_ssa_var(*var, def);
                 }
-            }
-        } else {
-            let clif_block = self.block_map[&block.id];
-            let params = self.builder.block_params(clif_block).to_vec();
-            for (var, value) in block.params.iter().copied().zip(params.iter().copied()) {
-                self.bind_ssa_var(var, VarDef::Value(value));
             }
         }
 
@@ -945,9 +993,39 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
 
     fn bind_ssa_var(&mut self, var: ValueId, def: VarDef) {
         self.ssa_variables.insert(var, def);
-        if let Some(source) = self.ssa_source(var) {
-            self.variables.insert(source, def);
-            if let VarDef::Value(value) = def {
+        match def {
+            VarDef::Value(value) => {
+                let clif_var = self.ensure_uvar_declared(var);
+                self.builder.def_var(clif_var, value);
+                if let Some(source) = self.ssa_source(var) {
+                    self.variables.insert(source, VarDef::Value(value));
+                    self.debug_local(source, value);
+                }
+            }
+            VarDef::Comparison(_) => {
+                // Defer select→Scheme-bool until a value use or `flush_comparisons`
+                // so same-block branches can consume the raw i1.
+            }
+        }
+    }
+
+    /// Materialize pending Comparison uvars as Scheme booleans in Variables.
+    fn flush_comparisons(&mut self) {
+        let pending: Vec<(ValueId, ir::Value)> = self
+            .ssa_variables
+            .iter()
+            .filter_map(|(id, def)| match def {
+                VarDef::Comparison(cmp) => Some((*id, *cmp)),
+                VarDef::Value(_) => None,
+            })
+            .collect();
+        for (id, cmp) in pending {
+            let value = self.comparison_to_value(cmp);
+            let clif_var = self.ensure_uvar_declared(id);
+            self.builder.def_var(clif_var, value);
+            self.ssa_variables.insert(id, VarDef::Value(value));
+            if let Some(source) = self.ssa_source(id) {
+                self.variables.insert(source, VarDef::Value(value));
                 self.debug_local(source, value);
             }
         }
@@ -964,15 +1042,19 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
     }
 
     fn ssa_var(&mut self, var: ValueId) -> ir::Value {
-        let def = self
-            .ssa_variables
-            .get(&var)
-            .copied()
-            .unwrap_or_else(|| panic!("SSA variable {var:?} not found"));
-        match def {
-            VarDef::Value(value) => value,
-            VarDef::Comparison(value) => self.comparison_to_value(value),
+        if let Some(VarDef::Comparison(cmp)) = self.ssa_variables.get(&var).copied() {
+            let value = self.comparison_to_value(cmp);
+            let clif_var = self.ensure_uvar_declared(var);
+            self.builder.def_var(clif_var, value);
+            self.ssa_variables.insert(var, VarDef::Value(value));
+            if let Some(source) = self.ssa_source(var) {
+                self.variables.insert(source, VarDef::Value(value));
+                self.debug_local(source, value);
+            }
+            return value;
         }
+        let clif_var = self.ensure_uvar_declared(var);
+        self.builder.use_var(clif_var)
     }
 
     fn rest_source(&self, rest: ValueId) -> RestSource {
@@ -1031,17 +1113,14 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                         alias
                     } else {
                         let name =
-                            Symbol::from_str(self.module_builder.ctx, "ssa-synthetic").into();
+                            Symbol::from_str(self.module_builder.ctx, "cfg-synthetic").into();
                         let alias = fresh_lvar(self.module_builder.ctx, name);
                         self.synthetic_aliases.insert(var, alias);
                         alias
                     }
                 });
-                let def = *self
-                    .ssa_variables
-                    .get(&var)
-                    .unwrap_or_else(|| panic!("SSA variable {var:?} not found"));
-                self.variables.insert(alias, def);
+                let value = self.ssa_var(var);
+                self.variables.insert(alias, VarDef::Value(value));
                 Atom::Local(alias)
             }
         }
@@ -1057,6 +1136,13 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
 
     fn translate_instruction(&mut self, instruction: &Instruction<'gc>) {
         match instruction {
+            Instruction::Assign { dst, src } => {
+                // Always materialize Scheme values on Assign. Propagating
+                // Comparison i1 across Capyscheme blocks (and Assign-helper
+                // edges) breaks Cranelift SSA dominance.
+                let value = self.emit_atom(*src);
+                self.bind_ssa_var(*dst, VarDef::Value(value));
+            }
             Instruction::Const { dst, value } => {
                 let value = self.atom(Atom::Constant(*value));
                 self.bind_ssa_var(*dst, VarDef::Value(value));
@@ -1414,85 +1500,58 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
 
     fn jump_to_block(
         &mut self,
-        procedure: &Procedure<'gc>,
-        target: crate::compiler::ssa::BlockId,
-        args: &[Operand<'gc>],
+        _procedure: &Procedure<'gc>,
+        target: crate::compiler::cfg::BlockId,
     ) {
-        let block = procedure
-            .blocks
-            .iter()
-            .find(|block| block.id == target)
-            .expect("SSA jump target should exist");
-        let fixed_count = if block.variadic.is_some() {
-            block.params.len() - 1
-        } else {
-            block.params.len()
-        };
-        if args.len() < fixed_count {
-            self.raise_wrong_block_arity(args, -(fixed_count as isize));
-            return;
-        }
-
-        let mut block_args = args[..fixed_count]
-            .iter()
-            .copied()
-            .map(|arg| BlockArg::Value(self.emit_atom(arg)))
-            .collect::<Vec<_>>();
-
-        if let Some(variadic) = block.variadic {
-            // Materialize the rest list when this block's SSA body uses it.
-            // Do not consult `procedure.sources`: SBBV renames non-procedure
-            // variadics to fresh ValueIds that are absent from that map, and
-            // LVar reference flags are the wrong layer for block-local SSA.
-            if block.uses_local(variadic) {
-                let mut ls = self
-                    .builder
-                    .ins()
-                    .iconst(types::I64, Value::null().bits() as i64);
-                for arg in args[fixed_count..].iter().rev().copied() {
-                    let arg = self.emit_atom(arg);
-                    ls = self.cons(arg, ls);
-                }
-                block_args.push(BlockArg::Value(ls));
-            } else {
-                let null = self
-                    .builder
-                    .ins()
-                    .iconst(types::I64, Value::null().bits() as i64);
-                block_args.push(BlockArg::Value(null));
-            }
-        } else if args.len() != fixed_count {
-            self.raise_wrong_block_arity(args, fixed_count as isize);
-            return;
-        }
-
         let clif_block = self.block_map[&target];
-        self.builder.ins().jump(clif_block, &block_args);
-    }
-
-    fn raise_wrong_block_arity(&mut self, args: &[Operand<'gc>], expected: isize) {
-        let got = self
-            .builder
-            .ins()
-            .iconst(types::I64, Value::new(args.len() as i32).bits() as i64);
-        let expected = self
-            .builder
-            .ins()
-            .iconst(types::I64, Value::new(expected as i32).bits() as i64);
-        self.emit_raise(
-            RaiseKind::WrongNumberOfArguments,
-            &[self.rator, got, expected],
-            Value::new(false),
-        );
+        self.builder.ins().jump(clif_block, &[]);
     }
 
     fn emit_branch_target(&mut self, procedure: &Procedure<'gc>, target: &BranchTarget<'gc>) {
         match target {
-            BranchTarget::Local { block, args } => self.jump_to_block(procedure, *block, args),
+            BranchTarget::Local { block, edge_assigns } => {
+                for instruction in edge_assigns {
+                    self.translate_instruction(instruction);
+                }
+                self.flush_comparisons();
+                self.jump_to_block(procedure, *block);
+            }
             BranchTarget::Reified { continuation, args } => {
                 self.emit_tail_call(*continuation, args, Value::new(false));
             }
         }
+    }
+
+    fn emit_branch_prim(
+        &mut self,
+        procedure: &Procedure<'gc>,
+        prim: crate::compiler::cranelift::primitive::Primitive,
+        args: &[Operand<'gc>],
+        consequent: &BranchTarget<'gc>,
+        alternative: &BranchTarget<'gc>,
+        source: Value<'gc>,
+    ) {
+        let args = args
+            .iter()
+            .copied()
+            .map(|arg| self.emit_atom_as_term_arg(arg))
+            .collect::<Vec<_>>();
+        let cmp = match prim.lower(self, &args, source) {
+            PrimValue::Comparison(val) => val,
+            PrimValue::Value(val) => self
+                .builder
+                .ins()
+                .icmp_imm_s(IntCC::NotEqual, val, Value::VALUE_FALSE),
+        };
+        self.flush_comparisons();
+
+        let kcons = self.builder.create_block();
+        let kalt = self.builder.create_block();
+        self.builder.ins().brif(cmp, kcons, &[], kalt, &[]);
+        self.builder.switch_to_block(kalt);
+        self.emit_branch_target(procedure, alternative);
+        self.builder.switch_to_block(kcons);
+        self.emit_branch_target(procedure, consequent);
     }
 
     fn translate_terminator(&mut self, procedure: &Procedure<'gc>, terminator: &Terminator<'gc>) {
@@ -1502,17 +1561,25 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                 retk,
                 args,
                 source,
-            } => self.emit_call(*callee, *retk, args, *source),
+            } => {
+                self.flush_comparisons();
+                self.emit_call(*callee, *retk, args, *source)
+            }
             Terminator::TailCall {
                 callee,
                 args,
                 source,
-            } => self.emit_tail_call(*callee, args, *source),
+            } => {
+                self.flush_comparisons();
+                self.emit_tail_call(*callee, args, *source)
+            }
             Terminator::Raise { kind, args, source } => {
+                self.flush_comparisons();
                 self.emit_raise_to_handler(*kind, args, *source)
             }
-            Terminator::Jump { target, args } => {
-                self.jump_to_block(procedure, *target, args);
+            Terminator::Jump { target } => {
+                self.flush_comparisons();
+                self.jump_to_block(procedure, *target);
             }
             Terminator::Branch {
                 test,
@@ -1521,6 +1588,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                 hints: _,
             } => {
                 let truthy = self.emit_atom_for_cond(*test);
+                self.flush_comparisons();
                 let kcons = self.builder.create_block();
                 let kalt = self.builder.create_block();
 
@@ -1531,12 +1599,29 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                 self.builder.switch_to_block(kcons);
                 self.emit_branch_target(procedure, consequent);
             }
+            Terminator::BranchPrim {
+                prim,
+                args,
+                consequent,
+                alternative,
+                hints: _,
+            } => self.emit_branch_prim(
+                procedure,
+                *prim,
+                args,
+                consequent,
+                alternative,
+                Value::new(false),
+            ),
             Terminator::Switch {
                 kind,
                 scrutinee,
                 cases,
                 default,
-            } => self.emit_switch(procedure, *kind, *scrutinee, cases, default),
+            } => {
+                self.flush_comparisons();
+                self.emit_switch(procedure, *kind, *scrutinee, cases, default)
+            }
         }
     }
 
@@ -1545,7 +1630,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         procedure: &Procedure<'gc>,
         kind: SwitchKind,
         scrutinee: Operand<'gc>,
-        cases: &[crate::compiler::ssa::SwitchCase<'gc>],
+        cases: &[crate::compiler::cfg::SwitchCase<'gc>],
         default: &BranchTarget<'gc>,
     ) {
         let value = self.emit_atom(scrutinee);
@@ -1559,7 +1644,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         } else {
             self.builder.create_block()
         };
-        let mut case_blocks: Vec<(ir::Block, Vec<&crate::compiler::ssa::SwitchCase<'gc>>)> =
+        let mut case_blocks: Vec<(ir::Block, Vec<&crate::compiler::cfg::SwitchCase<'gc>>)> =
             Vec::with_capacity(cases.len());
         let mut case_block_by_key: HashMap<u128, usize> = HashMap::new();
         let mut switch = Switch::new();
@@ -1682,7 +1767,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
     fn emit_fixnum_switch_error_or_default(
         &mut self,
         scrutinee: ir::Value,
-        cases: &[crate::compiler::ssa::SwitchCase<'gc>],
+        cases: &[crate::compiler::cfg::SwitchCase<'gc>],
         procedure: &Procedure<'gc>,
         default: &BranchTarget<'gc>,
     ) {
@@ -1715,7 +1800,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         &mut self,
         procedure: &Procedure<'gc>,
         scrutinee: ir::Value,
-        cases: &[crate::compiler::ssa::SwitchCase<'gc>],
+        cases: &[crate::compiler::cfg::SwitchCase<'gc>],
         default: &BranchTarget<'gc>,
     ) {
         let ctx = self.ctx;

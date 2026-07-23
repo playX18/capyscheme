@@ -1,7 +1,7 @@
 use crate::{
-    compiler::ssa::{
+    compiler::cfg::{
         Block, BlockId, BranchTarget, ClosureKind, CodeId, Instruction, Operand, Procedure,
-        ProcedureKind, Program, RestPredicate, SwitchKind, Terminator, ValueId,
+        ProcedureKind, Program, RestPredicate, SwitchKind, Terminator, UVar,
         bbv::BlockAnnotation,
     },
     expander::core::LVarRef,
@@ -31,8 +31,8 @@ fn render_procedure<'gc>(
     annotations: Option<&HashMap<BlockId, BlockAnnotation>>,
 ) {
     let name = render_procedure_name(procedure);
-    let params = render_value_ids(&procedure.params);
-    let retk = render_optional_value_id(procedure.return_cont);
+    let params = render_uvars(&procedure.params);
+    let retk = render_optional_uvar(procedure.return_cont);
     writeln!(
         out,
         "{} {} {}({}) -> {} {{",
@@ -58,7 +58,7 @@ fn render_block<'gc>(
     block: &Block<'gc>,
     annotations: Option<&HashMap<BlockId, BlockAnnotation>>,
 ) {
-    let mut header = format!("block{}({}):", block.id.0, render_block_params(block));
+    let mut header = format!("block{}:", block.id.0);
     if let Some(annotations) = annotations
         && let Some(annotation) = annotations.get(&block.id)
     {
@@ -78,22 +78,13 @@ fn render_block<'gc>(
     writeln!(out, "    {}", render_terminator(&block.terminator)).unwrap();
 }
 
-fn render_block_params<'gc>(block: &Block<'gc>) -> String {
-    let mut params = render_value_ids(&block.params);
-    if let Some(variadic) = block.variadic {
-        if params.is_empty() {
-            params = format!("...{}", render_value_id(variadic));
-        } else {
-            params = format!("{params}, ...{}", render_value_id(variadic));
-        }
-    }
-    params
-}
-
 fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
     match instruction {
+        Instruction::Assign { dst, src } => {
+            format!("{} = {}", render_uvar(*dst), render_operand(*src))
+        }
         Instruction::Const { dst, value } => {
-            format!("{} = const {}", render_value_id(*dst), render_value(*value))
+            format!("{} = const {}", render_uvar(*dst), render_value(*value))
         }
         Instruction::MakeClosure {
             dst,
@@ -102,7 +93,7 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
             free_count,
         } => format!(
             "{} = make_closure {} {} {}",
-            render_value_id(*dst),
+            render_uvar(*dst),
             render_code_id(code),
             render_closure_kind(*kind),
             free_count
@@ -113,7 +104,7 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
             index,
         } => format!(
             "{} = closure_ref {}[{}]",
-            render_value_id(*dst),
+            render_uvar(*dst),
             render_operand(*closure),
             index
         ),
@@ -129,7 +120,7 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
         ),
         Instruction::CacheRef { dst, cache_key, .. } => format!(
             "{} = cache_ref {}",
-            render_value_id(*dst),
+            render_uvar(*dst),
             render_operand(*cache_key)
         ),
         Instruction::CacheSet {
@@ -139,37 +130,32 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
             ..
         } => format!(
             "{} = cache_set {}, {}",
-            render_value_id(*dst),
+            render_uvar(*dst),
             render_operand(*cache_key),
             render_operand(*value)
         ),
         Instruction::PrimCall {
             dst, prim, args, ..
-        } => format!(
-            "{} = {}{}",
-            render_value_id(*dst),
-            prim,
-            render_call_args(args)
-        ),
+        } => format!("{} = {}{}", render_uvar(*dst), prim, render_call_args(args)),
         Instruction::RestToList { dst, rest, .. } => format!(
             "{} = rest_to_list {}",
-            render_value_id(*dst),
-            render_value_id(*rest)
+            render_uvar(*dst),
+            render_uvar(*rest)
         ),
         Instruction::RestRef {
             dst, rest, index, ..
         } => format!(
             "{} = rest_ref {}, {}",
-            render_value_id(*dst),
-            render_value_id(*rest),
+            render_uvar(*dst),
+            render_uvar(*rest),
             index
         ),
         Instruction::RestLength {
             dst, rest, skip, ..
         } => format!(
             "{} = rest_length {}, {}",
-            render_value_id(*dst),
-            render_value_id(*rest),
+            render_uvar(*dst),
+            render_uvar(*rest),
             skip
         ),
         Instruction::RestPredicate {
@@ -180,9 +166,9 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
             ..
         } => format!(
             "{} = rest_{} {}, {}",
-            render_value_id(*dst),
+            render_uvar(*dst),
             render_rest_predicate(*predicate),
-            render_value_id(*rest),
+            render_uvar(*rest),
             skip
         ),
     }
@@ -206,8 +192,8 @@ fn render_terminator<'gc>(terminator: &Terminator<'gc>) -> String {
         Terminator::Raise { kind, args, .. } => {
             format!("raise {:?}({})", kind, render_call_args_list(args))
         }
-        Terminator::Jump { target, args } => {
-            format!("jump block{}({})", target.0, render_call_args_list(args))
+        Terminator::Jump { target } => {
+            format!("jump block{}", target.0)
         }
         Terminator::Branch {
             test,
@@ -217,6 +203,24 @@ fn render_terminator<'gc>(terminator: &Terminator<'gc>) -> String {
         } => format!(
             "brif {}, {}, {} ; {:?}, {:?}",
             render_operand(*test),
+            render_branch_target(consequent),
+            render_branch_target(alternative),
+            hints[0],
+            hints[1]
+        ),
+        Terminator::BranchPrim {
+            prim,
+            args,
+            consequent,
+            alternative,
+            hints,
+        } => format!(
+            "brif_prim {}({}), {}, {} ; {:?}, {:?}",
+            prim.name(),
+            args.iter()
+                .map(|arg| render_operand(*arg))
+                .collect::<Vec<_>>()
+                .join(", "),
             render_branch_target(consequent),
             render_branch_target(alternative),
             hints[0],
@@ -249,8 +253,15 @@ fn render_terminator<'gc>(terminator: &Terminator<'gc>) -> String {
 
 fn render_branch_target<'gc>(target: &BranchTarget<'gc>) -> String {
     match target {
-        BranchTarget::Local { block, args } => {
-            format!("block{}({})", block.0, render_call_args_list(args))
+        BranchTarget::Local {
+            block,
+            edge_assigns,
+        } => {
+            if edge_assigns.is_empty() {
+                format!("block{}", block.0)
+            } else {
+                format!("block{}[+{}]", block.0, edge_assigns.len())
+            }
         }
         BranchTarget::Reified { continuation, args } => format!(
             "return {}({})",
@@ -279,10 +290,10 @@ fn render_switch_kind(kind: SwitchKind) -> &'static str {
     }
 }
 
-fn render_switch_case_value<'gc>(value: crate::compiler::ssa::SwitchCaseValue<'gc>) -> String {
+fn render_switch_case_value<'gc>(value: crate::compiler::cfg::SwitchCaseValue<'gc>) -> String {
     match value {
-        crate::compiler::ssa::SwitchCaseValue::Integer(value) => value.to_string(),
-        crate::compiler::ssa::SwitchCaseValue::Symbol { value, .. } => render_value(value),
+        crate::compiler::cfg::SwitchCaseValue::Integer(value) => value.to_string(),
+        crate::compiler::cfg::SwitchCaseValue::Symbol { value, .. } => render_value(value),
     }
 }
 
@@ -300,23 +311,23 @@ fn render_call_args_list<'gc>(args: &[Operand<'gc>]) -> String {
 fn render_operand<'gc>(atom: Operand<'gc>) -> String {
     match atom {
         Operand::Constant(value) => render_value(value),
-        Operand::Local(var) => render_value_id(var),
+        Operand::Local(var) => render_uvar(var),
     }
 }
 
-fn render_value_id(id: ValueId) -> String {
-    format!("v{}", id.0)
+fn render_uvar(id: UVar) -> String {
+    format!("u{}", id.0)
 }
 
-fn render_value_ids(vars: &[ValueId]) -> String {
+fn render_uvars(vars: &[UVar]) -> String {
     vars.iter()
-        .map(|var| render_value_id(*var))
+        .map(|var| render_uvar(*var))
         .collect::<Vec<_>>()
         .join(", ")
 }
 
-fn render_optional_value_id(var: Option<ValueId>) -> String {
-    var.map(render_value_id).unwrap_or_else(|| "#f".to_string())
+fn render_optional_uvar(var: Option<UVar>) -> String {
+    var.map(render_uvar).unwrap_or_else(|| "#f".to_string())
 }
 
 fn render_code_id(code: &CodeId) -> String {
@@ -348,8 +359,8 @@ fn render_procedure_name<'gc>(procedure: &Procedure<'gc>) -> String {
 }
 
 fn render_source_name<'gc>(
-    binding: ValueId,
-    sources: &HashMap<ValueId, LVarRef<'gc>>,
+    binding: UVar,
+    sources: &HashMap<UVar, LVarRef<'gc>>,
 ) -> Option<String> {
     sources.get(&binding).map(|var| render_lvar(*var))
 }

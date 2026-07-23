@@ -4,7 +4,7 @@ use super::specialize::BlockAnnotation;
 use crate::compiler::{
     cranelift::primitive::Primitive,
     dump,
-    ssa::{Instruction, Procedure, Program, render_program_with_annotations},
+    cfg::{Instruction, Procedure, Program, render_program_with_annotations},
 };
 
 const GUARD_PRIMITIVES: &[Primitive] = &[
@@ -90,7 +90,7 @@ const UNCHECKED_PRIMITIVES: &[Primitive] = &[
 pub(crate) fn maybe_dump_procedure<'gc>(
     stage: &str,
     procedure: &Procedure<'gc>,
-    annotations: Option<&std::collections::HashMap<crate::compiler::ssa::BlockId, BlockAnnotation>>,
+    annotations: Option<&std::collections::HashMap<crate::compiler::cfg::BlockId, BlockAnnotation>>,
 ) {
     if !dump::sbbv_dump_stage_enabled(stage) {
         return;
@@ -122,8 +122,8 @@ pub(crate) fn maybe_dump_procedure<'gc>(
     dump::log_dump_path(&format!("SBBV {stage}"), &path);
 }
 
-fn render_code_id(code: &crate::compiler::ssa::CodeId) -> String {
-    use crate::compiler::ssa::CodeId;
+fn render_code_id(code: &crate::compiler::cfg::CodeId) -> String {
+    use crate::compiler::cfg::CodeId;
     match code {
         CodeId::GraphFunction(id) => format!("gf{}", id.0),
         CodeId::GraphContinuation(id) => format!("gk{}", id.0),

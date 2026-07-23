@@ -1,4 +1,4 @@
-//! SSA (Static Single Assignment) code generation using Cranelift.
+//! CFG (mutable-uvar) code generation using Cranelift.
 
 use std::sync::Arc;
 
@@ -111,7 +111,7 @@ use crate::{
             CompiledFunction, Relocation as DirectRelocation, Target as DirectTarget,
             compile_function,
         },
-        ssa::{BlockId, CodeId, Procedure, Program, ValueId},
+        cfg::{BlockId, CodeId, Procedure, Program, ValueId},
         symbols::FunctionSymbol,
     },
     disassembly::{DisassemblySource, SourceAnnotation, SourceRangeAnnotation},
@@ -790,7 +790,7 @@ impl<'gc> ModuleBuilder<'gc> {
                         ),
                     }
                     let ssa_path = dump_dir.join(format!("{safe_name}.ssa.txt"));
-                    let rendered = crate::compiler::ssa::render_program(&Program {
+                    let rendered = crate::compiler::cfg::render_program(&Program {
                         entry: declared.procedure.code,
                         procedures: vec![declared.procedure.clone()],
                     });
@@ -806,7 +806,7 @@ impl<'gc> ModuleBuilder<'gc> {
                     }
                     // Also dump the full module SSA for cross-procedure context.
                     let full_path = dump_dir.join("module.ssa.txt");
-                    let full = crate::compiler::ssa::render_program(&self.program);
+                    let full = crate::compiler::cfg::render_program(&self.program);
                     let _ = std::fs::write(&full_path, full);
                     eprintln!(
                         ";; TRACE  (capy)@compile: verify-fail module SSA -> {}",
@@ -1656,7 +1656,10 @@ pub struct SsaBuilder<'gc, 'a, 'f> {
 
     pub block_map: HashMap<BlockId, ir::Block>,
     pub variables: HashMap<LVarRef<'gc>, VarDef>,
+    /// Capyscheme uvar → Comparison/Value (preserves i1 flags for branches).
     pub ssa_variables: HashMap<ValueId, VarDef>,
+    /// Cranelift variables declared for Capyscheme mutable uvars.
+    pub declared_uvars: HashMap<u32, cranelift::prelude::Variable>,
     pub rest_sources: HashMap<ValueId, RestSource>,
     pub synthetic_aliases: HashMap<ValueId, LVarRef<'gc>>,
 
@@ -1767,6 +1770,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
             entry_block,
             variables,
             ssa_variables: HashMap::new(),
+            declared_uvars: HashMap::new(),
             rest_sources: HashMap::new(),
             synthetic_aliases: HashMap::new(),
             block_map: HashMap::new(),

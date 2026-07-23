@@ -12,7 +12,7 @@ use super::types::{
     intersect_types,
 };
 use crate::compiler::cranelift::primitive::Primitive;
-use crate::compiler::ssa::ValueId;
+use crate::compiler::cfg::ValueId;
 use crate::runtime::value::{ByteVector, Pair, Str, Symbol, Value, Vector};
 
 /// Outcome of specializing a primitive call under a typing context.
@@ -966,6 +966,7 @@ pub(super) fn narrow_binary_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler::cfg::UVar;
 
     #[test]
     fn checked_multiply_remains_checked_when_an_endpoint_can_overflow() {
@@ -1094,7 +1095,7 @@ mod tests {
 
     #[test]
     fn checked_indexed_access_does_not_reuse_an_unrelated_symbolic_bound() {
-        let index = Type::fixnum(Bound::Int(0), Bound::VecLenMinus(ValueId(99), 1));
+        let index = Type::fixnum(Bound::Int(0), Bound::VecLenMinus(UVar(99), 1));
 
         for (prim, container) in [
             (Primitive::VectorRef, Type::kind(TypeKind::Vector)),
@@ -1134,7 +1135,7 @@ mod tests {
 
     #[test]
     fn ambiguous_heap_numbers_remain_on_both_type_test_branches() {
-        let value = ValueId(1);
+        let value = UVar(1);
         let mut ctx = TypeContext::new();
         ctx.set(value, Type::kind(TypeKind::Other));
 

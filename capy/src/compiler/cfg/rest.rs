@@ -43,23 +43,40 @@ fn collect_rest_aliases<'gc>(
         changed = false;
         for block in &procedure.blocks {
             for instruction in &block.instructions {
-                let Instruction::PrimCall {
-                    dst, prim, args, ..
-                } = instruction
-                else {
-                    continue;
-                };
-                if *prim != Primitive::Cdr || args.len() != 1 {
-                    continue;
-                }
-                if let Some(alias) = rest_alias_for_atom(args[0], rest, &aliases) {
-                    let next_alias = RestAlias {
-                        rest: alias.rest,
-                        skip: alias.skip + 1,
-                    };
-                    if aliases.insert(*dst, next_alias) != Some(next_alias) {
-                        changed = true;
+                match instruction {
+                    Instruction::PrimCall {
+                        dst, prim, args, ..
+                    } => {
+                        if *prim != Primitive::Cdr || args.len() != 1 {
+                            continue;
+                        }
+                        // Mutable uvars may redefine a home many times
+                        // (`v = cdr(v)`). Keep the first alias only so the
+                        // fixed-point cannot climb `skip` forever.
+                        if aliases.contains_key(dst) {
+                            continue;
+                        }
+                        if let Some(alias) = rest_alias_for_atom(args[0], rest, &aliases) {
+                            aliases.insert(
+                                *dst,
+                                RestAlias {
+                                    rest: alias.rest,
+                                    skip: alias.skip + 1,
+                                },
+                            );
+                            changed = true;
+                        }
                     }
+                    Instruction::Assign { dst, src } => {
+                        if aliases.contains_key(dst) {
+                            continue;
+                        }
+                        if let Some(alias) = rest_alias_for_atom(*src, rest, &aliases) {
+                            aliases.insert(*dst, alias);
+                            changed = true;
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -145,6 +162,8 @@ fn has_incompatible_rest_use<'gc>(
                 Instruction::PrimCall { prim, args, .. } => {
                     rest_rewrite_for_prim(*prim, args, rest, aliases).is_some()
                 }
+                // Moves of rest/aliases are fine; they do not force RestToList.
+                Instruction::Assign { .. } => true,
                 _ => false,
             };
             if !compatible {

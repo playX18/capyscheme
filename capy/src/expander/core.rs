@@ -113,10 +113,6 @@ impl<'gc> std::fmt::Display for CompileError<'gc> {
 
 pub type Error<'gc> = Box<CompileError<'gc>>;
 
-// ---------------------------------------------------------------------------
-// Main expansion entry point
-// ---------------------------------------------------------------------------
-
 pub fn expand<'gc>(cenv: &mut Cenv<'gc>, program: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
     if program.try_as::<Symbol>().is_some() {
         let module = get_current_module(cenv.ctx).downcast::<Module>();
@@ -264,10 +260,6 @@ pub fn fresh_lvar_derived<'gc>(
     )
 }
 
-// ---------------------------------------------------------------------------
-// Define parsing
-// ---------------------------------------------------------------------------
-
 #[derive(Debug)]
 pub enum Define<'gc> {
     Lambda(Value<'gc>, Vec<Value<'gc>>, Option<Value<'gc>>, Value<'gc>),
@@ -357,10 +349,6 @@ impl<'gc> Define<'gc> {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Form-specific expanders
-// ---------------------------------------------------------------------------
 
 fn expand_set<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
     if form.list_length() != 3 {

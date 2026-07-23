@@ -5,34 +5,15 @@
 //! contexts. Each expanded call splits its block: type guards branch into a
 //! fast path built from unchecked primitives and a slow path that falls back
 //! to the generic primitive (or raises for `car`/`cdr` on non-pairs). All
-//! paths join at a continuation block that receives the result as a block
-//! parameter, preserving SSA form.
-//!
-//! Every value that is live across the split (per [`super::liveness`]) is
-//! threaded through the guard blocks as explicit block parameters. This keeps
-//! the "cross-block values are block parameters" invariant the specializer
-//! relies on, and gives each guard block a typing context of its own so that
-//! versioning can fold the guards.
-//!
-//! Expanded shapes:
-//!
-//! - `(+ x y)` (and `-`, `*`): `fixnum? x` -> `fixnum? y` -> `fx+/ovf?/unchecked`
-//!   with a branch on the `#f` overflow result; otherwise the generic slow
-//!   primitive. Flonum cases are left to type-lattice specialization.
-//! - `(< x y)` (and `<=`, `>`, `>=`, `=`): fixnum path via unchecked comparisons;
-//!   otherwise slow (flonum via specialize when proven).
-//! - `(car p)` / `(cdr p)`: `pair? p` -> `car/unchecked` else
-//!   `Raise CarNotPair`/`CdrNotPair`.
-//! - `(set-car! p v)` / `(set-cdr! p v)`: `pair? p` -> unchecked else slow.
-//! - `(vector-ref v i)` / `(vector-set! v i x)`: `vector? v`, `fixnum? i`,
-//!   `0 <= i < (vector-length/unchecked v)` -> unchecked else slow.
+//! paths join at a continuation block that receives the result through the
+//! original mutable destination uvar.
 
 use super::config;
 use super::specialize::{max_block_id, max_value_id};
 use crate::compiler::cps::graph::BranchHint;
 use crate::compiler::cranelift::primitive::Primitive;
-use crate::compiler::ssa::{
-    Block, BlockId, BranchTarget, Instruction, Operand, Procedure, Terminator, ValueId,
+use crate::compiler::cfg::{
+    Block, BlockId, BranchTarget, Instruction, Operand, Procedure, Terminator, UVar,
 };
 use crate::runtime::value::Value;
 use crate::runtime::vm::exceptions::RaiseKind;
@@ -80,39 +61,23 @@ fn is_expandable(prim: Primitive, argc: usize) -> bool {
 const GUARD_HINTS: [BranchHint; 2] = [BranchHint::Normal, BranchHint::Cold];
 const EVEN_HINTS: [BranchHint; 2] = [BranchHint::Normal, BranchHint::Normal];
 
-/// Splits blocks at expandable primitive calls, allocating fresh value and
-/// block ids for the guard/fast/slow scaffolding it introduces.
+/// Splits blocks at expandable primitive calls, allocating fresh block ids
+/// for the guard/fast/slow scaffolding it introduces.
 struct Expander<'gc> {
     next_value: u32,
     next_block: usize,
-    proc_values: HashSet<ValueId>,
+    proc_values: HashSet<UVar>,
     out: Vec<Block<'gc>>,
 }
 
-/// Per-split state: which values the guard chain must thread along.
+/// Per-split state for one expandable call site.
 struct SplitEnv<'gc> {
-    /// Original call operands.
     args: Vec<Operand<'gc>>,
-    /// Params of every intermediate guard/op/slow/raise block (original ids).
-    threaded: Vec<ValueId>,
-    /// Values (beyond the result) the continuation block rebinds.
-    cont_extra: Vec<ValueId>,
+    /// Original destination uvar for the expandable call.
+    result: UVar,
     cont: BlockId,
     prim_source: Value<'gc>,
     block_source: Value<'gc>,
-}
-
-impl<'gc> SplitEnv<'gc> {
-    fn threaded_atoms(&self) -> Vec<Operand<'gc>> {
-        self.threaded.iter().map(|id| Operand::Local(*id)).collect()
-    }
-
-    fn cont_args(&self, result: ValueId) -> Vec<Operand<'gc>> {
-        let mut args = Vec::with_capacity(1 + self.cont_extra.len());
-        args.push(Operand::Local(result));
-        args.extend(self.cont_extra.iter().map(|id| Operand::Local(*id)));
-        args
-    }
 }
 
 impl<'gc> Expander<'gc> {
@@ -131,8 +96,8 @@ impl<'gc> Expander<'gc> {
         }
     }
 
-    fn fresh_value(&mut self) -> ValueId {
-        let value = ValueId(self.next_value);
+    fn fresh_value(&mut self) -> UVar {
+        let value = UVar(self.next_value);
         self.next_value += 1;
         value
     }
@@ -146,41 +111,15 @@ impl<'gc> Expander<'gc> {
     fn expand_block(&mut self, block: Block<'gc>) {
         let Block {
             id,
-            params,
-            variadic,
             instructions,
             terminator,
             source,
         } = block;
 
-        // Backward liveness within the block: values live after instruction k.
-        // Cross-block flow is covered because terminator uses include all edge
-        // arguments (the same convention as `liveness::compute_live_in`).
-        let mut live_after: Vec<HashSet<ValueId>> = vec![HashSet::new(); instructions.len()];
-        let mut live: HashSet<ValueId> = HashSet::new();
-        for atom in terminator.uses() {
-            if let Operand::Local(value) = atom {
-                live.insert(value);
-            }
-        }
-        for (k, instruction) in instructions.iter().enumerate().rev() {
-            live_after[k] = live.clone();
-            for def in instruction.defs() {
-                live.remove(&def);
-            }
-            for atom in instruction.uses() {
-                if let Operand::Local(value) = atom {
-                    live.insert(value);
-                }
-            }
-        }
-
         let mut cur_id = id;
-        let mut cur_params = params;
-        let mut cur_variadic = variadic;
         let mut cur_instructions: Vec<Instruction<'gc>> = Vec::new();
 
-        for (k, instruction) in instructions.into_iter().enumerate() {
+        for instruction in instructions {
             match instruction {
                 Instruction::PrimCall {
                     dst,
@@ -188,29 +127,10 @@ impl<'gc> Expander<'gc> {
                     args,
                     source: prim_source,
                 } if is_expandable(prim, args.len()) => {
-                    let mut cont_extra: Vec<ValueId> = live_after[k]
-                        .iter()
-                        .copied()
-                        .filter(|value| *value != dst && !self.proc_values.contains(value))
-                        .collect();
-                    cont_extra.sort_by_key(|value| value.0);
-
-                    let mut threaded = cont_extra.clone();
-                    for arg in &args {
-                        if let Operand::Local(value) = arg
-                            && !self.proc_values.contains(value)
-                            && !threaded.contains(value)
-                        {
-                            threaded.push(*value);
-                        }
-                    }
-                    threaded.sort_by_key(|value| value.0);
-
                     let cont = self.fresh_block();
                     let env = SplitEnv {
                         args,
-                        threaded,
-                        cont_extra: cont_extra.clone(),
+                        result: dst,
                         cont,
                         prim_source,
                         block_source: source,
@@ -219,23 +139,12 @@ impl<'gc> Expander<'gc> {
                     let head = self.expand_primcall(prim, &env, &mut cur_instructions);
                     self.out.push(Block {
                         id: cur_id,
-                        params: cur_params,
-                        variadic: cur_variadic,
                         instructions: cur_instructions,
                         terminator: head,
                         source,
                     });
 
-                    // The continuation receives the result (reusing `dst` so
-                    // downstream uses stay intact) plus the live values.
                     cur_id = cont;
-                    cur_params = {
-                        let mut params = Vec::with_capacity(1 + cont_extra.len());
-                        params.push(dst);
-                        params.extend(cont_extra);
-                        params
-                    };
-                    cur_variadic = None;
                     cur_instructions = Vec::new();
                 }
                 other => cur_instructions.push(other),
@@ -244,17 +153,12 @@ impl<'gc> Expander<'gc> {
 
         self.out.push(Block {
             id: cur_id,
-            params: cur_params,
-            variadic: cur_variadic,
             instructions: cur_instructions,
             terminator,
             source,
         });
     }
 
-    /// Emits the guard chain for one primitive call. Helper blocks are pushed
-    /// to `self.out`; the returned terminator ends the block being split, and
-    /// the head guard instruction is appended to `head_instructions`.
     fn expand_primcall(
         &mut self,
         prim: Primitive,
@@ -294,9 +198,6 @@ impl<'gc> Expander<'gc> {
         }
     }
 
-    // --- shared emission helpers -------------------------------------------
-
-    /// New block with the threaded values as params and the given body.
     fn emit_block(
         &mut self,
         env: &SplitEnv<'gc>,
@@ -306,8 +207,6 @@ impl<'gc> Expander<'gc> {
         let id = self.fresh_block();
         self.out.push(Block {
             id,
-            params: env.threaded.clone(),
-            variadic: None,
             instructions,
             terminator,
             source: env.block_source,
@@ -315,31 +214,26 @@ impl<'gc> Expander<'gc> {
         id
     }
 
-    /// `r = prim(args); jump cont(r, extra...)`
     fn op_block(
         &mut self,
         env: &SplitEnv<'gc>,
         prim: Primitive,
         args: Vec<Operand<'gc>>,
     ) -> BlockId {
-        let result = self.fresh_value();
-        let jump = Terminator::Jump {
-            target: env.cont,
-            args: env.cont_args(result),
-        };
         self.emit_block(
             env,
             vec![Instruction::PrimCall {
-                dst: result,
+                dst: env.result,
                 prim,
                 args,
                 source: env.prim_source,
             }],
-            jump,
+            Terminator::Jump {
+                target: env.cont,
+            },
         )
     }
 
-    /// `t = prim(args); branch t ? then_block(threaded) : else_block(threaded)`
     fn guard_block(
         &mut self,
         env: &SplitEnv<'gc>,
@@ -350,14 +244,6 @@ impl<'gc> Expander<'gc> {
         hints: [BranchHint; 2],
     ) -> BlockId {
         let test = self.fresh_value();
-        let branch = branch_to(
-            test,
-            then_block,
-            env.threaded_atoms(),
-            else_block,
-            env.threaded_atoms(),
-            hints,
-        );
         self.emit_block(
             env,
             vec![Instruction::PrimCall {
@@ -366,12 +252,10 @@ impl<'gc> Expander<'gc> {
                 args,
                 source: env.prim_source,
             }],
-            branch,
+            branch_to(test, then_block, else_block, hints),
         )
     }
 
-    /// Appends the head guard to the split block and returns its terminator.
-    #[allow(clippy::too_many_arguments)]
     fn head_guard(
         &mut self,
         env: &SplitEnv<'gc>,
@@ -389,17 +273,8 @@ impl<'gc> Expander<'gc> {
             args,
             source: env.prim_source,
         });
-        branch_to(
-            test,
-            then_block,
-            env.threaded_atoms(),
-            else_block,
-            env.threaded_atoms(),
-            hints,
-        )
+        branch_to(test, then_block, else_block, hints)
     }
-
-    // --- per-primitive expansions ------------------------------------------
 
     fn expand_arith(
         &mut self,
@@ -426,20 +301,11 @@ impl<'gc> Expander<'gc> {
         let fl_y = self.guard_block(env, Primitive::IsFlonum, vec![y], fl_op, slow, GUARD_HINTS);
         let fl_x = self.guard_block(env, Primitive::IsFlonum, vec![x], fl_y, slow, GUARD_HINTS);
 
-        // Fixnum overflow and non-numeric operands fall back to the generic thunk.
-        let sum = self.fresh_value();
-        let branch = branch_to(
-            sum,
-            env.cont,
-            env.cont_args(sum),
-            slow,
-            env.threaded_atoms(),
-            GUARD_HINTS,
-        );
+        let branch = branch_to(env.result, env.cont, slow, GUARD_HINTS);
         let fx_op = self.emit_block(
             env,
             vec![Instruction::PrimCall {
-                dst: sum,
+                dst: env.result,
                 prim: ovf_prim,
                 args: vec![x, y],
                 source: env.prim_source,
@@ -596,18 +462,9 @@ impl<'gc> Expander<'gc> {
         let slow = self.op_block(env, prim, env.args.clone());
         let ok = self.op_block(env, unchecked, env.args.clone());
 
-        // Upper bound: i < (vector-length/unchecked v).
         let upper = {
             let length = self.fresh_value();
             let test = self.fresh_value();
-            let branch = branch_to(
-                test,
-                ok,
-                env.threaded_atoms(),
-                slow,
-                env.threaded_atoms(),
-                GUARD_HINTS,
-            );
             self.emit_block(
                 env,
                 vec![
@@ -624,23 +481,13 @@ impl<'gc> Expander<'gc> {
                         source: env.prim_source,
                     },
                 ],
-                branch,
+                branch_to(test, ok, slow, GUARD_HINTS),
             )
         };
 
-        // Lower bound: 0 <= i, with the zero materialized as a constant so
-        // interval narrowing sees both comparison operands.
         let lower = {
             let zero = self.fresh_value();
             let test = self.fresh_value();
-            let branch = branch_to(
-                test,
-                upper,
-                env.threaded_atoms(),
-                slow,
-                env.threaded_atoms(),
-                GUARD_HINTS,
-            );
             self.emit_block(
                 env,
                 vec![
@@ -655,7 +502,7 @@ impl<'gc> Expander<'gc> {
                         source: env.prim_source,
                     },
                 ],
-                branch,
+                branch_to(test, upper, slow, GUARD_HINTS),
             )
         };
 
@@ -725,14 +572,6 @@ impl<'gc> Expander<'gc> {
         let upper = {
             let length = self.fresh_value();
             let test = self.fresh_value();
-            let branch = branch_to(
-                test,
-                ok,
-                env.threaded_atoms(),
-                slow,
-                env.threaded_atoms(),
-                GUARD_HINTS,
-            );
             self.emit_block(
                 env,
                 vec![
@@ -749,21 +588,13 @@ impl<'gc> Expander<'gc> {
                         source: env.prim_source,
                     },
                 ],
-                branch,
+                branch_to(test, ok, slow, GUARD_HINTS),
             )
         };
 
         let lower = {
             let zero = self.fresh_value();
             let test = self.fresh_value();
-            let branch = branch_to(
-                test,
-                upper,
-                env.threaded_atoms(),
-                slow,
-                env.threaded_atoms(),
-                GUARD_HINTS,
-            );
             self.emit_block(
                 env,
                 vec![
@@ -778,7 +609,7 @@ impl<'gc> Expander<'gc> {
                         source: env.prim_source,
                     },
                 ],
-                branch,
+                branch_to(test, upper, slow, GUARD_HINTS),
             )
         };
 
@@ -857,14 +688,7 @@ impl<'gc> Expander<'gc> {
                         source: env.prim_source,
                     },
                 ],
-                branch_to(
-                    test,
-                    slow,
-                    env.threaded_atoms(),
-                    ok,
-                    env.threaded_atoms(),
-                    GUARD_HINTS,
-                ),
+                branch_to(test, slow, ok, GUARD_HINTS),
             )
         };
 
@@ -885,14 +709,7 @@ impl<'gc> Expander<'gc> {
                         source: env.prim_source,
                     },
                 ],
-                branch_to(
-                    test,
-                    minimum_dividend,
-                    env.threaded_atoms(),
-                    ok,
-                    env.threaded_atoms(),
-                    GUARD_HINTS,
-                ),
+                branch_to(test, minimum_dividend, ok, GUARD_HINTS),
             )
         };
 
@@ -913,14 +730,7 @@ impl<'gc> Expander<'gc> {
                         source: env.prim_source,
                     },
                 ],
-                branch_to(
-                    test,
-                    slow,
-                    env.threaded_atoms(),
-                    exceptional_divisor,
-                    env.threaded_atoms(),
-                    GUARD_HINTS,
-                ),
+                branch_to(test, slow, exceptional_divisor, GUARD_HINTS),
             )
         };
 
@@ -953,20 +763,16 @@ impl<'gc> Expander<'gc> {
         let slow = self.op_block(env, Primitive::Modulo, vec![x, y]);
         let ok = self.op_block(env, Primitive::FxModulo, vec![x, y]);
 
-        let zero_result = {
-            let result = self.fresh_value();
-            self.emit_block(
-                env,
-                vec![Instruction::Const {
-                    dst: result,
-                    value: Value::from_i32(0),
-                }],
-                Terminator::Jump {
-                    target: env.cont,
-                    args: env.cont_args(result),
-                },
-            )
-        };
+        let zero_result = self.emit_block(
+            env,
+            vec![Instruction::Const {
+                dst: env.result,
+                value: Value::from_i32(0),
+            }],
+            Terminator::Jump {
+                target: env.cont,
+            },
+        );
 
         let nonzero = {
             let zero = self.fresh_value();
@@ -985,14 +791,7 @@ impl<'gc> Expander<'gc> {
                         source: env.prim_source,
                     },
                 ],
-                branch_to(
-                    test,
-                    zero_result,
-                    env.threaded_atoms(),
-                    ok,
-                    env.threaded_atoms(),
-                    GUARD_HINTS,
-                ),
+                branch_to(test, zero_result, ok, GUARD_HINTS),
             )
         };
 
@@ -1017,23 +816,21 @@ impl<'gc> Expander<'gc> {
     }
 }
 
-fn branch_to<'gc>(
-    test: ValueId,
+fn branch_to(
+    test: UVar,
     then_block: BlockId,
-    then_args: Vec<Operand<'gc>>,
     else_block: BlockId,
-    else_args: Vec<Operand<'gc>>,
     hints: [BranchHint; 2],
-) -> Terminator<'gc> {
+) -> Terminator<'static> {
     Terminator::Branch {
         test: Operand::Local(test),
         consequent: BranchTarget::Local {
             block: then_block,
-            args: then_args,
+            edge_assigns: vec![]
         },
         alternative: BranchTarget::Local {
             block: else_block,
-            args: else_args,
+            edge_assigns: vec![]
         },
         hints,
     }
@@ -1042,14 +839,14 @@ fn branch_to<'gc>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compiler::ssa::{CodeId, GraphCodeId, ProcedureKind};
+    use crate::compiler::cfg::{CodeId, GraphCodeId, ProcedureKind};
     use std::collections::HashMap;
 
     fn test_procedure(blocks: Vec<Block<'static>>) -> Procedure<'static> {
         Procedure {
             code: CodeId::GraphFunction(GraphCodeId(0)),
             kind: ProcedureKind::Function,
-            binding: ValueId(0),
+            binding: UVar(0),
             name: Value::new(false),
             source: Value::new(false),
             meta: Value::new(false),
@@ -1077,13 +874,11 @@ mod tests {
 
     #[test]
     fn expand_plus_builds_guarded_diamond() {
-        let x = ValueId(1);
-        let y = ValueId(2);
-        let dst = ValueId(3);
+        let x = UVar(1);
+        let y = UVar(2);
+        let dst = UVar(3);
         let procedure = test_procedure(vec![Block {
             id: BlockId(0),
-            params: vec![x, y],
-            variadic: None,
             instructions: vec![Instruction::PrimCall {
                 dst,
                 prim: Primitive::Plus,
@@ -1099,7 +894,6 @@ mod tests {
         }]);
 
         let expanded = expand_procedure(procedure);
-        // head + slow + fl_op + fl_y + fl_x + fx_op + fx_y + cont
         assert_eq!(expanded.blocks.len(), 8);
 
         let head = expanded
@@ -1116,12 +910,18 @@ mod tests {
         ));
         assert!(matches!(head.terminator, Terminator::Branch { .. }));
 
-        // The continuation rebinds the original dst as its first parameter
-        // and keeps the original terminator.
         let cont = expanded
             .blocks
             .iter()
-            .find(|block| block.params.first() == Some(&dst))
+            .find(|block| {
+                matches!(
+                    block.terminator,
+                    Terminator::TailCall {
+                        callee: Operand::Local(value),
+                        ..
+                    } if value == dst
+                )
+            })
             .expect("continuation block");
         assert!(matches!(cont.terminator, Terminator::TailCall { .. }));
 
@@ -1137,15 +937,13 @@ mod tests {
 
     #[test]
     fn expand_div_abs_and_compare_build_flonum_fast_paths() {
-        let x = ValueId(1);
-        let y = ValueId(2);
-        let quotient = ValueId(3);
-        let absolute = ValueId(4);
-        let comparison = ValueId(5);
+        let x = UVar(1);
+        let y = UVar(2);
+        let quotient = UVar(3);
+        let absolute = UVar(4);
+        let comparison = UVar(5);
         let procedure = test_procedure(vec![Block {
             id: BlockId(0),
-            params: vec![x, y],
-            variadic: None,
             instructions: vec![
                 Instruction::PrimCall {
                     dst: quotient,
@@ -1189,13 +987,11 @@ mod tests {
 
     #[test]
     fn expand_fixnum_modulo_returns_zero_for_zero_divisor() {
-        let x = ValueId(1);
-        let y = ValueId(2);
-        let dst = ValueId(3);
+        let x = UVar(1);
+        let y = UVar(2);
+        let dst = UVar(3);
         let procedure = test_procedure(vec![Block {
             id: BlockId(0),
-            params: vec![x, y],
-            variadic: None,
             instructions: vec![Instruction::PrimCall {
                 dst,
                 prim: Primitive::Modulo,
@@ -1228,13 +1024,11 @@ mod tests {
             (Primitive::Quotient, Primitive::FxQuotient),
             (Primitive::Remainder, Primitive::FxRemainder),
         ] {
-            let x = ValueId(1);
-            let y = ValueId(2);
-            let dst = ValueId(3);
+            let x = UVar(1);
+            let y = UVar(2);
+            let dst = UVar(3);
             let procedure = test_procedure(vec![Block {
                 id: BlockId(0),
-                params: vec![x, y],
-                variadic: None,
                 instructions: vec![Instruction::PrimCall {
                     dst,
                     prim,
@@ -1263,16 +1057,13 @@ mod tests {
     }
 
     #[test]
-    fn expand_threads_live_values_through_guards() {
-        let x = ValueId(1);
-        let y = ValueId(2);
-        let z = ValueId(3);
-        let dst = ValueId(4);
-        // z is live across the split (used by the terminator).
+    fn expand_join_uses_original_result_home() {
+        let x = UVar(1);
+        let y = UVar(2);
+        let z = UVar(3);
+        let dst = UVar(4);
         let procedure = test_procedure(vec![Block {
             id: BlockId(0),
-            params: vec![x, y, z],
-            variadic: None,
             instructions: vec![Instruction::PrimCall {
                 dst,
                 prim: Primitive::Plus,
@@ -1288,30 +1079,45 @@ mod tests {
         }]);
 
         let expanded = expand_procedure(procedure);
-        let cont = expanded
-            .blocks
-            .iter()
-            .find(|block| block.params.first() == Some(&dst))
-            .expect("continuation block");
-        assert!(cont.params.contains(&z));
-
-        // Guard blocks thread x, y (operands) and z (live-across).
-        for block in &expanded.blocks {
-            if block.id == BlockId(0) || block.params.first() == Some(&dst) {
-                continue;
+        assert!(expanded.blocks.iter().any(|block| {
+            block.instructions.iter().any(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::PrimCall {
+                        prim: Primitive::Plus | Primitive::FxAddOvfUnchecked,
+                        ..
+                    }
+                )
+            })
+        }));
+        assert!(expanded.blocks.iter().all(|block| {
+            !matches!(
+                block.terminator,
+                Terminator::Jump { .. } | Terminator::Branch { .. } | Terminator::BranchPrim { .. }
+            ) || match &block.terminator {
+                Terminator::Jump { .. } => true,
+                Terminator::Branch {
+                    consequent,
+                    alternative,
+                    ..
+                }
+                | Terminator::BranchPrim {
+                    consequent,
+                    alternative,
+                    ..
+                } => matches!(consequent, BranchTarget::Local { .. })
+                    && matches!(alternative, BranchTarget::Local { .. }),
+                _ => true,
             }
-            assert_eq!(block.params, vec![x, y, z], "block {:?}", block.id);
-        }
+        }));
     }
 
     #[test]
     fn expand_car_raises_on_non_pair() {
-        let p = ValueId(1);
-        let dst = ValueId(2);
+        let p = UVar(1);
+        let dst = UVar(2);
         let procedure = test_procedure(vec![Block {
             id: BlockId(0),
-            params: vec![p],
-            variadic: None,
             instructions: vec![Instruction::PrimCall {
                 dst,
                 prim: Primitive::Car,
@@ -1335,19 +1141,16 @@ mod tests {
             }
         )));
         assert!(collect_prims(&expanded).contains(&Primitive::CarUnchecked));
-        // No slow-path Car remains: non-pairs raise.
         assert!(!collect_prims(&expanded).contains(&Primitive::Car));
     }
 
     #[test]
     fn expand_vector_ref_checks_bounds_with_unchecked_length() {
-        let v = ValueId(1);
-        let i = ValueId(2);
-        let dst = ValueId(3);
+        let v = UVar(1);
+        let i = UVar(2);
+        let dst = UVar(3);
         let procedure = test_procedure(vec![Block {
             id: BlockId(0),
-            params: vec![v, i],
-            variadic: None,
             instructions: vec![Instruction::PrimCall {
                 dst,
                 prim: Primitive::VectorRef,
@@ -1379,12 +1182,10 @@ mod tests {
 
     #[test]
     fn non_expandable_instructions_pass_through() {
-        let x = ValueId(1);
-        let dst = ValueId(2);
+        let x = UVar(1);
+        let dst = UVar(2);
         let procedure = test_procedure(vec![Block {
             id: BlockId(0),
-            params: vec![x],
-            variadic: None,
             instructions: vec![Instruction::PrimCall {
                 dst,
                 prim: Primitive::Cons,
