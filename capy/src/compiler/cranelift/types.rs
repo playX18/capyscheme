@@ -53,21 +53,20 @@ pub(crate) fn overflow_base_from_argc(
 }
 
 pub(crate) fn compiled_scheme_signature() -> ir::Signature {
-    let mut sig = ir::Signature::new(CallConv::Ghc);
+    let mut sig = ir::Signature::new(CallConv::Tail);
     for _ in 0..COMPILED_ENTRY_ARG_COUNT {
         sig.params.push(ir::AbiParam::new(types::I64));
     }
     sig
 }
 
-/// Pack Scheme GHC call arguments: ctx, rator, argc, arg0..arg3.
+/// Pack Scheme Tail call arguments: rator, argc, arg0..arg3.
 pub(crate) fn scheme_call_values(
-    ctx: ir::Value,
     rator: ir::Value,
     argc: ir::Value,
     args: [ir::Value; REGISTER_ARG_COUNT],
 ) -> [ir::Value; COMPILED_ENTRY_ARG_COUNT] {
-    [ctx, rator, argc, args[0], args[1], args[2], args[3]]
+    [rator, argc, args[0], args[1], args[2], args[3]]
 }
 
 pub(crate) const MAX_RAISE_ARITY: usize = 4;

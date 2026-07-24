@@ -56,13 +56,13 @@ pub fn declare_runtime_data(
 
 pub fn host_isa() -> Arc<dyn TargetIsa> {
     let mut shared_builder = settings::builder();
-    shared_builder.set("enable_probestack", "false").unwrap();
+    shared_builder.set("enable_probestack", "false").expect("invariant holds");
     shared_builder
         .set("enable_heap_access_spectre_mitigation", "false")
-        .unwrap();
-    shared_builder.set("opt_level", "speed_and_size").unwrap();
-    // GHC uses %rbp as an argument register (STG Sp); do not force a frame pointer.
-    shared_builder.set("preserve_frame_pointers", "false").unwrap();
+        .expect("infallible allocation callback");
+    shared_builder.set("opt_level", "speed_and_size").expect("invariant holds");
+    shared_builder.enable("preserve_frame_pointers").unwrap();
+    shared_builder.enable("enable_pinned_reg").unwrap();
     shared_builder.enable("enable_alias_analysis").unwrap();
 
     let shared_flags = Flags::new(shared_builder);
@@ -1120,9 +1120,9 @@ impl<'gc> ModuleBuilder<'gc> {
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
 
-        let ctx = builder.block_params(entry)[0];
-        let err = builder.block_params(entry)[1];
-        let retk_or_zero = builder.block_params(entry)[3];
+        let err = builder.block_params(entry)[0];
+        let retk_or_zero = builder.block_params(entry)[2];
+        let ctx = builder.ins().get_pinned_reg(clif_types::I64);
 
         let load_default_retk = builder.create_block();
         let got_retk = builder.create_block();
@@ -1165,7 +1165,7 @@ impl<'gc> ModuleBuilder<'gc> {
         builder.ins().return_call_indirect(
             sig_call,
             handler_code,
-            &[ctx, handler, argc, retk, err, undefined, undefined],
+            &[handler, argc, retk, err, undefined, undefined],
         );
         builder.seal_all_blocks();
         builder.finalize(host_isa().frontend_config());
@@ -1185,12 +1185,12 @@ impl<'gc> ModuleBuilder<'gc> {
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
 
-        let ctx = builder.block_params(entry)[0];
-        let rator = builder.block_params(entry)[1];
-        let actual_argc = builder.block_params(entry)[2];
-        let retk_or_zero = builder.block_params(entry)[3];
-        let got = builder.block_params(entry)[4];
-        let expected = builder.block_params(entry)[5];
+        let rator = builder.block_params(entry)[0];
+        let actual_argc = builder.block_params(entry)[1];
+        let retk_or_zero = builder.block_params(entry)[2];
+        let got = builder.block_params(entry)[3];
+        let expected = builder.block_params(entry)[4];
+        let ctx = builder.ins().get_pinned_reg(clif_types::I64);
 
         let state = builder.ins().iadd_imm_s(ctx, Context::OFFSET_OF_STATE as i64);
         let overflow = overflow_base_from_argc(&mut builder, state, actual_argc);
@@ -1265,7 +1265,6 @@ impl<'gc> ModuleBuilder<'gc> {
             sig_call,
             handler_code,
             &[
-                ctx,
                 handler,
                 handler_argc,
                 retk,
@@ -1292,13 +1291,13 @@ impl<'gc> ModuleBuilder<'gc> {
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
 
-        let ctx = builder.block_params(entry)[0];
-        let code = builder.block_params(entry)[1];
-        let argc = builder.block_params(entry)[2];
-        let arg0 = builder.block_params(entry)[3];
-        let arg1 = builder.block_params(entry)[4];
-        let arg2 = builder.block_params(entry)[5];
-        let arg3 = builder.block_params(entry)[6];
+        let code = builder.block_params(entry)[0];
+        let argc = builder.block_params(entry)[1];
+        let arg0 = builder.block_params(entry)[2];
+        let arg1 = builder.block_params(entry)[3];
+        let arg2 = builder.block_params(entry)[4];
+        let arg3 = builder.block_params(entry)[5];
+        let ctx = builder.ins().get_pinned_reg(clif_types::I64);
 
         let state = builder.ins().iadd_imm_s(ctx, Context::OFFSET_OF_STATE as i64);
         let overflow = overflow_base_from_argc(&mut builder, state, argc);
@@ -1331,7 +1330,7 @@ impl<'gc> ModuleBuilder<'gc> {
         builder.ins().return_call_indirect(
             sig_call,
             handler_code,
-            &[ctx, handler, argc, arg0, condition, undefined, undefined],
+            &[handler, argc, arg0, condition, undefined, undefined],
         );
         builder.seal_all_blocks();
         builder.finalize(host_isa().frontend_config());
@@ -1368,13 +1367,13 @@ impl<'gc> ModuleBuilder<'gc> {
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
 
-        let ctx = builder.block_params(entry)[0];
-        let generic = builder.block_params(entry)[1];
-        let argc = builder.block_params(entry)[2];
-        let arg0 = builder.block_params(entry)[3];
-        let arg1 = builder.block_params(entry)[4];
-        let arg2 = builder.block_params(entry)[5];
-        let arg3 = builder.block_params(entry)[6];
+        let generic = builder.block_params(entry)[0];
+        let argc = builder.block_params(entry)[1];
+        let arg0 = builder.block_params(entry)[2];
+        let arg1 = builder.block_params(entry)[3];
+        let arg2 = builder.block_params(entry)[4];
+        let arg3 = builder.block_params(entry)[5];
+        let ctx = builder.ins().get_pinned_reg(clif_types::I64);
 
         let state = builder.ins().iadd_imm_s(ctx, Context::OFFSET_OF_STATE as i64);
         let value_tag = builder.ins().band_imm_u(generic, Value::NOT_CELL_MASK);
@@ -1420,7 +1419,7 @@ impl<'gc> ModuleBuilder<'gc> {
         builder.ins().return_call_indirect(
             sig_call,
             code,
-            &[ctx, generic, argc, arg0, arg1, arg2, arg3],
+            &[generic, argc, arg0, arg1, arg2, arg3],
         );
 
         builder.switch_to_block(generic_call);
@@ -1532,7 +1531,7 @@ impl<'gc> ModuleBuilder<'gc> {
         builder.ins().return_call_indirect(
             sig_call,
             body_code,
-            &[ctx, rator, argc, arg0, arg1, arg2, arg3],
+            &[rator, argc, arg0, arg1, arg2, arg3],
         );
 
         builder.seal_all_blocks();
@@ -1675,7 +1674,7 @@ pub struct SsaBuilder<'gc, 'a, 'f> {
     /// application sites are present in a function/continuation.
     pub app_block: Option<ir::Block>,
 
-    /// Runtime context pointer (GHC arg 0).
+    /// Runtime context pointer (pinned register).
     pub ctx: ir::Value,
     pub rator: ir::Value,
     pub thunks: ImportedThunks,
@@ -1700,14 +1699,14 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         let entry = builder.create_block();
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
-        let ctx = builder.block_params(entry)[0];
-        let rator = builder.block_params(entry)[1];
-        let argc = builder.block_params(entry)[2];
+        let ctx = builder.ins().get_pinned_reg(clif_types::I64);
+        let rator = builder.block_params(entry)[0];
+        let argc = builder.block_params(entry)[1];
         let args = [
+            builder.block_params(entry)[2],
             builder.block_params(entry)[3],
             builder.block_params(entry)[4],
             builder.block_params(entry)[5],
-            builder.block_params(entry)[6],
         ];
 
         let variables = HashMap::new();
@@ -1718,44 +1717,39 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         let exit_block = builder.create_block();
 
         builder.append_block_param(exit_block, clif_types::I64); /* code */
-        builder.append_block_param(exit_block, clif_types::I64); /* ctx */
         builder.append_block_param(exit_block, clif_types::I64); /* rator */
         builder.append_block_param(exit_block, clif_types::I64); /* argc */
         for _ in 0..REGISTER_ARG_COUNT {
             builder.append_block_param(exit_block, clif_types::I64);
         }
 
-        builder.set_val_label(ctx, func_debug_cx.internal_variable(0));
-        builder.set_val_label(rator, func_debug_cx.internal_variable(1));
-        builder.set_val_label(argc, func_debug_cx.internal_variable(2));
+        builder.set_val_label(rator, func_debug_cx.internal_variable(0));
+        builder.set_val_label(argc, func_debug_cx.internal_variable(1));
         for (index, arg) in args.iter().copied().enumerate() {
-            builder.set_val_label(arg, func_debug_cx.internal_variable((index + 3) as u32));
+            builder.set_val_label(arg, func_debug_cx.internal_variable((index + 2) as u32));
         }
 
         let entry_block = builder.create_block();
         builder.append_block_params_for_function_params(entry_block);
-        let entry_args = std::iter::once(ctx)
-            .chain(std::iter::once(rator))
+        let entry_args = std::iter::once(rator)
             .chain(std::iter::once(argc))
             .chain(args)
             .map(BlockArg::Value)
             .collect::<Vec<_>>();
         builder.ins().jump(entry_block, &entry_args);
         builder.switch_to_block(entry_block);
-        let entry_ctx = builder.block_params(entry_block)[0];
-        let entry_rator = builder.block_params(entry_block)[1];
-        let entry_argc = builder.block_params(entry_block)[2];
+        let entry_rator = builder.block_params(entry_block)[0];
+        let entry_argc = builder.block_params(entry_block)[1];
         let entry_args = [
+            builder.block_params(entry_block)[2],
             builder.block_params(entry_block)[3],
             builder.block_params(entry_block)[4],
             builder.block_params(entry_block)[5],
-            builder.block_params(entry_block)[6],
         ];
-        builder.set_val_label(entry_ctx, func_debug_cx.internal_variable(0));
-        builder.set_val_label(entry_rator, func_debug_cx.internal_variable(1));
-        builder.set_val_label(entry_argc, func_debug_cx.internal_variable(2));
+        builder.set_val_label(entry_rator, func_debug_cx.internal_variable(0));
+        builder.set_val_label(entry_argc, func_debug_cx.internal_variable(1));
         for (index, arg) in entry_args.iter().copied().enumerate() {
-            builder.set_val_label(arg, func_debug_cx.internal_variable((index + 3) as u32));
+            builder.set_val_label(arg, func_debug_cx.internal_variable((index + 2) as u32));
         }
 
         let mut this = Self {
@@ -1764,7 +1758,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
             target,
             exit_block,
             app_block: None,
-            ctx: entry_ctx,
+            ctx,
             rator: entry_rator,
             func_debug_cx,
             entry_block,

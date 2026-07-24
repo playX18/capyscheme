@@ -251,23 +251,15 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         rator: ir::Value,
         args: RegisterCallArgs,
     ) -> [ir::Value; COMPILED_ENTRY_ARG_COUNT] {
-        scheme_call_values(self.ctx, rator, args.argc, args.args)
+        scheme_call_values(rator, args.argc, args.args)
     }
 
     fn call_block_args(&mut self, rator: ir::Value, args: RegisterCallArgs) -> Vec<BlockArg> {
-        // Exit / self-rec blocks carry ctx,rator,argc,args.
-        [
-            self.ctx,
-            rator,
-            args.argc,
-            args.args[0],
-            args.args[1],
-            args.args[2],
-            args.args[3],
-        ]
-        .into_iter()
-        .map(BlockArg::Value)
-        .collect()
+        // Exit / self-rec blocks carry rator,argc,args (ctx lives in the pinned reg).
+        self.call_values(rator, args)
+            .into_iter()
+            .map(BlockArg::Value)
+            .collect()
     }
 
     fn emit_wrong_arity_trampoline_call(
@@ -1826,18 +1818,17 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         self.builder.switch_to_block(self.exit_block);
 
         let code = self.builder.block_params(self.exit_block)[0];
-        let ctx = self.builder.block_params(self.exit_block)[1];
-        let rator = self.builder.block_params(self.exit_block)[2];
-        let argc = self.builder.block_params(self.exit_block)[3];
-        let arg0 = self.builder.block_params(self.exit_block)[4];
-        let arg1 = self.builder.block_params(self.exit_block)[5];
-        let arg2 = self.builder.block_params(self.exit_block)[6];
-        let arg3 = self.builder.block_params(self.exit_block)[7];
+        let rator = self.builder.block_params(self.exit_block)[1];
+        let argc = self.builder.block_params(self.exit_block)[2];
+        let arg0 = self.builder.block_params(self.exit_block)[3];
+        let arg1 = self.builder.block_params(self.exit_block)[4];
+        let arg2 = self.builder.block_params(self.exit_block)[5];
+        let arg3 = self.builder.block_params(self.exit_block)[6];
 
         self.builder.ins().return_call_indirect(
             self.sig_call,
             code,
-            &[ctx, rator, argc, arg0, arg1, arg2, arg3],
+            &[rator, argc, arg0, arg1, arg2, arg3],
         );
 
         self.builder.seal_all_blocks();

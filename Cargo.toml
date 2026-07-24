@@ -11,8 +11,8 @@ version = "2.0.2"
 
 bytecodegen = { git = "https://github.com/playx18/bytecodegen" }
 mmtk = { git = "https://github.com/mmtk/mmtk-core", features = ["vo_bit", "vo_bit_access"] }
-cranelift = { git = "https://github.com/playX18/wasmtime", branch = "ap/ghc-callconv" }
-cranelift-codegen = { git = "https://github.com/playX18/wasmtime", branch = "ap/ghc-callconv" }
+cranelift = "0.134.2"
+cranelift-codegen = "0.134.2"
 target-lexicon = "*"
 gimli = "0.32.2"
 object = { version = "0.37.3", features = ["macho"] }
