@@ -256,6 +256,7 @@ impl<'gc> Expander<'gc> {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn head_guard(
         &mut self,
         env: &SplitEnv<'gc>,

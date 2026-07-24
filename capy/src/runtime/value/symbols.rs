@@ -37,7 +37,7 @@ static ONCE: Once = Once::new();
 
 #[allow(dead_code)]
 pub(crate) fn symbol_table<'gc>(mc: Mutation<'gc>) -> Gc<'gc, WeakSet<'gc>> {
-    *SYMBOL_TABLE.get().unwrap().fetch(mc)
+    *SYMBOL_TABLE.get().expect("index in range").fetch(mc)
 }
 
 pub fn init_symbols<'gc>(mc: Mutation<'gc>) {
@@ -54,7 +54,7 @@ fn lookup_interned_symbol<'gc>(
 ) -> Option<Value<'gc>> {
     let name = name.downcast::<Str<'gc>>();
     WeakSet::lookup(
-        *SYMBOL_TABLE.get().unwrap().fetch(mc),
+        *SYMBOL_TABLE.get().expect("index in range").fetch(mc),
         mc,
         raw_hash,
         |_, sym| {
@@ -116,7 +116,7 @@ impl<'gc> Symbol<'gc> {
             let sym = Self::new::<true>(*mc, str, hash, None);
 
             WeakSet::add(
-                *SYMBOL_TABLE.get().unwrap().fetch(*mc),
+                *SYMBOL_TABLE.get().expect("index in range").fetch(*mc),
                 *mc,
                 hash,
                 |mc, s| symbool_lookup_predicate(mc, s, sym),
@@ -295,7 +295,7 @@ impl<'gc> PartialEq<str> for Symbol<'gc> {
             return false;
         }
 
-        let wide = self.wide_chars().unwrap();
+        let wide = self.wide_chars().expect("string buffer encoding matches branch");
 
         str.chars().zip(wide.iter()).all(|(c, &w)| c == w)
     }
@@ -331,7 +331,7 @@ pub struct Keyword<'gc> {
 }
 
 fn keyword_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::KEYWORD).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::KEYWORD).expect("builtin class id is nonzero"))
 }
 
 // SAFETY: `gc` for `Keyword` upholds all trait invariants

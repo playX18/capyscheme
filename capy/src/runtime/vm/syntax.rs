@@ -29,7 +29,7 @@ pub struct Syntax<'gc> {
 }
 
 fn syntax_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::SYNTAX).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::SYNTAX).expect("builtin class id is nonzero"))
 }
 
 impl<'gc> Syntax<'gc> {
@@ -412,7 +412,7 @@ pub struct SyntaxTransformer<'gc> {
 }
 
 fn syntax_transformer_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::SYNTAX_TRANSFORMER).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::SYNTAX_TRANSFORMER).expect("builtin class id is nonzero"))
 }
 
 impl<'gc> SyntaxTransformer<'gc> {

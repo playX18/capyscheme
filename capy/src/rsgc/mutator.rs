@@ -121,7 +121,7 @@ where
     {
         let thread = Thread::new(true);
 
-        Self::try_new_with_thread::<_, ()>(thread, |mc| Ok(f(mc))).unwrap()
+        Self::try_new_with_thread::<_, ()>(thread, |mc| Ok(f(mc))).expect("invariant holds")
     }
 
     pub fn try_new<F, E>(f: F) -> Result<Self, E>
@@ -317,7 +317,7 @@ impl<'gc> Mutation<'gc> {
         unsafe {
             mmtk::memory_manager::post_alloc(
                 self.thread.mutator_unchecked(),
-                object.to_object_reference().unwrap(),
+                object.to_object_reference().expect("gc object has object reference"),
                 bytes,
                 semantics,
             );
@@ -326,7 +326,7 @@ impl<'gc> Mutation<'gc> {
 
     #[inline(always)]
     unsafe fn set_vo_bit_for_object(&self, object: GcObject) {
-        let object = object.to_object_reference().unwrap();
+        let object = object.to_object_reference().expect("gc object has object reference");
         VO_BIT_SIDE_METADATA_SPEC.store_atomic::<u8>(object.to_raw_address(), 1, Ordering::SeqCst);
     }
 
@@ -901,7 +901,7 @@ impl<'gc> Mutation<'gc> {
             self.thread
                 .mutator_unchecked()
                 .barrier()
-                .load_weak_reference(weak.to_object_reference().unwrap());
+                .load_weak_reference(weak.to_object_reference().expect("gc object has object reference"));
         }
     }
 

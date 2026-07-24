@@ -596,7 +596,7 @@ fn expand_and<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc
     }
 
     let mut it = exprs.into_iter().rev();
-    let last_expr = it.next().unwrap();
+    let last_expr = it.next().expect("invariant holds");
     let mut result = expand(cenv, last_expr)?;
 
     let false_branch = constant(cenv.ctx, Value::new(false));
@@ -645,7 +645,7 @@ fn expand_or<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>
     }
 
     let mut it = exprs.into_iter().rev();
-    let last_expr = it.next().unwrap();
+    let last_expr = it.next().expect("invariant holds");
     let mut result = expand(cenv, last_expr)?;
 
     for expr in it {
@@ -786,7 +786,7 @@ fn finalize_body<'gc>(
                 }
                 vars.insert(*var, fresh_lvar(cenv.ctx, *var));
 
-                cenv.extend(*var, *vars.get(var).unwrap());
+                cenv.extend(*var, *vars.get(var).expect("index in range"));
             }
         }
     }
@@ -797,7 +797,7 @@ fn finalize_body<'gc>(
     for def in defs {
         match def {
             Define::Lambda(name, formals, variadic, def_body) => {
-                let name = *vars.get(&name).unwrap();
+                let name = *vars.get(&name).expect("index in range");
                 let formals = formals
                     .into_iter()
                     .map(|sym| {
@@ -862,7 +862,7 @@ fn finalize_body<'gc>(
             }
 
             Define::Simple(var, val) => {
-                let lvar = *vars.get(&var).unwrap();
+                let lvar = *vars.get(&var).expect("index in range");
 
                 cenv.extend(var, lvar);
 

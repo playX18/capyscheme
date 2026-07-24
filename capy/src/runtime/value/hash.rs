@@ -102,7 +102,7 @@ fn hashtable_header_word(immutable: bool) -> u64 {
         builtin_class_ids::HASHTABLE
     };
 
-    class_header_word(ClassId::new(class_id).unwrap())
+    class_header_word(ClassId::new(class_id).expect("builtin class id is nonzero"))
 }
 
 pub type HashTableRef<'gc> = Gc<'gc, HashTable<'gc>>;
@@ -137,7 +137,7 @@ impl<'gc> Hash for EqvHash<'gc> {
             if val.is_inline_number() {
                 state.write_u64(val.raw_i64() as u64);
             } else {
-                let n = val.number().unwrap();
+                let n = val.number().expect("invariant holds");
                 n.hash(state);
             }
         } else {
@@ -157,7 +157,7 @@ impl<'gc> Hash for EqualHash<'gc> {
             if val.is_inline_number() {
                 state.write_u64(val.raw_i64() as u64);
             } else {
-                let n = val.number().unwrap();
+                let n = val.number().expect("invariant holds");
                 n.hash(state);
             }
         } else if val.is::<Str>() {

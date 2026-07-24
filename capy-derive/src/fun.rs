@@ -247,14 +247,14 @@ impl FunctionDefinition {
             if let syn::FnArg::Typed(pat_type) = arg {
                 pat_type.ty.clone()
             } else {
-                todo!("methods")
+                panic!("#[scheme] does not support method receivers (self)")
             }
         });
         let arg_pats = self.transformed_function.sig.inputs.iter().map(|arg| {
             if let syn::FnArg::Typed(pat_type) = arg {
                 pat_type.pat.clone()
             } else {
-                todo!("methods")
+                panic!("#[scheme] does not support method receivers (self)")
             }
         });
         let scm_name = &self.scheme_attribute.name;

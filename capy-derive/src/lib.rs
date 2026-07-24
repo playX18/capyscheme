@@ -229,7 +229,7 @@ pub(crate) fn get_ident(
                             "Expected single identifier for 'name'",
                         ));
                     }
-                    let id = expr_path.path.segments.first().unwrap().ident.clone();
+                    let id = expr_path.path.segments.first().expect("invariant holds").ident.clone();
                     if ident.is_some() {
                         return Err(syn::Error::new_spanned(
                             nv,

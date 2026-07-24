@@ -942,7 +942,7 @@ pub fn resolve_module<'gc>(ctx: Context<'gc>, name: Value<'gc>, public: bool) ->
     };
 
     if public {
-        module.public_interface.get().unwrap().into()
+        module.public_interface.get().expect("index in range").into()
     } else {
         module.into()
     }

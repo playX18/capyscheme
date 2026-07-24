@@ -35,7 +35,7 @@ const _: () = {
 };
 
 fn vector_header_word(immutable: bool) -> u64 {
-    let class_id = ClassId::new(builtin_class_ids::VECTOR).unwrap();
+    let class_id = ClassId::new(builtin_class_ids::VECTOR).expect("builtin class id is nonzero");
 
     if immutable {
         class_header_word_with_private_variant_flag(class_id)
@@ -253,11 +253,11 @@ fn bytevector_header_word(immutable: bool) -> u64 {
         builtin_class_ids::MUTABLE_BYTEVECTOR
     };
 
-    class_header_word(ClassId::new(class_id).unwrap())
+    class_header_word(ClassId::new(class_id).expect("builtin class id is nonzero"))
 }
 
 fn mapped_bytevector_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::MAPPED_BYTEVECTOR).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::MAPPED_BYTEVECTOR).expect("builtin class id is nonzero"))
 }
 
 pub const BYTE_VECTOR_MAX_LENGTH: usize = usize::MAX;
@@ -535,7 +535,7 @@ const _: () = {
 };
 
 fn tuple_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::TUPLE).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::TUPLE).expect("builtin class id is nonzero"))
 }
 
 extern "C" fn trace_tuple(tuple: GcObject, vis: &mut Visitor) {

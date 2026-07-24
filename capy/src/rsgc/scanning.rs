@@ -56,7 +56,7 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
         let mut visitor = unsafe { Visitor::new(VisitorKind::Slot(&mut sv), None) };
         unsafe {
             if thread.is_thread_state_initialized() {
-                let state = thread.native_data().state.get().as_mut().unwrap();
+                let state = thread.native_data().state.get().as_mut().expect("index in range");
                 state.assume_init_mut().trace(&mut visitor);
             }
         }

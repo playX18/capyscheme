@@ -34,7 +34,7 @@ use std::{
 };
 
 pub(crate) const REGISTER_ARG_COUNT: usize = 4;
-pub(crate) const COMPILED_ENTRY_ARG_COUNT: usize = REGISTER_ARG_COUNT + 3;
+pub(crate) const COMPILED_ENTRY_ARG_COUNT: usize = REGISTER_ARG_COUNT + 2;
 
 #[derive(Clone, Copy)]
 #[repr(transparent)]
@@ -307,7 +307,7 @@ impl<'gc> Context<'gc> {
     pub fn define_module(self, name: &str, size_hint: Option<usize>) -> ModuleRef<'gc> {
         let name = crate::runtime::modules::convert_module_name(self, name);
 
-        let module = resolve_module(self, name, false, true).unwrap();
+        let module = resolve_module(self, name, false, true).expect("module resolve succeeds when creating");
         let wmodule = Gc::write(*self, module);
         if module.uses.get().is_null() {
             barrier::field!(wmodule, Module, uses)
@@ -957,7 +957,7 @@ impl<'gc> Drop for State<'gc> {
                 RUNSTACK_SIZE * std::mem::size_of::<Value>(),
                 std::mem::align_of::<Value>(),
             )
-            .unwrap();
+            .expect("infallible allocation callback");
             std::alloc::dealloc(self.runstack_start.to_mut_ptr(), layout);
         }
     }
@@ -968,7 +968,7 @@ fn make_fresh_runstack() -> (Address, Address) {
         RUNSTACK_SIZE * std::mem::size_of::<Value>(),
         std::mem::align_of::<Value>(),
     )
-    .unwrap();
+    .expect("infallible allocation callback");
     // SAFETY: Layout is valid (non-zero, properly aligned). `alloc` returns a valid
     // pointer or null; we handle the null case. The returned addresses are valid for the
     // lifetime of the State that owns them.

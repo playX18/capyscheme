@@ -18,7 +18,7 @@ pub struct ContinuationMarks<'gc> {
 }
 
 pub(crate) fn continuation_marks_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::CONTINUATION_MARKS).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::CONTINUATION_MARKS).expect("builtin class id is nonzero"))
 }
 
 fn is_c_star_continuation<'gc>(retk: ClosureRef<'gc>) -> bool {

@@ -521,7 +521,7 @@ pub mod base_ops {
         lz4_encoder
             .write_all(&buffer)
             .expect("Failed to write compressed heap image");*/
-        dest.write_all(&buffer).unwrap();
+        dest.write_all(&buffer).expect("invariant holds");
 
         nctx.return_(Value::undefined())
     }*/

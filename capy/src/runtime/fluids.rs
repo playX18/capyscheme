@@ -252,7 +252,7 @@ pub struct DynamicStateObject<'gc> {
 }
 
 fn dynamic_state_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::DYNAMIC_STATE).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::DYNAMIC_STATE).expect("builtin class id is nonzero"))
 }
 
 // SAFETY: `gc` for `DynamicStateObject` upholds all trait invariants
@@ -340,7 +340,7 @@ pub struct Fluid<'gc> {
 }
 
 fn fluid_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::FLUID).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::FLUID).expect("builtin class id is nonzero"))
 }
 
 impl<'gc> Fluid<'gc> {

@@ -426,10 +426,10 @@ pub fn print_stacktraces_impl<'gc>(ctx: Context<'gc>) {
                 let filename = frame
                     .meta
                     .assq(sym_filename(ctx).into())
-                    .unwrap()
+                    .expect("infallible allocation callback")
                     .downcast::<Str>();
-                let line = frame.meta.assq(sym_line(ctx).into()).unwrap();
-                let col = frame.meta.assq(sym_column(ctx).into()).unwrap();
+                let line = frame.meta.assq(sym_line(ctx).into()).expect("invariant holds");
+                let col = frame.meta.assq(sym_column(ctx).into()).expect("invariant holds");
                 format!("{}:{}:{}", filename, line, col)
             } else {
                 "<unknown>".to_string()

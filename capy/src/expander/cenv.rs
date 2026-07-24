@@ -48,7 +48,7 @@ impl<'gc> Cenv<'gc> {
     }
 
     pub fn extend(&mut self, name: Value<'gc>, lvar_ref: LVarRef<'gc>) {
-        self.frames.as_mut().unwrap().extend(name, lvar_ref);
+        self.frames.as_mut().expect("pointer in allocated entry range").extend(name, lvar_ref);
     }
 
     pub fn new_frame(&mut self) {

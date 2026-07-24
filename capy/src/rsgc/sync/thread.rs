@@ -811,7 +811,7 @@ impl BlockAdapter for GcBlockAdapter {
 
     fn set_blocked(&self, thread: &Thread, value: bool) {
         unsafe {
-            let state = thread.state_ptr().as_ref().unwrap();
+            let state = thread.state_ptr().as_ref().expect("pointer in allocated entry range");
             if value {
                 state.stats.start_stw();
             } else {

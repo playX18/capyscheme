@@ -19,7 +19,7 @@ pub struct Boxed<'gc> {
 }
 
 fn box_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::BOX).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::BOX).expect("builtin class id is nonzero"))
 }
 
 impl<'gc> Boxed<'gc> {

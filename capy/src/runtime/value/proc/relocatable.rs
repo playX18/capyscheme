@@ -95,7 +95,7 @@ extern "C" fn process_weak_relocatable_code_block(
 }
 
 fn relocatable_code_block_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::RELOCATABLE_CODE_BLOCK).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::RELOCATABLE_CODE_BLOCK).expect("builtin class id is nonzero"))
 }
 
 impl<'gc> RelocatableCodeBlock<'gc> {

@@ -700,7 +700,7 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
         let data_slots = self.collect_code_block_data_slots(source_index, &spec.relocations)?;
         let mut loaded = runtime_code_memory()
             .lock()
-            .unwrap()
+            .expect("infallible allocation callback")
             .allocate_copy_with_data_slots(&spec.bytes, data_slots.slots.len())?;
         let result = (|| {
             self.initialize_loaded_data_slots(&loaded, &data_slots);
@@ -753,7 +753,7 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
             Ok(code_block) => Ok(code_block),
             Err(err) => {
                 if let Some(span) = loaded.take_span() {
-                    let _ = runtime_code_memory().lock().unwrap().release_span(span);
+                    let _ = runtime_code_memory().lock().expect("lock should not be poisoned").release_span(span);
                 }
                 Err(err)
             }
@@ -1072,7 +1072,7 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
         code_block.with_live_span(|span| {
             runtime_code_memory()
                 .lock()
-                .unwrap()
+                .expect("infallible allocation callback")
                 .patch_many_raw(span, &patch_refs)
         })
     }
@@ -1617,7 +1617,7 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
             )?;
             patches.push((code_block, relocation.offset, bytes));
         }
-        let mut memory = runtime_code_memory().lock().unwrap();
+        let mut memory = runtime_code_memory().lock().expect("lock should not be poisoned");
         for (code_block, offset, bytes) in &mut patches {
             code_block.with_live_span(|span| memory.patch_raw(span, *offset, bytes))?;
         }

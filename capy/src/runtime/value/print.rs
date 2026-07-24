@@ -127,7 +127,7 @@ impl<'gc, 'a, 'b> ValueFmt<'gc, 'a, 'b> {
                 write!(self.fmt, "{s}")
             }
         } else if x.is_number() {
-            let n = x.number().unwrap();
+            let n = x.number().expect("invariant holds");
             write!(self.fmt, "{}", n)
         } else if x == Value::undefined() {
             write!(self.fmt, "#<unspecified>")

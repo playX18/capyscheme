@@ -1904,7 +1904,7 @@ pub fn convert<'gc>(
 
             let prev = cps.current_topbox_scope;
             cps.enter_scope();
-            let id = cps.current_topbox_scope.unwrap();
+            let id = cps.current_topbox_scope.expect("invariant holds");
             capture_toplevel_scope(cps, owner, src, id, |cps, owner| {
                 let form = convert(cps, exp, k, owner);
                 cps.current_topbox_scope = prev;
@@ -2020,7 +2020,7 @@ pub fn convert<'gc>(
 
             let prev = cps.current_topbox_scope;
             cps.enter_scope();
-            let id = cps.current_topbox_scope.unwrap();
+            let id = cps.current_topbox_scope.expect("invariant holds");
             capture_toplevel_scope(cps, owner, src, id, |cps, owner| {
                 let form = convert(cps, exp, k, owner);
                 cps.current_topbox_scope = prev;

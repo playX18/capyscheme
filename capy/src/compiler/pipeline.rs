@@ -149,9 +149,9 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
             .write(true)
             .truncate(true)
             .open(&path)
-            .unwrap();
+            .expect("infallible allocation callback");
         dump::log_dump_path("IR noopt", &path);
-        doc.1.render(80, &mut file_noopt).unwrap();
+        doc.1.render(80, &mut file_noopt).expect("invariant holds");
     }
 
     if options.dump_ir {
@@ -164,14 +164,14 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
             .write(true)
             .truncate(true)
             .open(&path)
-            .unwrap();
+            .expect("infallible allocation callback");
         dump::log_dump_path("IR", &path);
-        doc.1.render(80, &mut file).unwrap();
+        doc.1.render(80, &mut file).expect("invariant holds");
     }
 
     if options.dump_graph {
         let path = dump::resolve_artifact_dump_path(destination, ".gcps.txt");
-        std::fs::write(&path, &lowered.graph_cps).unwrap();
+        std::fs::write(&path, &lowered.graph_cps).expect("invariant holds");
         dump::log_dump_path("GCPS", &path);
     }
 
@@ -180,7 +180,7 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
         let path = dump::resolve_artifact_dump_path(destination, ".ssa.txt");
         let mut rendered = crate::compiler::cfg::render_program(&lowered.ssa);
         rendered.push('\n');
-        std::fs::write(&path, rendered).unwrap();
+        std::fs::write(&path, rendered).expect("invariant holds");
         dump::log_dump_path("SSA", &path);
     }
 }
@@ -312,7 +312,7 @@ mod tests {
             let dir =
                 std::env::temp_dir().join(format!("capy-ssa-dump-test-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::create_dir_all(&dir).expect("invariant holds");
             let destination = dir.join("out.fasl");
             let il = dummy_il(ctx);
             let ssa = dummy_ssa(ctx);
@@ -334,7 +334,7 @@ mod tests {
             assert!(ssa.contains("function gf7 ssa-dump-test(u0) -> #f {"));
             assert!(ssa.contains("block0:"));
 
-            std::fs::remove_dir_all(&dir).unwrap();
+            std::fs::remove_dir_all(&dir).expect("invariant holds");
         });
     }
 

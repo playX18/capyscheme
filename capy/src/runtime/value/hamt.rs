@@ -32,7 +32,7 @@ pub enum HamtKind {
 }
 
 fn hamt_node_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::HAMT_NODE).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::HAMT_NODE).expect("builtin class id is nonzero"))
 }
 
 fn fragment(hash: u32, shift: u32) -> u32 {
@@ -138,7 +138,7 @@ extern "C" fn trace_hamt_node(obj: GcObject, vis: &mut Visitor) {
                     .to_address()
                     .as_mut_ref::<HamtCollisionHeader<'static>>();
                 for i in 0..header.entry_count as usize {
-                    let entry = header.entries.as_mut_ptr().add(i).as_mut().unwrap();
+                    let entry = header.entries.as_mut_ptr().add(i).as_mut().expect("pointer in allocated entry range");
                     entry.key.trace(vis);
                     entry.value.trace(vis);
                 }
@@ -357,7 +357,7 @@ fn hamt_get<'gc>(
                     .to_address()
                     .as_ref::<HamtCollisionHeader<'gc>>();
                 for i in 0..header.entry_count as usize {
-                    let entry = header.entries.as_ptr().add(i).as_ref().unwrap();
+                    let entry = header.entries.as_ptr().add(i).as_ref().expect("pointer in allocated entry range");
                     if typ.equal(key, entry.key) {
                         return Some(entry.value);
                     }
@@ -440,7 +440,7 @@ fn hamt_assoc_collision<'gc>(
     let mut entries = Vec::with_capacity(header.entry_count as usize + 1);
     let mut found = false;
     for i in 0..header.entry_count as usize {
-        let entry = unsafe { header.entries.as_ptr().add(i).as_ref().unwrap() };
+        let entry = unsafe { header.entries.as_ptr().add(i).as_ref().expect("pointer in allocated entry range") };
         if typ.equal(key, entry.key) {
             entries.push((key, value, hash));
             found = true;
@@ -515,7 +515,7 @@ fn hamt_assoc<'gc>(
                     let mut children: Vec<Gc<'gc, HamtNode>> = (0..header.child_count as usize)
                         .map(|i| header.children.as_ptr().add(i).read())
                         .collect();
-                    children[child_idx] = new_child.unwrap();
+                    children[child_idx] = new_child.expect("HAMT child present");
                     (Some(alloc_bitmap(mc, header.bitmap, &children)), added)
                 }
             }
@@ -543,7 +543,7 @@ fn hamt_assoc<'gc>(
                         (Some(alloc_array(mc, slots)), true)
                     }
                 } else {
-                    let child = array.children[idx].get().unwrap();
+                    let child = array.children[idx].get().expect("index in range");
                     let (new_child, added) =
                         hamt_assoc(mc, typ, Some(child), shift + HAMT_SHIFT, key, value, hash);
                     let mut slots: [Option<Gc<'gc, HamtNode>>; HAMT_WIDTH] = [None; HAMT_WIDTH];
@@ -584,7 +584,7 @@ fn hamt_remove_collision<'gc>(
     let mut entries = Vec::new();
     let mut removed = false;
     for i in 0..header.entry_count as usize {
-        let entry = unsafe { header.entries.as_ptr().add(i).as_ref().unwrap() };
+        let entry = unsafe { header.entries.as_ptr().add(i).as_ref().expect("pointer in allocated entry range") };
         if typ.equal(key, entry.key) {
             removed = true;
         } else {
@@ -839,7 +839,7 @@ impl<'gc> HamtTrie<'gc> {
                             .as_ref::<HamtCollisionHeader<'gc>>();
                         let mut acc = acc;
                         for i in 0..header.entry_count as usize {
-                            let entry = header.entries.as_ptr().add(i).as_ref().unwrap();
+                            let entry = header.entries.as_ptr().add(i).as_ref().expect("pointer in allocated entry range");
                             acc = match kind {
                                 HamtKind::Map => f(acc, entry.key, entry.value),
                                 HamtKind::Set => f(acc, entry.key, Value::undefined()),
@@ -865,7 +865,7 @@ fn persistent_header_word(kind: HamtKind) -> u64 {
         HamtKind::Map => builtin_class_ids::PERSISTENT_MAP,
         HamtKind::Set => builtin_class_ids::PERSISTENT_SET,
     };
-    class_header_word(ClassId::new(class_id).unwrap())
+    class_header_word(ClassId::new(class_id).expect("builtin class id is nonzero"))
 }
 
 /// A persistent HAMT-backed map.
@@ -1162,7 +1162,7 @@ fn fold_set_into<'gc>(
                     .to_address()
                     .as_ref::<HamtCollisionHeader<'gc>>();
                 for i in 0..header.entry_count as usize {
-                    let entry = header.entries.as_ptr().add(i).as_ref().unwrap();
+                    let entry = header.entries.as_ptr().add(i).as_ref().expect("pointer in allocated entry range");
                     set = set.add(ctx, entry.key);
                 }
                 set
@@ -1219,7 +1219,7 @@ fn intersect_nodes<'gc>(
                     .to_address()
                     .as_ref::<HamtCollisionHeader<'gc>>();
                 for i in 0..header.entry_count as usize {
-                    let entry = header.entries.as_ptr().add(i).as_ref().unwrap();
+                    let entry = header.entries.as_ptr().add(i).as_ref().expect("pointer in allocated entry range");
                     if other.contains(entry.key) {
                         result = result.add(ctx, entry.key);
                     }
@@ -1278,7 +1278,7 @@ fn diff_nodes<'gc>(
                     .to_address()
                     .as_ref::<HamtCollisionHeader<'gc>>();
                 for i in 0..header.entry_count as usize {
-                    let entry = header.entries.as_ptr().add(i).as_ref().unwrap();
+                    let entry = header.entries.as_ptr().add(i).as_ref().expect("pointer in allocated entry range");
                     if !other.contains(entry.key) {
                         result = result.add(ctx, entry.key);
                     }

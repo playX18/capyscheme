@@ -353,7 +353,7 @@ impl<'gc> BigInt<'gc> {
 }
 
 fn bigint_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::BIGINT).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::BIGINT).expect("builtin class id is nonzero"))
 }
 
 // SAFETY: `gc` for `BigInt` upholds all trait invariants
@@ -533,11 +533,14 @@ impl<'gc> BigInt<'gc> {
         if value > -1.0 && value < 1.0 {
             Self::new::<true>(ctx, &[0], value < 0.0)
         } else if value > -(u64::MAX as f64) && value < u64::MAX as f64 {
-            let absvalue = (-value) as u64;
+            let absvalue = value.abs() as u64;
 
             Self::new::<false>(ctx, &[absvalue], value < 0.0)
+        } else if value.is_finite() {
+            let s = format!("{:.0}", value);
+            Self::parse(ctx, &s, &Base::DEC).unwrap_or_else(|_| Self::zero(ctx))
         } else {
-            todo!()
+            Self::zero(ctx)
         }
     }
 
@@ -715,7 +718,7 @@ impl<'gc> BigInt<'gc> {
             result.count = off as u32;
             Ok(())
         })
-        .unwrap()
+        .expect("infallible allocation callback")
     }
 
     pub fn minus(this: Gc<'gc, Self>, ctx: Context<'gc>, rhs: Gc<'gc, Self>) -> Gc<'gc, Self> {
@@ -775,7 +778,7 @@ impl<'gc> BigInt<'gc> {
 
             Result::<(), ()>::Ok(())
         })
-        .unwrap()
+        .expect("infallible allocation callback")
     }
 
     pub fn times(this: Gc<'gc, Self>, ctx: Context<'gc>, rhs: Gc<'gc, Self>) -> Gc<'gc, Self> {
@@ -804,7 +807,7 @@ impl<'gc> BigInt<'gc> {
             return 0;
         }
 
-        let zeros: usize = self.last().unwrap().leading_zeros() as usize;
+        let zeros: usize = self.last().expect("bigint digits non-empty").leading_zeros() as usize;
         self.len() * DIGIT_BIT - zeros
     }
 
@@ -837,7 +840,7 @@ impl<'gc> BigInt<'gc> {
 
             Result::<(), ()>::Ok(())
         })
-        .unwrap()
+        .expect("infallible allocation callback")
     }
 
     /// Karatsuba multiplication algorithm for large integers
@@ -975,7 +978,7 @@ impl<'gc> BigInt<'gc> {
         let mut temp = vec![];
 
         while i < str.len() {
-            if let Some(digit) = base.char_to_digit(str.chars().nth(i).unwrap()) {
+            if let Some(digit) = base.char_to_digit(str.chars().nth(i).expect("string buffer encoding matches branch")) {
                 temp.push(digit);
                 i += 1;
             } else {
@@ -1366,7 +1369,7 @@ impl<'gc> BigInt<'gc> {
                 res.negative = true;
                 Result::<(), ()>::Ok(())
             })
-            .unwrap()
+            .expect("infallible allocation callback")
         } else {
             Self::new::<true>(ctx, words, false)
         }
@@ -1618,7 +1621,7 @@ impl<'gc> BigInt<'gc> {
 
             Result::<(), ()>::Ok(())
         })
-        .unwrap()
+        .expect("infallible allocation callback")
     }
 
     pub fn shift_right(this: Gc<'gc, Self>, ctx: Context<'gc>, shift: usize) -> Gc<'gc, Self> {

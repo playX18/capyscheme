@@ -704,7 +704,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                 Ok(self.wrap(node, kw.into()))
             }
 
-            _ => todo!(
+            _ => panic!(
                 "Unhandled node kind: {}: {} at {} in {}",
                 node.kind(),
                 self.text_of(node),

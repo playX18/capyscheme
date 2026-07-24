@@ -80,7 +80,7 @@ fn render_function<'gc>(out: &mut String, graph: &Graph<'gc>, function: Function
         "procedure {kind} {code_id} {name} ({}) retk {retk}:",
         params.join(", ")
     )
-    .unwrap();
+    .expect("infallible allocation callback");
 
     let entry = renderer.alloc_block();
     let params = renderer.param_ids(graph.bound_vars_slice(&data.vars), data.variadic);
@@ -350,7 +350,7 @@ impl<'a, 'gc> FunctionRenderer<'a, 'gc> {
 
         self.blocks.sort_by_key(|block| block.id);
         for block in &self.blocks {
-            writeln!(out, "BB{}: ({})", block.id, block.params.join(", ")).unwrap();
+            writeln!(out, "BB{}: ({})", block.id, block.params.join(", ")).expect("write to string cannot fail");
             if let Some(preds) = predecessors.get(&block.id) {
                 let mut pred_ids = preds.clone();
                 pred_ids.sort_unstable();

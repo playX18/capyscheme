@@ -431,8 +431,9 @@ pub mod hash_ops {
         let typ = ht.typ();
 
         match typ {
-            HashTableType::Generic(_) => {
-                todo!()
+            HashTableType::Generic(v) => {
+                let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_SET].get();
+                return nctx.return_call(handler, &[ht.into(), key, value]);
             }
             HashTableType::String if !key.is::<Str>() => {
                 return nctx.wrong_argument_violation(

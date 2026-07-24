@@ -615,7 +615,7 @@ primitive_expanders!(
 
         let len = ls.list_length();
         if len == 1 {
-            let v1 = ls.list_ref(0).unwrap();
+            let v1 = ls.list_ref(0).expect("invariant holds");
             let check = prim_call_term(ctx, sym_eqp(ctx).into(), [key, constant(ctx, v1)], src);
             return Some(if_term(ctx, check, constant(ctx, ls), constant(ctx, Value::new(false))));
         } else if len > 5 {
@@ -669,7 +669,7 @@ primitive_expanders!(
 
         let len = ls.list_length();
         if len == 1 {
-            let v1 = ls.list_ref(0).unwrap();
+            let v1 = ls.list_ref(0).expect("invariant holds");
             let check = prim_call_term(ctx, sym_eqp(ctx).into(), [key, constant(ctx, v1)], src);
             return Some(if_term(ctx, check, constant(ctx, ls), constant(ctx, Value::new(false))));
         } else if len > 5 {

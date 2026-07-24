@@ -36,7 +36,7 @@ pub struct Complex<'gc> {
 }
 
 fn complex_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::COMPLEX).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::COMPLEX).expect("builtin class id is nonzero"))
 }
 
 impl<'gc> Complex<'gc> {
@@ -62,7 +62,7 @@ pub struct Rational<'gc> {
 }
 
 fn rational_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::RATIONAL).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::RATIONAL).expect("builtin class id is nonzero"))
 }
 
 impl<'gc> Rational<'gc> {
@@ -743,11 +743,11 @@ impl<'gc> Number<'gc> {
                 return Self::reduce_fix_fix(ctx, nume, deno);
             }
 
-            return Self::reduce_fix_big(ctx, nume, denominator.as_bigint().unwrap());
+            return Self::reduce_fix_big(ctx, nume, denominator.as_bigint().expect("value is bigint"));
         }
 
         if let Number::Fixnum(deno) = denominator {
-            return Self::reduce_big_fix(ctx, numerator.as_bigint().unwrap(), deno);
+            return Self::reduce_big_fix(ctx, numerator.as_bigint().expect("value is bigint"), deno);
         }
 
         if matches!(denominator, Number::Fixnum(1)) {
@@ -3684,8 +3684,8 @@ impl<'gc> Rational<'gc> {
 
         if nume.is_infinite() || deno.is_infinite() {
             if nume.is_infinite() && deno.is_infinite() {
-                let nume_bitsize = BigInt::bitsize(self.numerator.as_bigint().unwrap());
-                let deno_bitsize = BigInt::bitsize(self.denominator.as_bigint().unwrap());
+                let nume_bitsize = BigInt::bitsize(self.numerator.as_bigint().expect("value is bigint"));
+                let deno_bitsize = BigInt::bitsize(self.denominator.as_bigint().expect("value is bigint"));
                 let mut shift = if nume_bitsize > deno_bitsize {
                     nume_bitsize as isize - 96
                 } else {
@@ -3696,28 +3696,28 @@ impl<'gc> Rational<'gc> {
                     shift = 1;
                 }
 
-                nume = BigInt::shift_right(self.numerator.as_bigint().unwrap(), ctx, shift as _)
+                nume = BigInt::shift_right(self.numerator.as_bigint().expect("value is bigint"), ctx, shift as _)
                     .as_f64();
-                deno = BigInt::shift_right(self.denominator.as_bigint().unwrap(), ctx, shift as _)
+                deno = BigInt::shift_right(self.denominator.as_bigint().expect("value is bigint"), ctx, shift as _)
                     .as_f64();
             } else if deno.is_infinite() {
-                let deno_bitsize = BigInt::bitsize(self.denominator.as_bigint().unwrap());
+                let deno_bitsize = BigInt::bitsize(self.denominator.as_bigint().expect("value is bigint"));
                 let mut shift = deno_bitsize as isize - 96;
                 if shift < 1 {
                     shift = 1;
                 }
 
                 nume = libm::ldexp(nume, -(shift as i32));
-                deno = BigInt::shift_right(self.denominator.as_bigint().unwrap(), ctx, shift as _)
+                deno = BigInt::shift_right(self.denominator.as_bigint().expect("value is bigint"), ctx, shift as _)
                     .as_f64();
             } else {
-                let nume_bitsize = BigInt::bitsize(self.numerator.as_bigint().unwrap());
+                let nume_bitsize = BigInt::bitsize(self.numerator.as_bigint().expect("value is bigint"));
                 let mut shift = nume_bitsize as isize - 96;
                 if shift < 1 {
                     shift = 1;
                 }
 
-                nume = BigInt::shift_right(self.numerator.as_bigint().unwrap(), ctx, shift as _)
+                nume = BigInt::shift_right(self.numerator.as_bigint().expect("value is bigint"), ctx, shift as _)
                     .as_f64();
                 deno = libm::ldexp(deno, -(shift as i32));
             }

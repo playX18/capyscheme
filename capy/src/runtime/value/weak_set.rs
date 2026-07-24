@@ -101,7 +101,7 @@ pub struct WeakSet<'gc> {
 }
 
 fn weak_set_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::WEAK_SET).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::WEAK_SET).expect("builtin class id is nonzero"))
 }
 
 pub(crate) struct WeakSetInner<'gc> {
@@ -547,7 +547,7 @@ impl<'gc> WeakSet<'gc> {
 
         ALL_WEAK_SETS
             .get()
-            .unwrap()
+            .expect("infallible allocation callback")
             .fetch(mc)
             .0
             .lock()

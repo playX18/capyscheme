@@ -15,7 +15,7 @@ pub static LOCALE: LazyLock<icu::locale::Locale> = LazyLock::new(|| {
     let locale = sys_locale::get_locale().unwrap_or_else(|| "en-US".to_string());
     locale
         .parse()
-        .unwrap_or_else(|_| icu::locale::Locale::try_from_str("en-US").unwrap())
+        .unwrap_or_else(|_| icu::locale::Locale::try_from_str("en-US").expect("invariant holds"))
 });
 
 type OptionalIndex = Option<usize>;
@@ -728,9 +728,9 @@ mod string_ops {
                     && j < cend2
                     && s1
                         .get(i)
-                        .unwrap()
+                        .expect("infallible allocation callback")
                         .to_lowercase()
-                        .eq(s2.get(j).unwrap().to_lowercase())
+                        .eq(s2.get(j).expect("index in range").to_lowercase())
                 {
                     i += 1;
                     j += 1;
@@ -806,7 +806,7 @@ mod string_ops {
             );
         }
 
-        let ch = str.get(index).unwrap(); // safe due to the bounds check above
+        let ch = str.get(index).expect("index in range"); // safe due to the bounds check above
 
         nctx.return_(Ok(ch))
     }
@@ -932,7 +932,7 @@ mod string_ops {
                 endian,
                 Some(2),
                 2,
-                &[str.into(), endian.unwrap()],
+                &[str.into(), endian.expect("invariant holds")],
             );
         };
 

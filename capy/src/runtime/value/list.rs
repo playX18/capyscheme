@@ -29,7 +29,7 @@ const _: () = {
 };
 
 fn pair_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::PAIR).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::PAIR).expect("builtin class id is nonzero"))
 }
 
 impl<'gc> Pair<'gc> {
@@ -816,7 +816,7 @@ impl<'gc> Value<'gc> {
                 if head == self {
                     return Value::null();
                 } else {
-                    last.unwrap().set_cdr(ctx, Value::null());
+                    last.expect("invariant holds").set_cdr(ctx, Value::null());
                     return self;
                 }
             } else if f(rest.car()) {

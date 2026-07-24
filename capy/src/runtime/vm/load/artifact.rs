@@ -29,7 +29,7 @@ impl LoadArtifact {
 pub(crate) fn artifact_kind_for_policy(policy: ExecutionPolicy) -> LoadArtifactKind {
     match policy {
         ExecutionPolicy::Aot => LoadArtifactKind::FaslCode,
-        _ => todo!(),
+        ExecutionPolicy::Jit => LoadArtifactKind::SharedObject,
     }
 }
 

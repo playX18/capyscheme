@@ -13,7 +13,7 @@ pub struct Closure<'gc> {
 }
 
 fn closure_header_word(is_cont: bool) -> u64 {
-    let class_id = ClassId::new(builtin_class_ids::CLOSURE).unwrap();
+    let class_id = ClassId::new(builtin_class_ids::CLOSURE).expect("builtin class id is nonzero");
 
     if is_cont {
         class_header_word_with_private_variant_flag(class_id)
@@ -49,7 +49,7 @@ extern "C" fn trace_closure(obj: GcObject, visitor: &mut Visitor) {
         visitor.trace(&mut closure.code_block);
         visitor.trace(&mut closure.meta);
         for i in 0..closure.nfree {
-            visitor.trace(closure.free.as_mut_ptr().add(i).as_mut().unwrap());
+            visitor.trace(closure.free.as_mut_ptr().add(i).as_mut().expect("pointer in allocated entry range"));
         }
     }
 }

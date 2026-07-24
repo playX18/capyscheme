@@ -2007,7 +2007,7 @@ pub struct Poller {
 }
 
 fn poller_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::POLLER).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::POLLER).expect("builtin class id is nonzero"))
 }
 
 // SAFETY: Class IDs in `CLASS_IDS` match the allocation header for `Poller`

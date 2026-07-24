@@ -37,7 +37,7 @@ mod tests {
 }
 
 fn ephemeron_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::EPHEMERON).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::EPHEMERON).expect("builtin class id is nonzero"))
 }
 
 // SAFETY: `gc` for `Ephemeron` upholds all trait invariants

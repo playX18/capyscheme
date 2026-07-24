@@ -1278,6 +1278,7 @@ fn instruction_uses_local(instruction: &Instruction<'_>, local: ValueId) -> bool
 }
 
 /// Fuse single-use predicate/compare `PrimCall` + `Branch` into `BranchPrim`.
+#[allow(clippy::too_many_arguments)]
 fn try_fuse_branch_prim<'gc>(
     test: &Operand<'gc>,
     consequent: &BranchTarget<'gc>,

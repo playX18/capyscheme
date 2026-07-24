@@ -213,7 +213,8 @@ fn reorder_bindings<'gc>(
     sym_id: &Map<LVarRef<'gc>, u32>,
     fv_cache: &mut Map<*const Term<'gc>, Rc<HashSet<u32>>>,
 ) -> Vec<(LVarRef<'gc>, TermRef<'gc>)> {
-    todo!()
+    // Identity order until sinking analysis is implemented (CAPY-42).
+    lhs.iter().copied().zip(rhs.iter().copied()).collect()
 }
 
 pub fn fix_letrec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {

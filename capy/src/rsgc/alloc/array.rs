@@ -48,7 +48,7 @@ extern "C" fn array_size<T: Trace>(obj: GcObject) -> usize {
         let layout = Layout::array::<T>(arr.len());
 
         raw_align_up(
-            layout.unwrap().size() + size_of::<Array<T>>() - size_of::<T>(),
+            layout.expect("invariant holds").size() + size_of::<Array<T>>() - size_of::<T>(),
             align_of::<Array<T>>(),
         )
     }

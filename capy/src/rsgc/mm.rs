@@ -54,7 +54,7 @@ impl mmtk::vm::ReferenceGlue<MemoryManager> for ReferenceGlue {
 #[cfg(feature = "aslr")]
 fn get_random_mmap_addr() -> Address {
     let mut rng = rand::rng();
-    let uniform = rand::distr::Uniform::new(0x4000_0000, usize::MAX).unwrap();
+    let uniform = rand::distr::Uniform::new(0x4000_0000, usize::MAX).expect("invariant holds");
     let mut raw_addr = unsafe { Address::from_usize(rng.sample(uniform)) };
 
     raw_addr = chunk_align_down(raw_addr);

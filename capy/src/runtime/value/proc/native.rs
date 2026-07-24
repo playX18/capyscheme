@@ -34,7 +34,7 @@ fn native_proc_header_word(is_k: bool) -> u64 {
         builtin_class_ids::NATIVE_PROCEDURE
     };
 
-    class_header_word(ClassId::new(class_id).unwrap())
+    class_header_word(ClassId::new(class_id).expect("builtin class id is nonzero"))
 }
 
 impl NativeProc {

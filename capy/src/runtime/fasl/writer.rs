@@ -206,7 +206,7 @@ impl<'gc, W: Write> Writer<'gc, W> {
         }
 
         if obj.is::<Symbol>() || obj.is::<Str>() {
-            let id = self.lites.get(self.ctx, obj).unwrap().as_int32();
+            let id = self.lites.get(self.ctx, obj).expect("index in range").as_int32();
             self.put8(FASL_TAG_LOOKUP)?;
             self.put32(id as u32)?;
             return Ok(());
@@ -331,7 +331,7 @@ impl<'gc, W: Write> Writer<'gc, W> {
 
         while count > 0 {
             count -= 1;
-            let item = self.pop().unwrap();
+            let item = self.pop().expect("invariant holds");
 
             self.put(item)?;
         }

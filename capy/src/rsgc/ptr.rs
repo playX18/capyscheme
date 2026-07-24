@@ -117,7 +117,7 @@ impl<'gc, T> Gc<'gc, T> {
     /// Panics if `ptr` is null.
     pub unsafe fn from_ptr(ptr: *const T) -> Self {
         Self {
-            ptr: NonNull::new(ptr as _).unwrap(),
+            ptr: NonNull::new(ptr as _).expect("invariant holds"),
             pd: PhantomData,
         }
     }

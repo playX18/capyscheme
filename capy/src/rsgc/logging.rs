@@ -152,7 +152,7 @@ pub(crate) fn set_gc_logging_enabled(enabled: bool) {
 }
 
 pub(crate) fn gc_pause_started(mmtk: &MMTK<MemoryManager>) {
-    let mut state = gc_log_state().lock().unwrap();
+    let mut state = gc_log_state().lock().expect("lock should not be poisoned");
     state.collection = state.collection.saturating_add(1);
     state.pause_started_at = Some(Instant::now());
     state.used_before = mmtk::memory_manager::used_bytes(mmtk);
@@ -160,7 +160,7 @@ pub(crate) fn gc_pause_started(mmtk: &MMTK<MemoryManager>) {
 
 pub(crate) fn log_gc_completed(mmtk: &MMTK<MemoryManager>) {
     let (collection, pause, used_before) = {
-        let mut state = gc_log_state().lock().unwrap();
+        let mut state = gc_log_state().lock().expect("lock should not be poisoned");
         let pause = state
             .pause_started_at
             .take()

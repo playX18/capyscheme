@@ -48,21 +48,21 @@ impl RuntimeData {
         match self {
             Self::PairHeaderWord => static_class_header_word_address(
                 &PAIR_HEADER_WORD,
-                class_header_word(ClassId::new(builtin_class_ids::PAIR).unwrap()),
+                class_header_word(ClassId::new(builtin_class_ids::PAIR).expect("builtin class id is nonzero")),
             ),
             Self::ClosureProcHeaderWord => static_class_header_word_address(
                 &CLOSURE_PROC_HEADER_WORD,
-                class_header_word(ClassId::new(builtin_class_ids::CLOSURE).unwrap()),
+                class_header_word(ClassId::new(builtin_class_ids::CLOSURE).expect("builtin class id is nonzero")),
             ),
             Self::ClosureKHeaderWord => static_class_header_word_address(
                 &CLOSURE_K_HEADER_WORD,
                 class_header_word_with_private_variant_flag(
-                    ClassId::new(builtin_class_ids::CLOSURE).unwrap(),
+                    ClassId::new(builtin_class_ids::CLOSURE).expect("builtin class id is nonzero"),
                 ),
             ),
             Self::MutableVectorHeaderWord => static_class_header_word_address(
                 &MUTABLE_VECTOR_HEADER_WORD,
-                class_header_word(ClassId::new(builtin_class_ids::VECTOR).unwrap()),
+                class_header_word(ClassId::new(builtin_class_ids::VECTOR).expect("builtin class id is nonzero")),
             ),
         }
     }

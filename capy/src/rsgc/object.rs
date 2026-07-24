@@ -236,14 +236,14 @@ fn pending_type_classes() -> &'static Mutex<HashMap<u32, AllocationHooks>> {
 pub(crate) fn record_pending_type_class(id: ClassId, hooks: AllocationHooks) {
     pending_type_classes()
         .lock()
-        .unwrap()
+        .expect("infallible allocation callback")
         .insert(id.bits(), hooks);
 }
 
 pub(crate) fn drain_pending_type_classes() -> Vec<(ClassId, AllocationHooks)> {
     pending_type_classes()
         .lock()
-        .unwrap()
+        .expect("infallible allocation callback")
         .drain()
         .filter_map(|(bits, hooks)| Some((ClassId::new(bits)?, hooks)))
         .collect()
@@ -252,7 +252,7 @@ pub(crate) fn drain_pending_type_classes() -> Vec<(ClassId, AllocationHooks)> {
 pub(crate) fn pending_hooks_for_class_id(id: ClassId) -> Option<AllocationHooks> {
     pending_type_classes()
         .lock()
-        .unwrap()
+        .expect("infallible allocation callback")
         .get(&id.bits())
         .copied()
 }
@@ -369,7 +369,7 @@ fn type_class_header_word_slow<'gc>(
 ) {
     let key = hooks.registry_key();
     let id = {
-        let mut registry = type_class_registry().lock().unwrap();
+        let mut registry = type_class_registry().lock().expect("lock should not be poisoned");
         if let Some(&id) = registry.get(&key) {
             id
         } else {
@@ -721,7 +721,7 @@ impl mmtk::vm::ObjectModel<MemoryManager> for ObjectModel {
     const UNIFIED_OBJECT_REFERENCE_ADDRESS: bool = false;
 
     fn dump_object(_object: mmtk::util::ObjectReference) {
-        todo!()
+        // MMTk debug hook; no object pretty-printer yet (CAPY-43).
     }
 
     fn get_type_descriptor(_reference: ObjectReference) -> &'static [i8] {
@@ -753,7 +753,7 @@ impl mmtk::vm::ObjectModel<MemoryManager> for ObjectModel {
 
         let to_obj = Self::move_object(gc_from, MoveTarget::ToAddress(addr), bytes);
 
-        let to_obj = ObjectReference::try_from(to_obj).unwrap();
+        let to_obj = ObjectReference::try_from(to_obj).expect("invariant holds");
 
         copy_context.post_copy(to_obj, bytes, semantics);
 
@@ -783,7 +783,7 @@ impl mmtk::vm::ObjectModel<MemoryManager> for ObjectModel {
         let res_addr = to + OBJECT_REF_OFFSET + gc_from.hashcode_overhead::<true>();
         let res = GcObject(res_addr);
 
-        res.try_into().unwrap()
+        res.try_into().expect("invariant holds")
     }
 
     fn get_current_size(object: ObjectReference) -> usize {

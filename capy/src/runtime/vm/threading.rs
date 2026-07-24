@@ -24,7 +24,7 @@ pub struct Condition {
 }
 
 fn condition_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::CONDITION).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::CONDITION).expect("builtin class id is nonzero"))
 }
 
 // SAFETY: GC trace for `Condition` — all reachable heap fields are visited
@@ -47,7 +47,7 @@ pub struct Mutex {
 }
 
 fn mutex_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::MUTEX).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::MUTEX).expect("builtin class id is nonzero"))
 }
 
 pub enum MutexKind {
@@ -175,7 +175,7 @@ struct PendingInterruptQueue {
 }
 
 fn thread_object_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::THREAD).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::THREAD).expect("builtin class id is nonzero"))
 }
 
 impl<'gc> ThreadObject<'gc> {
@@ -340,7 +340,7 @@ pub mod threading_ops {
                 scm.call_value(
                     |ctx, _args| {
                         let thread_obj = ctx.state().thread_object;
-                        let thunk = thread_obj.entrypoint.get().unwrap();
+                        let thunk = thread_obj.entrypoint.get().expect("index in range");
                         barrier::field!(Gc::write(*ctx, thread_obj), ThreadObject, entrypoint)
                             .unlock()
                             .set(None);

@@ -67,8 +67,8 @@ pub struct Trampolines {
     pub debug_scheme_trampoline_size: usize,
 }
 
-fn compiled_ghc_signature() -> ir::Signature {
-    let mut sig = ir::Signature::new(CallConv::Ghc);
+fn compiled_tail_signature() -> ir::Signature {
+    let mut sig = ir::Signature::new(CallConv::Tail);
     for _ in 0..COMPILED_ENTRY_ARG_COUNT {
         sig.params.push(AbiParam::new(types::I64));
     }
@@ -76,8 +76,9 @@ fn compiled_ghc_signature() -> ir::Signature {
 }
 
 fn native_enter_signature() -> ir::Signature {
-    // SysV entry from Rust: ctx, rator, argc, arg0..arg3 (same 7 values as GHC).
+    // SysV entry from Rust: ctx + Tail args (rator, argc, arg0..arg3).
     let mut sig = ir::Signature::new(CallConv::SystemV);
+    sig.params.push(AbiParam::new(types::I64)); // ctx
     for _ in 0..COMPILED_ENTRY_ARG_COUNT {
         sig.params.push(AbiParam::new(types::I64));
     }
@@ -189,10 +190,8 @@ fn copy_overflow_args(
     builder.switch_to_block(done);
 }
 
-/// GHC-convention enter body (unused on x86_64; kept for non-x86 helpers).
-#[cfg(not(target_arch = "x86_64"))]
-#[allow(dead_code)]
-fn enter_scheme_ghc_body(fctx: &mut FunctionBuilderContext, ctx: &mut Context) {
+/// Enter Scheme from Rust: pin ctx, then call into Tail-convention code.
+fn enter_scheme_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Context) {
     let mut builder = FunctionBuilder::new(&mut ctx.func, fctx);
     let mem = ir::MemFlagsData::new();
 
@@ -208,86 +207,24 @@ fn enter_scheme_ghc_body(fctx: &mut FunctionBuilderContext, ctx: &mut Context) {
     let arg2 = builder.block_params(entry)[5];
     let arg3 = builder.block_params(entry)[6];
 
-    let sig = compiled_ghc_signature();
+    let sig = compiled_tail_signature();
     let sigref = builder.import_signature(sig);
+    builder.ins().set_pinned_reg(ctx_v);
+
     let code = builder.ins().load(
         types::I64,
         mem,
         rator,
         offset_of!(Closure, code) as i32,
     );
-    builder.ins().return_call_indirect(
-        sigref,
-        code,
-        &[ctx_v, rator, argc, arg0, arg1, arg2, arg3],
-    );
-
-    builder.seal_all_blocks();
-    builder.finalize(host_isa().frontend_config());
-}
-
-/// SystemV → GHC enter (aarch64/riscv64).
-#[cfg(not(target_arch = "x86_64"))]
-fn enter_scheme_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Context) {
-    let mut builder = FunctionBuilder::new(&mut ctx.func, fctx);
-
-    let entry = builder.create_block();
-    builder.append_block_params_for_function_params(entry);
-    builder.switch_to_block(entry);
-
-    let ctx_v = builder.block_params(entry)[0];
-    let rator = builder.block_params(entry)[1];
-    let argc = builder.block_params(entry)[2];
-    let arg0 = builder.block_params(entry)[3];
-    let arg1 = builder.block_params(entry)[4];
-    let arg2 = builder.block_params(entry)[5];
-    let arg3 = builder.block_params(entry)[6];
-
-    let sig = compiled_ghc_signature();
-    let sigref = builder.import_signature(sig);
-    let code = builder.ins().load(
-        types::I64,
-        ir::MemFlagsData::new(),
-        rator,
-        offset_of!(Closure, code) as i32,
-    );
-    builder.ins().call_indirect(
-        sigref,
-        code,
-        &[ctx_v, rator, argc, arg0, arg1, arg2, arg3],
-    );
+    builder
+        .ins()
+        .call_indirect(sigref, code, &[rator, argc, arg0, arg1, arg2, arg3]);
+    // Ok/Err exits via longjmp; falling through is a bug.
     builder.ins().trap(ir::TrapCode::STACK_OVERFLOW);
 
     builder.seal_all_blocks();
     builder.finalize(host_isa().frontend_config());
-}
-
-/// x86_64 SysV → GHC remap stub that jumps directly into Scheme code.
-///
-/// Remap SysV args into STG pins, load `Closure.code` from rator (`%rbp`), and `jmp`.
-#[cfg(target_arch = "x86_64")]
-fn build_enter_sysv_to_ghc_stub(memory: &mut CodeMemory) -> CodeAllocation {
-    // SysV: rdi,rsi,rdx,rcx,r8,r9,[rsp+8] = ctx,rator,argc,arg0,arg1,arg2,arg3
-    // GHC:  r13,rbp,r12,rbx,r14,rsi,rdi = ctx,rator,argc,arg0,arg1,arg2,arg3
-    let code_off = offset_of!(Closure, code) as i32;
-    assert!(
-        (-128..128).contains(&code_off),
-        "Closure::code offset must fit in disp8 for enter stub"
-    );
-    let mut code = Vec::with_capacity(48);
-    code.extend_from_slice(&[0x49, 0x89, 0xfd]); // mov r13, rdi  ; ctx
-    code.extend_from_slice(&[0x48, 0x89, 0xf5]); // mov rbp, rsi  ; rator
-    code.extend_from_slice(&[0x49, 0x89, 0xd4]); // mov r12, rdx  ; argc
-    code.extend_from_slice(&[0x48, 0x89, 0xcb]); // mov rbx, rcx  ; arg0
-    code.extend_from_slice(&[0x4d, 0x89, 0xc6]); // mov r14, r8   ; arg1
-    code.extend_from_slice(&[0x4c, 0x89, 0xce]); // mov rsi, r9   ; arg2
-    code.extend_from_slice(&[0x48, 0x8b, 0x7c, 0x24, 0x08]); // mov rdi, [rsp+8] ; arg3
-    // mov rax, qword ptr [rbp + code_off]
-    code.extend_from_slice(&[0x48, 0x8b, 0x45, code_off as u8]);
-    code.extend_from_slice(&[0xff, 0xe0]); // jmp rax
-    memory
-        .allocate_copy(&code)
-        .expect("failed to allocate SysV→GHC enter stub")
 }
 
 /// Trampoline from Scheme code to native procedure. Generated exactly once and is used for every native function.
@@ -299,15 +236,16 @@ fn scheme_native_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Co
 
     builder.append_block_params_for_function_params(entry);
 
-    let ctx = builder.block_params(entry)[0];
-    let rator = builder.block_params(entry)[1];
-    let argc = builder.block_params(entry)[2];
-    let arg0 = builder.block_params(entry)[3];
-    let arg1 = builder.block_params(entry)[4];
-    let arg2 = builder.block_params(entry)[5];
-    let arg3 = builder.block_params(entry)[6];
+    let rator = builder.block_params(entry)[0];
+    let argc = builder.block_params(entry)[1];
+    let arg0 = builder.block_params(entry)[2];
+    let arg1 = builder.block_params(entry)[3];
+    let arg2 = builder.block_params(entry)[4];
+    let arg3 = builder.block_params(entry)[5];
 
     builder.switch_to_block(entry);
+    let ret_addr = builder.ins().get_return_address(types::I64);
+    let ctx = builder.ins().get_pinned_reg(types::I64);
     let retk = arg0;
 
     let sig = call_signature!(SystemV(
@@ -336,7 +274,12 @@ fn scheme_native_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Co
         offset_of!(NativeProc, proc) as i32,
     );
 
-    // GHC is FP-less (Sp is %rbp), so `get_return_address` is unavailable.
+    builder.ins().store(
+        mem,
+        ret_addr,
+        state,
+        offset_of!(State, last_ret_addr) as i32,
+    );
     let overflow_base = overflow_base(&mut builder, state, argc);
     let native_base = overflow_base;
     copy_overflow_args(&mut builder, argc, overflow_base, native_base, -1);
@@ -388,7 +331,7 @@ fn scheme_native_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Co
     }
     builder.switch_to_block(on_cont);
 
-    let sig_call = compiled_ghc_signature();
+    let sig_call = compiled_tail_signature();
     let sig_call = builder.import_signature(sig_call);
 
     {
@@ -465,7 +408,7 @@ fn scheme_native_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Co
 
         builder
             .ins()
-            .return_call_indirect(sig_call, code, &[ctx, rator, argc, arg0, arg1, arg2, arg3]);
+            .return_call_indirect(sig_call, code, &[rator, argc, arg0, arg1, arg2, arg3]);
     }
 
     builder.seal_all_blocks();
@@ -480,15 +423,15 @@ fn scheme_native_continuation_code(fctx: &mut FunctionBuilderContext, ctx: &mut 
 
     builder.append_block_params_for_function_params(entry);
 
-    let ctx = builder.block_params(entry)[0];
-    let rator = builder.block_params(entry)[1];
-    let argc = builder.block_params(entry)[2];
-    let arg0 = builder.block_params(entry)[3];
-    let arg1 = builder.block_params(entry)[4];
-    let arg2 = builder.block_params(entry)[5];
-    let arg3 = builder.block_params(entry)[6];
+    let rator = builder.block_params(entry)[0];
+    let argc = builder.block_params(entry)[1];
+    let arg0 = builder.block_params(entry)[2];
+    let arg1 = builder.block_params(entry)[3];
+    let arg2 = builder.block_params(entry)[4];
+    let arg3 = builder.block_params(entry)[5];
 
     builder.switch_to_block(entry);
+    let ctx = builder.ins().get_pinned_reg(types::I64);
 
     let sig = call_signature!(SystemV(
         I64, /* ctx */
@@ -566,7 +509,7 @@ fn scheme_native_continuation_code(fctx: &mut FunctionBuilderContext, ctx: &mut 
     }
     builder.switch_to_block(on_cont);
 
-    let sig_call = compiled_ghc_signature();
+    let sig_call = compiled_tail_signature();
     let sig_call = builder.import_signature(sig_call);
 
     {
@@ -643,7 +586,7 @@ fn scheme_native_continuation_code(fctx: &mut FunctionBuilderContext, ctx: &mut 
 
         builder
             .ins()
-            .return_call_indirect(sig_call, code, &[ctx, rator, argc, arg0, arg1, arg2, arg3]);
+            .return_call_indirect(sig_call, code, &[rator, argc, arg0, arg1, arg2, arg3]);
     }
 
     builder.seal_all_blocks();
@@ -658,13 +601,13 @@ fn debug_scheme_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Con
     builder.append_block_params_for_function_params(entry);
     builder.switch_to_block(entry);
 
-    let ctx = builder.block_params(entry)[0];
-    let rator = builder.block_params(entry)[1];
-    let argc = builder.block_params(entry)[2];
-    let arg0 = builder.block_params(entry)[3];
-    let arg1 = builder.block_params(entry)[4];
-    let arg2 = builder.block_params(entry)[5];
-    let arg3 = builder.block_params(entry)[6];
+    let rator = builder.block_params(entry)[0];
+    let argc = builder.block_params(entry)[1];
+    let arg0 = builder.block_params(entry)[2];
+    let arg1 = builder.block_params(entry)[3];
+    let arg2 = builder.block_params(entry)[4];
+    let arg3 = builder.block_params(entry)[5];
+    let ctx = builder.ins().get_pinned_reg(types::I64);
     let state = builder
         .ins()
         .iadd_imm_s(ctx, crate::runtime::thread::Context::OFFSET_OF_STATE as i64);
@@ -749,12 +692,12 @@ fn debug_scheme_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Con
 
     builder.switch_to_block(call_real);
     let new_arg0 = builder.block_params(call_real)[0];
-    let sig_call = compiled_ghc_signature();
+    let sig_call = compiled_tail_signature();
     let sig_call = builder.import_signature(sig_call);
     builder.ins().return_call_indirect(
         sig_call,
         real_code,
-        &[ctx, rator, argc, new_arg0, arg1, arg2, arg3],
+        &[rator, argc, new_arg0, arg1, arg2, arg3],
     );
 
     builder.seal_all_blocks();
@@ -766,9 +709,6 @@ impl Trampolines {
         let isa = host_isa();
         let mut memory = CodeMemory::new();
 
-        #[cfg(target_arch = "x86_64")]
-        let enter_scheme_trampoline = build_enter_sysv_to_ghc_stub(&mut memory);
-        #[cfg(not(target_arch = "x86_64"))]
         let enter_scheme_trampoline = compile_trampoline(
             &mut memory,
             &*isa,
@@ -780,21 +720,21 @@ impl Trampolines {
             &mut memory,
             &*isa,
             1,
-            compiled_ghc_signature(),
+            compiled_tail_signature(),
             scheme_native_trampoline_code,
         );
         let native_continuation_trampoline = compile_trampoline(
             &mut memory,
             &*isa,
             2,
-            compiled_ghc_signature(),
+            compiled_tail_signature(),
             scheme_native_continuation_code,
         );
         let debug_scheme_trampoline = compile_trampoline(
             &mut memory,
             &*isa,
             3,
-            compiled_ghc_signature(),
+            compiled_tail_signature(),
             debug_scheme_trampoline_code,
         );
 

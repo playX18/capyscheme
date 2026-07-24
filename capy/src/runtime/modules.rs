@@ -61,7 +61,7 @@ pub struct Module<'gc> {
 }
 
 fn module_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::MODULE).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::MODULE).expect("builtin class id is nonzero"))
 }
 
 // SAFETY: `gc` for `Module` upholds all trait invariants
@@ -695,7 +695,7 @@ pub struct Variable<'gc> {
 }
 
 fn variable_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::VARIABLE).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::VARIABLE).expect("builtin class id is nonzero"))
 }
 
 const _: () = {
@@ -1076,7 +1076,7 @@ pub mod module_ops {
             }
         }
 
-        let binding = binding.unwrap();
+        let binding = binding.expect("invariant holds");
 
         nctx.return_(binding)
     }
@@ -1101,7 +1101,7 @@ pub mod module_ops {
             }
         }
 
-        let binding = binding.unwrap();
+        let binding = binding.expect("invariant holds");
 
         nctx.return_(binding)
     }

@@ -42,7 +42,7 @@ fn render_procedure<'gc>(
         params,
         retk
     )
-    .unwrap();
+    .expect("infallible allocation callback");
 
     let mut blocks = procedure.blocks.clone();
     blocks.sort_by_key(|block| block.id.0);
@@ -67,15 +67,15 @@ fn render_block<'gc>(
             " ; orig=block{} {}",
             annotation.orig.0, annotation.ctx
         )
-        .unwrap();
+        .expect("infallible allocation callback");
     }
     writeln!(out, "{header}").unwrap();
 
     for instruction in &block.instructions {
-        writeln!(out, "    {}", render_instruction(instruction)).unwrap();
+        writeln!(out, "    {}", render_instruction(instruction)).expect("write to string cannot fail");
     }
 
-    writeln!(out, "    {}", render_terminator(&block.terminator)).unwrap();
+    writeln!(out, "    {}", render_terminator(&block.terminator)).expect("write to string cannot fail");
 }
 
 fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {

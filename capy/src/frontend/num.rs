@@ -112,7 +112,7 @@ impl Number {
     }
 
     pub fn from_uinteger(digits: &str, radix: u32) -> Self {
-        let value = BigInt::from_str_radix(digits, radix).unwrap();
+        let value = BigInt::from_str_radix(digits, radix).expect("invariant holds");
         Number::ExactInteger(Rc::new(value))
     }
 }

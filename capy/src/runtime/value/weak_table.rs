@@ -34,7 +34,7 @@ pub struct WeakMapping<'gc> {
 }
 
 fn weak_mapping_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::WEAK_MAPPING).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::WEAK_MAPPING).expect("builtin class id is nonzero"))
 }
 
 // SAFETY: `gc` for `WeakMapping` upholds all trait invariants
@@ -173,7 +173,7 @@ pub struct WeakTable<'gc> {
 }
 
 fn weak_table_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::WEAK_TABLE).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::WEAK_TABLE).expect("builtin class id is nonzero"))
 }
 
 // SAFETY: `gc` for `WeakTable` upholds all trait invariants

@@ -24,7 +24,7 @@ pub struct CodeBlock<'gc> {
 unsafe impl<'gc> Send for CodeBlock<'gc> {}
 
 fn code_block_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::CODE_BLOCK).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::CODE_BLOCK).expect("builtin class id is nonzero"))
 }
 
 pub struct CodeBlockFinalizerQueue {
@@ -39,7 +39,7 @@ impl CodeBlockFinalizerQueue {
     }
 
     fn pop(&self) -> Option<ObjectReference> {
-        self.finalizers.lock().unwrap().pop_front()
+        self.finalizers.lock().expect("lock should not be poisoned").pop_front()
     }
 }
 
@@ -49,7 +49,7 @@ pub static CODE_BLOCK_FINALIZERS: LazyLock<Arc<CodeBlockFinalizerQueue>> =
 // SAFETY: Correct `pop` semantics for the finalization queue
 unsafe impl FinalizerQueue for CodeBlockFinalizerQueue {
     fn mark_ready_to_run(&self, object: ObjectReference) {
-        self.finalizers.lock().unwrap().push_back(object);
+        self.finalizers.lock().expect("lock should not be poisoned").push_back(object);
     }
 
     fn schedule(&self) {

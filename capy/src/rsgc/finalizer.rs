@@ -134,7 +134,7 @@ impl Finalizers {
             .queues
             .get(index)
             .and_then(|q| q.as_ref())
-            .unwrap()
+            .expect("infallible allocation callback")
             .clone()
     }
 
@@ -168,7 +168,7 @@ impl Finalizers {
                     let newobject = tracer.trace_object(object);
                     state.queues[queue_index]
                         .as_mut()
-                        .unwrap()
+                        .expect("infallible allocation callback")
                         .mark_ready_to_run(newobject);
                 }
 
@@ -215,7 +215,7 @@ macro_rules! make_finalizer_queue {
                 &self,
                 mc: &$crate::mutator::Mutation<$gc>,
             ) -> Option<$crate::ptr::Gc<$gc, $t>> {
-                let mut finalizers = self.finalizers.lock().unwrap();
+                let mut finalizers = self.finalizers.lock().expect("lock should not be poisoned");
                 if let Some(object) = finalizers.pop_front() {
                     Some(unsafe { $crate::ptr::Gc::from_gc_object(object) })
                 } else {
@@ -227,7 +227,7 @@ macro_rules! make_finalizer_queue {
                 &self,
                 mc: &$crate::mutator::Mutation<$gc>,
             ) -> Option<$crate::ptr::Gc<$gc, $t>> {
-                let mut finalizers = self.finalizers.lock().unwrap();
+                let mut finalizers = self.finalizers.lock().expect("lock should not be poisoned");
                 if let Some(object) = finalizers.pop_back() {
                     Some(unsafe { $crate::ptr::Gc::from_gc_object(object) })
                 } else {
@@ -236,17 +236,17 @@ macro_rules! make_finalizer_queue {
             }
 
             pub fn len(&self) -> usize {
-                self.finalizers.lock().unwrap().len()
+                self.finalizers.lock().expect("lock should not be poisoned").len()
             }
 
             pub fn is_empty(&self) -> bool {
-                self.finalizers.lock().unwrap().is_empty()
+                self.finalizers.lock().expect("lock should not be poisoned").is_empty()
             }
         }
 
         unsafe impl $crate::finalizer::FinalizerQueue for $name {
             fn mark_ready_to_run(&self, object: $crate::mmtk::util::ObjectReference) {
-                let mut finalizers = self.finalizers.lock().unwrap();
+                let mut finalizers = self.finalizers.lock().expect("lock should not be poisoned");
                 finalizers.push_back($crate::object::GcObject::from(object));
             }
 

@@ -52,9 +52,9 @@ pub fn term_sourcev<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_term(ctx, v));
     let src = v.downcast::<Tuple>()[1].get();
     if src.is_pair() {
-        let filename = src.assq(sym_filename(ctx).into()).unwrap();
-        let line = src.assq(sym_line(ctx).into()).unwrap();
-        let col = src.assq(sym_column(ctx).into()).unwrap();
+        let filename = src.assq(sym_filename(ctx).into()).expect("invariant holds");
+        let line = src.assq(sym_line(ctx).into()).expect("invariant holds");
+        let col = src.assq(sym_column(ctx).into()).expect("invariant holds");
         Vector::from_slice(*ctx, &[filename, line, col]).into()
     } else if src.is::<Vector>() {
         src
@@ -1015,7 +1015,7 @@ impl<'gc> TermConverter<'gc> {
                 },
             ))
         } else {
-            todo!()
+            Err(t)
         }
     }
 }

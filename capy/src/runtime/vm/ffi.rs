@@ -146,7 +146,7 @@ pub struct Pointer {
 }
 
 pub(crate) fn pointer_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::POINTER).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::POINTER).expect("builtin class id is nonzero"))
 }
 
 pub struct PointerWithFinalizers {
@@ -197,7 +197,7 @@ impl Drop for CallbackOwner {
 // SAFETY: Correct `pop` semantics for the finalization queue
 unsafe impl FinalizerQueue for PointerWithFinalizers {
     fn mark_ready_to_run(&self, object: ObjectReference) {
-        self.queue.lock().unwrap().push_back(object);
+        self.queue.lock().expect("lock should not be poisoned").push_back(object);
     }
 
     fn schedule(&self) {
@@ -207,10 +207,10 @@ unsafe impl FinalizerQueue for PointerWithFinalizers {
 
 impl PointerWithFinalizers {
     pub fn pop(&self) -> Option<(ObjectReference, extern "C" fn(*mut std::ffi::c_void))> {
-        let mut queue = self.queue.lock().unwrap();
+        let mut queue = self.queue.lock().expect("lock should not be poisoned");
         if let Some(obj) = queue.pop_front() {
             let finalizer = {
-                let mut finalizers = self.finalizers.lock().unwrap();
+                let mut finalizers = self.finalizers.lock().expect("lock should not be poisoned");
                 finalizers.remove(&obj)
             };
             if let Some(finalizer) = finalizer {
@@ -415,8 +415,8 @@ pub mod ffi_ops {
         let mc = *nctx.ctx;
         mc.finalizers()
             .register_finalizer(&POINTERS_WITH_FINALIZERS, p);
-        POINTERS_WITH_FINALIZERS.finalizers.lock().unwrap().insert(
-            p.as_gc_object().to_object_reference().unwrap(),
+        POINTERS_WITH_FINALIZERS.finalizers.lock().expect("lock should not be poisoned").insert(
+            p.as_gc_object().to_object_reference().expect("gc object has object reference"),
             // SAFETY: Source and destination types have compatible layouts and sizes
             unsafe {
                 std::mem::transmute::<*mut libc::c_void, extern "C" fn(*mut libc::c_void)>(
@@ -743,8 +743,8 @@ fn make_ffi_type<'gc>(ctx: Context<'gc>, ftype: Value<'gc>) -> Result<Type, Conv
             ForeignType::Void => Ok(Type::void()),
             ForeignType::Float => Ok(Type::f32()),
             ForeignType::Double => Ok(Type::f64()),
-            ForeignType::ComplexFloat => todo!(), // Ok(Type::c32()),
-            ForeignType::ComplexDouble => todo!(), //Ok(Type::c64()),
+            ForeignType::ComplexFloat => Ok(Type::structure([Type::f32(), Type::f32()])),
+            ForeignType::ComplexDouble => Ok(Type::structure([Type::f64(), Type::f64()])),
             ForeignType::Uint8 => Ok(Type::u8()),
             ForeignType::Int8 => Ok(Type::i8()),
             ForeignType::Uint16 => Ok(Type::u16()),
@@ -775,7 +775,7 @@ fn make_ffi_type<'gc>(ctx: Context<'gc>, ftype: Value<'gc>) -> Result<Type, Conv
             ));
         }
 
-        let _typ = v[0].get();
+        let elem_typ = v[0].get();
         let count = v[1].get();
         if !count.is_int32() {
             return Err(ConversionError::type_mismatch(1, "fixnum", count));
@@ -790,7 +790,8 @@ fn make_ffi_type<'gc>(ctx: Context<'gc>, ftype: Value<'gc>) -> Result<Type, Conv
             ));
         }
 
-        todo!()
+        let elem = make_ffi_type(ctx, elem_typ)?;
+        Ok(Type::structure(vec![elem; count as usize]))
     } else {
         Err(ConversionError::type_mismatch(0, "foreign type", ftype))
     }
@@ -833,7 +834,7 @@ pub struct Cif<'gc> {
 }
 
 fn cif_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::CIF).unwrap())
+    class_header_word(ClassId::new(builtin_class_ids::CIF).expect("builtin class id is nonzero"))
 }
 
 // SAFETY: `gc` for `Cif` upholds all trait invariants
@@ -1041,13 +1042,13 @@ unsafe fn foreign_call<'a, 'gc>(
                     ctx,
                     ftype,
                     *rand,
-                    args.last().copied().unwrap() as *mut (),
+                    args.last().copied().expect("args non-empty") as *mut (),
                     false,
                 ) {
                     Ok(()) => (),
                     Err(e) => return nctx.return_error(e),
                 }
-                off = args.last().copied().unwrap() - data_ptr as usize + (*ftype).size;
+                off = args.last().copied().expect("args non-empty") - data_ptr as usize + (*ftype).size;
             }
         }
 
@@ -1480,7 +1481,7 @@ unsafe fn pack<'gc>(
             return ptr.into();
         }
 
-        todo!()
+        panic!("unsupported FFI type tag in pack: {t}");
     }
 }
 

@@ -64,11 +64,11 @@ where
     const NEXT_BIT: usize = POSITION + SIZE;
 
     fn mask() -> S {
-        S::from_usize((1 << SIZE) - 1).unwrap()
+        S::from_usize((1 << SIZE) - 1).expect("invariant holds")
     }
 
     fn mask_in_place() -> S {
-        S::from_usize(((1 << SIZE) - 1) << POSITION).unwrap()
+        S::from_usize(((1 << SIZE) - 1) << POSITION).expect("invariant holds")
     }
 
     fn shift() -> usize {
@@ -86,7 +86,7 @@ where
 
     fn decode(value: S) -> T {
         if SIGN_EXTEND {
-            let u = value.to_u64().unwrap();
+            let u = value.to_u64().expect("invariant holds");
 
             let res = ((u << (64 - Self::NEXT_BIT)) as i64) >> (64 - SIZE);
 
@@ -153,7 +153,7 @@ macro_rules! impl_tofrom_bitfield {
         $(
             impl<S: NumCast + One + Zero + ToPrimitive + FromPrimitive> ToBitfield<S> for $t {
                 fn to_bitfield(self) -> S {
-                    <S as NumCast>::from(self).unwrap()
+                    <S as NumCast>::from(self).expect("invariant holds")
                 }
 
                 fn one() -> Self {
@@ -167,7 +167,7 @@ macro_rules! impl_tofrom_bitfield {
 
             impl<S: One + Zero + ToPrimitive + FromPrimitive> FromBitfield<S> for $t {
                 fn from_bitfield(value: S) -> Self {
-                    <$t as NumCast>::from(value).unwrap()
+                    <$t as NumCast>::from(value).expect("invariant holds")
                 }
 
                 fn from_i64(value: i64) -> Self {
@@ -184,7 +184,7 @@ macro_rules! impl_tofrom_bitfield_signed {
         $(
             impl<S: NumCast + One + Zero + ToPrimitive + FromPrimitive> ToBitfield<S> for $t {
                 fn to_bitfield(self) -> S {
-                    <S as NumCast>::from(self as $unsigned).unwrap()
+                    <S as NumCast>::from(self as $unsigned).expect("invariant holds")
                 }
 
                 fn one() -> Self {
@@ -198,7 +198,7 @@ macro_rules! impl_tofrom_bitfield_signed {
 
             impl<S: One + Zero + ToPrimitive + FromPrimitive> FromBitfield<S> for $t {
                 fn from_bitfield(value: S) -> Self {
-                    <$t as NumCast>::from(value).unwrap()
+                    <$t as NumCast>::from(value).expect("invariant holds")
                 }
 
                 fn from_i64(value: i64) -> Self {

@@ -36,7 +36,7 @@ fn stringbuf_header_word(is_wide: bool) -> u64 {
         builtin_class_ids::STRINGBUF_NARROW
     };
 
-    class_header_word(ClassId::new(class_id).unwrap())
+    class_header_word(ClassId::new(class_id).expect("builtin class id is nonzero"))
 }
 
 // SAFETY: Class IDs in `CLASS_IDS` match the allocation header for `Stringbuf`
@@ -228,7 +228,7 @@ pub struct Str<'gc> {
 }
 
 fn string_header_word(read_only: bool) -> u64 {
-    let class_id = ClassId::new(builtin_class_ids::STRING).unwrap();
+    let class_id = ClassId::new(builtin_class_ids::STRING).expect("builtin class id is nonzero");
 
     if read_only {
         class_header_word_with_private_variant_flag(class_id)
@@ -465,7 +465,7 @@ impl<'gc> Str<'gc> {
 
     pub fn try_as_str(this: Gc<'gc, Self>, mc: Mutation<'gc>) -> Option<&'gc str> {
         if Self::try_narrow(this, mc) {
-            let chars = this.chars().unwrap();
+            let chars = this.chars().expect("string buffer encoding matches branch");
             // SAFETY: Pointer is valid for the given element count
             let slice = unsafe { std::slice::from_raw_parts(chars.as_ptr(), this.len()) };
             Some(std::str::from_utf8(slice).unwrap())
@@ -617,9 +617,9 @@ impl<'gc> Str<'gc> {
         }
 
         if this.is_narrow() {
-            this.chars_mut().unwrap()[index] = value as u8;
+            this.chars_mut().expect("string buffer encoding matches branch")[index] = value as u8;
         } else {
-            this.wide_chars_mut().unwrap()[index] = value;
+            this.wide_chars_mut().expect("string buffer encoding matches branch")[index] = value;
         }
     }
 
@@ -708,8 +708,8 @@ fn compare_strings<'gc>(
 
     while cstart1 < cend1 && cstart2 < cend2 {
         if ci {
-            let a = cm.simple_fold(s1.get(cstart1).unwrap()); // s1.get(cstart1).unwrap().to_uppercase().next().unwrap();
-            let b = cm.simple_fold(s2.get(cstart2).unwrap()); //s2.get(cstart2).unwrap().to_uppercase().next().unwrap();
+            let a = cm.simple_fold(s1.get(cstart1).expect("index in range")); // s1.get(cstart1).expect("index in range").to_uppercase().next().expect("index in range");
+            let b = cm.simple_fold(s2.get(cstart2).expect("index in range")); //s2.get(cstart2).expect("index in range").to_uppercase().next().expect("index in range");
             if a < b {
                 return Some(std::cmp::Ordering::Less);
             } else if a > b {
@@ -718,8 +718,8 @@ fn compare_strings<'gc>(
             cstart1 += 1;
             cstart2 += 1;
         } else {
-            let a = s1.get(cstart1).unwrap();
-            let b = s2.get(cstart2).unwrap();
+            let a = s1.get(cstart1).expect("index in range");
+            let b = s2.get(cstart2).expect("index in range");
 
             if a < b {
                 return Some(std::cmp::Ordering::Less);
@@ -789,14 +789,14 @@ impl<'gc> PartialOrd for Str<'gc> {
 
 impl<'gc> Ord for Str<'gc> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        compare_strings(false, self, other, None, None, None, None).unwrap()
+        compare_strings(false, self, other, None, None, None, None).expect("string compare always yields ordering")
     }
 }
 
 impl<'gc> PartialEq<str> for Str<'gc> {
     fn eq(&self, other: &str) -> bool {
         if let Some(chars) = self.chars() {
-            return std::str::from_utf8(chars).unwrap() == other;
+            return std::str::from_utf8(chars).expect("narrow string bytes are utf8") == other;
         }
 
         if let Some(wide_chars) = self.wide_chars() {
@@ -811,12 +811,12 @@ impl<'gc> Hash for Str<'gc> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         if self.is_narrow() {
             state.write_u8(0xde);
-            for c in self.chars().unwrap() {
+            for c in self.chars().expect("string buffer encoding matches branch") {
                 state.write_u8(*c);
             }
         } else {
             state.write_u8(0xee);
-            for c in self.wide_chars().unwrap() {
+            for c in self.wide_chars().expect("string buffer encoding matches branch") {
                 state.write_u32(*c as u32);
             }
         }
@@ -824,7 +824,7 @@ impl<'gc> Hash for Str<'gc> {
 }
 
 fn symbol_header_word(interned: bool) -> u64 {
-    let class_id = ClassId::new(builtin_class_ids::SYMBOL).unwrap();
+    let class_id = ClassId::new(builtin_class_ids::SYMBOL).expect("builtin class id is nonzero");
 
     if interned {
         class_header_word(class_id)
