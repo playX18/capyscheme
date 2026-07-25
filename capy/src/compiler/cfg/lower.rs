@@ -12,7 +12,7 @@ use crate::{
         cranelift::primitive::Primitive,
     },
     expander::core::LVarRef,
-    runtime::value::Value,
+    runtime::{value::Value, vm::exceptions::RaiseKind},
 };
 
 use super::{
@@ -356,8 +356,18 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
                         .get(&target)
                         .cloned()
                         .unwrap_or_else(|| (vec![], None));
-                    emit_parallel_assign(self, instructions, &formals, variadic, &args);
-                    Terminator::Jump { target: block }
+                    if !contified_arity_ok(&formals, variadic, &args) {
+                        // Contified receives must raise &assertion on value
+                        // arity mismatch (e.g. (let-values ((() (values 1))) …)).
+                        Terminator::Raise {
+                            kind: RaiseKind::AssertionViolation,
+                            args: vec![],
+                            source: data.source,
+                        }
+                    } else {
+                        emit_parallel_assign(self, instructions, &formals, variadic, &args);
+                        Terminator::Jump { target: block }
+                    }
                 } else {
                     Terminator::TailCall {
                         callee: Operand::Local(self.uvar(target)),
@@ -461,16 +471,31 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
                 .get(&continuation)
                 .cloned()
                 .unwrap_or_else(|| (vec![], None));
-            let mut instructions = Vec::new();
-            emit_parallel_assign(self, &mut instructions, &formals, variadic, &args);
             let source = Value::new(false);
+            let (instructions, terminator) = if !contified_arity_ok(&formals, variadic, &args) {
+                (
+                    Vec::new(),
+                    Terminator::Raise {
+                        kind: RaiseKind::AssertionViolation,
+                        args: vec![],
+                        source,
+                    },
+                )
+            } else {
+                let mut instructions = Vec::new();
+                emit_parallel_assign(self, &mut instructions, &formals, variadic, &args);
+                (instructions, Terminator::Jump { target: block })
+            };
             self.blocks.push(Block {
                 id: helper,
                 instructions,
-                terminator: Terminator::Jump { target: block },
+                terminator,
                 source,
             });
-            BranchTarget::Local { block: helper, edge_assigns: vec![] }
+            BranchTarget::Local {
+                block: helper,
+                edge_assigns: vec![],
+            }
         } else {
             BranchTarget::Reified {
                 continuation: Operand::Local(self.uvar(continuation)),
@@ -480,15 +505,18 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
     }
 }
 
-/// Classical parallel-copy decomposition into sequential `Assign`s, plus
-/// contified rest-list materialization.
-///
-/// Fixed formals are assigned in parallel (via temps so cyclic permutations
-/// cannot livelock). When `variadic` is set, excess arguments are consed into
-/// a proper list (right-fold) and assigned to the rest uvar — matching the old
-/// SSA `jump_to_block` behavior. Truncating extras into the rest slot was a
-/// CFG-migration bug that left module-export loops with a scalar/`()` instead
-/// of a name list.
+fn contified_arity_ok<'gc>(
+    formals: &[UVar],
+    variadic: Option<UVar>,
+    args: &[Operand<'gc>],
+) -> bool {
+    if variadic.is_some() {
+        args.len() >= formals.len()
+    } else {
+        args.len() == formals.len()
+    }
+}
+
 fn emit_parallel_assign<'gc>(
     builder: &mut ProcedureBuilder<'_, 'gc>,
     instructions: &mut Vec<Instruction<'gc>>,
@@ -496,15 +524,12 @@ fn emit_parallel_assign<'gc>(
     variadic: Option<UVar>,
     args: &[Operand<'gc>],
 ) {
+    debug_assert!(
+        contified_arity_ok(formals, variadic, args),
+        "emit_parallel_assign requires a matching contified arity"
+    );
     let fixed_count = formals.len();
-    let fixed_args = if args.len() >= fixed_count {
-        &args[..fixed_count]
-    } else {
-        // Undercall: pad missing fixed args with null (arity errors for
-        // contified jumps are rare vs procedure entry; keep lowering total).
-        // The parallel-assign helper below pads when sources are short.
-        args
-    };
+    let fixed_args = &args[..fixed_count.min(args.len())];
     emit_parallel_moves(builder, instructions, formals, fixed_args);
 
     let Some(rest) = variadic else {
