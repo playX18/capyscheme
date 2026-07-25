@@ -1,6 +1,55 @@
 (define-library (srfi 1)
   (import (core))
-  (export xcons
+  (export
+    cons
+    list
+    pair?
+    null?
+    car
+    cdr
+    caar
+    cadr
+    cdar
+    cddr
+    caaar
+    caadr
+    cadar
+    caddr
+    cdaar
+    cdadr
+    cddar
+    cdddr
+    caaaar
+    caaadr
+    caadar
+    caaddr
+    cadaar
+    cadadr
+    caddar
+    cadddr
+    cdaaar
+    cdaadr
+    cdadar
+    cdaddr
+    cddaar
+    cddadr
+    cdddar
+    cddddr
+    list-ref
+    length
+    append
+    reverse
+    memq
+    memv
+    assq
+    assv
+    set-car!
+    set-cdr!
+    (rename (map map-in-order))
+    for-each
+    member
+    assoc
+    xcons
     cons*
     make-list
     list-tabulate
