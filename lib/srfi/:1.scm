@@ -1,4 +1,4 @@
-(define-library (srfi 1)
+(define-library (srfi :1)
 (import (core))
 (export
   cons
