@@ -1,11 +1,3 @@
-;;; Regressions for SBBV rest-list materialization on block edges.
-;;;
-;;; SBBV may rename non-procedure variadic ValueIds. Jump lowering must still
-;;; materialize the rest list when the target block's SSA body uses that
-;;; variadic (e.g. capturing it into a closure free slot before
-;;; `(apply values ...)`). Dropping the list as `'()` yields 0 values into a
-;;; continuation that expects ≥1 argument.
-
 (import (srfi 64)
         (capy))
 

@@ -427,6 +427,13 @@ test:
 		fi; \
 		rm -f "$$log"; \
 	done; \
+	echo "Running R6RS tests"; \
+	log=$$(mktemp); \
+	if ! $(CAPY_ENV) $(CAPY) -L lib -L . --fresh-auto-compile --r6rs -s tests/r6rs/run-via-eval.sps > "$$log" 2>&1; then \
+		status=1; \
+	fi; \
+	cat "$$log"; \
+	rm -f "$$log"; \
 	if [ "$$count" -eq 0 ]; then \
 		echo "No tests found under tests/lib" >&2; \
 		exit 1; \
