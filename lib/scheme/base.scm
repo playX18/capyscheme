@@ -73,6 +73,7 @@
     current-input-port
     current-output-port
     define
+    define-values
     define-record-type
     define-syntax
     denominator
