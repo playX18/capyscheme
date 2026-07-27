@@ -13,6 +13,7 @@ pub fn handle(Input { meta: args }: Input, fun: syn::ItemFn) -> syn::Result<Func
     let mut name = None;
     let mut module = None;
     let mut is_continuation = false;
+    let mut is_unsafe = false;
 
     for meta in args {
         match meta {
@@ -37,6 +38,10 @@ pub fn handle(Input { meta: args }: Input, fun: syn::ItemFn) -> syn::Result<Func
 
             syn::Meta::Path(path) if path.is_ident("continuation") => {
                 is_continuation = true;
+            }
+
+            syn::Meta::Path(path) if path.is_ident("unsafe") => {
+                is_unsafe = true;
             }
 
             syn::Meta::NameValue(kv) if kv.path.is_ident("module") => {
@@ -79,6 +84,7 @@ pub fn handle(Input { meta: args }: Input, fun: syn::ItemFn) -> syn::Result<Func
     let scheme_attribute = SchemeAttribute {
         module_path: module,
         name,
+        is_unsafe,
     };
 
     let nctx = syn::Ident::new("nctx", proc_macro2::Span::call_site());
@@ -107,6 +113,10 @@ pub struct SchemeAttribute {
     ///
     /// If not provided, kebab-case version of the Rust function name is used.
     pub name: syn::LitStr,
+    /// When true (`#[scheme(unsafe)]`), the body may nest into Scheme via
+    /// [`crate::runtime::jni`] or unsafe [`call_scheme`]. Safe leaves must not
+    /// increase nest level or trigger GC.
+    pub is_unsafe: bool,
 }
 #[allow(dead_code)]
 struct TransformationContext {
@@ -403,11 +413,29 @@ impl FunctionDefinition {
         );
         let orig_body = &self.transformed_function.block;
         let ctx = syn::Ident::new("ctx", proc_macro2::Span::call_site());
+        let leaf_doc = if self.scheme_attribute.is_unsafe {
+            "\
+# Safety (`#[scheme(unsafe)]`)
+
+This leaf may increase nest level (re-enter Scheme). Keep live Values rooted via \
+`capy::runtime::jni` across any nest. Prefer CPS `nctx.return_call` when possible."
+        } else {
+            "\
+# GC contract (`#[scheme]`)
+
+Safe leaves must not increase nest level or trigger GC. Allocation may schedule \
+collection but must not collect inline. To nest into Scheme, use \
+`capy::runtime::jni::call_function` from a `#[scheme(unsafe)]` function, or stay \
+in CPS with `nctx.return_call`."
+        };
         let new_body = quote! {{
             let #ctx = nctx.ctx;
             #orig_body
         }};
         self.transformed_function.block = syn::parse2(new_body).expect("parsing new function body");
+        self.transformed_function
+            .attrs
+            .push(syn::parse_quote!(#[doc = #leaf_doc]));
         let func = &self.transformed_function;
         let vis = &func.vis;
 

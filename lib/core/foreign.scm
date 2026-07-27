@@ -92,7 +92,9 @@
     (define uintptr_t %uintptr_t))
 
   (define (string->pointer x)
-    "Converts a Scheme string to a C-style null-terminated string"
+    "Converts a Scheme string to a C-style null-terminated string in NonMoving memory.
+The resulting pointer stays valid while the returned pointer object is live
+(ephemeron keeps the NonMoving bytevector)."
     (unless (string? x)
       (assertion-violation 'string->pointer "not a string" x))
     (define bv (make-bytevector/nonmoving (+ (string-length x) 1) 0))

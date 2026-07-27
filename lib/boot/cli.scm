@@ -195,7 +195,7 @@
       "gc-plan"
       (defaults-to "StickyImmix")
       (value-help "PLAN")
-      (help "Select the MMTK GC plan (StickyImmix, ConcurrentImmix, MarkSweep, or Immix)"))
+      (help "Select the MMTK GC plan (StickyImmix, ConcurrentImmix, MarkSweep, Immix, SemiSpace, GenImmix, or GenCopy)"))
     (add-option! parser
       "gc-trigger"
       (defaults-to "Delegated")
@@ -310,6 +310,7 @@
     (define verbose (arg-results-ref res "verbose"))
     (define runtime-stats (arg-results-ref res "runtime-stats"))
     (define version (arg-results-ref res "version"))
+    (define barrier-kind (arg-results-ref res "barrier"))
     (define backtrace #t)
     (define dump-options
       (let ([options '()])
@@ -324,6 +325,13 @@
         (reverse options)))
 
     (when version (format #t "CapyScheme Compiler ~a~%" (implementation-version)) (exit 0))
+    (when barrier-kind
+      (unless (member barrier-kind '("nobarrier" "objbarrier" "satbbarrier"))
+        (format (current-error-port)
+          "error: invalid --barrier ~a; expected nobarrier, objbarrier, or satbbarrier~%"
+          barrier-kind)
+        (exit 1))
+      (compile-barrier-kind! barrier-kind))
     (if (and r7rs-mode r6rs-mode)
       (error "Cannot specify both --r7rs and --r6rs modes"))
     (cond
@@ -406,6 +414,12 @@
     (abbreviation "v")
     (help "Enable verbose output"))
 
+  (add-option! parser
+    "barrier"
+    (defaults-to #f)
+    (value-help "KIND")
+    (help "Force FASL write-barrier kind: nobarrier, objbarrier, or satbbarrier (default: from live --gc-plan)"))
+
   (add-flag! parser 
     "version"
     (help "Show version and exit"))
@@ -438,7 +452,7 @@
     "gc-plan"
     (defaults-to "StickyImmix")
     (value-help "PLAN")
-    (help "Select the MMTK GC plan (StickyImmix, ConcurrentImmix, MarkSweep, or Immix)"))
+    (help "Select the MMTK GC plan (StickyImmix, ConcurrentImmix, MarkSweep, Immix, SemiSpace, GenImmix, or GenCopy)"))
   (add-option! parser
     "gc-trigger"
     (defaults-to "Delegated")
