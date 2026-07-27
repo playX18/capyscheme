@@ -10,7 +10,7 @@ pub(crate) fn deliver_pending_interrupts<'gc>(ctx: Context<'gc>) {
     }
     thread.mask_interrupts();
     while let Some(thunk) = thread.pop_pending_interrupt() {
-        if let ExecutionResult::Err(err) = super::call_scheme(ctx, thunk, []) {
+        if let ExecutionResult::Err(err) = crate::runtime::jni::call_function(ctx, thunk, []) {
             ctx.state().accumulator.set(err);
             break;
         }

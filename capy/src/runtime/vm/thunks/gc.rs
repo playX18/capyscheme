@@ -4,24 +4,14 @@ use crate::rsgc::{
 };
 use crate::runtime::{Context, value::Value};
 
-pub fn yieldpoint_block<'gc>(
-    ctx: Context<'gc>,
-    rator: Value<'gc>,
-    argc: usize,
-    arg0: Value<'gc>,
-    arg1: Value<'gc>,
-    arg2: Value<'gc>,
-    arg3: Value<'gc>,
-) {
-    // Entry yieldpoints run before argument loading. Save the ABI roots so
-    // GC does not rely on machine registers being visible to conservative
-    // stack scanning while this thunk blocks.
-    ctx.state()
-        .gc_save
-        .save_entry(rator, argc, [arg0, arg1, arg2, arg3]);
+/// Block for a pending GC / interrupt at a compiled Scheme entry yieldpoint.
+///
+/// Compiled code must store ABI roots into [`State::gc_save`](crate::runtime::State::gc_save)
+/// before calling this thunk, then reload those slots afterward and clear the
+/// save area. GC relocates the `gc_save` slots in place (they are not pinned).
+pub fn yieldpoint_block<'gc>(ctx: Context<'gc>) {
     crate::rsgc::sync::thread::Thread::yieldpoint();
     crate::runtime::vm::interrupts::deliver_pending_interrupts(ctx);
-    ctx.state().gc_save.clear();
 }
 
 pub fn pre_write_barrier_at_slot<'gc>(

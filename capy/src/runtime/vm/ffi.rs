@@ -332,12 +332,21 @@ pub mod ffi_ops {
             );
         }
 
+        // Expose a stable address: copy movable owned BVs into NonMoving.
+        // Mapped BVs already reference external memory.
+        let bv = if bv.is_mapping() || bv.is_nonmoving(&*nctx.ctx) {
+            bv
+        } else {
+            let copy = ByteVector::new::<false>(*nctx.ctx, bv.len(), false);
+            copy.copy_from(bv.as_slice());
+            copy
+        };
+
         let ptr = bv.contents() + offset;
         let p = Pointer::new(ptr.to_mut_ptr());
         let p = Gc::new_with_header_word(*nctx.ctx, p, pointer_header_word());
-        // TODO(Adel): pin bytevector in memory OR move contents to non-moving space.
 
-        // create ephemeron to keep the bytevector alive if `p` is alive.
+        // Ephemeron: keep the (NonMoving) bytevector alive while `p` is live.
         ptrs(nctx.ctx).put(nctx.ctx, p, bv);
 
         nctx.return_(p)
@@ -968,7 +977,7 @@ fn make_cif<'gc>(
 
 // SAFETY: Caller ensures all C/FFI arguments are valid
 unsafe fn foreign_call<'a, 'gc>(
-    nctx: NativeCallContext<'a, 'gc>,
+    mut nctx: NativeCallContext<'a, 'gc>,
     ctx: Context<'gc>,
     cif: Value<'gc>,
     pointer: Value<'gc>,
@@ -1061,7 +1070,9 @@ unsafe fn foreign_call<'a, 'gc>(
             let raw = cif.cif.as_raw_ptr();
             let target: *mut () = pointer.cast();
             let mut args = args;
-            nctx.ctx.outside_gc_world(|| {
+            let scope = RootScope::new(nctx.ctx);
+            let retk = scope.root(nctx.retk);
+            nctx.ctx.call_in_native(|| {
                 libffi::raw::ffi_call(
                     raw,
                     // SAFETY: Invariants are upheld at this call site
@@ -1072,6 +1083,8 @@ unsafe fn foreign_call<'a, 'gc>(
                     args.as_mut_ptr().cast(),
                 );
             });
+            nctx.retk = retk.get();
+            drop(scope);
             return nctx.return_(pack(ctx, (*raw).rtype, rvalue, true));
         }
 
@@ -1491,11 +1504,36 @@ unsafe extern "C" fn scheme_callback(
     args: *const *const libc::c_void,
     userdata: &CallbackData,
 ) {
+    use crate::rsgc::sync::thread::{Thread, ThreadState, current_thread};
+    use crate::runtime::jni::LocalFrame;
+
     // SAFETY: Callback data is created from a live Capy context and is only
     // valid for callbacks invoked by C during that context's lifetime.
     let ctx = unsafe { Context::from_ptr(userdata.ctx) };
+
+    let was_native = matches!(
+        current_thread().get_exec_status(),
+        ThreadState::InNative | ThreadState::BlockedInNative
+    );
+    struct NativeReenterGuard {
+        was_native: bool,
+    }
+    impl Drop for NativeReenterGuard {
+        fn drop(&mut self) {
+            if self.was_native {
+                Thread::enter_native();
+            }
+        }
+    }
+    if was_native {
+        Thread::leave_native();
+    }
+    let _reenter = NativeReenterGuard { was_native };
+
     let proc = *userdata.proc.fetch(*ctx);
-    let mut scheme_args = Vec::with_capacity(cif.nargs as usize);
+    let mut frame = LocalFrame::push();
+    let proc_slot = frame.new_local_ref(proc).as_ptr();
+    let mut arg_slots: Vec<*mut Value<'static>> = Vec::with_capacity(cif.nargs as usize);
 
     for i in 0..cif.nargs as usize {
         // SAFETY: libffi supplies one argument slot per CIF argument.
@@ -1503,16 +1541,27 @@ unsafe extern "C" fn scheme_callback(
         // SAFETY: `arg_types` belongs to the live CIF passed by libffi.
         let arg_type = unsafe { *cif.arg_types.add(i) };
         // SAFETY: libffi argument locations match the CIF argument types.
-        scheme_args.push(unsafe { pack(ctx, arg_type, arg_loc, false) });
+        let arg = unsafe { pack(ctx, arg_type, arg_loc, false) };
+        arg_slots.push(frame.new_local_ref(arg).as_ptr());
     }
 
-    let value = match call_scheme(ctx, proc, scheme_args) {
-        ExecutionResult::Ok(value) => value,
-        ExecutionResult::Err(_) => {
-            *result = 0;
-            return;
+    // SAFETY: OopStorage slots live until `frame` drops.
+    let value = unsafe {
+        let proc = std::mem::transmute::<Value<'static>, Value<'_>>(*proc_slot);
+        let scheme_args: Vec<Value<'_>> = arg_slots
+            .iter()
+            .map(|slot| std::mem::transmute::<Value<'static>, Value<'_>>(**slot))
+            .collect();
+        match crate::runtime::jni::call_function(ctx, proc, scheme_args) {
+            ExecutionResult::Ok(value) => value,
+            ExecutionResult::Err(_) => {
+                *result = 0;
+                return;
+            }
         }
     };
+    let value_slot = frame.new_local_ref(value).as_ptr();
+    let value = unsafe { std::mem::transmute::<Value<'static>, Value<'_>>(*value_slot) };
 
     // SAFETY: libffi provided `result` as the return storage for this CIF.
     let _ = unsafe {

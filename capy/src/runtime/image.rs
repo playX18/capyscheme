@@ -188,11 +188,11 @@ pub fn all_native_procedures<'gc>(ctx: Context<'gc>) -> Vec<Address> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum AllowedGc {
-    /// Allow only StickyImmix.
+    /// Allow StickyImmix, GenImmix, GenCopy.
     Generational,
     /// Allow only ConcurrentImmix.
     Concurrent,
-    /// Allow only MarkSweep and Immix.
+    /// Allow MarkSweep, SemiSpace, and Immix.
     Regular,
 }
 
@@ -200,9 +200,12 @@ impl AllowedGc {
     pub fn adjust_mmtk_options(&self, opts: &mut Options) {
         match self {
             AllowedGc::Generational => {
-                if !matches!(*opts.plan, PlanSelector::StickyImmix) {
+                if !matches!(
+                    *opts.plan,
+                    PlanSelector::StickyImmix | PlanSelector::GenImmix | PlanSelector::GenCopy
+                ) {
                     log::warn!(
-                        "The loaded heap image only allows StickyImmix. Switching to StickyImmix plan."
+                        "The loaded heap image only allows StickyImmix, GenImmix, or GenCopy. Switching to StickyImmix plan."
                     );
                     opts.plan.set(PlanSelector::StickyImmix);
                 }
@@ -218,9 +221,12 @@ impl AllowedGc {
             }
 
             AllowedGc::Regular => {
-                if !matches!(*opts.plan, PlanSelector::MarkSweep | PlanSelector::Immix) {
+                if !matches!(
+                    *opts.plan,
+                    PlanSelector::MarkSweep | PlanSelector::SemiSpace | PlanSelector::Immix
+                ) {
                     log::warn!(
-                        "The loaded heap image only allows MarkSweep or Immix. Switching to Immix plan."
+                        "The loaded heap image only allows MarkSweep, SemiSpace, or Immix. Switching to Immix plan."
                     );
                     opts.plan.set(PlanSelector::Immix);
                 }

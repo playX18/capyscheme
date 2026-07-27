@@ -180,8 +180,7 @@ fn thread_object_header_word() -> u64 {
 
 impl<'gc> ThreadObject<'gc> {
     pub(crate) fn new(mc: Mutation<'gc>, entrypoint: Option<Value<'gc>>) -> Gc<'gc, Self> {
-        Gc::new_with_header_word(
-            mc,
+        mc.allocate_with_header_word(
             ThreadObject {
                 entrypoint: Lock::new(entrypoint),
                 pending_interrupts: Box::into_raw(Box::new(PendingInterruptQueue {
@@ -191,6 +190,7 @@ impl<'gc> ThreadObject<'gc> {
                 interrupt_level: AtomicUsize::new(0),
             },
             thread_object_header_word(),
+            AllocationSemantics::NonMoving,
         )
     }
 
@@ -422,11 +422,16 @@ pub mod threading_ops {
         }
 
         if block {
-            let mutex_ptr = NonNull::from(&*mutex_obj);
+            let mut mutex_obj = mutex_obj;
             let thread = nctx.ctx.state().thread_object;
             loop {
-                nctx.ctx.outside_gc_world(|| {
-                    // SAFETY: Preconditions verified by the surrounding code
+                let scope = RootScope::new(nctx.ctx);
+                let retk = scope.root(nctx.retk);
+                let mutex_root = scope.root(mutex_obj.into());
+                // Mutex is NonMoving; interior stays stable across GC.
+                let mutex_ptr = NonNull::from(&*mutex_obj);
+                nctx.ctx.call_in_native(|| {
+                    // SAFETY: Mutex is NonMoving and rooted for the wait.
                     let mutex_obj = unsafe { mutex_ptr.as_ref() };
                     loop {
                         match &mutex_obj.mutex {
@@ -451,6 +456,9 @@ pub mod threading_ops {
                         std::thread::sleep(Duration::from_millis(1));
                     }
                 });
+                nctx.retk = retk.get();
+                mutex_obj = mutex_root.get().downcast();
+                drop(scope);
                 crate::runtime::vm::interrupts::deliver_pending_interrupts(nctx.ctx);
                 if mutex_obj.is_owned_by_current_thread() {
                     return nctx.return_(true);
@@ -576,8 +584,12 @@ pub mod threading_ops {
         let condition = NonNull::from(&condition_obj.cond);
         let mutex_ptr = NonNull::from(&*mutex_obj);
         let thread = nctx.ctx.state().thread_object;
-        nctx.ctx.outside_gc_world(|| {
-            // SAFETY: Preconditions verified by the surrounding code
+        let scope = RootScope::new(nctx.ctx);
+        let retk = scope.root(nctx.retk);
+        let _mutex_root = scope.root(mutex_obj.into());
+        let _cond_root = scope.root(condition_obj.into());
+        nctx.ctx.call_in_native(|| {
+            // SAFETY: Mutex/Condition are NonMoving and rooted for the wait.
             let mutex_obj = unsafe { mutex_ptr.as_ref() };
             match &mutex_obj.mutex {
                 // SAFETY: Preconditions verified by the surrounding code
@@ -598,6 +610,8 @@ pub mod threading_ops {
                 _ => panic!("Only regular mutex can be used with condition waiting"),
             }
         });
+        nctx.retk = retk.get();
+        drop(scope);
         crate::runtime::vm::interrupts::deliver_pending_interrupts(nctx.ctx);
         nctx.return_(Value::undefined())
     }

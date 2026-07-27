@@ -294,9 +294,11 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         let source = self.target_source();
         let is_function = self.target_is_function();
         self.set_debug_loc(source);
-        if is_function {
-            self.check_yield(self.rator, argc, args);
-        }
+        let (argc, args) = if is_function {
+            self.check_yield(self.rator, argc, args)
+        } else {
+            (argc, args)
+        };
 
         if self.load_fixed_arity_register_arguments(argc, args) {
             return;
@@ -1844,14 +1846,21 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         }
     }
 
+    /// Poll for a pending GC/interrupt at function entry.
+    ///
+    /// On the cold path, stores ABI roots into `State::gc_save`, calls the
+    /// yieldpoint thunk, reloads them, and clears the save area. The returned
+    /// Values (and updated `self.rator`) must be used afterward — pre-yield SSA
+    /// defs must not outlive this join. `gc_save` roots are pinned until
+    /// Cranelift user stackmaps can rewrite any leftover spill slots across the
+    /// thunk call under a fully relocating collector.
     pub fn check_yield(
         &mut self,
         rator: ir::Value,
         argc: ir::Value,
         args: [ir::Value; REGISTER_ARG_COUNT],
-    ) {
+    ) -> (ir::Value, [ir::Value; REGISTER_ARG_COUNT]) {
         let ctx = self.ctx;
-
         let thread = ctx;
 
         let yieldpoint = self.builder.ins().load(
@@ -1861,24 +1870,87 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
             Thread::TAKE_YIELDPOINT_OFFSET as i32,
         );
         let on_yieldpoint = self.builder.create_block();
-        let on_no_yieldpoint = self.builder.create_block();
+        let on_join = self.builder.create_block();
         self.builder.func.layout.set_cold(on_yieldpoint);
 
+        for _ in 0..COMPILED_ENTRY_ARG_COUNT {
+            self.builder.append_block_param(on_join, types::I64);
+        }
+
         let take_yieldpoint = self.builder.ins().icmp_imm_s(IntCC::NotEqual, yieldpoint, 0);
+        let join_args = [
+            BlockArg::Value(rator),
+            BlockArg::Value(argc),
+            BlockArg::Value(args[0]),
+            BlockArg::Value(args[1]),
+            BlockArg::Value(args[2]),
+            BlockArg::Value(args[3]),
+        ];
 
         self.builder
             .ins()
-            .brif(take_yieldpoint, on_yieldpoint, &[], on_no_yieldpoint, &[]);
+            .brif(take_yieldpoint, on_yieldpoint, &[], on_join, &join_args);
         self.builder.switch_to_block(on_yieldpoint);
         {
-            let ctx = self.ctx;
-            self.builder.ins().call(
-                self.thunks.yieldpoint_block,
-                &[ctx, rator, argc, args[0], args[1], args[2], args[3]],
+            let state = self.state_ptr();
+            let mem = ir::MemFlagsData::trusted().with_can_move();
+            let gc_save = offset_of!(State, gc_save) as i32;
+            let rator_off = gc_save + offset_of!(crate::runtime::GcSave, rator) as i32;
+            let argc_off = gc_save + offset_of!(crate::runtime::GcSave, argc) as i32;
+            let arg_offs = [
+                gc_save + offset_of!(crate::runtime::GcSave, arg0) as i32,
+                gc_save + offset_of!(crate::runtime::GcSave, arg1) as i32,
+                gc_save + offset_of!(crate::runtime::GcSave, arg2) as i32,
+                gc_save + offset_of!(crate::runtime::GcSave, arg3) as i32,
+            ];
+
+            self.builder.ins().store(mem, rator, state, rator_off);
+            self.builder.ins().store(mem, argc, state, argc_off);
+            for i in 0..REGISTER_ARG_COUNT {
+                self.builder.ins().store(mem, args[i], state, arg_offs[i]);
+            }
+
+            self.builder.ins().call(self.thunks.yieldpoint_block, &[ctx]);
+
+            let rator = self.builder.ins().load(types::I64, mem, state, rator_off);
+            let argc = self.builder.ins().load(types::I64, mem, state, argc_off);
+            let args = [
+                self.builder.ins().load(types::I64, mem, state, arg_offs[0]),
+                self.builder.ins().load(types::I64, mem, state, arg_offs[1]),
+                self.builder.ins().load(types::I64, mem, state, arg_offs[2]),
+                self.builder.ins().load(types::I64, mem, state, arg_offs[3]),
+            ];
+
+            let undef = self
+                .builder
+                .ins()
+                .iconst(types::I64, Value::undefined().bits() as i64);
+            let zero = self.builder.ins().iconst(types::I64, 0);
+            self.builder.ins().store(mem, undef, state, rator_off);
+            self.builder.ins().store(mem, zero, state, argc_off);
+            for off in arg_offs {
+                self.builder.ins().store(mem, undef, state, off);
+            }
+
+            self.builder.ins().jump(
+                on_join,
+                &[
+                    BlockArg::Value(rator),
+                    BlockArg::Value(argc),
+                    BlockArg::Value(args[0]),
+                    BlockArg::Value(args[1]),
+                    BlockArg::Value(args[2]),
+                    BlockArg::Value(args[3]),
+                ],
             );
-            self.builder.ins().jump(on_no_yieldpoint, &[]);
         }
-        self.builder.switch_to_block(on_no_yieldpoint);
+        self.builder.switch_to_block(on_join);
+        let params = self.builder.block_params(on_join);
+        self.rator = params[0];
+        (
+            params[1],
+            [params[2], params[3], params[4], params[5]],
+        )
     }
 }
 

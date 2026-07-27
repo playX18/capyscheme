@@ -29,6 +29,7 @@ pub(crate) mod logging;
 pub mod mm;
 pub mod mutator;
 pub mod object;
+pub mod oop_storage;
 pub mod plans;
 pub mod ptr;
 pub mod scanning;
@@ -119,7 +120,7 @@ pub use traits::Trace;
 pub use weak::*;
 
 pub use conservative::is_mmtk_heap_object;
-pub use plans::{ALLOWED_GC_PLAN_NAMES, is_allowed_plan};
+pub use plans::{ALLOWED_GC_PLAN_NAMES, is_allowed_plan, validate_plan};
 
 pub fn compressed_heap_base() -> Address {
     unsafe { Address::from_usize(BASE.load(std::sync::atomic::Ordering::Relaxed)) }

@@ -263,14 +263,10 @@ fn mapped_bytevector_header_word() -> u64 {
 pub const BYTE_VECTOR_MAX_LENGTH: usize = usize::MAX;
 
 extern "C" fn trace_byte_vector_mapping(vec: GcObject, vis: &mut Visitor) {
-    // SAFETY: The pointer references a valid GC-managed object of the expected type
-    unsafe {
-        let bv = vec.to_address().as_mut_ref::<ByteVector>();
-        let orig = bv.contents.sub(size_of::<ByteVector>());
-        let mut orig_bv = Gc::from_ptr(orig.to_ptr::<ByteVector>());
-        orig_bv.trace(vis);
-        bv.contents = Address::from_ptr(orig_bv.as_ptr().add(1));
-    }
+    // Mapped bytevectors reference external (or otherwise non-owned) memory.
+    // Do not treat `contents` as an owned ByteVector payload that needs
+    // interior-pointer updating. The mapping header itself is traced as usual.
+    let _ = (vec, vis);
 }
 
 extern "C" fn process_weak_byte_vector(_: GcObject, _: &mut WeakProcessor) {}
@@ -319,6 +315,18 @@ impl ByteVector {
 
     pub fn is_mapping(&self) -> bool {
         payload_class_id(self).bits() == builtin_class_ids::MAPPED_BYTEVECTOR
+    }
+
+    /// True if this owned bytevector was allocated in the NonMoving space.
+    ///
+    /// Mapped bytevectors are not NonMoving shells; their `contents` address is
+    /// external and must not be treated as an owned payload interior.
+    pub fn is_nonmoving<'gc>(self: Gc<'gc, Self>, mc: &Mutation<'gc>) -> bool {
+        if self.is_mapping() {
+            return false;
+        }
+        // `Mutation::is_in_nonmoving_space` — object lives in NonMoving allocator space.
+        mc.is_in_nonmoving_space(self)
     }
 
     pub fn len(&self) -> usize {
@@ -700,6 +708,7 @@ unsafe impl<'gc> IndexWrite<usize> for Tuple<'gc> {}
 mod tests {
     use super::*;
     use crate::runtime::Scheme;
+    use mmtk::util::Address;
 
     #[test]
     fn bytevector_mapping_uses_class_id() {
@@ -713,6 +722,18 @@ mod tests {
                 payload_class_id(&*mapped).bits(),
                 builtin_class_ids::MAPPED_BYTEVECTOR
             );
+        });
+    }
+
+    #[test]
+    fn owned_bytevector_nonmoving_detection() {
+        Scheme::new_uninit().enter(|ctx| {
+            let movable = ByteVector::new::<false>(*ctx, 4, true);
+            let nonmoving = ByteVector::new::<false>(*ctx, 4, false);
+            let mapped = ByteVector::new_mapping(*ctx, Address::ZERO, 0);
+            assert!(!movable.is_nonmoving(&*ctx));
+            assert!(nonmoving.is_nonmoving(&*ctx));
+            assert!(!mapped.is_nonmoving(&*ctx));
         });
     }
 }

@@ -9,7 +9,6 @@ use crate::runtime::modules::{Variable, define};
 use crate::runtime::value::{Str, Value};
 use crate::runtime::vm::thunks::make_io_error;
 use crate::{global, runtime::Context};
-use mmtk::util::options::PlanSelector;
 
 use super::{
     artifact::{
@@ -83,14 +82,10 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
         FALLBACK_DIR.to_string()
     };
 
-    let plan = match *crate::GarbageCollector::get().mmtk.get_options().plan {
-        PlanSelector::Immix | PlanSelector::MarkSweep => "regular",
-        PlanSelector::ConcurrentImmix => "conc",
-        PlanSelector::StickyImmix => "gen",
-        _ => unreachable!("GC plan validated at startup"),
-    };
+    let plan = *crate::GarbageCollector::get().mmtk.get_options().plan;
+    let barrier_kind = crate::rsgc::plans::barrier_artifact_kind(plan);
 
-    let compile_fallback_path = Path::new(&cache_dir).join(plan);
+    let compile_fallback_path = Path::new(&cache_dir).join(barrier_kind);
     if !compile_fallback_path.exists() {
         std::fs::create_dir_all(&compile_fallback_path).expect("Failed to create cache directory");
     }
@@ -118,7 +113,7 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
                 Str::new(*ctx, stdlib_dir.to_string_lossy(), true).into(),
                 path,
             );
-            let compiled_dir = sysroot_dir.join("compiled");
+            let compiled_dir = sysroot_dir.join("compiled").join(barrier_kind);
             compiled_path = Value::cons(
                 ctx,
                 Str::new(*ctx, compiled_dir.to_string_lossy(), true).into(),
@@ -131,7 +126,11 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
                 Str::new(*ctx, stdlib_dir.to_string_lossy(), true).into(),
                 path,
             );
-            let compiled_dir = sysroot_dir.join("lib").join("capy").join("compiled");
+            let compiled_dir = sysroot_dir
+                .join("lib")
+                .join("capy")
+                .join("compiled")
+                .join(barrier_kind);
             compiled_path = Value::cons(
                 ctx,
                 Str::new(*ctx, compiled_dir.to_string_lossy(), true).into(),

@@ -82,6 +82,9 @@ macro_rules! Rootable {
 const DEFAULT_ALLOC_OPTIONS: AllocationOptions = AllocationOptions {
     allow_oom_call: false,
     allow_overcommit: true,
+    // Safe `#[scheme]` leaves and compiled alloc sites must not collect inline.
+    // MMTk may schedule GC; the mutator pauses only at compiled yieldpoints or
+    // while `InNative` / JNI nest.
     at_safepoint: false,
 };
 
@@ -95,6 +98,8 @@ pub type Root<'a, R> = <R as Rootable<'a>>::Root;
 ///
 /// GC may occur at explicit safepoints while inside `mutate`, such as compiler-emitted
 /// yieldpoints that call [`Thread::yieldpoint`](crate::rsgc::sync::thread::Thread::yieldpoint).
+/// Safe `#[scheme]` leaves must not call [`Mutator::yieldpoint`] or collect inline; nest
+/// via [`crate::runtime::jni`] if Scheme re-entry is required.
 /// Native code outside compiled safepoints should call [`Mutator::yieldpoint`] when
 /// [`take_yieldpoint`](Mutation::take_yieldpoint) indicates a pending GC request.
 pub struct Mutator<R>
@@ -469,16 +474,13 @@ impl<'gc> Mutation<'gc> {
         &crate::rsgc::GarbageCollector::get().finalizers
     }
 
-    pub fn is_movable<T: 'gc + Trace>(&self, obj: Gc<'gc, T>) -> bool {
-        unsafe {
-            let selector = mmtk::memory_manager::get_allocator_mapping(
-                &super::GarbageCollector::get().mmtk,
-                AllocationSemantics::NonMoving,
-            );
+    pub fn is_movable<T: 'gc>(&self, obj: Gc<'gc, T>) -> bool {
+        obj.to_object_reference().is_movable()
+    }
 
-            let allocator = self.thread.mutator_unchecked().allocator(selector);
-            allocator.get_space().is_in_space(obj.to_object_reference())
-        }
+    /// True if `obj` resides in a non-movable MMTk space (e.g. NonMoving alloc).
+    pub fn is_in_nonmoving_space<T: 'gc>(&self, obj: Gc<'gc, T>) -> bool {
+        !obj.to_object_reference().is_movable()
     }
 
     #[inline(always)]

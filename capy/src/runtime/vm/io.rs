@@ -1170,6 +1170,7 @@ pub mod io_ops {
             );
         }
 
+        let mut buf = buf;
         loop {
             // SAFETY: Mutable access is exclusive and goes through GC write barrier
             let ret = unsafe {
@@ -1181,7 +1182,12 @@ pub mod io_ops {
             {
                 return nctx.return_(ret);
             }
-            nctx.ctx.outside_gc_world(|| blocking_poll_read(fd));
+            let scope = RootScope::new(nctx.ctx);
+            let retk = scope.root(nctx.retk);
+            let buf_root = scope.root(buf.into());
+            nctx.ctx.call_in_native(|| blocking_poll_read(fd));
+            nctx.retk = retk.get();
+            buf = buf_root.get().downcast();
         }
     }
 
@@ -1199,6 +1205,7 @@ pub mod io_ops {
             );
         }
 
+        let mut buf = buf;
         loop {
             // SAFETY: Preconditions verified by the surrounding code
             let ret = unsafe {
@@ -1210,7 +1217,12 @@ pub mod io_ops {
             {
                 return nctx.return_(ret);
             }
-            nctx.ctx.outside_gc_world(|| blocking_poll_write(fd));
+            let scope = RootScope::new(nctx.ctx);
+            let retk = scope.root(nctx.retk);
+            let buf_root = scope.root(buf.into());
+            nctx.ctx.call_in_native(|| blocking_poll_write(fd));
+            nctx.retk = retk.get();
+            buf = buf_root.get().downcast();
         }
     }
 
@@ -1230,7 +1242,10 @@ pub mod io_ops {
             {
                 return nctx.return_(ret);
             }
-            nctx.ctx.outside_gc_world(|| blocking_poll_write(fd));
+            let scope = RootScope::new(nctx.ctx);
+            let retk = scope.root(nctx.retk);
+            nctx.ctx.call_in_native(|| blocking_poll_write(fd));
+            nctx.retk = retk.get();
         }
     }
 
@@ -1348,6 +1363,7 @@ pub mod io_ops {
             );
         }
 
+        let mut buf = buf;
         loop {
             // SAFETY: Mutable access is exclusive and goes through GC write barrier
             let ret = unsafe {
@@ -1359,7 +1375,12 @@ pub mod io_ops {
             {
                 return nctx.return_(ret);
             }
-            nctx.ctx.outside_gc_world(|| blocking_poll_read(fd));
+            let scope = RootScope::new(nctx.ctx);
+            let retk = scope.root(nctx.retk);
+            let buf_root = scope.root(buf.into());
+            nctx.ctx.call_in_native(|| blocking_poll_read(fd));
+            nctx.retk = retk.get();
+            buf = buf_root.get().downcast();
         }
     }
 
@@ -1377,6 +1398,7 @@ pub mod io_ops {
             );
         }
 
+        let mut buf = buf;
         loop {
             // SAFETY: Preconditions verified by the surrounding code
             let ret = unsafe {
@@ -1388,7 +1410,12 @@ pub mod io_ops {
             {
                 return nctx.return_(ret);
             }
-            nctx.ctx.outside_gc_world(|| blocking_poll_write(fd));
+            let scope = RootScope::new(nctx.ctx);
+            let retk = scope.root(nctx.retk);
+            let buf_root = scope.root(buf.into());
+            nctx.ctx.call_in_native(|| blocking_poll_write(fd));
+            nctx.retk = retk.get();
+            buf = buf_root.get().downcast();
         }
     }
 
@@ -1606,7 +1633,11 @@ pub mod io_ops {
                 );
             }
         };
-        let poller = Gc::new_with_header_word(*ctx, Poller { inner }, poller_header_word());
+        let poller = ctx.allocate_with_header_word(
+            Poller { inner },
+            poller_header_word(),
+            crate::rsgc::mmtk::AllocationSemantics::NonMoving,
+        );
 
         nctx.return_(poller)
     }
@@ -1828,9 +1859,13 @@ pub mod io_ops {
     pub fn poller_wait(poller: Gc<'gc, Poller>, timeout: Option<u64>) -> Value<'gc> {
         let ctx = nctx.ctx;
         let timeout = timeout.map(std::time::Duration::from_micros);
+        // Poller is NonMoving; root for liveness and retk across wait.
+        let scope = RootScope::new(ctx);
+        let retk = scope.root(nctx.retk);
+        let poller_root = scope.root(poller.into());
         let poller_ptr = Gc::as_ptr(poller);
-        let wait_outcome = ctx.outside_gc_world(|| {
-            // SAFETY: Preconditions verified by the surrounding code
+        let wait_outcome = ctx.call_in_native(|| {
+            // SAFETY: Poller is NonMoving and rooted for the wait.
             let poller = unsafe { &*poller_ptr };
             let mut events = polling::Events::new();
             let res = poller.inner.wait(&mut events, timeout);
@@ -1846,6 +1881,9 @@ pub mod io_ops {
                 collected,
             )
         });
+        nctx.retk = retk.get();
+        let _ = poller_root.get();
+        drop(scope);
 
         let (ok, os_error, events) = wait_outcome;
         if ok {

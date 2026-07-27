@@ -5,8 +5,10 @@ pub mod code_memory;
 pub mod fasl;
 pub mod fluids;
 pub mod global;
+pub mod jni;
 pub mod libs;
 pub mod modules;
+pub mod root;
 pub mod stats;
 pub mod symbols;
 pub mod thread;
@@ -64,9 +66,11 @@ pub mod prelude {
     use crate::runtime::modules::*;
 
     pub use super::global::Global;
+    pub use super::root::{RootScope, RootStack, Rooted, with_rooted_native};
     pub use super::thread::Context;
     pub use super::value::*;
     pub use super::vm::{self, NativeCallContext, NativeCallReturn, call_scheme};
+    pub use super::jni;
     pub use crate::rsgc::Gc;
     pub use crate::rsgc::Rootable;
     pub use crate::rsgc::Trace;

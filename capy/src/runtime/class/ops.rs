@@ -1461,7 +1461,7 @@ pub mod class_ops {
             }
             value
         } else if !accessor.init_thunk().is_empty() {
-            match crate::runtime::vm::call_scheme(nctx.ctx, accessor.init_thunk(), []) {
+            match crate::runtime::jni::call_function(nctx.ctx, accessor.init_thunk(), []) {
                 crate::runtime::vm::ExecutionResult::Ok(value) => value,
                 crate::runtime::vm::ExecutionResult::Err(error) => {
                     let who = nctx.ctx.intern("slot-initialize-using-accessor!");

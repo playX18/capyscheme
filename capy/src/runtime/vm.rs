@@ -63,15 +63,19 @@ fn is_continuation(value: Value<'_>) -> bool {
         .is_some_and(|closure| closure.is_continuation())
 }
 
-/// Perform call into the Scheme code in `rator` with `args`.
+/// Perform a nested call into Scheme for `rator` with `args`.
 ///
-/// This function performs *nested* call into Scheme. For calling Scheme
-/// from native code use [`return_call`](NativeCallContext::return_call) method.
+/// Prefer CPS [`NativeCallContext::return_call`] from `#[scheme]` leaves when
+/// possible (no nest). The **safe** nest API is [`crate::runtime::jni::call_function`].
 ///
-/// Once this function is called, current thread nest level is increased by 1
-/// and if it is greater than 1, GC safepoints and interrupts will be ignored until
-/// nested level is back to 1.
-pub fn call_scheme<'gc>(
+/// # Safety
+///
+/// Increases [`State::nest_level`](crate::runtime::State::nest_level). While the
+/// nested Scheme activation runs, GC may occur at compiled yieldpoints. The
+/// caller must keep every live [`Value`] rooted across this call (e.g. via
+/// [`crate::runtime::jni::LocalFrame`]); stack/`register` copies alone are not
+/// sufficient under a moving collector.
+pub unsafe fn call_scheme<'gc>(
     ctx: Context<'gc>,
     rator: Value<'gc>,
     args: impl IntoIterator<Item = Value<'gc>>,
@@ -80,11 +84,16 @@ pub fn call_scheme<'gc>(
 
     let retk = procs.register_static_cont_closure(ctx, default_retk, Value::null());
 
-    call_scheme_with_k(ctx, retk.into(), rator, args)
+    // SAFETY: Caller upholds the same rooting contract as this function.
+    unsafe { call_scheme_with_k(ctx, retk.into(), rator, args) }
 }
 
-/// Call Scheme code with explicit return continuation.
-pub extern "C" fn call_scheme_with_k<'gc>(
+/// Call Scheme code with an explicit return continuation.
+///
+/// # Safety
+///
+/// Same rooting / nest-level contract as [`call_scheme`].
+pub unsafe extern "C" fn call_scheme_with_k<'gc>(
     ctx: Context<'gc>,
     retk: Value<'gc>,
     rator: Value<'gc>,
@@ -93,9 +102,13 @@ pub extern "C" fn call_scheme_with_k<'gc>(
     if !rator.is::<Closure>() {
         return ExecutionResult::Err(rator);
     }
-    let guard = NestedSchemeCallGuard::new(ctx);
-
+    // Pack and stage into State before nest++ so ABI roots are precise slots.
+    let old_runstack = ctx.state().runstack.get();
     let (argc, regs) = ctx.prepare_scheme_call_args(args, Some(retk));
+    stage_call_abi(ctx, rator, argc, regs);
+
+    let guard = NestedSchemeCallGuard::enter(ctx, old_runstack);
+    let (rator, argc, regs) = load_call_abi(ctx);
 
     let f = get_trampoline_into_scheme().to_ptr::<()>();
 
@@ -123,6 +136,20 @@ pub extern "C" fn call_scheme_with_k<'gc>(
     }
 }
 
+/// Like [`call_scheme`], for callers that already rooted args (JNI).
+///
+/// # Safety
+///
+/// Same contract as [`call_scheme`].
+pub unsafe fn call_scheme_with_prepared<'gc>(
+    ctx: Context<'gc>,
+    rator: Value<'gc>,
+    args: impl IntoIterator<Item = Value<'gc>>,
+) -> ExecutionResult<'gc> {
+    // SAFETY: caller rooted live Values for the nest.
+    unsafe { call_scheme(ctx, rator, args) }
+}
+
 /// Continue execution by invoking a Scheme continuation.
 ///
 /// # Safety
@@ -138,9 +165,12 @@ pub unsafe extern "C" fn continue_to<'gc>(
     if !cont.is::<Closure>() {
         return ExecutionResult::Err(cont);
     }
-    let guard = NestedSchemeCallGuard::new(ctx);
-
+    let old_runstack = ctx.state().runstack.get();
     let (argc, regs) = ctx.prepare_scheme_call_args(args, None);
+    stage_call_abi(ctx, cont, argc, regs);
+
+    let guard = NestedSchemeCallGuard::enter(ctx, old_runstack);
+    let (cont, argc, regs) = load_call_abi(ctx);
 
     let f = get_trampoline_into_scheme().to_ptr::<()>();
 
@@ -167,6 +197,41 @@ pub unsafe extern "C" fn continue_to<'gc>(
     }
 }
 
+fn stage_call_abi<'gc>(
+    ctx: Context<'gc>,
+    rator: Value<'gc>,
+    argc: usize,
+    regs: [Value<'gc>; crate::runtime::thread::REGISTER_ARG_COUNT],
+) {
+    let state = ctx.state();
+    state.call_data.rator.set(rator);
+    state.call_data.argc.set(argc);
+    state.call_data.set_arg(0, regs[0]);
+    state.call_data.set_arg(1, regs[1]);
+    state.call_data.set_arg(2, regs[2]);
+    state.call_data.set_arg(3, regs[3]);
+}
+
+fn load_call_abi<'gc>(
+    ctx: Context<'gc>,
+) -> (
+    Value<'gc>,
+    usize,
+    [Value<'gc>; crate::runtime::thread::REGISTER_ARG_COUNT],
+) {
+    let state = ctx.state();
+    (
+        state.call_data.rator.get(),
+        state.call_data.argc.get(),
+        [
+            state.call_data.arg0.get(),
+            state.call_data.arg1.get(),
+            state.call_data.arg2.get(),
+            state.call_data.arg3.get(),
+        ],
+    )
+}
+
 struct NestedSchemeCallGuard<'gc> {
     ctx: Context<'gc>,
     old_runstack: mmtk::util::Address,
@@ -174,8 +239,7 @@ struct NestedSchemeCallGuard<'gc> {
 }
 
 impl<'gc> NestedSchemeCallGuard<'gc> {
-    fn new(ctx: Context<'gc>) -> Self {
-        let old_runstack = ctx.state().runstack.get();
+    fn enter(ctx: Context<'gc>, old_runstack: mmtk::util::Address) -> Self {
         let old_nest_level = ctx.state().nest_level.fetch_add(1, Ordering::Relaxed);
         Self {
             ctx,
@@ -1093,7 +1157,7 @@ mod tests {
             assert_eq!(ctx.nest_level(), 0);
 
             let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                let _guard = NestedSchemeCallGuard::new(ctx);
+                let _guard = NestedSchemeCallGuard::enter(ctx, old_runstack);
                 ctx.state().runstack.set(old_runstack + size_of::<Value>());
                 assert_eq!(ctx.nest_level(), 1);
                 panic!("force unwind across nested Scheme call state");

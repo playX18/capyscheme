@@ -9,6 +9,7 @@ use crate::{
     rsgc::{
         mmtk::BarrierSelector,
         object::{OBJECT_HEADER_OFFSET, builtin_class_ids},
+        plans::compile_barrier,
     },
     runtime::value::{Pair, Value, Vector},
 };
@@ -499,7 +500,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
     pub fn pre_write_barrier(&mut self, src: ir::Value, offset: i32, target: ir::Value) {
         let _ = (src, offset, target);
 
-        match self.module_builder.ctx.mc.barrier() {
+        match compile_barrier(self.module_builder.ctx.mc.barrier()) {
             BarrierSelector::SATBBarrier => {
                 let done = self.builder.create_block();
                 let check_wb = self.builder.create_block();
@@ -564,7 +565,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
     }
 
     pub fn post_write_barrier(&mut self, src: ir::Value, offset: i32, target: ir::Value) {
-        match self.module_builder.ctx.mc.barrier() {
+        match compile_barrier(self.module_builder.ctx.mc.barrier()) {
             BarrierSelector::NoBarrier => {}
             BarrierSelector::SATBBarrier => { /* no-op */ }
             BarrierSelector::ObjectBarrier => {
@@ -624,7 +625,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
 
     pub fn pre_write_barrier_n(&mut self, src: ir::Value, slot: ir::Value, target: ir::Value) {
         let _ = (src, slot, target);
-        match self.module_builder.ctx.mc.barrier() {
+        match compile_barrier(self.module_builder.ctx.mc.barrier()) {
             BarrierSelector::SATBBarrier => {
                 let done = self.builder.create_block();
                 let check_wb = self.builder.create_block();
@@ -687,7 +688,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
     }
 
     pub fn post_write_barrier_n(&mut self, src: ir::Value, slot: ir::Value, target: ir::Value) {
-        match self.module_builder.ctx.mc.barrier() {
+        match compile_barrier(self.module_builder.ctx.mc.barrier()) {
             BarrierSelector::NoBarrier => {}
             BarrierSelector::SATBBarrier => {}
             BarrierSelector::ObjectBarrier => {

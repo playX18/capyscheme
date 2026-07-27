@@ -75,6 +75,7 @@ CAPY_SBBV_VERSION_LIMIT ?=
 CAPY_COMPILE_DUMP ?=
 CAPY_COMPILE_DUMP_DIR ?=
 CAPY_DUMP_DIR ?=
+CAPY_BARRIER_KIND ?=
 CAPY_ENV = \
 	MMTK_PLAN="$(MMTK_PLAN)" \
 	XDG_CACHE_HOME="$(XDG_CACHE_HOME)" \
@@ -87,7 +88,8 @@ CAPY_ENV = \
 	$(if $(CAPY_SBBV_VERSION_LIMIT),CAPY_SBBV_VERSION_LIMIT="$(CAPY_SBBV_VERSION_LIMIT)") \
 	$(if $(CAPY_COMPILE_DUMP),CAPY_COMPILE_DUMP="$(CAPY_COMPILE_DUMP)") \
 	$(if $(CAPY_COMPILE_DUMP_DIR),CAPY_COMPILE_DUMP_DIR="$(CAPY_COMPILE_DUMP_DIR)") \
-	$(if $(CAPY_DUMP_DIR),CAPY_DUMP_DIR="$(CAPY_DUMP_DIR)")
+	$(if $(CAPY_DUMP_DIR),CAPY_DUMP_DIR="$(CAPY_DUMP_DIR)") \
+	$(if $(CAPY_BARRIER_KIND),CAPY_BARRIER_KIND="$(CAPY_BARRIER_KIND)")
 
 SBBV_BENCH_RUNS ?= 7
 SBBV_BENCH_LIMITS ?= 0,1,2,3,4
@@ -479,7 +481,9 @@ stage-1:
 stage-2:
 	@echo "Creating stage-2 CapyScheme"
 	mkdir -p stage-2
-	$(MAKE) $(foreach n,0 1 2 3 4 5 6 7 8 9,$(filter -j$n%,$(MAKEFLAGS))) compile-all COMPILER=stage-1/capyc OUT=stage-2/compiled
+	$(MAKE) $(foreach n,0 1 2 3 4 5 6 7 8 9,$(filter -j$n%,$(MAKEFLAGS))) compile-all COMPILER=stage-1/capyc OUT=stage-2/compiled/objbarrier CAPY_BARRIER_KIND=objbarrier
+	$(MAKE) $(foreach n,0 1 2 3 4 5 6 7 8 9,$(filter -j$n%,$(MAKEFLAGS))) compile-all COMPILER=stage-1/capyc OUT=stage-2/compiled/nobarrier CAPY_BARRIER_KIND=nobarrier
+	$(MAKE) $(foreach n,0 1 2 3 4 5 6 7 8 9,$(filter -j$n%,$(MAKEFLAGS))) compile-all COMPILER=stage-1/capyc OUT=stage-2/compiled/satbbarrier CAPY_BARRIER_KIND=satbbarrier
 	cp stage-1/capy stage-2/capy
 	cp stage-1/capyc stage-2/capyc
 

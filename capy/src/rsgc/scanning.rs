@@ -5,7 +5,6 @@ use mmtk::vm::SlotVisitor;
 use crate::rsgc::{
     ObjectSlot,
     collection::{Visitor, VisitorKind},
-    conservative::scan_conservative_native_stack,
     mm::MemoryManager,
     object::GcObject,
     sync::thread::Thread,
@@ -64,8 +63,6 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
         let Some(mut state) = unsafe { &mut *thread.native_data_mut_ptr() }.mutator_state else {
             factory.create_process_pinning_roots_work(visitor.pinned_roots);
             factory.create_process_roots_work(sv.set.into_iter().collect());
-            scan_conservative_native_stack(thread, &mut factory);
-
             return;
         };
 
@@ -80,17 +77,17 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
 
             factory.create_process_pinning_roots_work(visitor.pinned_roots);
             factory.create_process_roots_work(sv.set.into_iter().collect());
-            scan_conservative_native_stack(thread, &mut factory);
         }
     }
 
     fn scan_vm_specific_roots(
         _tls: mmtk::util::VMWorkerThread,
-        _factory: impl mmtk::vm::RootsWorkFactory<<MemoryManager as mmtk::vm::VMBinding>::VMSlot>,
+        mut factory: impl mmtk::vm::RootsWorkFactory<<MemoryManager as mmtk::vm::VMBinding>::VMSlot>,
     ) {
+        crate::rsgc::oop_storage::OopStorageSet::get().scan_strong(&mut factory);
         crate::rsgc::GarbageCollector::get()
             .global_registry
-            .scan(_factory);
+            .scan(factory);
     }
 
     fn supports_return_barrier() -> bool {

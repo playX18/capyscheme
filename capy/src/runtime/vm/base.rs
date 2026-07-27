@@ -276,6 +276,43 @@ pub mod base_ops {
         nctx.return_(Str::new(*ctx, uuid.to_string(), true).into())
     }
 
+    #[scheme(name = "compile-barrier-kind")]
+    pub fn compile_barrier_kind() -> Value<'gc> {
+        let ctx = nctx.ctx;
+        let live = ctx.mc.barrier();
+        let kind = crate::rsgc::plans::compile_barrier_artifact_kind(live);
+        nctx.return_(Str::new(*ctx, kind, true).into())
+    }
+
+    #[scheme(name = "compile-barrier-kind!")]
+    pub fn compile_barrier_kind_set(kind: Value<'gc>) -> () {
+        if !kind.is::<Str>() && !kind.is::<Symbol>() {
+            return nctx.wrong_argument_violation(
+                "compile-barrier-kind!",
+                "expected a string or symbol (nobarrier, objbarrier, or satbbarrier)",
+                Some(kind),
+                Some(1),
+                1,
+                &[kind],
+            );
+        }
+        let name = kind.to_string();
+        match crate::rsgc::plans::parse_barrier_artifact_kind(name.trim()) {
+            Some(barrier) => {
+                crate::rsgc::plans::set_compile_barrier_override(Some(barrier));
+                nctx.return_(())
+            }
+            None => nctx.wrong_argument_violation(
+                "compile-barrier-kind!",
+                "expected nobarrier, objbarrier, or satbbarrier",
+                Some(kind),
+                Some(1),
+                1,
+                &[kind],
+            ),
+        }
+    }
+
     #[scheme(name = "boolean=?")]
     pub fn boolean_eq(a: bool, b: bool, rest: &'gc [Value<'gc>]) -> bool {
         for v in rest.iter() {
@@ -529,9 +566,13 @@ pub mod base_ops {
     #[scheme(name = "collect-garbage")]
     pub fn collect_garbage() -> Value<'gc> {
         let ctx = nctx.ctx;
-        ctx.outside_gc_world(|| {
+        let scope = RootScope::new(ctx);
+        let retk = scope.root(nctx.retk);
+        ctx.call_in_native(|| {
             let _ = crate::rsgc::mutator::user_collect_garbage();
         });
+        nctx.retk = retk.get();
+        drop(scope);
         nctx.return_(Value::new(true))
     }
 }

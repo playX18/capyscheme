@@ -23,7 +23,7 @@ use crate::{
             init_weak_tables,
         },
         vm::{
-            ExecutionResult, call_scheme, control::ContinuationMarks, debug,
+            ExecutionResult, control::ContinuationMarks, debug,
             load::load_thunk_in_vicinity, threading::ThreadObject,
         },
     },
@@ -160,12 +160,14 @@ impl<'gc> Context<'gc> {
             .register_static_cont_closure(self, proc, meta)
     }
 
-    /// Run `f` outside the GC-mutating world.
+    /// Run `f` outside the GC-mutating world (`InNative`).
     ///
     /// Preparation that needs `Context`, allocation, or tracing must happen before calling
     /// this function. The closure must not capture GC handles or interior pointers into
-    /// movable objects.
-    pub fn outside_gc_world<T>(self, f: impl FnOnce() -> T) -> T {
+    /// movable objects unless they are rooted on [`State::root_stack`] /
+    /// [`crate::runtime::root`] or in OopStorage. After return, reload Values from those
+    /// slots — stack copies are not updated by moving GC.
+    pub fn call_in_native<T>(self, f: impl FnOnce() -> T) -> T {
         use std::panic::{AssertUnwindSafe, catch_unwind};
 
         struct OutsideGcGuard;
@@ -188,6 +190,11 @@ impl<'gc> Context<'gc> {
             Ok(value) => value,
             Err(payload) => std::panic::resume_unwind(payload),
         }
+    }
+
+    /// Alias for [`Self::call_in_native`].
+    pub fn outside_gc_world<T>(self, f: impl FnOnce() -> T) -> T {
+        self.call_in_native(f)
     }
 
     pub fn return_call(
@@ -376,30 +383,6 @@ impl<'gc> std::ops::Deref for Context<'gc> {
     }
 }
 
-pub struct DeferYield<'gc> {
-    ctx: Context<'gc>,
-}
-
-impl<'gc> DeferYield<'gc> {
-    pub fn new(ctx: Context<'gc>) -> Self {
-        ctx.state()
-            .nest_level
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Self { ctx }
-    }
-}
-
-impl<'gc> Drop for DeferYield<'gc> {
-    fn drop(&mut self) {
-        let nest_level = self
-            .ctx
-            .state()
-            .nest_level
-            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-        assert!(nest_level > 0, "Mismatched DeferYield drop");
-    }
-}
-
 /// Hardcoded limit for runstack to not make calls too slow and runstack too large.
 const RUNSTACK_SIZE: usize = 4096;
 
@@ -408,7 +391,10 @@ pub struct State<'gc> {
     pub(crate) runstack: Cell<Address>,
     pub(crate) runstack_start: Address,
     pub(crate) runstack_end: Address,
-    /// Nest level of nested calls into Scheme from native code.
+    /// Nest depth of Scheme activations entered via the nest API
+    /// ([`crate::runtime::jni`] / unsafe [`crate::runtime::vm::call_scheme`]).
+    /// A `#[scheme]` leaf does not change this. When nest increases, GC may run
+    /// at compiled yieldpoints; outer native locals must be rooted (JNI locals).
     pub(crate) nest_level: AtomicUsize,
     pub(crate) gc_save: GcSave<'gc>,
     pub(crate) call_data: CallData<'gc>,
@@ -425,6 +411,9 @@ pub struct State<'gc> {
     /// Staged return value for [`crate::runtime::vm::scheme_longjmp`].
     pub(crate) exit_value: Cell<Value<'gc>>,
     pub(crate) stats: ThreadStats,
+    /// Precise relocatable roots for Values held across `call_in_native`.
+    /// Kept at the end so it does not shift Cranelift/FASL offsets of earlier fields.
+    pub(crate) root_stack: crate::runtime::root::RootStack<'gc>,
 }
 
 #[repr(C)]
@@ -592,7 +581,9 @@ unsafe impl<'gc> Trace for CallData<'gc> {
 
 // SAFETY: `gc` for `GcSave` upholds all trait invariants
 unsafe impl<'gc> Trace for GcSave<'gc> {
-    // SAFETY: All GC-reachable fields are traced via `visitor`
+    // SAFETY: Pin entry ABI roots so any leftover machine copies across the
+    // yieldpoint thunk stay valid, and also trace the slots so they remain
+    // precise roots. Compiled code reloads these Values after the yield.
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
         pin_saved_value(self.rator.get(), visitor);
         pin_saved_value(self.arg0.get(), visitor);
@@ -648,6 +639,7 @@ unsafe impl Trace for State<'_> {
 
         visitor.trace(&mut self.gc_save);
         visitor.trace(&mut self.call_data);
+        visitor.trace(&mut self.root_stack);
 
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
@@ -691,6 +683,7 @@ impl<'gc> State<'gc> {
             exit_code: Cell::new(ReturnCode::ReturnOk),
             exit_value: Cell::new(Value::undefined()),
             stats: ThreadStats::new(),
+            root_stack: crate::runtime::root::RootStack::new(),
         }
     }
 
@@ -738,7 +731,7 @@ impl Scheme {
             let mut args = Vec::with_capacity(4);
             ctx.stats.start_execution();
             let rator = prep(ctx, &mut args);
-            let run = call_scheme(ctx, rator, args);
+            let run = crate::runtime::jni::call_function(ctx, rator, args);
             ctx.stats.end_execution();
 
             let result = match run {
@@ -905,7 +898,7 @@ impl Scheme {
             let thunk = load_thunk_in_vicinity::<true>(ctx, "boot.scm", None::<&str>, false, None)
                 .expect("Failed to load boot.scm");
 
-            match call_scheme(ctx, thunk, []) {
+            match crate::runtime::jni::call_function(ctx, thunk, []) {
                 ExecutionResult::Ok(_) => {}
                 ExecutionResult::Err(err) => {
                     eprintln!("Failed to boot: {err}");

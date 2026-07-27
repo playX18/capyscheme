@@ -152,17 +152,6 @@ impl Thread {
         (data.stack_low, data.stack_high)
     }
 
-    pub(crate) fn gc_scan_sp(&self) -> Address {
-        unsafe { Address::from_usize(self.native_data().gc_scan_sp.load(Ordering::Relaxed)) }
-    }
-
-    pub(crate) fn record_gc_scan_sp(&self) {
-        let sp = current_stack_pointer();
-        self.native_data()
-            .gc_scan_sp
-            .store(sp.as_usize(), Ordering::Relaxed);
-    }
-
     pub fn active_mutator_context(&self) -> bool {
         self.status_word.read::<ActiveMutatorContext>()
     }
@@ -242,7 +231,6 @@ impl Thread {
         debug_assert!(!self.is_about_to_terminate());
         let id = self.id();
 
-        self.record_gc_scan_sp();
         self.status_word.update::<IsBlocking>(true);
 
         let mut had_really_blocked = false;
@@ -276,10 +264,10 @@ impl Thread {
     pub fn yieldpoint() {
         let thread = current_thread();
 
-        // Compiled code may call this only through the yieldpoint thunk, which
-        // first saves the compiled entry ABI roots in State::gc_save. Overflow
-        // arguments are already rooted by the runstack. Do not add direct
-        // compiled calls here without preserving that invariant.
+        // Compiled code may call this only through the yieldpoint thunk after
+        // storing entry ABI roots in State::gc_save (and must reload them after).
+        // Overflow arguments are already rooted by the runstack. Do not add
+        // direct compiled calls here without preserving that invariant.
         thread.status_word.update::<AtYieldpoint>(true);
 
         let mut guard = thread.monitor.lock();
@@ -295,12 +283,8 @@ impl Thread {
     }
 
     fn enter_native_blocked(&self) {
-        // Record SP before blocking so GC's conservative native-stack scan
-        // covers Rust frames that hold Values (e.g. NativeCallContext::retk).
-        // Without this, a stale scan_sp from an earlier shallower frame skips
-        // those slots; movable objects can relocate while the stack copy goes
-        // stale and later Continue jumps through an interior/dangling rator.
-        self.record_gc_scan_sp();
+        // Values held across InNative must be rooted on State::root_stack or
+        // OopStorage; there is no conservative native-stack scan.
         let guard = self.monitor.lock();
         self.status_word
             .update::<ThreadStateField>(ThreadState::InNative);
@@ -563,7 +547,6 @@ impl Thread {
                 state: UnsafeCell::new(MaybeUninit::uninit()),
                 stack_low: Address::ZERO,
                 stack_high: Address::ZERO,
-                gc_scan_sp: AtomicUsize::new(0),
             }),
             index_in_thread_list: AtomicUsize::new(usize::MAX),
         })
@@ -612,7 +595,6 @@ impl Thread {
         let (stack_low, stack_high) = query_stack_bounds();
         native_data.stack_low = stack_low;
         native_data.stack_high = stack_high;
-        this.record_gc_scan_sp();
         gc.threads.add_thread(this.clone());
         this.status_word
             .update::<ThreadStateField>(ThreadState::InNative);
@@ -695,7 +677,6 @@ pub struct ThreadNativeData {
     pub(crate) state: UnsafeCell<MaybeUninit<State<'static>>>,
     pub(crate) stack_low: Address,
     pub(crate) stack_high: Address,
-    pub(crate) gc_scan_sp: AtomicUsize,
 }
 
 thread_local! {
@@ -727,48 +708,6 @@ pub(crate) fn deinit_current_thread() {
         let thread = unsafe { Arc::from_raw(thread) };
         drop(thread);
     })
-}
-
-#[cfg(target_arch = "x86_64")]
-fn current_stack_pointer() -> Address {
-    // SAFETY: reads the stack pointer register only.
-    unsafe {
-        let sp: usize;
-        core::arch::asm!("mov {sp}, rsp", sp = out(reg) sp);
-        Address::from_usize(sp)
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-fn current_stack_pointer() -> Address {
-    // SAFETY: reads the stack pointer register only.
-    unsafe {
-        let sp: usize;
-        core::arch::asm!("mov {sp}, sp", sp = out(reg) sp);
-        Address::from_usize(sp)
-    }
-}
-
-#[cfg(target_arch = "riscv64")]
-fn current_stack_pointer() -> Address {
-    // SAFETY: reads the stack pointer register only.
-    unsafe {
-        let sp: usize;
-        core::arch::asm!("mv {sp}, sp", sp = out(reg) sp);
-        Address::from_usize(sp)
-    }
-}
-
-#[cfg(not(any(
-    target_arch = "x86_64",
-    target_arch = "aarch64",
-    target_arch = "riscv64"
-)))]
-#[inline(never)]
-fn current_stack_pointer() -> Address {
-    let mut addr = std::ptr::null_mut::<u8>();
-    addr = &mut addr as *mut *mut u8 as *mut u8;
-    Address::from_ptr(addr)
 }
 
 fn query_stack_bounds() -> (Address, Address) {

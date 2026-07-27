@@ -82,7 +82,7 @@ impl<'gc> SchemeInstance<'gc> {
             if slot.init_thunk().is_empty() || explicit_slots.contains(&slot.index()) {
                 continue;
             }
-            match crate::runtime::vm::call_scheme(ctx, slot.init_thunk(), []) {
+            match crate::runtime::jni::call_function(ctx, slot.init_thunk(), []) {
                 crate::runtime::vm::ExecutionResult::Ok(value) => {
                     Self::set_slot(ctx, instance, slot.index(), value);
                 }

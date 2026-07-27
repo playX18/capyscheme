@@ -851,6 +851,8 @@ mod string_ops {
     #[scheme(name = "string->utf8")]
     pub fn string_to_utf8(str: Gc<'gc, Str<'gc>>) -> Gc<'gc, ByteVector> {
         let bytes = str.to_string().into_bytes();
+        // Default (movable): general conversion. FFI paths use string->utf8/nul,
+        // string->pointer, or bytevector->pointer (which copies to NonMoving).
         let bytevec = ByteVector::from_slice(*nctx.ctx, &bytes, true);
         nctx.return_(bytevec)
     }
@@ -859,7 +861,8 @@ mod string_ops {
     pub fn string_to_utf8_nul(str: Gc<'gc, Str<'gc>>) -> Gc<'gc, ByteVector> {
         let mut bytes = str.to_string().into_bytes();
         bytes.push(0); // NUL terminator
-        let bytevec = ByteVector::from_slice(*nctx.ctx, &bytes, true);
+        // NonMoving: used by process/FFI paths that expose contents to C.
+        let bytevec = ByteVector::from_slice(*nctx.ctx, &bytes, false);
         nctx.return_(bytevec)
     }
 

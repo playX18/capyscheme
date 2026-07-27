@@ -639,7 +639,7 @@ pub(crate) fn call_scheme_slot_ref<'gc>(
     receiver: Value<'gc>,
     proc: Value<'gc>,
 ) -> Result<Value<'gc>, SlotAccessError> {
-    match crate::runtime::vm::call_scheme(ctx, proc, [receiver]) {
+    match crate::runtime::jni::call_function(ctx, proc, [receiver]) {
         crate::runtime::vm::ExecutionResult::Ok(value) => Ok(value),
         crate::runtime::vm::ExecutionResult::Err(_) => Err(SlotAccessError::SchemeHookFailed),
     }
@@ -651,7 +651,7 @@ pub(crate) fn call_scheme_slot_set<'gc>(
     value: Value<'gc>,
     proc: Value<'gc>,
 ) -> Result<(), SlotAccessError> {
-    match crate::runtime::vm::call_scheme(ctx, proc, [receiver, value]) {
+    match crate::runtime::jni::call_function(ctx, proc, [receiver, value]) {
         crate::runtime::vm::ExecutionResult::Ok(_) => Ok(()),
         crate::runtime::vm::ExecutionResult::Err(_) => Err(SlotAccessError::SchemeHookFailed),
     }
@@ -662,7 +662,7 @@ pub(crate) fn call_scheme_slot_bound<'gc>(
     receiver: Value<'gc>,
     proc: Value<'gc>,
 ) -> Result<bool, SlotAccessError> {
-    match crate::runtime::vm::call_scheme(ctx, proc, [receiver]) {
+    match crate::runtime::jni::call_function(ctx, proc, [receiver]) {
         crate::runtime::vm::ExecutionResult::Ok(value) => Ok(value != Value::new(false)),
         crate::runtime::vm::ExecutionResult::Err(_) => Err(SlotAccessError::SchemeHookFailed),
     }

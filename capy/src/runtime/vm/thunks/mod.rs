@@ -30,7 +30,7 @@ use crate::{
     runtime::{
         Context,
         value::{ReturnCode, Str, Symbol, Value},
-        vm::{ExecutionResult, call_scheme, thunk_raise},
+        vm::{ExecutionResult, thunk_raise},
     },
 };
 
@@ -390,14 +390,8 @@ thunks! {
         modules::module_ensure_local_variable(ctx, module, name)
     }
 
-    pub fn yieldpoint_block(ctx: Context<'gc>,
-        rator: Value<'gc>,
-        argc: usize,
-        arg0: Value<'gc>,
-        arg1: Value<'gc>,
-        arg2: Value<'gc>,
-        arg3: Value<'gc>) -> () {
-        gc::yieldpoint_block(ctx, rator, argc, arg0, arg1, arg2, arg3)
+    pub fn yieldpoint_block(ctx: Context<'gc>) -> () {
+        gc::yieldpoint_block(ctx)
     }
 
     /// Exit CPSed code back to the Rust `setjmp` in [`crate::runtime::vm::trampoline`].
@@ -824,7 +818,7 @@ pub fn make_assertion_violation<'gc>(
             panic!("failed to resolve %make-assertion-violation (pre-boot): who={who}, message={message}, irritants={irritants:?}",)
         });
 
-    match call_scheme(ctx, assertion_violation, args) {
+    match crate::runtime::jni::call_function(ctx, assertion_violation, args) {
         ExecutionResult::Ok(val) => val,
         ExecutionResult::Err(err) => err,
     }
@@ -849,7 +843,7 @@ pub fn make_undefined_violation<'gc>(
         .unwrap_or_else(|| {
             panic!("failed to resolve %make-undefined-violation (pre-boot): who={who}, message={message}, irritants={irritants:?}",)
         });
-    match call_scheme(ctx, undefined_violation, args) {
+    match crate::runtime::jni::call_function(ctx, undefined_violation, args) {
         ExecutionResult::Ok(val) => val,
         ExecutionResult::Err(err) => err,
     }
@@ -872,7 +866,7 @@ pub fn make_error<'gc>(
         .get(ctx, Symbol::from_str(ctx, "%make-error").into())
         .expect("failed to resolve %make-error (pre-boot)");
 
-    match call_scheme(ctx, error, args) {
+    match crate::runtime::jni::call_function(ctx, error, args) {
         ExecutionResult::Ok(val) => val,
         ExecutionResult::Err(err) => err,
     }
@@ -901,7 +895,7 @@ pub fn make_io_error<'gc>(
             )
         });
 
-    match call_scheme(ctx, io_error, args) {
+    match crate::runtime::jni::call_function(ctx, io_error, args) {
         ExecutionResult::Ok(val) => val,
         ExecutionResult::Err(err) => err,
     }
@@ -922,7 +916,7 @@ pub fn make_lexical_violation<'gc>(
         .get(ctx, Symbol::from_str(ctx, "%make-lexical-violation").into())
         .unwrap_or_else(|| panic!("failed to resolve %make-lexical-violation (pre-boot): who={who}, message={message}",));
 
-    match call_scheme(ctx, lexical_violation, args) {
+    match crate::runtime::jni::call_function(ctx, lexical_violation, args) {
         ExecutionResult::Ok(val) => val,
         ExecutionResult::Err(err) => err,
     }
