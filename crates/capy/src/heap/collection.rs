@@ -20,25 +20,6 @@ impl mmtk::vm::Collection<MemoryManager> for Collection {
     where
         F: FnMut(&'static mut mmtk::Mutator<MemoryManager>),
     {
-        // #region agent log
-        {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/home/adel/projects/capyscheme/.cursor/debug-3ed3b0.log")
-            {
-                let _ = writeln!(
-                    f,
-                    r#"{{"sessionId":"3ed3b0","runId":"hang1","hypothesisId":"D","location":"collection.rs:stop_all_mutators","message":"gc_stop_mutators","data":{{}},"timestamp":{}}}"#,
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis())
-                        .unwrap_or(0)
-                );
-            }
-        }
-        // #endregion
         super::logging::gc_pause_started(&super::GarbageCollector::get().mmtk);
         let gc = super::GarbageCollector::get();
         gc.constraints.write().did_start_marking();
@@ -51,25 +32,6 @@ impl mmtk::vm::Collection<MemoryManager> for Collection {
     }
 
     fn resume_mutators(_tls: mmtk::util::VMWorkerThread) {
-        // #region agent log
-        {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/home/adel/projects/capyscheme/.cursor/debug-3ed3b0.log")
-            {
-                let _ = writeln!(
-                    f,
-                    r#"{{"sessionId":"3ed3b0","runId":"hang1","hypothesisId":"D","location":"collection.rs:resume_mutators","message":"gc_resume_mutators","data":{{}},"timestamp":{}}}"#,
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis())
-                        .unwrap_or(0)
-                );
-            }
-        }
-        // #endregion
         let gc = super::GarbageCollector::get();
         gc.constraints.write().did_finish_marking();
         gc.threads.resume_all_mutators_from_gc();

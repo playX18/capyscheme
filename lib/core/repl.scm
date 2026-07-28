@@ -66,6 +66,6 @@
 
   (define (read-eval-print-loop)
     (if (and (tty? (current-input-port))
-             (tty? (current-output-port)))
+         (tty? (current-output-port)))
       (eval '((@ (core fancy-repl) read-eval-print-loop)) (current-module))
       (simple-read-eval-print-loop))))

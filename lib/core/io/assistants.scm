@@ -1,17 +1,16 @@
-
 (library (core io assistants)
 
   (export port-type
-          port-direction
-          port-lookup-file-option-code
-          port-lookup-buffer-mode-code
-          port-lookup-codec-code
-          port-lookup-eol-style-code
-          port-lookup-error-handling-mode-code
-          port-reverse-lookup-codec-code
-          port-reverse-lookup-eol-style-code
-          port-reverse-lookup-error-handling-mode-code
-          make-file-options)
+    port-direction
+    port-lookup-file-option-code
+    port-lookup-buffer-mode-code
+    port-lookup-codec-code
+    port-lookup-eol-style-code
+    port-lookup-error-handling-mode-code
+    port-reverse-lookup-codec-code
+    port-reverse-lookup-eol-style-code
+    port-reverse-lookup-error-handling-mode-code
+    make-file-options)
 
   (import (core primitives) (core enums))
 
@@ -50,25 +49,25 @@
     (lambda (x)
       (syntax-case x ()
         ((_ type)
-         (datum->syntax
-          #'k
-          (cond ((assq (syntax->datum (syntax type)) port-kind-codes) => cdr)
-                (else
-                 (syntax-violation 'port-type "invalid port type" x)))))
+          (datum->syntax
+            #'k
+            (cond ((assq (syntax->datum (syntax type)) port-kind-codes) => cdr)
+              (else
+                (syntax-violation 'port-type "invalid port type" x)))))
         (_
-         (syntax-violation 'port-type "invalid port type" x)))))
+          (syntax-violation 'port-type "invalid port type" x)))))
 
   (define-syntax port-direction
     (lambda (x)
       (syntax-case x (input output)
         ((_ input)
-         (datum->syntax #'k (lookup 'input direction-codes)))
+          (datum->syntax #'k (lookup 'input direction-codes)))
         ((_ output)
-         (datum->syntax #'k (lookup 'output direction-codes)))
+          (datum->syntax #'k (lookup 'output direction-codes)))
         ((_ input output)
-         (datum->syntax #'k (lookup 'input/output direction-codes)))
+          (datum->syntax #'k (lookup 'input/output direction-codes)))
         (_
-         (syntax-violation 'port-direction "invalid port direction" x)))))
+          (syntax-violation 'port-direction "invalid port direction" x)))))
 
   (define port-lookup-file-option-code (lambda (obj) (lookup obj file-option-codes)))
   (define port-lookup-buffer-mode-code (lambda (obj) (lookup obj buffer-mode-codes)))
@@ -79,6 +78,4 @@
   (define port-reverse-lookup-eol-style-code (lambda (obj) (lookup obj flipped-eol-style-codes)))
   (define port-reverse-lookup-error-handling-mode-code (lambda (obj) (lookup obj flipped-error-handling-mode-codes)))
 
-  (define make-file-options (enum-set-constructor (make-enumeration (map car file-option-codes))))
-
-  ) ;[end]
+  (define make-file-options (enum-set-constructor (make-enumeration (map car file-option-codes))))) ;[end]

@@ -2,18 +2,18 @@
 
 (define-library (args runner)
   (import (scheme base)
-          (srfi 1)
-          (args grammar)
-          (args parser)
-          (args results)
-          (args help optional))
+    (srfi 1)
+    (args grammar)
+    (args parser)
+    (args results)
+    (args help optional))
   (cond-expand
     ((library (srfi 130))
       (import (srfi 130)))
     (else
       (import (only (args string)
-                    string-join
-                    string-pad-right))))
+               string-join
+               string-pad-right))))
   (export
     make-command-runner
     command-runner-add-command!
@@ -48,9 +48,9 @@
   (begin
     (define-record-type <command-runner>
       (%command-runner executable-name
-                       description
-                       commands
-                       grammar)
+        description
+        commands
+        grammar)
       command-runner?
       (executable-name command-runner-executable-name)
       (description command-runner-description)
@@ -59,16 +59,18 @@
 
     (define (make-command-runner executable-name description)
       (define runner (%command-runner executable-name
-                       description
-                       '() ; commands
-                       (make-grammar)))
+                      description
+                      '() ; commands
+                      (make-grammar)))
       (grammar-add-flag! (command-runner-grammar runner) "help"
-        'abbr: "h"
-        'help: "Display help information for the command."
-        'hide-negated-usage?: #t)
+        'abbr:
+        "h"
+        'help:
+        "Display help information for the command."
+        'hide-negated-usage?:
+        #t)
       (command-runner-add-command! runner help-command)
       runner)
-
 
     (define (command-runner-usage runner)
       (usage-without-description runner))
@@ -77,7 +79,8 @@
       (define usage-prefix "Usage: ")
       (define buffer (open-output-string))
       (write-string (string-append usage-prefix
-                                  (command-runner-invocation runner)) buffer)
+                     (command-runner-invocation runner))
+        buffer)
       (write-string "\n" buffer)
       (write-string "Global options:\n" buffer)
       (write-string (grammar-usage (command-runner-grammar runner)) buffer)
@@ -101,20 +104,21 @@
 
     (define (get-command-usage commands subcommand? default-command)
       (define names (map car (filter
-        (lambda (entry)
-          (define name (car entry))
-          (define cmd (cdr entry))
-          ;; exclude aliases:
-          (not (member name (command-aliases cmd))))
-          commands)))
+                              (lambda (entry)
+                                (define name (car entry))
+                                (define cmd (cdr entry))
+                                ;; exclude aliases:
+                                (not (member name (command-aliases cmd))))
+                              commands)))
 
       (define visible (filter (lambda (name)
-        (define cmd (cdr (assoc name commands)))
-        (not (command-hidden? cmd))) names))
+                               (define cmd (cdr (assoc name commands)))
+                               (not (command-hidden? cmd)))
+                       names))
 
       (define sorted-names (if (null? visible)
-        (sort-command-names names)
-        (sort-command-names visible)))
+                            (sort-command-names names)
+                            (sort-command-names visible)))
 
       (let loop ((categories '()) (names sorted-names))
         (cond
@@ -122,7 +126,8 @@
             (let* ((buffer (open-output-string))
                    (length (fold (lambda (name acc)
                                   (max acc (string-length name)))
-                              0 sorted-names))
+                            0
+                            sorted-names))
                    (column-start (+ length 5)))
               (write-string (string-append "Available " (if subcommand? "sub" "") "commands:") buffer)
               (for-each
@@ -140,15 +145,15 @@
                       (write-string
                         (string-append
                           "  "
-                         (string-pad-right
-                           (command-name cmd)
-                           length)
-                        "   "
-                        default-marker)
+                          (string-pad-right
+                            (command-name cmd)
+                            length)
+                          "   "
+                          default-marker)
                         buffer)
                       (write-string (command-summary cmd) buffer))
                     cmds))
-                categories )
+                categories)
               (get-output-string buffer)))
           (else
             (let* ((name (car names))
@@ -177,7 +182,6 @@
           (command-set-runner-recursively! (cdr entry) runner))
         (command-subcommands cmd)))
 
-
     (define (command-runner-add-command! runenr cmd . rest)
       (let-optionals rest ((default? #f))
         (when (and default? (not (null? (command-subcommands cmd))))
@@ -186,7 +190,7 @@
           (error "runner already has a default command."))
 
         (let loop ((names (append (list (command-name cmd))
-                              (command-aliases cmd)))
+                           (command-aliases cmd)))
                    (cmds (command-runner-commands runenr)))
           (cond
             ((null? names)
@@ -207,16 +211,14 @@
     (define (command-runner-run runner args)
       (command-runner-run-command runner (command-runner-parse runner args)))
 
-
-
     (define (command-runner-run-command runner top-results)
       (define top-flags (argument-results-flags top-results))
       (call/cc
         (lambda (exit)
           (let loop ((results top-results)
-                    (commands (command-runner-commands runner))
-                    (command #f)
-                    (command-str (command-runner-executable-name runner)))
+                     (commands (command-runner-commands runner))
+                     (command #f)
+                     (command-str (command-runner-executable-name runner)))
             (cond
               ((not (null? commands))
                 (cond
@@ -240,15 +242,14 @@
                            (commands (command-subcommands command))
                            (command-str (string-append command-str " " (argument-results-name results))))
 
-                        (command-results-set! command results)
-                        (command-global-results-set! command top-results)
+                      (command-results-set! command results)
+                      (command-global-results-set! command top-results)
 
-                        (when (and (argument-results-has-option? results "help")
-                                   ((argument-results-flags results) "help"))
-                          (command-print-usage command)
-                          (exit #f))
-                        (loop results commands command command-str)
-                        ))))
+                      (when (and (argument-results-has-option? results "help")
+                             ((argument-results-flags results) "help"))
+                        (command-print-usage command)
+                        (exit #f))
+                      (loop results commands command command-str)))))
               (else
                 (when ((argument-results-flags top-results) "help")
                   (command-print-usage command)
@@ -261,8 +262,6 @@
       (flush-output-port (current-output-port)))
 
     ;; Commands: Simple OOP based API for defining commands and running them
-
-
 
     (define-record-type <command>
       (%command
@@ -302,7 +301,7 @@
           ((not parent) (reverse parents))
           (else
             (loop (cons parent parents)
-                  (command-parent parent))))))
+              (command-parent parent))))))
 
     (define (command-default-invocation cmd)
       (define parents
@@ -310,7 +309,7 @@
           (list (command-name cmd))
           (map command-name (command-parents cmd))
           (list (command-runner-executable-name
-                  (command-runner cmd)))))
+                 (command-runner cmd)))))
       (define invocation (string-join (reverse parents) " "))
       (define grammar (command-grammar cmd))
 
@@ -359,12 +358,13 @@
         (newline buffer)
         (unless (null? (command-subcommands cmd))
           (write-string (get-command-usage (command-subcommands cmd)
-                                           (not (null? (command-subcommands cmd)))
-                                           (grammar-default-command (command-grammar cmd))) buffer)
+                         (not (null? (command-subcommands cmd)))
+                         (grammar-default-command (command-grammar cmd)))
+            buffer)
           (newline buffer))
         (newline buffer)
         (write-string (string-append "Run '" (command-runner-executable-name (command-runner cmd)) " help' to see global options.") buffer)
-        (get-output-string buffer)) )
+        (get-output-string buffer)))
 
     (define (command-print-usage cmd)
       (write-string (command-description cmd) (current-output-port))
@@ -372,44 +372,46 @@
       (write-string (command-usage-without-description cmd) (current-output-port))
       (flush-output-port (current-output-port)))
 
-      ;(define usage-no-desc (command-usage-without-description cmd))
-      ;(write-string (string-append (command-description cmd) "\n\n" usage-no-desc) (current-output-port))
-      ;(flush-output-port (current-output-port)))
+    ;(define usage-no-desc (command-usage-without-description cmd))
+    ;(write-string (string-append (command-description cmd) "\n\n" usage-no-desc) (current-output-port))
+    ;(flush-output-port (current-output-port)))
 
     (define (command name . rest)
       (let-keywords* rest
         ((category command-default-category)
-         (summary command-default-summary)
-         (invocation command-default-invocation)
-         (description command-default-description)
-         (run command-default-run)
-         (grammar (make-grammar)) ; user can provide pre-built grammar
-         (aliases '())
-         (hidden? #f))
+          (summary command-default-summary)
+          (invocation command-default-invocation)
+          (description command-default-description)
+          (run command-default-run)
+          (grammar (make-grammar)) ; user can provide pre-built grammar
+          (aliases '())
+          (hidden? #f))
         (let ((wrapper (lambda (method)
-          (case method
-            ((category) category)
-            ((summary) summary)
-            ((invocation) invocation)
-            ((description) (if (string? description)
-                              (lambda args description)
-                              description))
-            ((run) run)))))
-        (when (not (grammar-allow-anything? grammar))
+                        (case method
+                          ((category) category)
+                          ((summary) summary)
+                          ((invocation) invocation)
+                          ((description) (if (string? description)
+                                          (lambda args description)
+                                          description))
+                          ((run) run)))))
+          (when (not (grammar-allow-anything? grammar))
 
-          (grammar-add-flag! grammar "help"
-            'abbr: "h"
-            'help: "Display help information for this command."))
-        (%command name
-                  #f ; parent
-                  #f ; runner
-                  #f ; global-results
-                  #f ; results
-                  grammar
-                  '() ; subcommands
-                  wrapper
-                  aliases
-                  hidden?))))
+            (grammar-add-flag! grammar "help"
+              'abbr:
+              "h"
+              'help:
+              "Display help information for this command."))
+          (%command name
+            #f ; parent
+            #f ; runner
+            #f ; global-results
+            #f ; results
+            grammar
+            '() ; subcommands
+            wrapper
+            aliases
+            hidden?))))
 
     (define (command-add-subcommand! cmd subcommand . rest)
       (let-optionals rest ((default? #f))
@@ -419,7 +421,7 @@
           (error "command already has a default command."))
 
         (let loop ((names (append (list (command-name subcommand))
-                              (command-aliases subcommand)))
+                           (command-aliases subcommand)))
                    (subs (command-subcommands cmd)))
           (cond
             ((null? names)
@@ -436,7 +438,6 @@
         (command-parent-set! subcommand cmd)
         (when (command-runner cmd)
           (command-set-runner-recursively! subcommand (command-runner cmd)))))
-
 
     ;; pre-built help command
 
@@ -467,12 +468,15 @@
                     (command-print-usage target))
                   (else
                     (loop (cdr names)
-                          (command-subcommands target)
-                          (string-append command-str " " name))))))))))
+                      (command-subcommands target)
+                      (string-append command-str " " name))))))))))
 
     (define help-command (command "help"
-      'description: help-description
-      'hidden?: #t
-      'invocation: help-invocation
-      'run: help-run
-    ))))
+                          'description:
+                          help-description
+                          'hidden?:
+                          #t
+                          'invocation:
+                          help-invocation
+                          'run:
+                          help-run))))

@@ -217,21 +217,21 @@
                    ((line) 'line)
                    ((datum flush) 'datum)
                    (else 'block)))
-          (exists? (file-io/file-exists? filename)))
-     (cond ((and exists? (not dont-create) (not dont-fail))
-            (let* ((exec-mode (capy:execution-mode)))
-              (raise-i/o-file-already-exists
-                'open-file-input/output-port
-                "file already exists"
-                filename)))
-          ((and (not exists?) (not dont-create))
-            (call-with-port (open-file-output-port filename) values))
-          ((not exists?)
-            (raise-io/file-does-not-exist-error
-              'open-file-input/output-port
-              "file does not exist"
-              filename))
-          (else #f))
+         (exists? (file-io/file-exists? filename)))
+    (cond ((and exists? (not dont-create) (not dont-fail))
+           (let* ((exec-mode (capy:execution-mode)))
+             (raise-i/o-file-already-exists
+               'open-file-input/output-port
+               "file already exists"
+               filename)))
+      ((and (not exists?) (not dont-create))
+        (call-with-port (open-file-output-port filename) values))
+      ((not exists?)
+        (raise-io/file-does-not-exist-error
+          'open-file-input/output-port
+          "file does not exist"
+          filename))
+      (else #f))
     (let ([fd (apply osdep/open-file filename 'input+output 'binary opts)])
       (define (read! bv start count)
         (let* ([tmp (make-bytevector count)]

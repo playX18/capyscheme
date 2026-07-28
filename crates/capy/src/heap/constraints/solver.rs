@@ -96,28 +96,6 @@ pub fn execute_constraints<C: ObjectTracerContext<MemoryManager> + Clone + 'stat
                 }
             }
         });
-        // #region agent log
-        {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/home/adel/projects/capyscheme/.cursor/debug-3ed3b0.log")
-            {
-                let _ = writeln!(
-                    f,
-                    r#"{{"sessionId":"3ed3b0","runId":"post-fix","hypothesisId":"A","location":"solver.rs:execute_constraints","message":"constraints_seq","data":{{"post_parallel_drain":{},"indices":{},"visited":{}}},"timestamp":{}}}"#,
-                    post_parallel_drain,
-                    indices.len(),
-                    visited,
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis())
-                        .unwrap_or(0)
-                );
-            }
-        }
-        // #endregion
         return visited;
     }
 
@@ -173,28 +151,6 @@ pub fn execute_constraints<C: ObjectTracerContext<MemoryManager> + Clone + 'stat
 
     let dirty =
         result.dirty.load(Ordering::Relaxed) || result.visited.load(Ordering::Relaxed) > 0;
-    // #region agent log
-    {
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/home/adel/projects/capyscheme/.cursor/debug-3ed3b0.log")
-        {
-            let _ = writeln!(
-                f,
-                r#"{{"sessionId":"3ed3b0","runId":"post-fix","hypothesisId":"A","location":"solver.rs:execute_constraints","message":"constraints_par","data":{{"scheduled_parallel":{},"dirty":{},"ret":{}}},"timestamp":{}}}"#,
-                scheduled_parallel,
-                dirty,
-                scheduled_parallel || dirty,
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis())
-                    .unwrap_or(0)
-            );
-        }
-    }
-    // #endregion
     // Request one post-drain re-entry when shards were scheduled; otherwise only
     // continue while constraints actually greyed/retained work.
     scheduled_parallel || dirty

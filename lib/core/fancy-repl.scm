@@ -365,8 +365,9 @@
     (display (styled-string "            |_|    |___/ " 'bold 'cyan))
     (newline)
     (display (styled-string
-               (string-append "v" (implementation-version) " | R6RS/R7RS Scheme")
-               'bold 'green))
+              (string-append "v" (implementation-version) " | R6RS/R7RS Scheme")
+              'bold
+              'green))
     (newline)
     (newline)
     (flush-output-port (current-output-port)))

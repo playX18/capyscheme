@@ -1,9 +1,9 @@
 (define-library (capy args)
   (import (scheme base)
-          (capy args grammar)
-          (capy args option)
-          (capy args parser)
-          (capy args results))
+    (capy args grammar)
+    (capy args option)
+    (capy args parser)
+    (capy args results))
   (export
     argparser
     argparser-add-command!
@@ -56,20 +56,22 @@
 
     (define (arg-results-ref results name)
       (let ((option (grammar-find-by-name-or-alias
-                      (argument-results-grammar results)
-                      name)))
+                     (argument-results-grammar results)
+                     name)))
         (cond
           ((not option)
             (error (string-append "No option named: '--" name "'")))
           ((and (option-mandatory? option)
-                (not (argument-results-was-parsed? results name)))
+              (not (argument-results-was-parsed? results name)))
             (error (string-append "Mandatory option '--" name "' not provided")))
           (else
             (option-value
               option
               (cond
                 ((assoc (option-name option)
-                        (argument-results-parsed results)) => cdr)
+                    (argument-results-parsed results))
+                  =>
+                  cdr)
                 (else #f)))))))
 
     (define (option-clauses clauses)

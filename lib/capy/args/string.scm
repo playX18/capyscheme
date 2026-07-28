@@ -1,27 +1,27 @@
 (define-library (capy args string)
   (export string-prefix?
-          string-index
-          string-cursor-start
-          string-cursor-end
-          string-cursor=?
-          string-cursor->index
-          string-contains
-          string-every
-          string-for-each
-          string-join
-          string-pad-right)
+    string-index
+    string-cursor-start
+    string-cursor-end
+    string-cursor=?
+    string-cursor->index
+    string-contains
+    string-every
+    string-for-each
+    string-join
+    string-pad-right)
   (import (except (scheme base) string-for-each))
   (begin
     (define (string-prefix? prefix s)
       (let ((prefix-len (string-length prefix))
             (s-len (string-length s)))
         (and (>= s-len prefix-len)
-             (string=? prefix (substring s 0 prefix-len)))))
+          (string=? prefix (substring s 0 prefix-len)))))
 
     (define (string-index s pred-or-char)
       (let ((pred (if (char? pred-or-char)
-                    (lambda (ch) (char=? ch pred-or-char))
-                    pred-or-char))
+                   (lambda (ch) (char=? ch pred-or-char))
+                   pred-or-char))
             (len (string-length s)))
         (let loop ((i 0))
           (cond
@@ -51,8 +51,8 @@
       (let ((len (string-length s)))
         (let loop ((i 0))
           (or (= i len)
-              (and (pred (string-ref s i))
-                   (loop (+ i 1)))))))
+            (and (pred (string-ref s i))
+              (loop (+ i 1)))))))
 
     (define (string-for-each proc s)
       (let ((len (string-length s)))

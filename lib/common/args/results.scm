@@ -1,8 +1,8 @@
 (define-library (args results)
   (import (scheme base)
-          (args help optional)
-          (args grammar)
-          (args option))
+    (args help optional)
+    (args grammar)
+    (args option))
 
   (export
     argument-results
@@ -75,7 +75,7 @@
           ((not (option-single? option))
             (error (string-append "Option '--" name "' is not a single-value option")))
           ((and (option-mandatory? option)
-                (not (argument-results-was-parsed? results name)))
+              (not (argument-results-was-parsed? results name)))
             (error (string-append "Mandatory option '--" name "' not provided")))
           (else
             (option-value option (argument-results-parsed-value results option))))))

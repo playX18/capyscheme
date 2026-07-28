@@ -1295,52 +1295,52 @@
 
 (define (%slot-name slot)
   (if (slot-definition? slot)
-      (slot-definition-name slot)
-      slot))
+    (slot-definition-name slot)
+    slot))
 
 (define (%slot-ref-using-class class obj slot . fallback)
   (define slot-name (%slot-name slot))
   (if (not (subclass? (class-of obj) class))
-      (assertion-violation 'slot-ref-using-class
-        "object is not an instance of class"
-        obj
-        class)
-      (let ([accessor (class-slot-accessor class slot-name)])
-        (cond
-          [accessor
-            (if (slot-bound-using-accessor? obj accessor)
-                (slot-ref-using-accessor obj accessor)
-                (slot-unbound class obj slot-name))]
-          [(null? fallback)
-           (slot-missing class obj slot-name)]
-          [else (car fallback)]))))
+    (assertion-violation 'slot-ref-using-class
+      "object is not an instance of class"
+      obj
+      class)
+    (let ([accessor (class-slot-accessor class slot-name)])
+      (cond
+        [accessor
+          (if (slot-bound-using-accessor? obj accessor)
+            (slot-ref-using-accessor obj accessor)
+            (slot-unbound class obj slot-name))]
+        [(null? fallback)
+          (slot-missing class obj slot-name)]
+        [else (car fallback)]))))
 
 (define (%slot-set-using-class! class obj slot value)
   (define slot-name (%slot-name slot))
   (if (not (subclass? (class-of obj) class))
-      (assertion-violation 'slot-set-using-class!
-        "object is not an instance of class"
-        obj
-        class)
-      (let ([accessor (class-slot-accessor class slot-name)])
-        (if accessor
-            (slot-set-using-accessor! obj accessor value)
-            (slot-missing class obj slot-name value)))))
+    (assertion-violation 'slot-set-using-class!
+      "object is not an instance of class"
+      obj
+      class)
+    (let ([accessor (class-slot-accessor class slot-name)])
+      (if accessor
+        (slot-set-using-accessor! obj accessor value)
+        (slot-missing class obj slot-name value)))))
 
 (define (%slot-bound-using-class? class obj slot)
   (define slot-name (%slot-name slot))
   (if (not (subclass? (class-of obj) class))
-      (assertion-violation 'slot-bound-using-class?
-        "object is not an instance of class"
-        obj
-        class)
-      (let ([accessor (class-slot-accessor class slot-name)])
-        (if accessor
-            (slot-bound-using-accessor? obj accessor)
-            (assertion-violation 'slot-bound-using-class?
-              "class has no slot"
-              class
-              slot-name)))))
+    (assertion-violation 'slot-bound-using-class?
+      "object is not an instance of class"
+      obj
+      class)
+    (let ([accessor (class-slot-accessor class slot-name)])
+      (if accessor
+        (slot-bound-using-accessor? obj accessor)
+        (assertion-violation 'slot-bound-using-class?
+          "class has no slot"
+          class
+          slot-name)))))
 
 (define (slot-definition-allocation slot)
   (%slot-definition-allocation slot))
@@ -1361,57 +1361,80 @@
 (define (class-slot-ref class slot-name)
   (let ([slot (class-slot-definition class slot-name)])
     (if slot
-        (if (eq? (slot-definition-allocation slot) #:class)
-            (%class-slot-ref class slot)
-            (class-slot-allocation-error 'class-slot-ref class slot-name slot))
-        (class-slot-missing-error 'class-slot-ref class slot-name))))
+      (if (eq? (slot-definition-allocation slot) #:class)
+        (%class-slot-ref class slot)
+        (class-slot-allocation-error 'class-slot-ref class slot-name slot))
+      (class-slot-missing-error 'class-slot-ref class slot-name))))
 
 (define (class-slot-set! class slot-name value)
   (let ([slot (class-slot-definition class slot-name)])
     (if slot
-        (if (eq? (slot-definition-allocation slot) #:class)
-            (%class-slot-set! class slot value)
-            (class-slot-allocation-error 'class-slot-set! class slot-name slot))
-        (class-slot-missing-error 'class-slot-set! class slot-name))))
+      (if (eq? (slot-definition-allocation slot) #:class)
+        (%class-slot-set! class slot value)
+        (class-slot-allocation-error 'class-slot-set! class slot-name slot))
+      (class-slot-missing-error 'class-slot-set! class slot-name))))
 
 (define (class-slot-bound? class slot-name)
   (let ([slot (class-slot-definition class slot-name)])
     (if slot
-        (if (eq? (slot-definition-allocation slot) #:class)
-            (%class-slot-bound? class slot)
-            (class-slot-allocation-error 'class-slot-bound? class slot-name slot))
-        (class-slot-missing-error 'class-slot-bound? class slot-name))))
+      (if (eq? (slot-definition-allocation slot) #:class)
+        (%class-slot-bound? class slot)
+        (class-slot-allocation-error 'class-slot-bound? class slot-name slot))
+      (class-slot-missing-error 'class-slot-bound? class slot-name))))
 
 (set-setter! class-slot-ref class-slot-set!)
 
 (define (slot-definition-options slot)
   (list #:allocation (slot-definition-allocation slot)
-        #:init-keyword (slot-definition-init-keyword slot)
-        #:init-value (slot-definition-init-value slot)
-        #:init-thunk (slot-definition-init-thunk slot)
-        #:slot-ref (slot-definition-slot-ref slot)
-        #:slot-set! (slot-definition-slot-set! slot)
-        #:slot-bound? (slot-definition-slot-bound? slot)
-        #:getter (slot-definition-getter slot)
-        #:setter (slot-definition-setter slot)
-        #:accessor (slot-definition-accessor slot)
-        #:initializable (slot-definition-initializable? slot)
-        #:settable (slot-definition-settable? slot)
-        #:immutable (slot-definition-immutable? slot)))
+    #:init-keyword
+    (slot-definition-init-keyword slot)
+    #:init-value
+    (slot-definition-init-value slot)
+    #:init-thunk
+    (slot-definition-init-thunk slot)
+    #:slot-ref
+    (slot-definition-slot-ref slot)
+    #:slot-set!
+    (slot-definition-slot-set! slot)
+    #:slot-bound?
+    (slot-definition-slot-bound? slot)
+    #:getter
+    (slot-definition-getter slot)
+    #:setter
+    (slot-definition-setter slot)
+    #:accessor
+    (slot-definition-accessor slot)
+    #:initializable
+    (slot-definition-initializable? slot)
+    #:settable
+    (slot-definition-settable? slot)
+    #:immutable
+    (slot-definition-immutable? slot)))
 
 (define (slot-accessor-options accessor)
   (list #:init-keyword (slot-accessor-init-keyword accessor)
-        #:init-value (slot-accessor-init-value accessor)
-        #:init-thunk (slot-accessor-init-thunk accessor)
-        #:slot-ref (slot-accessor-slot-ref accessor)
-        #:slot-set! (slot-accessor-slot-set! accessor)
-        #:slot-bound? (slot-accessor-slot-bound? accessor)
-        #:getter (slot-accessor-getter accessor)
-        #:setter (slot-accessor-setter accessor)
-        #:accessor (slot-accessor-accessor accessor)
-        #:initializable (slot-accessor-initializable? accessor)
-        #:settable (slot-accessor-settable? accessor)
-        #:immutable (slot-accessor-immutable? accessor)))
+    #:init-value
+    (slot-accessor-init-value accessor)
+    #:init-thunk
+    (slot-accessor-init-thunk accessor)
+    #:slot-ref
+    (slot-accessor-slot-ref accessor)
+    #:slot-set!
+    (slot-accessor-slot-set! accessor)
+    #:slot-bound?
+    (slot-accessor-slot-bound? accessor)
+    #:getter
+    (slot-accessor-getter accessor)
+    #:setter
+    (slot-accessor-setter accessor)
+    #:accessor
+    (slot-accessor-accessor accessor)
+    #:initializable
+    (slot-accessor-initializable? accessor)
+    #:settable
+    (slot-accessor-settable? accessor)
+    #:immutable
+    (slot-accessor-immutable? accessor)))
 
 (define (%mop-option-name key)
   (cond
@@ -1419,9 +1442,9 @@
     [(symbol? key)
       (let ([name (symbol->string key)])
         (if (and (> (string-length name) 0)
-                 (char=? (string-ref name 0) #\:))
-            (string->symbol (substring name 1 (string-length name)))
-            key))]
+             (char=? (string-ref name 0) #\:))
+          (string->symbol (substring name 1 (string-length name)))
+          key))]
     [else key]))
 
 (define (slot-definition-option slot key . default)
@@ -1429,9 +1452,9 @@
     (let loop ([options (slot-definition-options slot)])
       (cond
         [(null? options)
-         (if (null? default) #f (car default))]
+          (if (null? default) #f (car default))]
         [(eq? (%mop-option-name (car options)) name)
-         (cadr options)]
+          (cadr options)]
         [else (loop (cddr options))]))))
 
 (define (slot-accessor-option accessor key . default)
@@ -1439,85 +1462,107 @@
     (let loop ([options (slot-accessor-options accessor)])
       (cond
         [(null? options)
-         (if (null? default) #f (car default))]
+          (if (null? default) #f (car default))]
         [(eq? (%mop-option-name (car options)) name)
-         (cadr options)]
+          (cadr options)]
         [else (loop (cddr options))]))))
 
 (define (generic-options generic)
   (list #:fallback (generic-fallback generic)
-        #:required-dispatch-arg-count
-        (generic-required-dispatch-arg-count generic)
-        #:sealed (generic-sealed? generic)))
+    #:required-dispatch-arg-count
+    (generic-required-dispatch-arg-count generic)
+    #:sealed
+    (generic-sealed? generic)))
 
 (define (generic-option generic key . default)
   (let ([name (%mop-option-name key)])
     (let loop ([options (generic-options generic)])
       (cond
         [(null? options)
-         (if (null? default) #f (car default))]
+          (if (null? default) #f (car default))]
         [(eq? (%mop-option-name (car options)) name)
-         (cadr options)]
+          (cadr options)]
         [else (loop (cddr options))]))))
 
 (define (method-options method)
   (list #:generic (method-generic method)
-        #:specializers (method-specializers method)
-        #:required-arg-count (method-required-arg-count method)
-        #:body (method-body method)
-        #:locked (method-locked? method)))
+    #:specializers
+    (method-specializers method)
+    #:required-arg-count
+    (method-required-arg-count method)
+    #:body
+    (method-body method)
+    #:locked
+    (method-locked? method)))
 
 (define (method-option method key . default)
   (let ([name (%mop-option-name key)])
     (let loop ([options (method-options method)])
       (cond
         [(null? options)
-         (if (null? default) #f (car default))]
+          (if (null? default) #f (car default))]
         [(eq? (%mop-option-name (car options)) name)
-         (cadr options)]
+          (cadr options)]
         [else (loop (cddr options))]))))
 
 (define (next-method-options next-method)
   (list #:generic (next-method-generic next-method)
-        #:methods (next-method-methods next-method)
-        #:args (next-method-args next-method)
-        #:index (next-method-index next-method)
-        #:body (next-method-body next-method)
-        #:has-next? (next-method-has-next? next-method)
-        #:next (next-method-next next-method)))
+    #:methods
+    (next-method-methods next-method)
+    #:args
+    (next-method-args next-method)
+    #:index
+    (next-method-index next-method)
+    #:body
+    (next-method-body next-method)
+    #:has-next?
+    (next-method-has-next? next-method)
+    #:next
+    (next-method-next next-method)))
 
 (define (next-method-option next-method key . default)
   (let ([name (%mop-option-name key)])
     (let loop ([options (next-method-options next-method)])
       (cond
         [(null? options)
-         (if (null? default) #f (car default))]
+          (if (null? default) #f (car default))]
         [(eq? (%mop-option-name (car options)) name)
-         (cadr options)]
+          (cadr options)]
         [else (loop (cddr options))]))))
 
 (define (class-options class)
   (list #:name (class-name class)
-        #:direct-supers (class-direct-supers class)
-        #:cpl (class-precedence-list class)
-        #:direct-slots (class-direct-slots class)
-        #:slots (class-slots class)
-        #:accessors (class-accessors class)
-        #:initargs (class-initargs class)
-        #:direct-methods (class-direct-methods class)
-        #:direct-subclasses (class-direct-subclasses class)
-        #:applicable (class-applicable? class)
-        #:malleable (class-malleable? class)
-        #:sealed (class-sealed? class)))
+    #:direct-supers
+    (class-direct-supers class)
+    #:cpl
+    (class-precedence-list class)
+    #:direct-slots
+    (class-direct-slots class)
+    #:slots
+    (class-slots class)
+    #:accessors
+    (class-accessors class)
+    #:initargs
+    (class-initargs class)
+    #:direct-methods
+    (class-direct-methods class)
+    #:direct-subclasses
+    (class-direct-subclasses class)
+    #:applicable
+    (class-applicable? class)
+    #:malleable
+    (class-malleable? class)
+    #:sealed
+    (class-sealed? class)))
 
 (define (class-option class key . default)
   (let ([name (%mop-option-name key)])
     (let loop ([options (class-options class)])
       (cond
         [(null? options)
-         (if (null? default) #f (car default))]
+          (if (null? default) #f (car default))]
         [(eq? (%mop-option-name (car options)) name)
-         (cadr options)]
+          (cadr options)]
         [else (loop (cddr options))]))))
 
 (define (subclass? class super)
@@ -1532,14 +1577,14 @@
 
 (define (method-applicable-for-classes? method . classes)
   (and (>= (length classes) (method-required-arg-count method))
-       (let loop ([specializers (method-specializers method)]
-                  [classes classes])
-         (cond
-           [(null? specializers) #t]
-           [(null? classes) #f]
-           [(subclass? (car classes) (car specializers))
-             (loop (cdr specializers) (cdr classes))]
-           [else #f]))))
+    (let loop ([specializers (method-specializers method)]
+               [classes classes])
+      (cond
+        [(null? specializers) #t]
+        [(null? classes) #f]
+        [(subclass? (car classes) (car specializers))
+          (loop (cdr specializers) (cdr classes))]
+        [else #f]))))
 
 (define (compute-applicable-methods generic args)
   (let ([classes (map class-of args)])
@@ -1558,25 +1603,25 @@
         [(eq? (car cpl) specializer) distance]
         [else (loop (cdr cpl) (+ distance 1))])))
   (and (>= (length classes) (method-required-arg-count method))
-       (let loop ([classes classes]
-                  [specializers (method-specializers method)]
-                  [score '()])
-         (cond
-           [(null? classes)
-            (reverse
-              (cons (- unspecialized-distance
-                       (method-required-arg-count method))
-                    score))]
-           [(null? specializers)
-            (loop (cdr classes)
-                  specializers
-                  (cons unspecialized-distance score))]
-           [else
-            (let ([distance (class-distance (car classes) (car specializers))])
-              (and distance
-                   (loop (cdr classes)
-                         (cdr specializers)
-                         (cons distance score))))]))))
+    (let loop ([classes classes]
+               [specializers (method-specializers method)]
+               [score '()])
+      (cond
+        [(null? classes)
+          (reverse
+            (cons (- unspecialized-distance
+                   (method-required-arg-count method))
+              score))]
+        [(null? specializers)
+          (loop (cdr classes)
+            specializers
+            (cons unspecialized-distance score))]
+        [else
+          (let ([distance (class-distance (car classes) (car specializers))])
+            (and distance
+              (loop (cdr classes)
+                (cdr specializers)
+                (cons distance score))))]))))
 
 (define (score<? left right)
   (cond
@@ -1590,8 +1635,8 @@
   (let ([left-score (method-specificity-score left classes)]
         [right-score (method-specificity-score right classes)])
     (and left-score
-         right-score
-         (score<? left-score right-score))))
+      right-score
+      (score<? left-score right-score))))
 
 (define (sort-applicable-methods generic methods args)
   (let ([classes (map class-of args)])
@@ -1602,9 +1647,9 @@
 
 (define (apply-method generic methods build-next args)
   (if (null? methods)
-      (apply generic-invoke generic args)
-      (apply (method-body (car methods))
-             (cons (build-next generic methods args) args))))
+    (apply generic-invoke generic args)
+    (apply (method-body (car methods))
+      (cons (build-next generic methods args) args))))
 
 (define (apply-methods generic methods args)
   (apply-method generic methods %make-next-method args))
@@ -1612,8 +1657,8 @@
 (define (apply-generic generic args)
   (let ([methods (compute-applicable-methods generic args)])
     (apply-methods generic
-                   (sort-applicable-methods generic methods args)
-                   args)))
+      (sort-applicable-methods generic methods args)
+      args)))
 
 (define (slot-exists? obj slot-name)
   (slot-exists-using-class? (class-of obj) obj slot-name))
@@ -1626,14 +1671,14 @@
 
 (define (slot-pop! obj slot-name . default)
   (if (or (not (slot-exists? obj slot-name))
-          (not (slot-bound? obj slot-name))
-          (not (pair? (slot-ref obj slot-name))))
-      (if (null? default)
-          (assertion-violation 'slot-pop! "slot value is not a pair" obj slot-name)
-          (car default))
-      (let ([value (slot-ref obj slot-name)])
-        (slot-set! obj slot-name (cdr value))
-        (car value))))
+       (not (slot-bound? obj slot-name))
+       (not (pair? (slot-ref obj slot-name))))
+    (if (null? default)
+      (assertion-violation 'slot-pop! "slot value is not a pair" obj slot-name)
+      (car default))
+    (let ([value (slot-ref obj slot-name)])
+      (slot-set! obj slot-name (cdr value))
+      (car value))))
 
 (define-for-syntax (%define-class-syntax-list->list form stx)
   (syntax-case stx ()
@@ -1641,15 +1686,15 @@
     [(head . tail)
       (cons #'head (%define-class-syntax-list->list form #'tail))]
     [_ (syntax-violation 'define-class
-         "slot list must be a proper list"
-         form
-         stx)]))
+        "slot list must be a proper list"
+        form
+        stx)]))
 
 (define-for-syntax (%define-class-colon-symbol? datum)
   (and (symbol? datum)
-       (let ([name (symbol->string datum)])
-         (and (> (string-length name) 0)
-              (char=? (string-ref name 0) #\:)))))
+    (let ([name (symbol->string datum)])
+      (and (> (string-length name) 0)
+        (char=? (string-ref name 0) #\:)))))
 
 (define-for-syntax (%define-class-option-name option)
   (let ([datum (syntax->datum option)])
@@ -1682,22 +1727,22 @@
     [() '()]
     [(option value . rest)
       (cons (cons #'option #'value)
-            (%define-class-slot-option-pairs form #'rest slot))]
+        (%define-class-slot-option-pairs form #'rest slot))]
     [_ (syntax-violation 'define-class
-         "slot options must be keyword/value pairs"
-         form
-         slot)]))
+        "slot options must be keyword/value pairs"
+        form
+        slot)]))
 
 (define-for-syntax (%define-class-option-pairs form options)
   (syntax-case options ()
     [() '()]
     [(option value . rest)
       (cons (cons #'option #'value)
-            (%define-class-option-pairs form #'rest))]
+        (%define-class-option-pairs form #'rest))]
     [_ (syntax-violation 'define-class
-         "class options must be keyword/value pairs"
-         form
-         options)]))
+        "class options must be keyword/value pairs"
+        form
+        options)]))
 
 (define-for-syntax (%define-class-applicable-option form options)
   (let loop ([pairs (%define-class-option-pairs form options)]
@@ -1738,22 +1783,22 @@
           (cond
             [(memq option-name '(getter setter accessor))
               (loop (cdr pairs)
-                    (cons #`'#,value
-                          (cons (%define-class-runtime-slot-option (caar pairs)) out)))]
+                (cons #`'#,value
+                  (cons (%define-class-runtime-slot-option (caar pairs)) out)))]
             [(memq option-name '(initform init-form))
               (loop (cdr pairs)
-                    (cons #`(lambda () #,value)
-                          (cons (datum->syntax (caar pairs) '#:init-thunk)
-                                out)))]
+                (cons #`(lambda () #,value)
+                  (cons (datum->syntax (caar pairs) '#:init-thunk)
+                    out)))]
             [(and (eq? option-name 'allocation)
-                  (%define-class-colon-symbol? (syntax->datum value)))
+                (%define-class-colon-symbol? (syntax->datum value)))
               (loop (cdr pairs)
-                    (cons #`'#,value
-                          (cons (%define-class-runtime-slot-option (caar pairs)) out)))]
+                (cons #`'#,value
+                  (cons (%define-class-runtime-slot-option (caar pairs)) out)))]
             [else
               (loop (cdr pairs)
-                    (cons value
-                          (cons (%define-class-runtime-slot-option (caar pairs)) out)))]))])))
+                (cons value
+                  (cons (%define-class-runtime-slot-option (caar pairs)) out)))]))])))
 
 (define-for-syntax (%process-slot-definition form slot)
   (syntax-case slot ()
@@ -1769,9 +1814,9 @@
                         slot)])
         #'(list 'name runtime-option-value ...))]
     [_ (syntax-violation 'define-class
-         "expected a slot name or (slot-name option value ...)"
-         form
-         slot)]))
+        "expected a slot name or (slot-name option value ...)"
+        form
+        slot)]))
 
 (define-for-syntax (%define-class-getter-forms class-name slot-name getter-name)
   (with-syntax ([class-name class-name]
@@ -1779,7 +1824,7 @@
                 [getter-name getter-name])
     #'((define-generic getter-name)
        (define-method (getter-name (obj class-name))
-         (slot-ref obj 'slot-name)))))
+        (slot-ref obj 'slot-name)))))
 
 (define-for-syntax (%define-class-setter-forms class-name slot-name setter-name)
   (with-syntax ([class-name class-name]
@@ -1787,8 +1832,8 @@
                 [setter-name setter-name])
     #'((define-generic setter-name)
        (define-method (setter-name (obj class-name) value)
-         (slot-set! obj 'slot-name value)
-         value))))
+        (slot-set! obj 'slot-name value)
+        value))))
 
 (define-for-syntax (%define-class-accessor-forms class-name slot-name accessor-name)
   (with-syntax ([class-name class-name]
@@ -1797,10 +1842,10 @@
     #'((define-generic accessor-name)
        (define-generic (setter accessor-name))
        (define-method (accessor-name (obj class-name))
-         (slot-ref obj 'slot-name))
+        (slot-ref obj 'slot-name))
        (define-method ((setter accessor-name) (obj class-name) value)
-         (slot-set! obj 'slot-name value)
-         value))))
+        (slot-set! obj 'slot-name value)
+        value))))
 
 (define-for-syntax (%define-class-slot-accessor-forms form class-name slot)
   (syntax-case slot ()
@@ -1817,13 +1862,13 @@
             (cond
               [(eq? (%define-class-option-name (caar pairs)) 'getter)
                 (loop (cdr pairs)
-                      (cons (%define-class-getter-forms class-name #'name target) forms))]
+                  (cons (%define-class-getter-forms class-name #'name target) forms))]
               [(eq? (%define-class-option-name (caar pairs)) 'setter)
                 (loop (cdr pairs)
-                      (cons (%define-class-setter-forms class-name #'name target) forms))]
+                  (cons (%define-class-setter-forms class-name #'name target) forms))]
               [(eq? (%define-class-option-name (caar pairs)) 'accessor)
                 (loop (cdr pairs)
-                      (cons (%define-class-accessor-forms class-name #'name target) forms))]
+                  (cons (%define-class-accessor-forms class-name #'name target) forms))]
               [else
                 (loop (cdr pairs) forms)]))))]
     [_ '()]))
@@ -1835,12 +1880,12 @@
                   [(super ...) supers]
                   [(slot-spec ...)
                     (map (lambda (slot) (%process-slot-definition form slot))
-                         slot-list)]
+                      slot-list)]
                   [(accessor-form ...)
                     (apply append
                       (map (lambda (slot)
-                             (%define-class-slot-accessor-forms form name slot))
-                           slot-list))]
+                            (%define-class-slot-accessor-forms form name slot))
+                        slot-list))]
                   [(class-var old-class) (generate-temporaries '(class-var old-class))]
                   [make-class-id
                     (if applicable? #'make-invocable-class #'make-class)]
@@ -1848,25 +1893,29 @@
                     (if applicable? #'redefine-invocable-class! #'redefine-class!)]
                   [applicable-value (datum->syntax form applicable?)])
       #'(begin
-          (define name
-            (let ([class-var (module-local-variable (current-module) 'name)])
-              (if (and class-var (variable-bound? class-var))
-                (let ([old-class (variable-ref class-var)])
-                  (if (class? old-class)
-                    (redefine-class-id
-                      old-class
-                      'name
-                      (list slot-spec ...)
-                      (list super ...))
-                    (make-class-id 'name (list slot-spec ...) (list super ...))))
-                (make-class-id 'name (list slot-spec ...) (list super ...)))))
-          (class-post-initialize
-            name
-            (list #:name 'name
-                  #:supers (list super ...)
-                  #:slots (list slot-spec ...)
-                  #:applicable applicable-value))
-          accessor-form ...))))
+         (define name
+          (let ([class-var (module-local-variable (current-module) 'name)])
+           (if (and class-var (variable-bound? class-var))
+            (let ([old-class (variable-ref class-var)])
+             (if (class? old-class)
+              (redefine-class-id
+               old-class
+               'name
+               (list slot-spec ...)
+               (list super ...))
+              (make-class-id 'name (list slot-spec ...) (list super ...))))
+            (make-class-id 'name (list slot-spec ...) (list super ...)))))
+         (class-post-initialize
+          name
+          (list #:name 'name
+           #:supers
+           (list super ...)
+           #:slots
+           (list slot-spec ...)
+           #:applicable
+           applicable-value))
+         accessor-form
+         ...))))
 
 (define-syntax define-class
   (lambda (form)
@@ -1875,16 +1924,16 @@
         (identifier? #'name)
         (%expand-define-class form #'name #'supers #'slots #'(option ...))]
       [_ (syntax-violation 'define-class
-           "expected (define-class name supers slots . options)"
-           form)])))
+          "expected (define-class name supers slots . options)"
+          form)])))
 
 (define-syntax define-generic
   (lambda (x)
     (define (colon-symbol? datum)
       (and (symbol? datum)
-           (let ([name (symbol->string datum)])
-             (and (> (string-length name) 0)
-                  (char=? (string-ref name 0) #\:)))))
+        (let ([name (symbol->string datum)])
+          (and (> (string-length name) 0)
+            (char=? (string-ref name 0) #\:)))))
     (define (option-name option)
       (let ([datum (syntax->datum option)])
         (cond
@@ -1898,11 +1947,11 @@
         [() '()]
         [(option value . rest)
           (cons (cons #'option #'value)
-                (generic-option-pairs #'rest))]
+            (generic-option-pairs #'rest))]
         [_ (syntax-violation 'define-generic
-             "generic options must be keyword/value pairs"
-             x
-             options)]))
+            "generic options must be keyword/value pairs"
+            x
+            options)]))
     (define (generic-option-forms generic options)
       (let loop ([pairs (generic-option-pairs options)]
                  [forms '()])
@@ -1913,18 +1962,18 @@
             (case option
               [(fallback)
                 (loop (cdr pairs)
-                      (cons
-                        (with-syntax ([generic generic]
-                                      [value value])
-                          #'((set-generic-fallback! generic value)))
-                        forms))]
+                  (cons
+                    (with-syntax ([generic generic]
+                                  [value value])
+                      #'((set-generic-fallback! generic value)))
+                    forms))]
               [(sealed)
                 (loop (cdr pairs)
-                      (cons
-                        (with-syntax ([generic generic]
-                                      [value value])
-                          #'((when value (generic-seal! generic))))
-                        forms))]
+                  (cons
+                    (with-syntax ([generic generic]
+                                  [value value])
+                      #'((when value (generic-seal! generic))))
+                    forms))]
               [else
                 (syntax-violation 'define-generic
                   "unsupported generic option"
@@ -1943,30 +1992,32 @@
                     [(option-form ...)
                       (generic-option-forms (setter-binding-name name) options)])
         #'(begin
-            (define setter-id (make-generic 'setter-id required-dispatch-args))
-            option-form ...
-            (set-setter! getter-id setter-id))))
+           (define setter-id (make-generic 'setter-id required-dispatch-args))
+           option-form
+           ...
+           (set-setter! getter-id setter-id))))
     (define (expand-generic name required-dispatch-args options)
       (with-syntax ([name name]
                     [required-dispatch-args required-dispatch-args]
                     [(option-form ...) (generic-option-forms name options)])
         #'(begin
-            (define name (make-generic 'name required-dispatch-args))
-            option-form ...)))
+           (define name (make-generic 'name required-dispatch-args))
+           option-form
+           ...)))
     (syntax-case x (setter)
       [(_ name)
         (identifier? #'name)
         #'(define name (make-generic 'name))]
       [(_ name option value ...)
         (and (identifier? #'name)
-             (or (keyword? (syntax->datum #'option))
-                 (colon-symbol? (syntax->datum #'option))))
+          (or (keyword? (syntax->datum #'option))
+            (colon-symbol? (syntax->datum #'option))))
         (expand-generic #'name #'1 #'(option value ...))]
       [(_ (setter name))
         (expand-setter-generic #'name #'1 #'())]
       [(_ (setter name) option value ...)
         (or (keyword? (syntax->datum #'option))
-            (colon-symbol? (syntax->datum #'option)))
+          (colon-symbol? (syntax->datum #'option)))
         (expand-setter-generic #'name #'1 #'(option value ...))]
       [(_ name required-dispatch-args)
         (identifier? #'name)
@@ -2001,10 +2052,10 @@
             (identifier? #'var)
             (if specialized-prefix?
               (loop #'more
-                    (cons #'var vars)
-                    (cons #'class specializers)
-                    (+ required 1)
-                    #t)
+                (cons #'var vars)
+                (cons #'class specializers)
+                (+ required 1)
+                #t)
               (syntax-violation 'define-method
                 "specialized arguments must precede unspecialized arguments"
                 args
@@ -2012,13 +2063,13 @@
           [(var . more)
             (identifier? #'var)
             (loop #'more
-                  (cons #'var vars)
-                  specializers
-                  (+ required 1)
-                  #f)]
+              (cons #'var vars)
+              specializers
+              (+ required 1)
+              #f)]
           [_ (syntax-violation 'define-method
-               "expected arguments as variables, (variable class), or a rest variable"
-               args)])))
+              "expected arguments as variables, (variable class), or a rest variable"
+              args)])))
     (define (generic-expression form generic)
       (syntax-case generic (setter)
         [id
@@ -2028,22 +2079,22 @@
           (identifier? #'id)
           #'(setter id)]
         [_ (syntax-violation 'define-method
-             "expected a generic identifier or (setter identifier)"
-             form
-             generic)]))
+            "expected a generic identifier or (setter identifier)"
+            form
+            generic)]))
     (define (locked-qualifier? qualifier)
       (let ([datum (syntax->datum qualifier)])
         (or (eq? datum '#:locked)
-            (eq? datum ':locked))))
+          (eq? datum ':locked))))
     (define (colon-symbol? datum)
       (and (symbol? datum)
-           (let ([name (symbol->string datum)])
-             (and (> (string-length name) 0)
-                  (char=? (string-ref name 0) #\:)))))
+        (let ([name (symbol->string datum)])
+          (and (> (string-length name) 0)
+            (char=? (string-ref name 0) #\:)))))
     (define (keyword-qualifier? qualifier)
       (let ([datum (syntax->datum qualifier)])
         (or (keyword? datum)
-            (colon-symbol? datum))))
+          (colon-symbol? datum))))
     (define (unsupported-qualifier form qualifier)
       (syntax-violation 'define-method
         "unsupported method qualifier"
@@ -2064,32 +2115,34 @@
           (if rest-var
             (with-syntax ([rest-id rest-var])
               #'(add-method! generic-id
-                  (list specializer ...)
-                  required-count
-                  (lambda* (next-id var ... . rest-id)
-                    (let ([next-method-id (lambda () (next-method-invoke next-id))])
-                      body ...))
-                  locked-value))
-            #'(add-method! generic-id
-                (list specializer ...)
-                required-count
-                (lambda* (next-id var ... tail ...)
+                 (list specializer ...)
+                 required-count
+                 (lambda* (next-id var ... . rest-id)
                   (let ([next-method-id (lambda () (next-method-invoke next-id))])
-                    body ...))
-                locked-value)))))
+                   body
+                   ...))
+                 locked-value))
+            #'(add-method! generic-id
+               (list specializer ...)
+               required-count
+               (lambda* (next-id var ... tail ...)
+                (let ([next-method-id (lambda () (next-method-invoke next-id))])
+                 body
+                 ...))
+               locked-value)))))
     (syntax-case x ()
       [(_ (generic . args) qualifier body ...)
         (keyword-qualifier? #'qualifier)
         (if (locked-qualifier? #'qualifier)
-            (expand-method x #'generic #'args #'(body ...) #'#t)
-            (unsupported-qualifier x #'qualifier))]
+          (expand-method x #'generic #'args #'(body ...) #'#t)
+          (unsupported-qualifier x #'qualifier))]
       [(_ (generic . args) body ...)
         (expand-method x #'generic #'args #'(body ...) #'#f)]
       [(_ generic qualifier args body ...)
         (keyword-qualifier? #'qualifier)
         (if (locked-qualifier? #'qualifier)
-            (expand-method x #'generic #'args #'(body ...) #'#t)
-            (unsupported-qualifier x #'qualifier))]
+          (expand-method x #'generic #'args #'(body ...) #'#t)
+          (unsupported-qualifier x #'qualifier))]
       [(_ generic args body ...)
         (expand-method x #'generic #'args #'(body ...) #'#f)]
       [_ (syntax-violation 'define-method "invalid method definition" x)])))
@@ -2230,7 +2283,7 @@
 (define (%describe-hidden-slot? slot-name)
   (let ([name (symbol->string slot-name)])
     (and (> (string-length name) 0)
-         (char=? (string-ref name 0) #\%))))
+      (char=? (string-ref name 0) #\%))))
 
 (define (describe-common obj)
   (format #t "~s is an instance of class ~a~%" obj (class-name (class-of obj)))
@@ -2246,11 +2299,11 @@
         (lambda (slot)
           (let ([name (slot-definition-name slot)])
             (when (or (describe-details)
-                      (not (%describe-hidden-slot? name)))
+                   (not (%describe-hidden-slot? name)))
               (format #t "  ~s: " name)
               (if (slot-bound? obj name)
-                  (write (slot-ref obj name))
-                  (display "#<unbound>"))
+                (write (slot-ref obj name))
+                (display "#<unbound>"))
               (newline))))
         slots)))
   (values))
@@ -2292,8 +2345,8 @@
   (slot-ref obj slot))
 (define-method (ref (obj <top>) (slot <symbol>) fallback)
   (if (and (slot-exists? obj slot) (slot-bound? obj slot))
-      (slot-ref obj slot)
-      fallback))
+    (slot-ref obj slot)
+    fallback))
 (define-method ((setter ref) (obj <top>) (slot <symbol>) value)
   (slot-set! obj slot value))
 
@@ -2364,17 +2417,17 @@
 
 (define (~ obj selector . more)
   (if (null? more)
-      (ref obj selector)
-      (apply ~ (ref obj selector) more)))
+    (ref obj selector)
+    (apply ~ (ref obj selector) more)))
 
 (define (%set-~ obj selector . rest)
   (cond
     [(null? rest)
-     (assertion-violation 'setter-of-~ "missing value" obj selector)]
+      (assertion-violation 'setter-of-~ "missing value" obj selector)]
     [(null? (cdr rest))
-     ((setter ref) obj selector (car rest))]
+      ((setter ref) obj selector (car rest))]
     [else
-     (apply (setter ~) (ref obj selector) rest)]))
+      (apply (setter ~) (ref obj selector) rest)]))
 
 (set-setter! ~ %set-~)
 

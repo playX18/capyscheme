@@ -2,7 +2,7 @@
 
 (define-library (capy args option)
   (import (scheme base)
-          (capy args help optional))
+    (capy args help optional))
   (export
     make-option
     option?
@@ -98,14 +98,21 @@
              (hide? (plist-ref args 'hide?: #f))
              (aliases (plist-ref args 'aliases: '()))
              (split-commas? (if (eq? split-commas? unspecified-key)
-                              (if (eq? type 'multi) #t #f)
-                              split-commas?)))
+                             (if (eq? type 'multi) #t #f)
+                             split-commas?)))
         (unless (string? name)
           (error "Option name must be a string" name))
 
         (%make-option name abbr help value-help allowed allowed-help
-                      defaults-to negatable? hide-negated-usage?
-                      callback type split-commas? mandatory? hide? aliases)))
+          defaults-to
+          negatable?
+          hide-negated-usage?
+          callback
+          type
+          split-commas?
+          mandatory?
+          hide?
+          aliases)))
 
     (define (option-value opt . rest)
       (let-optionals rest ((value #f))

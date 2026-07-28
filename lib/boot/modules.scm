@@ -140,9 +140,9 @@
                      (let ([iface* (interface-without-duplicate-imports iface accepted-explicit)])
                        (if iface*
                          (loop (cdr in)
-                               (cons iface* accepted)
-                               (cons iface* accepted-explicit)
-                               (cons iface* out))
+                           (cons iface* accepted)
+                           (cons iface* accepted-explicit)
+                           (cons iface* out))
                          (loop (cdr in) accepted accepted-explicit out)))))))])
 
     (set-module-uses! module (append new cur))
@@ -538,11 +538,17 @@
        [host-family-sls (string-append host-family ".sls")]
        [arch-sls (string-append host-arch ".sls")]
        [common (list host-os-scm host-family-scm arch-scm
-                 "capy.scm" "scm" "sch" "ss")]
+                "capy.scm"
+                "scm"
+                "sch"
+                "ss")]
        [r7rs (list host-os-sld host-family-sld arch-sld
-               "capy.sld" "sld")]
+              "capy.sld"
+              "sld")]
        [r6rs (list host-os-sls host-family-sls arch-sls
-               "capy.sls" "sls" "sps")])
+              "capy.sls"
+              "sls"
+              "sps")])
   (set! capy:r7rs-load-extensions
     (append r7rs common))
   (set! capy:r6rs-load-extensions
@@ -565,7 +571,7 @@
 (define (capy:update-load-extensions! mode)
   (let ([extra (filter (lambda (ext)
                         (not (capy:mode-load-extension? ext)))
-                 %load-extensions)])
+                %load-extensions)])
     (set! %load-extensions
       (append (capy:mode-load-extensions mode) extra))))
 

@@ -257,7 +257,7 @@
     (add-flag! parser
       "log-error"
       (help "Enable error logging"))
-    (add-flag! parser 
+    (add-flag! parser
       "version"
       (help "Show version and exit"))
 
@@ -284,12 +284,12 @@
       (let* ([len (string-length str)]
              [body
                (if (and (>= len 2)
-                     (eqv? (string-ref str 0) #\()
-                     (eqv? (string-ref str (- len 1)) #\)))
+                    (eqv? (string-ref str 0) #\()
+                    (eqv? (string-ref str (- len 1)) #\)))
                  (substring str 1 (- len 1))
                  str)]
              [parts (filter (lambda (part) (> (string-length part) 0))
-                      (string-split body #\space))])
+                     (string-split body #\space))])
         (map string->symbol parts))))
 
   (define (run)
@@ -420,7 +420,7 @@
     (value-help "KIND")
     (help "Force FASL write-barrier kind: nobarrier, objbarrier, or satbbarrier (default: from live --gc-plan)"))
 
-  (add-flag! parser 
+  (add-flag! parser
     "version"
     (help "Show version and exit"))
 

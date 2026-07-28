@@ -187,29 +187,6 @@ impl MarkingConstraintSet {
         };
 
         let visited = solver::execute_constraints(self, &order, worker, tracer_context, mode);
-        // #region agent log
-        {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/home/adel/projects/capyscheme/.cursor/debug-3ed3b0.log")
-            {
-                let _ = writeln!(
-                    f,
-                    r#"{{"sessionId":"3ed3b0","runId":"post-fix","hypothesisId":"A","location":"set.rs:execute_vmref_convergence","message":"vmref_convergence","data":{{"iteration":{},"order_len":{},"visited":{},"dirty":{}}},"timestamp":{}}}"#,
-                    iteration,
-                    order.len(),
-                    visited,
-                    self.dirty.load(Ordering::Relaxed),
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis())
-                        .unwrap_or(0)
-                );
-            }
-        }
-        // #endregion
         // Iteration 2 always requests another pass (JSC); later passes repeat while dirty.
         // Do not mark_dirty merely because a pass requested re-entry (e.g. parallel drain).
         if iteration == 2 {

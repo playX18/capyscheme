@@ -1,8 +1,8 @@
 (define-library (capy args results)
   (import (scheme base)
-          (capy args help optional)
-          (capy args grammar)
-          (capy args option))
+    (capy args help optional)
+    (capy args grammar)
+    (capy args option))
 
   (export
     argument-results
@@ -75,7 +75,7 @@
           ((not (option-single? option))
             (error (string-append "Option '--" name "' is not a single-value option")))
           ((and (option-mandatory? option)
-                (not (argument-results-was-parsed? results name)))
+              (not (argument-results-was-parsed? results name)))
             (error (string-append "Mandatory option '--" name "' not provided")))
           (else
             (option-value option (argument-results-parsed-value results option))))))

@@ -26,9 +26,6 @@ PROFILE ?= release
 TARGET  ?= $(shell rustc --print host-tuple)
 HOST_TARGET := $(shell rustc --print host-tuple)
 
-# Always build into the workspace target dir. Cursor/sandbox agents often set
-# CARGO_TARGET_DIR to a cache path; without this, `cargo build` writes elsewhere
-# while recipes still `cp` from `target/$(TARGET)/...` and stage a stale binary.
 export CARGO_TARGET_DIR := $(CURDIR)/target
 TARGET_DIR  := $(CARGO_TARGET_DIR)/$(TARGET)
 TARGET_PATH := $(TARGET_DIR)/$(PROFILE)

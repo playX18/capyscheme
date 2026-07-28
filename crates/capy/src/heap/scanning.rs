@@ -104,12 +104,6 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
         mut tracer_context: impl mmtk::vm::ObjectTracerContext<MemoryManager>,
     ) -> bool {
         let gc = crate::heap::GarbageCollector::get();
-        // #region agent log
-        static WEAK_PASS: std::sync::atomic::AtomicUsize =
-            std::sync::atomic::AtomicUsize::new(0);
-        let pass = WEAK_PASS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let t0 = std::time::Instant::now();
-        // #endregion
         // Existing weak/ephemeron + finalizer processing (may expand TC).
         let weak_dirty = gc.weak.run(worker, &mut tracer_context)
             || gc.finalizers.process(worker, &mut tracer_context);
@@ -119,30 +113,6 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
             set.execute_vmref_convergence(worker, &mut tracer_context)
         };
         let ret = weak_dirty || constraint_dirty;
-        // #region agent log
-        {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/home/adel/projects/capyscheme/.cursor/debug-3ed3b0.log")
-            {
-                let _ = writeln!(
-                    f,
-                    r#"{{"sessionId":"3ed3b0","runId":"hang1","hypothesisId":"A","location":"scanning.rs:process_weak_refs","message":"weak_refs_pass","data":{{"pass":{},"weak_dirty":{},"constraint_dirty":{},"ret":{},"elapsed_ms":{}}},"timestamp":{}}}"#,
-                    pass,
-                    weak_dirty,
-                    constraint_dirty,
-                    ret,
-                    t0.elapsed().as_millis(),
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis())
-                        .unwrap_or(0)
-                );
-            }
-        }
-        // #endregion
         ret
     }
 

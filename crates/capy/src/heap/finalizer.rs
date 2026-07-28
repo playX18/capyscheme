@@ -145,12 +145,6 @@ impl Finalizers {
     ) -> bool {
         let mut state = self.0.lock();
         let mut had_some = false;
-        // #region agent log
-        let candidates_before = state.candidates.len();
-        let mut reachable = 0usize;
-        let mut unreachable = 0usize;
-        let t0 = std::time::Instant::now();
-        // #endregion
 
         for notifier in state.notifiers.iter() {
             notifier.notify_in_processing();
@@ -163,18 +157,12 @@ impl Finalizers {
                 while let Some((object, queue_index)) = state.candidates.pop_front() {
                     // object is reachable? Add it to new cadidates.
                     if object.is_reachable() {
-                        // #region agent log
-                        reachable += 1;
-                        // #endregion
                         new_candidates.push_back((
                             object.get_forwarded_object().unwrap_or(object),
                             queue_index,
                         ));
                         continue;
                     }
-                    // #region agent log
-                    unreachable += 1;
-                    // #endregion
                     had_some = true;
                     // Object is not reachable, resurrect it and mark as ready to run.
                     let newobject = tracer.trace_object(object);
@@ -188,31 +176,6 @@ impl Finalizers {
             });
         }
 
-        // #region agent log
-        {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/home/adel/projects/capyscheme/.cursor/debug-3ed3b0.log")
-            {
-                let _ = writeln!(
-                    f,
-                    r#"{{"sessionId":"3ed3b0","runId":"hang1","hypothesisId":"B","location":"finalizer.rs:process","message":"finalizers_process","data":{{"candidates_before":{},"reachable":{},"unreachable":{},"candidates_after":{},"had_some":{},"elapsed_ms":{}}},"timestamp":{}}}"#,
-                    candidates_before,
-                    reachable,
-                    unreachable,
-                    state.candidates.len(),
-                    had_some,
-                    t0.elapsed().as_millis(),
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis())
-                        .unwrap_or(0)
-                );
-            }
-        }
-        // #endregion
 
         had_some
     }

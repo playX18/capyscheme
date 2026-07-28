@@ -1,10 +1,13 @@
-
 (define-library (args help optional)
   (export let-optionals let-optionals*
-          opt-lambda opt-lambda*
-          define-opt define-opt*
-          let-keywords let-keywords*
-          keyword-ref keyword-ref*)
+    opt-lambda
+    opt-lambda*
+    define-opt
+    define-opt*
+    let-keywords
+    let-keywords*
+    keyword-ref
+    keyword-ref*)
   ;; (cond-expand
   ;;  (chibi
   ;;   (import (chibi))
@@ -22,26 +25,25 @@
   ;;              `(string->symbol
   ;;                (string-append (symbol->string ,(cadr expr)) ":"))))))))
   ;;  (else
-    (import (scheme base))
-    (begin
-      (define-syntax let-optionals*
-        (syntax-rules ()
-          ((let-optionals* opt-ls () . body)
-           (begin . body))
-          ((let-optionals* (op . args) vars . body)
-           (let ((tmp (op . args)))
-             (let-optionals* tmp vars . body)))
-          ((let-optionals* tmp ((var default) . rest) . body)
-           (let* ((tmp2 (if (pair? tmp) (cdr tmp) '()))
-                  (var (if (pair? tmp) (car tmp) default)))
-             (let-optionals* tmp2 rest . body)))
-          ((let-optionals* tmp tail . body)
-           (let ((tail (list-copy tmp))) . body))))
-      (define-syntax symbol->keyword*
-        (syntax-rules ()
-          ((symbol->keyword* sym)
-           (string->symbol (string-append (symbol->string sym) ":")))
-          )));))
+  (import (scheme base))
+  (begin
+    (define-syntax let-optionals*
+      (syntax-rules ()
+        ((let-optionals* opt-ls () . body)
+          (begin . body))
+        ((let-optionals* (op . args) vars . body)
+          (let ((tmp (op . args)))
+            (let-optionals* tmp vars . body)))
+        ((let-optionals* tmp ((var default) . rest) . body)
+          (let* ((tmp2 (if (pair? tmp) (cdr tmp) '()))
+                 (var (if (pair? tmp) (car tmp) default)))
+            (let-optionals* tmp2 rest . body)))
+        ((let-optionals* tmp tail . body)
+          (let ((tail (list-copy tmp))) . body))))
+    (define-syntax symbol->keyword*
+      (syntax-rules ()
+        ((symbol->keyword* sym)
+          (string->symbol (string-append (symbol->string sym) ":")))))) ;))
   (begin
     ;;> Syntax to support optional and named keyword arguments.
     ;;> \scheme{let-optionals[*]} is originally from SCSH, and
@@ -53,12 +55,12 @@
     (define-syntax let*-to-let
       (syntax-rules ()
         ((let*-to-let letstar ls (vars ...) ((v . d) . rest) . body)
-         (let*-to-let letstar ls (vars ... (v tmp (tmp . d))) rest . body))
+          (let*-to-let letstar ls (vars ... (v tmp (tmp . d))) rest . body))
         ((let*-to-let letstar ls (vars ...) (v . rest) . body)
-         (let*-to-let letstar ls (vars ... (v tmp tmp)) rest . body))
+          (let*-to-let letstar ls (vars ... (v tmp tmp)) rest . body))
         ((let*-to-let letstar ls ((var tmp bind) ...) rest . body)
-         (letstar ls (bind ... . rest)
-           (let ((var tmp) ...) . body)))))
+          (letstar ls (bind ... . rest)
+            (let ((var tmp) ...) . body)))))
 
     ;;> \macro{(let-optionals ls ((var default) ... [rest]) body ...)}
     ;;>
@@ -101,7 +103,7 @@
     (define-syntax let-optionals
       (syntax-rules ()
         ((let-optionals ls (var&default ... . rest) body ...)
-         (let*-to-let let-optionals* ls () (var&default ... . rest) body ...))))
+          (let*-to-let let-optionals* ls () (var&default ... . rest) body ...))))
 
     ;;> \macro{(let-optionals* ls ((var default) ... [rest]) body ...)}
     ;;>
@@ -120,7 +122,7 @@
     (define-syntax opt-lambda
       (syntax-rules ()
         ((opt-lambda vars . body)
-         (lambda args (let-optionals args vars . body)))))
+          (lambda args (let-optionals args vars . body)))))
 
     ;;> \macro{(opt-lambda* ((var default) ... [rest]) body ...)}
     ;;>
@@ -130,7 +132,7 @@
     (define-syntax opt-lambda*
       (syntax-rules ()
         ((opt-lambda* vars . body)
-         (lambda args (let-optionals* args vars . body)))))
+          (lambda args (let-optionals* args vars . body)))))
 
     ;;> \macro{(define-opt (name (var default) ... [rest]) body ...)}
     ;;>
@@ -141,7 +143,7 @@
     (define-syntax define-opt
       (syntax-rules ()
         ((define-opt (name . vars) . body)
-         (define name (opt-lambda vars . body)))))
+          (define name (opt-lambda vars . body)))))
 
     ;;> \macro{(define-opt* (name (var default) ... [rest]) body ...)}
     ;;>
@@ -152,14 +154,14 @@
     (define-syntax define-opt*
       (syntax-rules ()
         ((define-opt* (name . vars) . body)
-         (define name (opt-lambda* vars . body)))))
+          (define name (opt-lambda* vars . body)))))
 
     (define (mem-key key ls)
       (and (pair? ls)
-           (pair? (cdr ls))
-           (if (eq? key (car ls))
-               ls
-               (mem-key key (cddr ls)))))
+        (pair? (cdr ls))
+        (if (eq? key (car ls))
+          ls
+          (mem-key key (cddr ls)))))
 
     ;;> \procedure{(keyword-ref ls key [default])}
     ;;>
@@ -170,7 +172,7 @@
 
     (define (keyword-ref ls key . o)
       (cond ((mem-key key ls) => (lambda (cell) (cadr cell)))
-            (else (and (pair? o) (car o)))))
+        (else (and (pair? o) (car o)))))
 
     ;;> \macro{(keyword-ref* ls key default)}
     ;;>
@@ -180,7 +182,7 @@
     (define-syntax keyword-ref*
       (syntax-rules ()
         ((keyword-ref* ls key default)
-         (cond ((mem-key key ls) => cadr) (else default)))))
+          (cond ((mem-key key ls) => cadr) (else default)))))
 
     (define (symbol->keyword sym)
       (string->symbol (string-append (symbol->string sym) ":")))
@@ -188,13 +190,14 @@
     (define-syntax let-key*-to-let
       (syntax-rules ()
         ((let-key*-to-let ls (vars ...) ((v d) . rest) . body)
-         (let-key*-to-let ls (vars ... (v tmp ,(symbol->keyword 'v) d)) rest
-                          . body))
+          (let-key*-to-let ls (vars ... (v tmp ,(symbol->keyword 'v) d)) rest
+            .
+            body))
         ((let-key*-to-let ls (vars ...) ((v k d) . rest) . body)
-         (let-key*-to-let ls (vars ... (v tmp k d)) rest . body))
+          (let-key*-to-let ls (vars ... (v tmp k d)) rest . body))
         ((let-key*-to-let ls ((var tmp k d) ...) rest . body)
-         (let-keywords* ls ((tmp k d) ... . rest)
-           (let ((var tmp) ...) . body)))))
+          (let-keywords* ls ((tmp k d) ... . rest)
+            (let ((var tmp) ...) . body)))))
 
     ;;> \macro{(let-keywords ls ((var [keyword] default) ... [rest]) body ...)}
     ;;>
@@ -259,27 +262,27 @@
     (define-syntax let-keywords
       (syntax-rules ()
         ((let-keywords ls vars . body)
-         (let-key*-to-let ls () vars . body))))
+          (let-key*-to-let ls () vars . body))))
 
     ;; Returns the plist ls filtering out key-values found in keywords.
     (define (remove-keywords ls keywords)
       (let lp ((ls ls) (res '()))
         (if (and (pair? ls) (pair? (cdr ls)))
-            (if (memq (car ls) keywords)
-                (lp (cddr ls) res)
-                (lp (cddr ls) (cons (cadr ls) (cons (car ls) res))))
-            (reverse res))))
+          (if (memq (car ls) keywords)
+            (lp (cddr ls) res)
+            (lp (cddr ls) (cons (cadr ls) (cons (car ls) res))))
+          (reverse res))))
 
     ;; Extracts the known keywords from a let-keyword spec and removes
     ;; them from the opt-ls.
     (define-syntax remove-keywords*
       (syntax-rules ()
         ((remove-keywords* opt-ls (keys ...) ((var key default) . rest))
-         (remove-keywords* opt-ls (keys ... key) rest))
+          (remove-keywords* opt-ls (keys ... key) rest))
         ((remove-keywords* opt-ls (keys ...) ((var default) . rest))
-         (remove-keywords* opt-ls (keys ... ,(symbol->keyword* 'var)) rest))
+          (remove-keywords* opt-ls (keys ... ,(symbol->keyword* 'var)) rest))
         ((remove-keywords* opt-ls (keys ...) ())
-         (remove-keywords opt-ls `(keys ...)))))
+          (remove-keywords opt-ls `(keys ...)))))
 
     ;;> \macro{(let-keywords* ls ((var [keyword] default) ... [rest]) body ...)}
     ;;>
@@ -297,18 +300,18 @@
     (define-syntax let-keywords*
       (syntax-rules ()
         ((let-keywords* opt-ls () . body)
-         (begin . body))
+          (begin . body))
         ((let-keywords* (op . args) vars . body)
-         (let ((tmp (op . args)))
-           (let-keywords* tmp vars . body)))
+          (let ((tmp (op . args)))
+            (let-keywords* tmp vars . body)))
         ((let-keywords* opt-ls ((var) (vars . x) ...) . body)
-         (let-keywords* opt-ls ((var #f) (vars . x) ...) . body))
+          (let-keywords* opt-ls ((var #f) (vars . x) ...) . body))
         ((let-keywords* opt-ls ((var default) (vars . x) ...) . body)
-         (let ((var (keyword-ref* opt-ls (symbol->keyword* 'var) default)))
-           (let-keywords* opt-ls ((vars . x) ...) . body)))
+          (let ((var (keyword-ref* opt-ls (symbol->keyword* 'var) default)))
+            (let-keywords* opt-ls ((vars . x) ...) . body)))
         ((let-keywords* opt-ls ((var key default) (vars . x) ...) . body)
-         (let ((var (keyword-ref* opt-ls `key default)))
-           (let-keywords* opt-ls ((vars . x) ...) . body)))
+          (let ((var (keyword-ref* opt-ls `key default)))
+            (let-keywords* opt-ls ((vars . x) ...) . body)))
         ((let-keywords* opt-ls ((vars . x) ... tail) . body)
-         (let ((tail (remove-keywords* opt-ls () ((vars . x) ...))))
-           (let-keywords* opt-ls ((vars . x) ...) . body)))))))
+          (let ((tail (remove-keywords* opt-ls () ((vars . x) ...))))
+            (let-keywords* opt-ls ((vars . x) ...) . body)))))))

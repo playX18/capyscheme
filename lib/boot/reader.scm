@@ -64,7 +64,12 @@
 
 (define (reader-source r)
   (vector (reader-file r) (reader-saved-line r) (reader-saved-column r)
-    #f #f #f #f 'read '()))
+    #f
+    #f
+    #f
+    #f
+    'read
+    '()))
 
 (define (finish-source reader source)
   (if (and (vector? source) (>= (vector-length source) 3))

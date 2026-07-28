@@ -1,15 +1,15 @@
 (define-library (capy args grammar)
   (import (scheme base)
-          (only (srfi 1) fold)
-          (capy args option)
-          (capy args help optional))
+    (only (srfi 1) fold)
+    (capy args option)
+    (capy args help optional))
   (cond-expand
     ((library (srfi 130))
       (import (srfi 130)))
     (else
       (import (only (capy args string)
-                    string-join
-                    string-pad-right))))
+               string-join
+               string-pad-right))))
   (export
     make-grammar
     make-grammar-builder
@@ -29,13 +29,20 @@
     grammar-builder-add-separator
     grammar-builder-default-command
     grammar-builder-build
-    grammar-options grammar-options-set!
-    grammar-commands grammar-commands-set!
-    grammar-aliases grammar-aliases-set!
-    grammar-default-command grammar-default-command-set!
-    grammar-options-and-separators grammar-options-and-separators-set!
-    grammar-allow-trailing? grammar-allow-trailing?-set!
-    grammar-allow-anything? grammar-allow-anything?-set!
+    grammar-options
+    grammar-options-set!
+    grammar-commands
+    grammar-commands-set!
+    grammar-aliases
+    grammar-aliases-set!
+    grammar-default-command
+    grammar-default-command-set!
+    grammar-options-and-separators
+    grammar-options-and-separators-set!
+    grammar-allow-trailing?
+    grammar-allow-trailing?-set!
+    grammar-allow-anything?
+    grammar-allow-anything?-set!
     grammar-add-option!
     grammar-add-flag!
     grammar-add-multi-option!
@@ -149,11 +156,11 @@
               (let* ((name (cadr operation))
                      (subgrammar? (car (cddr operation)))
                      (subgrammar (if (null? subgrammar?)
-                                   (make-grammar)
-                                   (let ((candidate (car subgrammar?)))
-                                     (if (grammar-builder? candidate)
-                                       (grammar-builder-build candidate)
-                                       candidate)))))
+                                  (make-grammar)
+                                  (let ((candidate (car subgrammar?)))
+                                    (if (grammar-builder? candidate)
+                                      (grammar-builder-build candidate)
+                                      candidate)))))
                 (grammar-add-command! grammar name subgrammar)))
             ((default-command)
               (grammar-default-command-set! grammar (cadr operation)))
@@ -184,47 +191,58 @@
         ((_ builder (allow-trailing value) rest ...)
           (grammar*-clauses
             (grammar-builder-allow-trailing builder value)
-            rest ...))
+            rest
+            ...))
         ((_ builder (allow-anything value) rest ...)
           (grammar*-clauses
             (grammar-builder-allow-anything builder value)
-            rest ...))
+            rest
+            ...))
         ((_ builder (separator text) rest ...)
           (grammar*-clauses
             (grammar-builder-add-separator builder text)
-            rest ...))
+            rest
+            ...))
         ((_ builder (flag name arg ...) rest ...)
           (grammar*-clauses
             (grammar-builder-add-flag builder name arg ...)
-            rest ...))
+            rest
+            ...))
         ((_ builder (option name arg ...) rest ...)
           (grammar*-clauses
             (grammar-builder-add-option builder name arg ...)
-            rest ...))
+            rest
+            ...))
         ((_ builder (multi-option name arg ...) rest ...)
           (grammar*-clauses
             (grammar-builder-add-multi-option builder name arg ...)
-            rest ...))
+            rest
+            ...))
         ((_ builder (command name) rest ...)
           (grammar*-clauses
             (grammar-builder-add-command builder name)
-            rest ...))
+            rest
+            ...))
         ((_ builder (command name subgrammar) rest ...)
           (grammar*-clauses
             (grammar-builder-add-command builder name subgrammar)
-            rest ...))
+            rest
+            ...))
         ((_ builder (subcommand name) rest ...)
           (grammar*-clauses
             (grammar-builder-add-command builder name)
-            rest ...))
+            rest
+            ...))
         ((_ builder (subcommand name subgrammar) rest ...)
           (grammar*-clauses
             (grammar-builder-add-command builder name subgrammar)
-            rest ...))
+            rest
+            ...))
         ((_ builder (default-command name) rest ...)
           (grammar*-clauses
             (grammar-builder-default-command builder name)
-            rest ...))))
+            rest
+            ...))))
 
     (define (grammar-clear-usage! grammar)
       (%grammar-usage-set! grammar #f))
@@ -240,8 +258,8 @@
       (when (assoc command (grammar-commands grammar))
         (error "Command already exists in grammar" command))
       (let ((subgrammar (if (null? subgrammar?)
-                            (make-grammar)
-                            (car subgrammar?))))
+                         (make-grammar)
+                         (car subgrammar?))))
         (unless (grammar? subgrammar)
           (error "Grammar for command must be of type <grammar>" subgrammar))
         (grammar-clear-usage! grammar)
@@ -251,48 +269,80 @@
 
     (define (grammar-add-flag! grammar name . args)
       (add-option! grammar
-        'name: name
-        'abbr: (plist-ref args 'abbr: #f)
-        'help: (plist-ref args 'help: #f)
-        'defaults-to: (plist-ref args 'defaults-to: #f)
-        'negatable?: (plist-ref args 'negatable?: #t)
-        'callback: (plist-ref args 'callback: #f)
-        'type: 'flag
-        'hide?: (plist-ref args 'hide?: #f)
-        'hide-negated-usage?: (plist-ref args 'hide-negated-usage?: #f)
-        'aliases: (plist-ref args 'aliases: '())))
+        'name:
+        name
+        'abbr:
+        (plist-ref args 'abbr: #f)
+        'help:
+        (plist-ref args 'help: #f)
+        'defaults-to:
+        (plist-ref args 'defaults-to: #f)
+        'negatable?:
+        (plist-ref args 'negatable?: #t)
+        'callback:
+        (plist-ref args 'callback: #f)
+        'type:
+        'flag
+        'hide?:
+        (plist-ref args 'hide?: #f)
+        'hide-negated-usage?:
+        (plist-ref args 'hide-negated-usage?: #f)
+        'aliases:
+        (plist-ref args 'aliases: '())))
 
     (define (grammar-add-option! grammar name . args)
       (add-option! grammar
-        'name: name
-        'abbr: (plist-ref args 'abbr: #f)
-        'help: (plist-ref args 'help: #f)
-        'value-help: (plist-ref args 'value-help: #f)
-        'allowed: (plist-ref args 'allowed: #f)
-        'allowed-help: (plist-ref args 'allowed-help: #f)
-        'defaults-to: (plist-ref args 'defaults-to: #f)
-        'callback: (plist-ref args 'callback: #f)
-        'type: 'single
-        'mandatory?: (plist-ref args 'mandatory?: #f)
-        'hide?: (plist-ref args 'hide?: #f)
-        'aliases: (plist-ref args 'aliases: '())))
+        'name:
+        name
+        'abbr:
+        (plist-ref args 'abbr: #f)
+        'help:
+        (plist-ref args 'help: #f)
+        'value-help:
+        (plist-ref args 'value-help: #f)
+        'allowed:
+        (plist-ref args 'allowed: #f)
+        'allowed-help:
+        (plist-ref args 'allowed-help: #f)
+        'defaults-to:
+        (plist-ref args 'defaults-to: #f)
+        'callback:
+        (plist-ref args 'callback: #f)
+        'type:
+        'single
+        'mandatory?:
+        (plist-ref args 'mandatory?: #f)
+        'hide?:
+        (plist-ref args 'hide?: #f)
+        'aliases:
+        (plist-ref args 'aliases: '())))
 
     (define (grammar-add-multi-option! grammar name . args)
       (add-option! grammar
-        'name: name
-        'abbr: (plist-ref args 'abbr: #f)
-        'help: (plist-ref args 'help: #f)
-        'value-help: (plist-ref args 'value-help: #f)
-        'allowed: (plist-ref args 'allowed: #f)
-        'allowed-help: (plist-ref args 'allowed-help: #f)
-        'defaults-to: (plist-ref args 'defaults-to: '())
-        'callback: (plist-ref args 'callback: #f)
-        'type: 'multi
-        'split-commas?: (plist-ref args 'split-commas?: #t)
-        'hide?: (plist-ref args 'hide?: #f)
-        'aliases: (plist-ref args 'aliases: '())))
-
-
+        'name:
+        name
+        'abbr:
+        (plist-ref args 'abbr: #f)
+        'help:
+        (plist-ref args 'help: #f)
+        'value-help:
+        (plist-ref args 'value-help: #f)
+        'allowed:
+        (plist-ref args 'allowed: #f)
+        'allowed-help:
+        (plist-ref args 'allowed-help: #f)
+        'defaults-to:
+        (plist-ref args 'defaults-to: '())
+        'callback:
+        (plist-ref args 'callback: #f)
+        'type:
+        'multi
+        'split-commas?:
+        (plist-ref args 'split-commas?: #t)
+        'hide?:
+        (plist-ref args 'hide?: #f)
+        'aliases:
+        (plist-ref args 'aliases: '())))
 
     (define (grammar-find-by-name-or-alias grammar name)
 
@@ -307,7 +357,7 @@
         (cond
           ((null? options) #f)
           ((equal? (option-abbr (cdr (car options))) abbr)
-           (car options))
+            (car options))
           (else (loop (cdr options))))))
 
     (define (grammar-default-for grammar name)
@@ -315,8 +365,6 @@
         (cond
           ((not value) (error "no such option in grammar" name))
           (else (option-defaults-to (cdr value))))))
-
-
 
     (define (add-option! grammar . args)
       (let ((name (plist-ref args 'name: #f))
@@ -335,8 +383,8 @@
             (hide-negated-usage? (plist-ref args 'hide-negated-usage?: #f))
             (aliases (plist-ref args 'aliases: '())))
         (for-each (lambda (name)
-                    (when (grammar-find-by-name-or-alias grammar name)
-                      (error "Option already exists in grammar" name)))
+                   (when (grammar-find-by-name-or-alias grammar name)
+                     (error "Option already exists in grammar" name)))
           (cons name aliases))
         (when abbr
           (when (grammar-find-by-abbr grammar abbr)
@@ -349,21 +397,35 @@
           (error "Option cannot have hide-negated-usage? set if negatable? is false" name))
 
         (let ((option (make-option
-                        name
-                        'abbr: abbr
-                        'help: help
-                        'value-help: value-help
-                        'allowed: allowed
-                        'allowed-help: allowed-help
-                        'defaults-to: defaults-to
-                        'negatable?: negatable?
-                        'callback: callback
-                        'type: type
-                        'split-commas?: split-commas?
-                        'mandatory?: mandatory?
-                        'hide?: hide?
-                        'hide-negated-usage?: hide-negated-usage?
-                        'aliases: aliases)))
+                       name
+                       'abbr:
+                       abbr
+                       'help:
+                       help
+                       'value-help:
+                       value-help
+                       'allowed:
+                       allowed
+                       'allowed-help:
+                       allowed-help
+                       'defaults-to:
+                       defaults-to
+                       'negatable?:
+                       negatable?
+                       'callback:
+                       callback
+                       'type:
+                       type
+                       'split-commas?:
+                       split-commas?
+                       'mandatory?:
+                       mandatory?
+                       'hide?:
+                       hide?
+                       'hide-negated-usage?:
+                       hide-negated-usage?
+                       'aliases:
+                       aliases)))
 
           (grammar-clear-usage! grammar)
           (grammar-options-set! grammar
@@ -392,13 +454,13 @@
               (let* ((option (car ops))
                      (abbr (max abbr (string-length (abbreviation option))))
                      (title (max title (+ (string-length (long-option option))
-                                          (string-length (mandatory-option option)))))
+                                        (string-length (mandatory-option option)))))
                      (title* (if (not (option-allowed-help option))
+                              title
+                              (fold (lambda (entry title)
+                                     (max title (string-length (allowed-title option (car entry)))))
                                 title
-                                (fold (lambda (entry title)
-                                  (max title (string-length (allowed-title option (car entry)))))
-                                 title
-                                 (option-allowed-help option)))))
+                                (option-allowed-help option)))))
                 (loop (cdr ops) abbr title*))))))
       (define (abbreviation opt)
         (cond
@@ -408,12 +470,12 @@
         (define result
           (cond
             ((and (option-negatable? opt) (not (option-hide-negated-usage? opt)))
-             (string-append "--[no-]" (option-name opt)))
+              (string-append "--[no-]" (option-name opt)))
             (else
               (string-append "--" (option-name opt)))))
         (cond
           ((option-value-help opt)
-           (string-append result "=<" (option-value-help opt) ">"))
+            (string-append result "=<" (option-value-help opt) ">"))
           (else result)))
       (define (mandatory-option opt)
         (cond
@@ -422,14 +484,14 @@
 
       (define (allowed-title option allowed)
         (define default? (cond
-          ((list? (option-defaults-to option))
-           (member (option-defaults-to option) allowed))
-          (else (equal? (option-defaults-to option) allowed))))
+                          ((list? (option-defaults-to option))
+                            (member (option-defaults-to option) allowed))
+                          (else (equal? (option-defaults-to option) allowed))))
 
         (define result (string-append "      [" allowed "]"))
         (if default?
-            (string-append result " (default)")
-            result))
+          (string-append result " (default)")
+          result))
 
       (define column-widths (calculate-column-width))
       (define newlines-needed 0)
@@ -446,7 +508,7 @@
         (define lines (str-split text #\newline))
 
         (for-each (lambda (line)
-          (%write-line column line))
+                   (%write-line column line))
           lines))
       (define (%write-line column line)
         (let loop ()
@@ -474,9 +536,9 @@
           (set! newlines-needed (+ 1 newlines-needed))))
       (define (build-allowed-list option)
         (define (default? x) (cond
-          ((list? (option-defaults-to option))
-           (member x (option-defaults-to option)))
-          (else (equal? x (option-defaults-to option)))))
+                              ((list? (option-defaults-to option))
+                                (member x (option-defaults-to option)))
+                              (else (equal? x (option-defaults-to option)))))
         (define allowed-buffer (open-output-string))
         (write-string "[" allowed-buffer)
 
@@ -501,8 +563,8 @@
           ((option-allowed-help option)
             (newline)
             (for-each (lambda (entry)
-                (%write 1 (allowed-title option (car entry)))
-                (%write 2 (cdr entry)))
+                       (%write 1 (allowed-title option (car entry)))
+                       (%write 2 (cdr entry)))
 
               (option-allowed-help option))
             (newline))
@@ -513,18 +575,18 @@
               (%write 2 "(defaults to on)")))
           ((option-multi? option)
             (if (and (list? (option-defaults-to option))
-                     (not (null? (option-defaults-to option))))
+                 (not (null? (option-defaults-to option))))
               (%write 2 (string-append "(defaults to "
-                                      (string-join (map (lambda (x) x) (option-defaults-to option)) ", ")
-                                      ")"))))
+                         (string-join (map (lambda (x) x) (option-defaults-to option)) ", ")
+                         ")"))))
           ((option-defaults-to option)
             (%write 2 (string-append "(defaults to "
-                                    (option-defaults-to option)
-                                    ")")))))
+                       (option-defaults-to option)
+                       ")")))))
       (for-each (lambda (item)
-        (cond
-          ((string? item) (write-separator item))
-          ((and (option? item) (not (option-hide? item))) (write-option item))))
+                 (cond
+                   ((string? item) (write-separator item))
+                   ((and (option? item) (not (option-hide? item))) (write-option item))))
         options-and-separators)
       (get-output-string buffer))
 
@@ -540,14 +602,14 @@
       (let ((len (string-length str)))
         (letrec
           ((split
-            (lambda (a b)
-              (cond
-                ((>= b len) (if (= a b) '() (cons (substring str a b) '())))
+              (lambda (a b)
+                (cond
+                  ((>= b len) (if (= a b) '() (cons (substring str a b) '())))
                   ((char=? ch (string-ref str b)) (if (= a b)
-                    (split (+ 1 a) (+ 1 b))
-                      (cons (substring str a b) (split b b))))
-                    (else (split a (+ 1 b)))))))
-                      (split 0 0))))
+                                                   (split (+ 1 a) (+ 1 b))
+                                                   (cons (substring str a b) (split b b))))
+                  (else (split a (+ 1 b)))))))
+          (split 0 0))))
 
     (define (grammar-usage grammar)
       (if (%grammar-usage grammar)

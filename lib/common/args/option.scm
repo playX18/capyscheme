@@ -2,7 +2,7 @@
 
 (define-library (args option)
   (import (scheme base)
-          (args help optional))
+    (args help optional))
   (export
     make-option
     option?
@@ -77,29 +77,36 @@
     (define (make-option name . args)
       (let-keywords* args
         ((abbr #f)
-         (help #f)
-         (value-help #f)
-         (allowed #f)
-         (allowed-help #f)
-         (defaults-to #f)
-         (negatable? #f)
-         (hide-negated-usage? #f)
-         (callback #f)
-         (type 'multi)
-         (split-commas? unspecified-key)
-         (mandatory? #f)
-         (hide? #f)
-         (aliases '()))
+          (help #f)
+          (value-help #f)
+          (allowed #f)
+          (allowed-help #f)
+          (defaults-to #f)
+          (negatable? #f)
+          (hide-negated-usage? #f)
+          (callback #f)
+          (type 'multi)
+          (split-commas? unspecified-key)
+          (mandatory? #f)
+          (hide? #f)
+          (aliases '()))
 
         (let ((split-commas? (if (eq? split-commas? unspecified-key)
-                                  (if (eq? type 'multi) #t #f)
-                                  split-commas?)))
+                              (if (eq? type 'multi) #t #f)
+                              split-commas?)))
           (unless (string? name)
             (error "Option name must be a string" name))
 
           (%make-option name abbr help value-help allowed allowed-help
-                        defaults-to negatable? hide-negated-usage?
-                        callback type split-commas? mandatory? hide? aliases))))
+            defaults-to
+            negatable?
+            hide-negated-usage?
+            callback
+            type
+            split-commas?
+            mandatory?
+            hide?
+            aliases))))
 
     (define (option-value opt . rest)
       (let-optionals rest ((value #f))

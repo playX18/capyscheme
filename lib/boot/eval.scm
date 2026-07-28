@@ -101,11 +101,11 @@
 ;; file or just compile and return. If its #f use load-thunk-in-vicinity
 (define (compile-file filename compiled-path env load-thunk? . maybe-dump-options)
   ((%%file-compiler)
-   filename
-   compiled-path
-   env
-   load-thunk?
-   (if (null? maybe-dump-options) '() (car maybe-dump-options))))
+    filename
+    compiled-path
+    env
+    load-thunk?
+    (if (null? maybe-dump-options) '() (car maybe-dump-options))))
 
 (define load-in-vicinity
   (lambda (filename directory)
