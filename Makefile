@@ -112,15 +112,6 @@ benchmark-r7rs: $(BENCHMARK_CAPY_DEP)
 		--timeout $(R7RS_BENCH_TIMEOUT) \
 		--report $(R7RS_BENCH_REPORT) $(R7RS_BENCH_ARGS)
 
-.PHONY: benchmark-sbbv
-benchmark-sbbv: $(BENCHMARK_CAPY_DEP)
-	python3 benchmarks/sbbv.py \
-		--runs $(SBBV_BENCH_RUNS) \
-		--limits $(SBBV_BENCH_LIMITS) \
-		--benchmark benchmarks/binary-trees-serial.capy.scm:$(SBBV_BENCH_DEPTH) \
-		--benchmark benchmarks/sbbv-brainfuck.scm:$(SBBV_BENCH_BRAINFUCK_REPETITIONS) \
-		--benchmark benchmarks/sbbv-scheme-eval.scm:$(SBBV_BENCH_EVAL_REPETITIONS) \
-		--benchmark benchmarks/sbbv-lua-vm.scm:$(SBBV_BENCH_LUA_REPETITIONS)
 
 
 BOOT_SRCS := \
