@@ -2,6 +2,7 @@
   (export
     call/cc
     call-with-current-continuation
+    call/1cc
     call-in-continuation
     dynamic-wind
     when

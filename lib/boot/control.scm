@@ -36,12 +36,15 @@
           ((x (if (> nx ny) (list-tail x (- nx ny)) x) (cdr x))
             (y (if (> ny nx) (list-tail y (- ny nx)) y) (cdr y)))
           ((eq? x y) x)))))
-  (let ((tail (common-tail new ($winders))))
-    (let loop ((rec ($winders)))
-      (cond ((not (eq? rec tail)) ($winders (cdr rec)) ((cdar rec)) (loop (cdr rec)))))
-    (let loop ((rec new))
-      (cond ((not (eq? rec tail)) (loop (cdr rec)) ((caar rec)) ($winders rec)))))
-  (apply cont args))
+  (if (eq? new ($winders))
+    (apply cont args)
+    (begin
+      (let ((tail (common-tail new ($winders))))
+        (let loop ((rec ($winders)))
+          (cond ((not (eq? rec tail)) ($winders (cdr rec)) ((cdar rec)) (loop (cdr rec)))))
+        (let loop ((rec new))
+          (cond ((not (eq? rec tail)) (loop (cdr rec)) ((caar rec)) ($winders rec)))))
+      (apply cont args))))
 
 (define (dynamic-wind in body out)
   (in)
@@ -53,40 +56,24 @@
       (out)
       (apply values ans))))
 
+;; Native reified continuation: winders + raw marks live in free vars.
 (define (call/cc f)
-  (define (attach-cont-props winders attachments k)
-    (set-procedure-property! k 'continuation
-      (tuple winders attachments))
-    k)
-
-  (define saved-record ($winders))
-  (define marks (current-continuation-marks))
-  (%call/cc-unsafe
-    (lambda (k)
-      (f (attach-cont-props
-          saved-record
-          marks
-          (lambda args
-            ($set-attachments! marks)
-            (perform-dynamic-wind saved-record k args)))))))
+  (%call/cc f))
 
 (define call-with-current-continuation call/cc)
 
+;; Escape-only contract (same implementation under CPS; capture is already O(1)).
+(define call/1cc call/cc)
+
 (define (continuation? x)
-  (and (procedure? x)
-    (if (procedure-property x 'continuation)
-      #t
-      #f)))
+  (%continuation? x))
 
 (define (continuation-next-marks k)
   (unless (continuation? k)
     (assertion-violation 'continuation-marks "expected a continuation" k))
-  (let ([props (procedure-property k 'continuation)])
-    (tuple-ref props 1)))
+  (%continuation-next-marks k))
 
 (define (call-in-continuation c proc . args)
-  (define (cont-attachments c)
-    (tuple-ref (procedure-property c 'continuation) 1))
   (unless (continuation? c)
     (error 'call-in-continuation "not a continuation" c))
 
@@ -94,7 +81,7 @@
     [(null? args)
       (unless (procedure? proc)
         (error 'call-in-continuation "not a procedure" proc))
-      ($set-attachments! (cont-attachments c))
+      (%set-continuation-marks! c)
       (receive vals (proc)
         (apply c vals))]
     [else
@@ -112,10 +99,4 @@
         (receive vals (proc)
           (apply c vals)))]))
 
-(define $null-continuation
-  (let ([k (lambda ()
-            (fprintf (current-error-port) "Error: attempted to invoke the null continuation.~%~!")
-            (exit 1))])
-    (set-procedure-property! k 'continuation
-      (tuple '() '()))
-    k))
+(define $null-continuation (%null-continuation))

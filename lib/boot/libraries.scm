@@ -194,6 +194,7 @@
     apply
     call-with-current-continuation
     call/cc
+    call/1cc
     call-in-continuation
     values
     call-with-values
@@ -413,6 +414,7 @@
     apply
     call-with-current-continuation
     call/cc
+    call/1cc
     call-in-continuation
     values
     call-with-values

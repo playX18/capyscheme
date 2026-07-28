@@ -292,6 +292,7 @@
     $winders
     call/cc
     call-with-current-continuation
+    call/1cc
     unspecified
     unspecified?))
 (define *interesting-primitive-vars*
