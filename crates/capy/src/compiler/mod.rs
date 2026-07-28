@@ -54,7 +54,6 @@ pub mod cranelift;
 pub mod debuginfo;
 pub mod direct;
 mod dump;
-pub mod linkutils;
 mod object;
 mod pipeline;
 mod symbols;

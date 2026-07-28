@@ -149,8 +149,7 @@ pub fn execute_constraints<C: ObjectTracerContext<MemoryManager> + Clone + 'stat
         });
     }
 
-    let dirty =
-        result.dirty.load(Ordering::Relaxed) || result.visited.load(Ordering::Relaxed) > 0;
+    let dirty = result.dirty.load(Ordering::Relaxed) || result.visited.load(Ordering::Relaxed) > 0;
     // Request one post-drain re-entry when shards were scheduled; otherwise only
     // continue while constraints actually greyed/retained work.
     scheduled_parallel || dirty

@@ -37,10 +37,8 @@ log.workspace = true
 gimli.workspace = true
 target-lexicon.workspace = true
 object.workspace = true
-probe.workspace = true
 lexical.workspace = true
 backtrace.workspace = true
-which.workspace = true
 libffi.workspace = true
 unicode-general-category.workspace = true
 unicode-normalization.workspace = true
@@ -48,7 +46,6 @@ bytecodegen.workspace = true
 uuid = { version = "1.18.1", features = ["v4"] }
 hostname = "0.4.1"
 errno = "0.3.14"
-stacker = "0.1.22"
 parking_lot = "0.12.5"
 icu = { version = "2.0.0", features = ["compiled_data"] }
 sys-locale = "0.3.2"
@@ -67,8 +64,7 @@ version = "15.1.0"
 package = "im-rc"
 
 [features]
-default = ["portable", "expeditor", "bootstrap"]
+default = ["portable", "bootstrap"]
 portable = []
 aslr = []
-expeditor = []
 bootstrap = ["tree-sitter", "tree-sitter-scheme", "num-bigint"]

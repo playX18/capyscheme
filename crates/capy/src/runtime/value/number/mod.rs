@@ -1150,12 +1150,7 @@ impl<'gc> Number<'gc> {
                 }
                 Number::Flonum(rhs) => Number::Flonum(lhs as f64 * rhs),
                 Number::BigInt(rhs) => {
-                    probe::probe!(mul_bigint, start);
-                    let res =
-                        BigInt::times(BigInt::from_i64(ctx, lhs as i64), ctx, rhs).into_number(ctx);
-                    probe::probe!(mul_bigint, end);
-
-                    res
+                    BigInt::times(BigInt::from_i64(ctx, lhs as i64), ctx, rhs).into_number(ctx)
                 }
                 Number::Rational(rn) => {
                     if matches!(rn.numerator, Number::Fixnum(1)) {

@@ -176,7 +176,6 @@ impl Finalizers {
             });
         }
 
-
         had_some
     }
 
