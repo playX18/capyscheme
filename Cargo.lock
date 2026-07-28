@@ -346,6 +346,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "capy-cli"
+version = "2.0.2"
+dependencies = [
+ "capy-sni",
+]
+
+[[package]]
 name = "capy-derive"
 version = "2.0.2"
 dependencies = [
@@ -353,6 +360,32 @@ dependencies = [
  "quote",
  "syn 2.0.119",
  "synstructure",
+]
+
+[[package]]
+name = "capy-sni"
+version = "2.0.2"
+dependencies = [
+ "bytemuck",
+ "capy-sni-derive",
+ "capy-sni-sys",
+ "libc",
+]
+
+[[package]]
+name = "capy-sni-derive"
+version = "2.0.2"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "capy-sni-sys"
+version = "2.0.2"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

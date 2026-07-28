@@ -1,0 +1,698 @@
+//! Weak mappings and weak hash tables.
+
+use std::{
+    cell::Cell,
+    hash::Hasher,
+    sync::{Arc, Once, OnceLock},
+};
+
+use crate::heap::{
+    Gc, Trace, Weak, WeakProcessor,
+    alloc::array::Array,
+    barrier::{self, Unlock, Write},
+    cell::Lock,
+    collection::Visitor,
+    finalizer::FinalizationNotify,
+    global::Global,
+    object::{ClassId, builtin_class_ids, class_header_word},
+    sync::monitor::Monitor,
+};
+use simplehash::MurmurHasher64;
+
+use crate::runtime::Context;
+
+use super::{WeakValue, *};
+
+/// Weak mapping between key and value.
+///
+/// For more information read [`GcEphemeron`](crate::heap::weak::GcEphemeron) documentation.
+#[repr(C, align(8))]
+pub struct WeakMapping<'gc> {
+    pub(crate) _key: Value<'gc>,
+    pub(crate) _value: Value<'gc>,
+}
+
+fn weak_mapping_header_word() -> u64 {
+    class_header_word(
+        ClassId::new(builtin_class_ids::WEAK_MAPPING).expect("builtin class id is nonzero"),
+    )
+}
+
+// SAFETY: `gc` for `WeakMapping` upholds all trait invariants
+unsafe impl<'gc> Trace for WeakMapping<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
+    unsafe fn trace(&mut self, _visitor: &mut Visitor<'_>) {
+        _visitor.register_for_weak_processing();
+    }
+
+    // SAFETY: Weak refs are processed through the given weak_processor
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::heap::WeakProcessor) {
+        if self._key.is_bwp() {
+            self._value = Value::bwp();
+        } else {
+            // SAFETY: The pointer is a valid GC object descriptor from the current heap
+            let key = unsafe { weak_processor.is_live_object(self._key.desc.ptr()) };
+            if !key.is_null() {
+                self._key.desc.ptr = key.to_address().to_mut_ptr();
+                weak_processor.visitor().trace(&mut self._value);
+            } else {
+                self._key = Value::bwp();
+                self._value = Value::bwp();
+            }
+        }
+    }
+}
+
+// SAFETY: `gc` for `WeakMapping` upholds all trait invariants
+unsafe impl<'gc> ClassTagged for WeakMapping<'gc> {
+    const CLASS_IDS: &'static [u32] = &[crate::heap::object::builtin_class_ids::WEAK_MAPPING];
+    const TYPE_NAME: &'static str = "#<weak-mapping>";
+}
+
+impl<'gc> WeakMapping<'gc> {
+    /// Allocates a weak mapping from a heap-object key to a value.
+    pub fn new(ctx: Context<'gc>, key: Value<'gc>, value: Value<'gc>) -> Gc<'gc, Self> {
+        assert!(key.is_cell(), "weak-mappings can only have cells as keys");
+
+        Gc::new_with_header_word(
+            ctx,
+            Self {
+                _key: key,
+                _value: value,
+            },
+            weak_mapping_header_word(),
+        )
+    }
+
+    pub fn is_broken(&self) -> bool {
+        self._key.is_bwp() || self._value.is_bwp()
+    }
+
+    pub fn key(&self, mc: Context<'gc>) -> Value<'gc> {
+        if self._key.is_bwp() {
+            return Value::bwp();
+        }
+        // SAFETY: The value descriptor contains a valid GC object pointer
+        unsafe {
+            mc.raw_weak_reference_load(self._key.desc.ptr());
+        }
+        self._key
+    }
+
+    pub fn value(&self, mc: Context<'gc>) -> Value<'gc> {
+        if self._value.is_bwp() || !self._value.is_cell() {
+            return self._value;
+        }
+
+        // SAFETY: The value descriptor contains a valid GC object pointer
+        unsafe {
+            mc.raw_weak_reference_load(self._value.desc.ptr());
+        }
+
+        self._value
+    }
+}
+
+struct WeakEntry<'gc> {
+    _key: WeakValue<'gc>,
+    _value: Lock<Value<'gc>>,
+    hash: u64,
+    next: Lock<Option<Gc<'gc, WeakEntry<'gc>>>>,
+}
+
+impl<'gc> WeakEntry<'gc> {
+    fn key(&self, mc: Context<'gc>) -> Value<'gc> {
+        self._key.get(mc)
+    }
+
+    fn value(&self, _mc: Context<'gc>) -> Value<'gc> {
+        self._value.get()
+    }
+}
+
+// SAFETY: `gc` for `WeakEntry` upholds all trait invariants
+unsafe impl<'gc> Trace for WeakEntry<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
+    unsafe fn trace(&mut self, _visitor: &mut Visitor<'_>) {
+        _visitor.register_for_weak_processing();
+        // SAFETY: Preconditions verified by the surrounding code
+        unsafe {
+            self.next.trace(_visitor);
+        }
+    }
+
+    // SAFETY: Weak refs are processed through the given weak_processor
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::heap::WeakProcessor) {
+        // SAFETY: Preconditions verified by the surrounding code
+        unsafe {
+            self._key.process_weak_refs(weak_processor);
+        }
+
+        if self._key.is_broken() {
+            // SAFETY: No concurrent access to this `Lock` cell exists at this point
+            unsafe { self._value.unlock_unchecked().set(Value::bwp()) };
+        } else {
+            let mut vis = weak_processor.visitor();
+            vis.trace(&mut self._value);
+        }
+
+        weak_processor.process(&mut self.next);
+    }
+}
+
+type Entry<'gc> = Gc<'gc, WeakEntry<'gc>>;
+
+type Entries<'gc> = Gc<'gc, Array<Lock<Option<Entry<'gc>>>>>;
+
+/// Weak table.
+///
+/// A weak table is a hash table that stores key-value pairs
+/// as ephemerons which is equal to [`WeakMapping`].
+#[repr(C, align(8))]
+pub struct WeakTable<'gc> {
+    inner: Monitor<WeakTableInner<'gc>>,
+}
+
+fn weak_table_header_word() -> u64 {
+    class_header_word(
+        ClassId::new(builtin_class_ids::WEAK_TABLE).expect("builtin class id is nonzero"),
+    )
+}
+
+// SAFETY: `gc` for `WeakTable` upholds all trait invariants
+unsafe impl<'gc> Trace for WeakTable<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
+    unsafe fn trace(&mut self, visitor: &mut Visitor<'_>) {
+        // SAFETY: Preconditions verified by the surrounding code
+        unsafe {
+            self.inner.get_mut().trace(visitor);
+        }
+    }
+
+    // SAFETY: Weak refs are processed through the given weak_processor
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
+        let inner = self.inner.get_mut();
+        let entries = inner.entries.get();
+
+        for index in 0..entries.len() {
+            let mut entry = entries[index].get();
+            while let Some(current) = entry {
+                current.as_gc_object().process_weak_refs(weak_processor);
+                entry = current.next.get();
+            }
+        }
+    }
+}
+
+struct WeakTableInner<'gc> {
+    entries: Lock<Entries<'gc>>,
+    pub count: Cell<usize>,
+    threshold: Cell<usize>,
+    load_factor: f64,
+    mod_count: Cell<usize>,
+}
+
+// SAFETY: `gc` for `WeakTableInner` upholds all trait invariants
+unsafe impl<'gc> Trace for WeakTableInner<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
+    unsafe fn trace(&mut self, visitor: &mut Visitor<'_>) {
+        visitor.trace(&mut self.entries);
+    }
+
+    // SAFETY: Weak refs are processed through the given weak_processor
+    unsafe fn process_weak_refs(&mut self, _weak_processor: &mut WeakProcessor) {}
+}
+
+fn make_hash<'gc>(key: Value<'gc>) -> u64 {
+    let mut hasher = MurmurHasher64::new(5382);
+    key.hash(&mut hasher);
+    hasher.finish()
+}
+
+impl<'gc> WeakTable<'gc> {
+    /// Allocates a weak table with the given capacity and load factor.
+    pub fn new(ctx: Context<'gc>, initial_capacity: usize, load_factor: f64) -> Gc<'gc, Self> {
+        assert!(
+            initial_capacity > 0,
+            "initial capacity must be greater than 0"
+        );
+        assert!(
+            load_factor > 0.0 && load_factor < 1.0,
+            "load factor must be in (0, 1)"
+        );
+
+        let entries = Array::with(ctx, initial_capacity, |_, _| Lock::new(None));
+        let inner = WeakTableInner {
+            entries: Lock::new(entries),
+            count: Cell::new(0),
+            threshold: Cell::new((initial_capacity as f64 * load_factor) as usize),
+            load_factor,
+            mod_count: Cell::new(0),
+        };
+
+        let table = Gc::new_with_header_word(
+            ctx,
+            Self {
+                inner: Monitor::new(inner),
+            },
+            weak_table_header_word(),
+        );
+
+        ALL_WEAK_TABLES
+            .get()
+            .expect("Weak tables not initialized")
+            .fetch(ctx)
+            .tables
+            .lock()
+            .push(Gc::downgrade(table));
+        table
+    }
+
+    #[allow(dead_code)]
+    // SAFETY: Caller must ensure preconditions are met (see fn docs)
+    pub(crate) unsafe fn at_object(
+        ctx: Context<'gc>,
+        obj: GcObject,
+        kvs: Vec<(Value<'gc>, Value<'gc>)>,
+    ) {
+        // SAFETY: Preconditions verified by the surrounding code
+        unsafe {
+            let entries = Array::with(ctx, 8, |_, _| Lock::new(None));
+            let inner = WeakTableInner {
+                entries: Lock::new(entries),
+                count: Cell::new(0),
+                threshold: Cell::new((8.0 * 0.75) as usize),
+                load_factor: 0.75,
+                mod_count: Cell::new(0),
+            };
+
+            obj.to_address()
+                .to_mut_ptr::<WeakTable<'gc>>()
+                .write(WeakTable {
+                    inner: Monitor::new(inner),
+                });
+
+            let ht: Gc<Self> = Gc::from_gc_object(obj);
+
+            for (k, v) in kvs {
+                ht.put(ctx, k, v);
+            }
+
+            ALL_WEAK_TABLES
+                .get()
+                .expect("Weak tables not initialized")
+                .fetch(ctx)
+                .tables
+                .lock()
+                .push(Gc::downgrade(ht));
+        }
+    }
+
+    fn rehash(inner: &Write<WeakTableInner<'gc>>, ctx: Context<'gc>) {
+        let old_capacity = inner.entries.get().len();
+        let old_table = inner.entries.get();
+
+        let new_capacity = (old_capacity as f64 / inner.load_factor) as usize;
+
+        let new_map = Array::with(ctx, new_capacity, |_, _| Lock::new(None));
+
+        inner.mod_count.set(inner.mod_count.get() + 1);
+        inner
+            .threshold
+            .set((new_capacity as f64 * inner.load_factor) as usize);
+
+        barrier::field!(inner, WeakTableInner, entries)
+            .unlock()
+            .set(new_map);
+
+        for i in (0..old_capacity).rev() {
+            let mut old = old_table[i].get();
+
+            while let Some(entry) = old {
+                old = entry.next.get();
+
+                let index = (entry.hash % new_capacity as u64) as usize;
+                let wentry = Gc::write(ctx, entry);
+                let key = entry.key(ctx);
+                if key.is_bwp() || !key.is_cell() {
+                    continue;
+                }
+                barrier::field!(wentry, WeakEntry, next)
+                    .unlock()
+                    .set(new_map[index].get());
+                Gc::write(ctx, new_map)[index].unlock().set(Some(entry));
+            }
+        }
+    }
+
+    fn add_entry(
+        this: &Write<WeakTableInner<'gc>>,
+        ctx: Context<'gc>,
+        mut hash: u64,
+        key: Value<'gc>,
+        value: Value<'gc>,
+        mut index: usize,
+    ) {
+        let inner = this;
+        if inner.count.get() >= inner.threshold.get() {
+            Self::rehash(inner, ctx);
+            hash = make_hash(key);
+            index = (hash % inner.entries.get().len() as u64) as usize;
+        }
+
+        let tab = Gc::write(ctx, inner.entries.get());
+        let e = tab[index].get();
+
+        tab[index].unlock().set(Some(Gc::new(
+            ctx,
+            WeakEntry {
+                hash,
+                _key: WeakValue::from_value(key),
+                _value: Lock::new(value),
+                next: Lock::new(e),
+            },
+        )));
+        inner.count.set(inner.count.get() + 1);
+        inner.mod_count.set(inner.mod_count.get() + 1);
+    }
+
+    pub fn put(
+        self: Gc<'gc, Self>,
+        ctx: Context<'gc>,
+        key: impl IntoValue<'gc>,
+        value: impl IntoValue<'gc>,
+    ) -> Option<Value<'gc>> {
+        let key = key.into_value(ctx);
+        let value = value.into_value(ctx);
+
+        let guard = self.inner.lock();
+        Gc::write(ctx, self);
+        let hash = make_hash(key);
+        let index = (hash % guard.entries.get().len() as u64) as usize;
+
+        let mut e = guard.entries.get()[index].get();
+
+        while let Some(entry) = e {
+            let ekey = entry.key(ctx);
+            if entry.hash == hash && ekey == key {
+                let old_value = entry.value(ctx);
+                barrier::field!(Gc::write(ctx, entry), WeakEntry, _value)
+                    .unlock()
+                    .set(value);
+                return Some(old_value);
+            }
+            e = entry.next.get();
+        }
+
+        Self::add_entry(
+            // SAFETY: The guard provides exclusive write access; no aliasing references
+            unsafe { Write::assume(&*guard) },
+            ctx,
+            hash,
+            key,
+            value,
+            index,
+        );
+        drop(guard);
+
+        None
+    }
+
+    pub fn remove(self: Gc<'gc, Self>, ctx: Context<'gc>, key: Value<'gc>) -> Option<Value<'gc>> {
+        let guard = self.inner.lock();
+        Gc::write(ctx, self);
+        let hash = make_hash(key);
+        let index = (hash % guard.entries.get().len() as u64) as usize;
+
+        let mut e = guard.entries.get()[index].get();
+        let mut prev: Option<Gc<'gc, WeakEntry<'gc>>> = None;
+
+        while let Some(entry) = e {
+            let ekey = entry.key(ctx);
+            if entry.hash == hash && ekey == key {
+                if let Some(prev_entry) = prev {
+                    barrier::field!(Gc::write(ctx, prev_entry), WeakEntry, next)
+                        .unlock()
+                        .set(entry.next.get());
+                } else {
+                    Gc::write(ctx, guard.entries.get())[index]
+                        .unlock()
+                        .set(entry.next.get());
+                }
+                guard.count.set(guard.count.get() - 1);
+                guard.mod_count.set(guard.mod_count.get() + 1);
+                return Some(entry._value.get());
+            }
+            prev = Some(entry);
+            e = entry.next.get();
+        }
+
+        None
+    }
+
+    pub fn vacuum(self: Gc<'gc, Self>, mc: Context<'gc>) {
+        let guard = self.inner.lock();
+        Gc::write(mc, self);
+        let table = Gc::write(mc, guard.entries.get());
+        for i in 0..table.len() {
+            let mut e = table[i].get();
+            let mut prev = None;
+            while let Some(entry) = e {
+                let ekey = entry.key(mc);
+                if ekey.is_bwp() || !ekey.is_cell() {
+                    if let Some(prev_entry) = prev {
+                        barrier::field!(Gc::write(mc, prev_entry), WeakEntry, next)
+                            .unlock()
+                            .set(entry.next.get());
+                    } else {
+                        table[i].unlock().set(entry.next.get());
+                    }
+
+                    guard.count.set(guard.count.get() - 1);
+                } else {
+                    prev = Some(entry);
+                }
+                e = entry.next.get();
+            }
+        }
+        guard.mod_count.set(guard.mod_count.get() + 1);
+    }
+
+    pub fn clear(self: Gc<'gc, Self>, ctx: Context<'gc>) {
+        let guard = self.inner.lock();
+        Gc::write(ctx, self);
+        let table = Gc::write(ctx, guard.entries.get());
+        for i in 0..table.len() {
+            table[i].unlock().set(None);
+        }
+        guard.count.set(0);
+        guard.mod_count.set(guard.mod_count.get() + 1);
+    }
+
+    pub fn get(&self, ctx: Context<'gc>, key: impl IntoValue<'gc>) -> Option<Value<'gc>> {
+        let key = key.into_value(ctx);
+        let guard = self.inner.lock();
+        let hash = make_hash(key);
+
+        let index = (hash % guard.entries.get().len() as u64) as usize;
+
+        let mut e = guard.entries.get()[index].get();
+
+        while let Some(entry) = e {
+            let ekey = entry.key(ctx);
+            if entry.hash == hash && ekey == key {
+                return Some(entry.value(ctx));
+            }
+            e = entry.next.get();
+        }
+
+        None
+    }
+
+    pub fn contains_key(&self, ctx: Context<'gc>, key: Value<'gc>) -> bool {
+        self.get(ctx, key).is_some()
+    }
+
+    pub fn contains_value(&self, value: Value<'gc>) -> bool {
+        let guard = self.inner.lock();
+        for i in 0..guard.entries.get().len() {
+            let mut e = guard.entries.get()[i].get();
+            while let Some(entry) = e {
+                if entry._value.get() == value {
+                    return true;
+                }
+                e = entry.next.get();
+            }
+        }
+        false
+    }
+
+    pub fn fold(
+        self: Gc<'gc, Self>,
+        ctx: Context<'gc>,
+        mut f: impl FnMut(Value<'gc>, Value<'gc>, Value<'gc>) -> Value<'gc>,
+        mut init: Value<'gc>,
+    ) -> Value<'gc> {
+        self.vacuum(ctx);
+
+        let mut alist = Value::null();
+        let guard = self.inner.lock();
+
+        for k in 0..guard.entries.get().len() {
+            let mut entry = guard.entries.get()[k].get();
+
+            while let Some(e) = entry {
+                let ekey = e.key(ctx);
+                if !ekey.is_bwp() && !e.value(ctx).is_bwp() {
+                    alist = Value::acons(ctx, ekey, e.value(ctx), alist);
+                }
+                entry = e.next.get();
+            }
+        }
+
+        drop(guard);
+
+        while !alist.is_null() {
+            init = f(alist.caar(), alist.cdar(), init);
+            alist = alist.cdr();
+        }
+
+        init
+    }
+
+    pub fn for_each(
+        self: Gc<'gc, Self>,
+        ctx: Context<'gc>,
+        mut f: impl FnMut(Value<'gc>, Value<'gc>),
+    ) {
+        self.vacuum(ctx);
+
+        let guard = self.inner.lock();
+
+        for k in 0..guard.entries.get().len() {
+            let mut entry = guard.entries.get()[k].get();
+
+            while let Some(e) = entry {
+                let ekey = e.key(ctx);
+                if !ekey.is_bwp() && !e.value(ctx).is_bwp() {
+                    f(ekey, e.value(ctx));
+                }
+                entry = e.next.get();
+            }
+        }
+    }
+
+    pub fn copy(self: Gc<'gc, Self>, ctx: Context<'gc>) -> Gc<'gc, Self> {
+        let guard = self.inner.lock();
+        let new_table = WeakTable::new(ctx, guard.entries.get().len(), guard.load_factor);
+
+        for i in 0..guard.entries.get().len() {
+            let mut e = guard.entries.get()[i].get();
+
+            while let Some(entry) = e {
+                let ekey = entry.key(ctx);
+                if !ekey.is_bwp() && !entry.value(ctx).is_bwp() {
+                    new_table.put(ctx, ekey, entry.value(ctx));
+                }
+                e = entry.next.get();
+            }
+        }
+
+        new_table
+    }
+
+    pub fn len(&self) -> usize {
+        let guard = self.inner.lock();
+        guard.count.get()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+pub type WeakTableRef<'gc> = Gc<'gc, WeakTable<'gc>>;
+
+// SAFETY: `gc` for `WeakTable` upholds all trait invariants
+unsafe impl<'gc> ClassTagged for WeakTable<'gc> {
+    const CLASS_IDS: &'static [u32] = &[crate::heap::object::builtin_class_ids::WEAK_TABLE];
+    const TYPE_NAME: &'static str = "#<weak-table>";
+}
+
+struct AllWeakTables<'gc> {
+    tables: Monitor<Vec<Weak<'gc, WeakTable<'gc>>>>,
+}
+
+// SAFETY: `gc` for `AllWeakTables` upholds all trait invariants
+unsafe impl<'gc> Send for AllWeakTables<'gc> {}
+// SAFETY: `gc` for `AllWeakTables` upholds all trait invariants
+unsafe impl<'gc> Sync for AllWeakTables<'gc> {}
+
+type RootedWeakTables = crate::Rootable!(AllWeakTables<'_>);
+
+static ALL_WEAK_TABLES: OnceLock<Global<RootedWeakTables>> = OnceLock::new();
+
+// SAFETY: `gc` for `AllWeakTables` upholds all trait invariants
+unsafe impl<'gc> Trace for AllWeakTables<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
+    unsafe fn trace(&mut self, visitor: &mut Visitor<'_>) {
+        visitor.register_for_weak_processing();
+    }
+
+    // SAFETY: Weak refs are processed through the given weak_processor
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
+        let tables = self.tables.get_mut();
+        tables.retain_mut(|table| {
+            // SAFETY: Preconditions verified by the surrounding code
+            unsafe {
+                table.process_weak_refs(weak_processor);
+            }
+            if table.is_broken() {
+                return false;
+            }
+
+            // SAFETY: The weak reference is known to be live at this point in the trace
+            if let Some(table) = unsafe { table.upgrade_unchecked() } {
+                table.as_gc_object().process_weak_refs(weak_processor);
+            }
+
+            true
+        });
+    }
+}
+struct WeakTableCleanup;
+
+pub fn vacuum_weak_tables<'gc>(mc: Context<'gc>) {
+    let Some(all_weak_tables) = ALL_WEAK_TABLES.get() else {
+        return;
+    };
+    let all_weak_tables = all_weak_tables.fetch(mc);
+
+    let guard = all_weak_tables.tables.lock();
+    let all_weak_tables = guard;
+
+    for table in all_weak_tables.iter() {
+        if let Some(table) = table.upgrade(mc) {
+            table.vacuum(mc);
+        }
+    }
+}
+
+impl FinalizationNotify for WeakTableCleanup {
+    fn notify_in_processing(&self) {}
+
+    fn schedule(&self) {}
+}
+
+static ONCE: Once = Once::new();
+
+pub fn init_weak_tables<'gc>(mc: Context<'gc>) {
+    ONCE.call_once(|| {
+        let all_weak_tables = AllWeakTables {
+            tables: Monitor::new(Vec::new()),
+        };
+        let all_weak_tables = Global::new(all_weak_tables);
+        let _ = ALL_WEAK_TABLES.set(all_weak_tables);
+        mc.finalizers().add_notifier(Arc::new(WeakTableCleanup));
+    });
+}

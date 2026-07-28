@@ -1,0 +1,15 @@
+[package]
+name = "capy-sni"
+version.workspace = true
+edition.workspace = true
+description = "Safe Rust bindings to Capyscheme SNI (libcapy)"
+
+[dependencies]
+capy-sni-sys = { path = "../capy-sni-sys" }
+libc = "0.2"
+bytemuck = { version = "1.10.2", features = ["derive"] }
+capy-sni-derive = { path = "../capy-sni-derive", optional = true }
+
+[features]
+default = ["derive"]
+derive = ["dep:capy-sni-derive"]

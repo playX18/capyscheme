@@ -43,7 +43,7 @@ PREFIX ?= $(HOME)/.local/share
 # Try to match the old Justfile version discovery, but allow override.
 VERSION ?= $(shell (cargo info capy 2>/dev/null | awk '/^version:/ {print $$2}' | head -n 1) || true)
 ifeq ($(strip $(VERSION)),)
-VERSION := $(shell awk -F '"' '/^version\s*=/{print $$2; exit}' capy/Cargo.toml)
+VERSION := $(shell awk -F '"' '/^version\s*=/{print $$2; exit}' crates/capy/Cargo.toml)
 endif
 
 UNAME_S := $(shell uname -s)
@@ -356,17 +356,14 @@ install-cross:
 		echo "Using cargo, no need to install cross"; \
 	fi
 
-# Build the static Rust launcher.
+# Build libcapy.so + thin capy/capyc CLIs into $(TARGET_PATH).
 build-runtime-bootstrap:
 	@echo "Version: $(VERSION)"
 	@echo "Target path: $(TARGET_PATH)"
 	@echo "Building CapyScheme with profile '$(PROFILE)' for target '$(TARGET)'"
-	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --bin capy --features portable,bootstrap
-	@echo "Build main capy launcher"
-	mkdir -p bin
-	cp $(TARGET_PATH)/capy bin/capy
-	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy" --capy-compiler-entrypoint "$$@"' > bin/capyc
-	chmod +x bin/capyc
+	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable,bootstrap
+	CAPY_LIB_DIR=$(TARGET_PATH) $(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy-cli
+	@echo "Built $(TARGET_PATH)/{libcapy.so,capy,capyc}"
 
 
 # Aggregate build: runtime + full bootstrap chain.
@@ -378,25 +375,16 @@ build:
 	@echo "Build complete: runtime and bootstrap stages 0-2"
 
 build-runtime:
-	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --bin capy --features portable --no-default-features
-	mkdir -p bin
-	cp $(TARGET_PATH)/capy bin/capy
-	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy" --capy-compiler-entrypoint "$$@"' > bin/capyc
-	chmod +x bin/capyc
+	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable --no-default-features
+	CAPY_LIB_DIR=$(TARGET_PATH) $(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy-cli
 
 build-runtime-fhs: 
-	CAPY_SYSROOT=$(PREFIX) $(CARGO_BIN) build --no-default-features --profile $(PROFILE) --target $(TARGET) -p capy --bin capy
-	mkdir -p bin
-	cp $(TARGET_PATH)/capy bin/capy-full
-	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy-full" --capy-compiler-entrypoint "$$@"' > bin/capyc-full
-	chmod +x bin/capyc-full
+	CAPY_SYSROOT=$(PREFIX) $(CARGO_BIN) build --no-default-features --profile $(PROFILE) --target $(TARGET) -p capy
+	CAPY_LIB_DIR=$(TARGET_PATH) CAPY_SYSROOT=$(PREFIX) $(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy-cli
 
 build-runtime-portable: 
-	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --bin capy --features portable --no-default-features
-	mkdir -p bin
-	cp $(TARGET_PATH)/capy bin/capy-full
-	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy-full" --capy-compiler-entrypoint "$$@"' > bin/capyc-full
-	chmod +x bin/capyc-full
+	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable --no-default-features
+	CAPY_LIB_DIR=$(TARGET_PATH) $(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy-cli
 
 install-scm:
 	mkdir -p $(PREFIX)/capy/$(VERSION)
@@ -453,8 +441,9 @@ stage-0: build-runtime-bootstrap
 	@echo "Creating stage-0 CapyScheme"
 	mkdir -p stage-0
 	cp $(TARGET_PATH)/capy stage-0/capy
-	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy" --capy-compiler-entrypoint "$$@"' > stage-0/capyc
-	chmod +x stage-0/capyc
+	cp $(TARGET_PATH)/capyc stage-0/capyc
+	cp $(TARGET_PATH)/libcapy.so stage-0/libcapy.so 2>/dev/null || true
+	chmod +x stage-0/capy stage-0/capyc
 	
 	$(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c 42
 	$(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (rnrs))'
@@ -477,6 +466,7 @@ stage-1:
 	mkdir -p stage-1
 	cp stage-0/capy stage-1/capy
 	cp stage-0/capyc stage-1/capyc
+	cp stage-0/libcapy.so stage-1/libcapy.so 2>/dev/null || true
 
 stage-2:
 	@echo "Creating stage-2 CapyScheme"
@@ -486,6 +476,7 @@ stage-2:
 	$(MAKE) $(foreach n,0 1 2 3 4 5 6 7 8 9,$(filter -j$n%,$(MAKEFLAGS))) compile-all COMPILER=stage-1/capyc OUT=stage-2/compiled/satbbarrier CAPY_BARRIER_KIND=satbbarrier
 	cp stage-1/capy stage-2/capy
 	cp stage-1/capyc stage-2/capyc
+	cp stage-1/libcapy.so stage-2/libcapy.so 2>/dev/null || true
 
 # -------------------------
 # Per-file compilation rules
@@ -622,9 +613,11 @@ install-portable: build build-runtime-portable
 	@echo "Installing CapyScheme to $(PREFIX)/capy/$(VERSION)"
 	mkdir -p $(PREFIX)/capy/$(VERSION)/extensions
 	rsync --checksum -r lib $(PREFIX)/capy/$(VERSION)
-	cp bin/capy-full $(PREFIX)/capy/$(VERSION)/capy 
-	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy" --capy-compiler-entrypoint "$$@"' > $(PREFIX)/capy/$(VERSION)/capyc
-	chmod +x $(PREFIX)/capy/$(VERSION)/capyc
+	cp $(TARGET_PATH)/capy $(PREFIX)/capy/$(VERSION)/capy
+	cp $(TARGET_PATH)/capyc $(PREFIX)/capy/$(VERSION)/capyc
+	chmod +x $(PREFIX)/capy/$(VERSION)/capy $(PREFIX)/capy/$(VERSION)/capyc
+	cp $(TARGET_PATH)/libcapy.so $(PREFIX)/capy/$(VERSION)/libcapy.so 2>/dev/null || true
+	cp c/capy.h $(PREFIX)/capy/$(VERSION)/capy.h
 	ln -sf $(PREFIX)/capy/$(VERSION)/capy $(PREFIX)/capy/$(VERSION)/capy-$(VERSION)
 	cp -r stage-2/compiled $(PREFIX)/capy/$(VERSION)/
 	@echo "CapyScheme installed to $(PREFIX)/capy/$(VERSION)"
@@ -646,9 +639,11 @@ dist-portable: build build-runtime-portable
 	rm -rf "$$stage_root"; \
 	mkdir -p "$$stage_install_dir/extensions"; \
 	rsync --checksum -r lib "$$stage_install_dir"; \
-	cp bin/capy-full "$$stage_install_dir/capy"; \
-	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy" --capy-compiler-entrypoint "$$@"' > "$$stage_install_dir/capyc"; \
-	chmod +x "$$stage_install_dir/capyc"; \
+	cp "$(TARGET_PATH)/capy" "$$stage_install_dir/capy"; \
+	cp "$(TARGET_PATH)/capyc" "$$stage_install_dir/capyc"; \
+	chmod +x "$$stage_install_dir/capy" "$$stage_install_dir/capyc"; \
+	cp "$(TARGET_PATH)/libcapy.so" "$$stage_install_dir/libcapy.so" 2>/dev/null || true; \
+	cp c/capy.h "$$stage_install_dir/capy.h"; \
 	cp -r stage-2/compiled "$$stage_install_dir/"; \
 	cp LICENSE "$$stage_install_dir/"; \
 	cp CHANGELOG.md "$$stage_install_dir/"; \
@@ -661,12 +656,17 @@ install: build
 	@echo "Installing CapyScheme (FHS) to $(PREFIX)"
 	mkdir -p "$(PREFIX)/bin"; \
 	mkdir -p "$(PREFIX)/lib"; \
+	mkdir -p "$(PREFIX)/include"; \
 	mkdir -p "$(PREFIX)/lib/capy/compiled"; \
 	mkdir -p "$(PREFIX)/share/capy"; \
 	cp -r lib "$(PREFIX)/share/capy/"; \
-	cp bin/capy-full "$(PREFIX)/bin/capy"; \
-	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy" --capy-compiler-entrypoint "$$@"' > "$(PREFIX)/bin/capyc"; \
-	chmod +x "$(PREFIX)/bin/capyc"; \
+	cp "$(TARGET_PATH)/capy" "$(PREFIX)/bin/capy"; \
+	cp "$(TARGET_PATH)/capyc" "$(PREFIX)/bin/capyc"; \
+	chmod +x "$(PREFIX)/bin/capy" "$(PREFIX)/bin/capyc"; \
+	cp "$(TARGET_PATH)/libcapy.so" "$(PREFIX)/lib/libcapy.so" 2>/dev/null || true; \
+	# Thin CLI RUNPATH includes $$ORIGIN/; keep a copy next to the binaries for FHS.
+	cp "$(TARGET_PATH)/libcapy.so" "$(PREFIX)/bin/libcapy.so" 2>/dev/null || true; \
+	cp c/capy.h "$(PREFIX)/include/capy.h"; \
 	cp -r stage-2/compiled "$(PREFIX)/lib/capy/"; \
 	echo "Installation complete."
 
@@ -695,9 +695,13 @@ dist-deb: build
 	$(MAKE) PREFIX=/usr build-runtime-fhs
 	rm -rf "$(PKG_ROOT)/deb"
 	mkdir -p "$(PKG_ROOT)/deb/usr/bin" "$(PKG_ROOT)/deb/usr/lib" "$(PKG_ROOT)/deb/usr/lib/capy" "$(PKG_ROOT)/deb/usr/share/capy" "$(PKG_ROOT)/deb/DEBIAN" "$(DIST_DIR)"
-	cp bin/capy-full "$(PKG_ROOT)/deb/usr/bin/capy"
-	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy" --capy-compiler-entrypoint "$$@"' > "$(PKG_ROOT)/deb/usr/bin/capyc"
-	chmod +x "$(PKG_ROOT)/deb/usr/bin/capyc"
+	cp "$(TARGET_PATH)/capy" "$(PKG_ROOT)/deb/usr/bin/capy"
+	cp "$(TARGET_PATH)/capyc" "$(PKG_ROOT)/deb/usr/bin/capyc"
+	chmod +x "$(PKG_ROOT)/deb/usr/bin/capy" "$(PKG_ROOT)/deb/usr/bin/capyc"
+	cp "$(TARGET_PATH)/libcapy.so" "$(PKG_ROOT)/deb/usr/lib/libcapy.so" 2>/dev/null || true
+	cp "$(TARGET_PATH)/libcapy.so" "$(PKG_ROOT)/deb/usr/bin/libcapy.so" 2>/dev/null || true
+	mkdir -p "$(PKG_ROOT)/deb/usr/include"
+	cp c/capy.h "$(PKG_ROOT)/deb/usr/include/capy.h"
 	cp -r lib "$(PKG_ROOT)/deb/usr/share/capy/"
 	cp -r stage-2/compiled "$(PKG_ROOT)/deb/usr/lib/capy/"
 	installed_size_kb=$$(du -sk "$(PKG_ROOT)/deb/usr" | awk '{print $$1}'); \
@@ -736,9 +740,13 @@ dist-rpm: build
 		"$(PKG_ROOT)/rpm/root/usr/bin" "$(PKG_ROOT)/rpm/root/usr/lib" "$(PKG_ROOT)/rpm/root/usr/lib/capy" "$(PKG_ROOT)/rpm/root/usr/share/capy" \
 		"$(PKG_ROOT)/rpm/rpmbuild/SPECS" "$(PKG_ROOT)/rpm/rpmbuild/SOURCES" "$(PKG_ROOT)/rpm/rpmbuild/BUILD" "$(PKG_ROOT)/rpm/rpmbuild/BUILDROOT" \
 		"$(PKG_ROOT)/rpm/rpmbuild/RPMS" "$(PKG_ROOT)/rpm/rpmbuild/SRPMS" "$(PKG_ROOT)/rpm/rpmbuild/RPMDB" "$(DIST_DIR)"
-	cp bin/capy-full "$(PKG_ROOT)/rpm/root/usr/bin/capy"
-	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy" --capy-compiler-entrypoint "$$@"' > "$(PKG_ROOT)/rpm/root/usr/bin/capyc"
-	chmod +x "$(PKG_ROOT)/rpm/root/usr/bin/capyc"
+	cp "$(TARGET_PATH)/capy" "$(PKG_ROOT)/rpm/root/usr/bin/capy"
+	cp "$(TARGET_PATH)/capyc" "$(PKG_ROOT)/rpm/root/usr/bin/capyc"
+	chmod +x "$(PKG_ROOT)/rpm/root/usr/bin/capy" "$(PKG_ROOT)/rpm/root/usr/bin/capyc"
+	cp "$(TARGET_PATH)/libcapy.so" "$(PKG_ROOT)/rpm/root/usr/lib/libcapy.so" 2>/dev/null || true
+	cp "$(TARGET_PATH)/libcapy.so" "$(PKG_ROOT)/rpm/root/usr/bin/libcapy.so" 2>/dev/null || true
+	mkdir -p "$(PKG_ROOT)/rpm/root/usr/include"
+	cp c/capy.h "$(PKG_ROOT)/rpm/root/usr/include/capy.h"
 	cp -r lib "$(PKG_ROOT)/rpm/root/usr/share/capy/"
 	cp -r stage-2/compiled "$(PKG_ROOT)/rpm/root/usr/lib/capy/"
 	rm -rf "$(PKG_ROOT)/rpm/rpmbuild/BUILD/$(PKG_NAME)-$(VERSION)"

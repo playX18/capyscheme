@@ -1,0 +1,13 @@
+[package]
+name = "capy-sni-derive"
+version.workspace = true
+edition.workspace = true
+description = "#[scheme], #[cps], and #[onload] macros for capy-sni embedders"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits", "visit"] }
+quote = "1"
+proc-macro2 = "1"

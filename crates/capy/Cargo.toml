@@ -1,0 +1,74 @@
+[package]
+name = "capy"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "capy"
+crate-type = ["cdylib", "rlib"]
+
+[build-dependencies]
+cc = "1"
+
+[dependencies]
+tinyvec = { workspace = true, features = ["alloc"] }
+atomic.workspace = true
+bitflags.workspace = true
+bytemuck.workspace = true
+easy-bitfield.workspace = true
+env_logger.workspace = true
+libm.workspace = true
+num-bigint = { workspace = true, optional = true }
+num = { workspace = true }
+rand.workspace = true
+mmtk.workspace = true
+simplehash.workspace = true
+tree-sitter = { workspace = true, optional = true }
+tree-sitter-scheme = { workspace = true, optional = true }
+rustix = { version = "*", features = ["fs", "pipe", "event"] }
+paste.workspace = true
+pretty.workspace = true
+hashlink.workspace = true
+petgraph.workspace = true
+libc.workspace = true
+cranelift.workspace = true
+cranelift-codegen.workspace = true
+log.workspace = true
+gimli.workspace = true
+target-lexicon.workspace = true
+object.workspace = true
+probe.workspace = true
+lexical.workspace = true
+backtrace.workspace = true
+which.workspace = true
+libffi.workspace = true
+unicode-general-category.workspace = true
+unicode-normalization.workspace = true
+bytecodegen.workspace = true
+uuid = { version = "1.18.1", features = ["v4"] }
+hostname = "0.4.1"
+errno = "0.3.14"
+stacker = "0.1.22"
+parking_lot = "0.12.5"
+icu = { version = "2.0.0", features = ["compiled_data"] }
+sys-locale = "0.3.2"
+capy-derive.workspace = true
+cranelift-entity = "0.134.2"
+polling = "3.11.0"
+asmkit-rs = { version = "0.5.0", features = ["jit", "x86", "aarch64"] }
+slotmap = "1.0.7"
+smallvec = "1.15.1"
+serde.workspace = true
+flate2 = "1.1.9"
+capstone.workspace = true
+
+[dependencies.im]
+version = "15.1.0"
+package = "im-rc"
+
+[features]
+default = ["portable", "expeditor", "bootstrap"]
+portable = []
+aslr = []
+expeditor = []
+bootstrap = ["tree-sitter", "tree-sitter-scheme", "num-bigint"]

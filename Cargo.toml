@@ -1,7 +1,14 @@
 [workspace]
 resolver = "3"
-members = ["capy", "capy-derive"]
-default-members = ["capy"]
+members = [
+    "crates/capy",
+    "crates/capy-derive",
+    "crates/capy-sni-sys",
+    "crates/capy-sni",
+    "crates/capy-sni-derive",
+    "crates/capy-cli",
+]
+default-members = ["crates/capy", "crates/capy-cli"]
 
 [workspace.package]
 edition = "2024"
@@ -10,7 +17,7 @@ version = "2.0.2"
 [workspace.dependencies]
 
 bytecodegen = { git = "https://github.com/playx18/bytecodegen" }
-mmtk = { git = "https://github.com/mmtk/mmtk-core", features = ["vo_bit", "vo_bit_access"] }
+mmtk = { git = "https://github.com/mmtk/mmtk-core" }
 cranelift = "0.134.2"
 cranelift-codegen = "0.134.2"
 target-lexicon = "*"
@@ -43,9 +50,14 @@ libffi = { version = "5.0.0" }
 tinyvec = "1.6.0"
 unicode-general-category = "1.1.0"
 unicode-normalization = "0.1.25"
-capy-derive = { path = "capy-derive" }
+capy-derive = { path = "crates/capy-derive" }
 serde = { version = "1.0.228", features = ["derive"] }
-capstone = { version = "0.14.0", default-features = false, features = ["std", "full", "arch_x86", "arch_arm64"] }
+capstone = { version = "0.14.0", default-features = false, features = [
+    "std",
+    "full",
+    "arch_x86",
+    "arch_arm64",
+] }
 
 [profile.release]
 incremental = true

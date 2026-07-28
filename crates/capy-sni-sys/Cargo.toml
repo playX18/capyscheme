@@ -1,0 +1,15 @@
+[package]
+name = "capy-sni-sys"
+version.workspace = true
+edition.workspace = true
+links = "capy"
+description = "Raw FFI bindings to libcapy SNI (Scheme Native Interface)"
+
+[lib]
+name = "capy_sni_sys"
+path = "src/lib.rs"
+
+[dependencies]
+libc = "0.2"
+
+[build-dependencies]

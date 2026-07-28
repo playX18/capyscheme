@@ -1,0 +1,164 @@
+//! Scheme macro expander for R6RS/R7RS syntax-case and syntax-rules.
+
+#[cfg(feature = "bootstrap")]
+use crate::expander::core::denotation_of_begin;
+#[cfg(feature = "bootstrap")]
+use crate::frontend::error::LexicalError;
+#[cfg(feature = "bootstrap")]
+use crate::frontend::reader::TreeSitter;
+use crate::heap::{Gc, Global};
+use crate::{
+    runtime::{Context, modules::Module, value::*},
+    static_symbols,
+};
+use std::sync::OnceLock;
+
+pub mod assignment_elimination;
+pub mod cenv;
+pub mod compile_cps;
+pub mod core;
+pub mod eta_expand;
+pub mod fix_letrec;
+pub mod fold;
+pub mod free_vars;
+pub mod inlining;
+pub mod letrectify;
+pub mod primitives;
+pub mod term;
+
+pub fn datum_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
+    let Some(props) = get_source_property(ctx, obj) else {
+        return Value::new(false);
+    };
+
+    if props.is::<Vector>() {
+        props
+    } else if props.is_pair() {
+        source_props_to_vector(ctx, props)
+    } else {
+        Value::new(false)
+    }
+}
+
+pub fn syntax_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
+    datum_sourcev(ctx, obj)
+}
+
+pub fn syntax_annotation<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
+    datum_sourcev(ctx, obj)
+}
+
+type RootedSourceProperties = crate::Rootable!(Gc<'_, WeakTable<'_>>);
+
+static SOURCE_PROPERTIES: OnceLock<Global<RootedSourceProperties>> = OnceLock::new();
+
+pub fn source_properties<'gc>(ctx: Context<'gc>) -> Gc<'gc, WeakTable<'gc>> {
+    *SOURCE_PROPERTIES
+        .get_or_init(|| Global::new(WeakTable::new(ctx, 128, 0.75)))
+        .fetch(ctx)
+}
+
+pub fn has_source_properties<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> bool {
+    source_properties(ctx).contains_key(ctx, obj)
+}
+
+pub fn set_source_property<'gc>(ctx: Context<'gc>, obj: Value<'gc>, alist: Value<'gc>) {
+    let props = source_properties(ctx);
+    props.put(ctx, obj, alist);
+}
+
+pub fn add_source<'gc>(
+    ctx: Context<'gc>,
+    obj: Value<'gc>,
+    filename: Value<'gc>,
+    line: i32,
+    column: i32,
+    end_line: i32,
+    end_column: i32,
+) {
+    let alist = crate::vector![
+        ctx,
+        filename,
+        Value::new(line),
+        Value::new(column),
+        Value::new(end_line),
+        Value::new(end_column),
+        Value::new(false),
+        Value::new(false),
+        Value::from(Symbol::from_str(ctx, "read")),
+        Value::null()
+    ];
+    set_source_property(ctx, obj, alist.into());
+}
+
+pub fn get_source_property<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Option<Value<'gc>> {
+    source_properties(ctx).get(ctx, obj)
+}
+
+static_symbols!(
+    SYM_FILENAME = "filename"
+    SYM_LINE = "line"
+    SYM_COLUMN = "column"
+    SYM_END_LINE = "end-line"
+    SYM_END_COLUMN = "end-column"
+    SYM_START_BYTE = "start-byte"
+    SYM_END_BYTE = "end-byte"
+    SYM_ORIGIN = "origin"
+    SYM_RELATED_SPANS = "related-spans"
+);
+
+fn source_prop<'gc>(props: Value<'gc>, key: Value<'gc>) -> Value<'gc> {
+    props
+        .assq(key)
+        .map(|pair| pair.cdr())
+        .unwrap_or(Value::new(false))
+}
+
+fn source_props_to_vector<'gc>(ctx: Context<'gc>, props: Value<'gc>) -> Value<'gc> {
+    Vector::from_slice(
+        ctx,
+        &[
+            source_prop(props, sym_filename(ctx).into()),
+            source_prop(props, sym_line(ctx).into()),
+            source_prop(props, sym_column(ctx).into()),
+            source_prop(props, sym_end_line(ctx).into()),
+            source_prop(props, sym_end_column(ctx).into()),
+            source_prop(props, sym_start_byte(ctx).into()),
+            source_prop(props, sym_end_byte(ctx).into()),
+            source_prop(props, sym_origin(ctx).into()),
+            source_prop(props, sym_related_spans(ctx).into()),
+        ],
+    )
+    .into()
+}
+
+pub fn source_property<'gc>(
+    ctx: Context<'gc>,
+    obj: Value<'gc>,
+    key: Value<'gc>,
+) -> Option<Value<'gc>> {
+    get_source_property(ctx, obj).and_then(|alist| alist.assq(key).map(|pair| pair.cdr()))
+}
+
+#[cfg(feature = "bootstrap")]
+pub fn read_from_string<'gc>(
+    ctx: Context<'gc>,
+    source: impl AsRef<str>,
+    filename: impl AsRef<str>,
+) -> Result<Value<'gc>, LexicalError<'gc>> {
+    let filename = Str::new(ctx, filename, true);
+    let tree_sitter = TreeSitter::new(ctx, source.as_ref(), filename.into(), false);
+    let program = tree_sitter.read_program()?;
+
+    let mut ls = Value::null();
+
+    for expr in program.iter().rev() {
+        ls = Value::cons(ctx, *expr, ls);
+    }
+
+    if program.is_empty() {
+        ls = Value::cons(ctx, Value::undefined(), ls);
+    }
+
+    Ok(Value::cons(ctx, denotation_of_begin(ctx).into(), ls))
+}
