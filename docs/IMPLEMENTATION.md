@@ -1,228 +1,490 @@
-# Implementation
+# Implementation Overview
 
-CapyScheme aims to implement R6RS/R7RS specification and also be performant. Implementation of language
-consists of "core expander", CPS compiler, runtime, and GC.
+CapyScheme implements R6RS and R7RS Scheme. The implementation is split
+into three layers. The front end — reader, macro expander, module
+system, and the first compiler passes — is written in Scheme and lives
+under `lib/`. The back end — the native compiler from TreeIL down to
+machine code, the runtime, and the garbage collector — is written in
+Rust under `crates/`. A C API for embedding and native extensions is
+declared in `c/capy.h` and implemented by the `libcapy.so` shared
+library built from `crates/capy/`.
 
-## Compiler layout
+Some key files and directories:
 
-All native-compilation code lives under `capy/src/compiler/`:
+ * `lib/boot/`: the boot libraries. This includes the reader
+   (`reader.scm`), the psyntax macro expander (`psyntax.scm` and the
+   pre-expanded copy `psyntax-exp.scm`), the TreeIL term definitions
+   (`expand.scm`), the evaluator and file compiler driver (`eval.scm`,
+   `compiler.scm`), and the CLI (`cli.scm`).
 
-```
-compiler/
-├── tree/        TreeIL types (`Term`, `TermKind`, `LVar`, `Proc`, …)
-├── cps/         Graph CPS (GCPS): graph IR, optimization, reification, linearization
-├── ssa/         Linear CPS (LCPS): basic blocks, cache/rest/switch/constant passes
-├── cranelift/   Cranelift backend (`ModuleBuilder`, `SSABuilder`, `PrimitiveLowerer`)
-├── pipeline.rs  TreeIL → graph CPS → linear CPS lowering orchestration
-├── object.rs    lowered program → unified FASL bytes
-├── direct.rs    Cranelift IR → machine code + relocations
-├── debuginfo/   source locations for debug info and disassembly annotations
-└── native/      platform ABI helpers (x64)
-```
+ * `lib/capy/compiler/tree-il/`: the self-hosted TreeIL passes:
+   `terms.scm`, `fold.scm`, `primitives.scm`, `resolve-free-vars.scm`,
+   and `letrectify.scm`.
 
-Macro expansion and TreeIL transformation passes remain in `expander/`. TreeIL type definitions live in `compiler/tree/` and are re-exported from `expander/term.rs` and `expander/core.rs`. TreeIL → graph CPS lowering is implemented in `expander/compile_cps.rs`.
+ * `crates/capy/src/expander/`: Rust versions of the expander and
+   TreeIL passes. This expander is used only for bootstrapping and 
+   can only compile R4RSish code.
 
-The end-to-end lowering pipeline (`compiler/pipeline.rs`) is:
+ * `crates/capy/src/compiler/`: the native compiler back end:
+   `pipeline.rs` (lowering orchestration), `tree/` (TreeIL types),
+   `cps/` (graph CPS and its optimizer), `cfg/` (CFG IR, lowering from
+   graph CPS, cleanup passes, SBBV), `cranelift/` (the code generator),
+   `direct.rs` (Cranelift compilation to machine code bytes),
+   `object.rs` (FASL emission), `symbols.rs` (the linker's symbol
+   namespaces), and `dump.rs` (compiler dump machinery).
 
-1. optional primitive resolution/expansion, free-variable resolution, and `letrectify` (when `expand_primitives` is enabled)
-2. `fix_letrec`, `eta_expand`, `assignment_elimination`
-3. `compile_cps::cps_toplevel` — TreeIL → graph CPS
-4. `optimize_graph_func_to_linear` — optimize graph CPS, reify, linearize to LCPS, then run LCPS cleanup passes
+ * `crates/capy/src/runtime/`: the runtime: `value/` (Scheme object
+   representations), `vm/` (runtime entry points and thunks callable
+   from compiled code, including `vm/load/` for the compile/cache/load
+   path), `fasl/` (the FASL reader/writer and relocation patching),
+   `thread.rs` and `vmthread.rs` (mutator threads and the per-thread
+   `State`), `modules.rs` (modules), `root.rs` (root scopes),
+   `code_memory.rs` (executable memory), `sni.rs` (Scheme Native
+   Interface support), and `gdb_jit.rs` (GDB JIT registration).
 
-## Frontend
+ * `crates/capy/src/heap/`: the garbage collector, built on MMTk. See
+   `docs/HEAP.md`.
 
-Frontend is implemented as a Tree-Sitter based parser for Scheme. It reads Tree-Sitter nodes
-and converts them to S-expressions. Each pair in source is annotated by putting source vector of that pair in format `#(filename line col)` into weak-table.
+ * `Makefile`: the build driver; it builds the Rust runtime and then
+   bootstraps the Scheme libraries through three stages.
 
-## Core expander
+# Compiled Files and Boot Files
 
-Core expander is a simple expander for R5RSque language without macros. It has the following forms supported:
+A Scheme source file is compiled into a file with the `.fasl`
+extension. The FASL format is CapyScheme's own relocatable binary
+format — it is not ELF, PE, or any other platform object format — and
+it carries machine code bytes, constants, cache cells, relocations,
+and source maps in one compressed image. Compiled files are produced
+by `compile-file` (in `lib/boot/eval.scm`, with the active compiler
+installed by `lib/boot/compiler.scm`) and loaded through the FASL
+reader in `crates/capy/src/runtime/fasl/`.
 
-- `begin`
-- `lambda`
-- `define`
-- `if`
-- `cond`: does not support `=>` form
-- `case`: does not support `=>` form
-- `let`, `let*`, `letrec`, and `letrec*`
-- `and`
-- `or`
-- `do`
+Compilation is cached. When a file is compiled without an explicit
+output path, the output lands in a fallback directory derived from
+`XDG_CACHE_HOME` (or the platform default, e.g. `~/.cache`), under
+`capy/cache/<version>/<barrier-kind>`; file names within it are
+arch-scoped (see `crates/capy/src/runtime/vm/load/paths.rs`). The
+Scheme side computes this name in `compiled-file-name`
+(`lib/boot/eval.scm`) from the `%compile-fallback-path` parameter.
+Because compiled code embeds barrier-specific sequences, the cache is
+partitioned by write-barrier kind (`nobarrier`, `objbarrier`,
+`satbbarrier`).
 
-These forms all expand into TreeIL, which is based on what Guile has. TreeIL has following forms:
+The boot libraries listed in `BOOT_SRCS` in the `Makefile` are
+ordinary Scheme files compiled to `.fasl` like any other. One of them
+is special: `lib/boot/psyntax-exp.scm` is the pre-expanded copy of the
+psyntax expander, used to load the expander before the expander can
+expand itself. It is checked in and normally does not change; after
+editing `lib/boot/psyntax.scm` it must be regenerated by building with
+`make COMPILE_PSYNTAX=1`, which runs `lib/boot/compile-psyntax.scm`
+during stage 0 to expand `psyntax.scm` back into `psyntax-exp.scm`.
 
-- `(lref <lvar>)`: loads local variable `<lvar>`
-- `(lset <lvar> <term>)`: updates local variable `<lvar>` to the result of executing `<term>`.
-- `(module-ref <module> <name> <public?>)`: lookups `<name>` in `<module>` or its public interface if `public?` is `#t`.
-- `(module-set! <module> <name> <public?> <term>)`:
-  lookups `<name>` in `<module>` or its public interface if `public?` is `#t`
-  and then sets it to result of executing `<term>`
-- `(toplevel-ref <module> <name>)`: lookups `<name>` in `<module>`
-- `(toplevel-set! <module> <name> <term>)`: lookups `<name>` in `<module>` and updates its binding
-  to the value of `<term>`.
-- `(define <module> <name> <term>)`: defines variable `<name>` in `<module>` and binds
-  its value to the value of `<term>`
-- `(primref <name>)`: lookups primitive in `(capy)` modules and returns its reference
-- `(primcall <name> <term*> ...)` : calls primitive in `(capy)` module with `<term*> ...` arguments. Internally primitive calls might be expanded into simpler forms or converted to `(call (module-ref ...) ...)` when some primitive conditions are violated e.g argument count is wrong.
-- `(if <test> <cons> <alt>)`: if `<test>` term evaluates to `#t` will jump to `<cons>`, otherwise
-  executes `<alt>`.
-- `(seq <head> <tail>)`: evaluates `<head>` for effect, then `<tail>`.
-- `(call <proc> <args> ...)`: calls procedure value produced by `<proc>`.
-- `(values <term> ...)`: produces multiple values.
-- `(receive <bindings> <producer> <consumer>)`: receives multiple values from `<producer>`, binds
-  them to `<bindings>`, and executes `<consumer>`.
-- `(with-continuation-mark <key> <mark> <result>)`: installs a continuation mark for the dynamic extent of `<result>`.
-- `(fix <procs> <body>)`: binds mutually recursive procedures `<procs>`, and executes `<body>`. This form is produced only after fixing letrec pass.
-- `(let <style> <lhs> <rhs> <body>)`: let-form, `style` indicates if its letrec, let\* or anything else. Executes `<rhs>` expressions and binds them to `<lhs>`, and then runs `<body>`.
-- `(lambda <args> <body>)` / `(proc <args> <variadic> <body>)`: produces a procedure value with `args` and `variadic` being optional variadic argument binder.
+# Build System
 
-### Optimizations on TreeIL
+The top-level `Makefile` drives everything. `make build` (the default
+target) builds the Rust runtime and then runs the three bootstrap
+stages in order. The important variables are `PROFILE` (`release` by
+default), `TARGET` (the host triple by default; `cross` is used when
+it differs from the host), `PREFIX` (install root, `~/.local/share` by
+default), `VERSION` (taken from `crates/capy/Cargo.toml`), and
+`COMPILE_PSYNTAX` (0 by default). The Makefile forces
+`CARGO_TARGET_DIR` to the workspace `target/` directory so recipes
+that copy binaries always see the fresh build. Environment for running
+capy during the build is collected in `CAPY_ENV`: `MMTK_PLAN`
+(default `StickyImmix`), `XDG_CACHE_HOME` (pointed at
+`stage-0/cache`), `CAPY_LOAD_PATH=./lib`, `CAPY_GC_MAX_HEAP`,
+`RUST_MIN_STACK`, and optional dump/tuning knobs (`CAPY_SBBV_*`,
+`CAPY_COMPILE_DUMP*`, `CAPY_BARRIER_KIND`).
 
-TreeIL passes run before CPS lowering and are orchestrated from `compiler/pipeline.rs`:
+The runtime itself is two cargo builds: the `capy` crate produces
+`libcapy.so`, and the `capy-cli` crate produces the thin `capy` and
+`capyc` executables that link against it. `capy` is the interpreter /
+script runner / REPL; `capyc` is the standalone file compiler. Both
+are launchers over the same shared library.
 
-#### Fixing letrec
+Bootstrapping proceeds in three stages:
 
-"Fixing" is a process of transforming letrec expressions into
-`let` for simple or complex variables, and `fix` for mutually recursive
-functions.
+ * `make stage-0` builds the runtime with the `bootstrap` cargo
+   feature (which pulls in the Rust core expander and the Tree-Sitter
+   reader) and copies `capy`, `capyc`, and `libcapy.so` into
+   `stage-0/`. It then warms the compile cache by having the fresh
+   binary auto-compile the boot libraries for a handful of imports.
+   With `COMPILE_PSYNTAX=1` it also regenerates `psyntax-exp.scm`
+   first.
 
-- Complex variables are those that are not free in their initializers, and also might be mutated.
-- Simple variables are those that are free in their initializers, and are not mutated.
-- Mutually recursive functions are those that are defined in terms of each other, and are not free
-  in their initializers.
+ * `make stage-1` recompiles every library — boot, core, rnrs, srfi,
+   scheme (R7RS), capy, common, and the CLI — with `stage-0/capyc`
+   into `stage-1/compiled/`, so the whole library set is compiled by
+   the compiler as built from current sources.
 
-For a detailed discussion, see ["Fixing Letrec: A Faithful Yet
-Efficient Implementation of Scheme's Recursive Binding Construct"](https://legacy.cs.indiana.edu/~dyb/pubs/fixing-letrec.pdf), by
-Oscar Waddell, Dipanwita Sarkar, and R. Kent Dybvig, as well as
-"Fixing Letrec (reloaded)", by Abdulaziz Ghuloum and R. Kent Dybvig.
+ * `make stage-2` recompiles everything again with `stage-1/capyc`
+   into `stage-2/compiled/`, once per write-barrier kind
+   (`objbarrier`, `nobarrier`, `satbbarrier`, selected with
+   `CAPY_BARRIER_KIND`). These per-barrier artifacts are what gets
+   installed.
 
-#### Eta expansion
+`make install` performs an FHS-style install under `PREFIX`
+(binaries in `bin/`, `libcapy.so` in `lib/`, `capy.h` in `include/`,
+libraries in `share/capy/`, compiled artifacts in `lib/capy/compiled/`). `make install-portable` installs a
+self-contained tree under `$(PREFIX)/capy/$(VERSION)`, and
+`make dist-portable`, `dist-deb`, and `dist-rpm` produce packages.
+After ABI or calling-convention changes, remove the `stage-*`
+directories and the compile cache (`~/.cache/capy`) before rebuilding;
+stale FASL images are not compatible across such changes.
 
-Eta-expands procedure values where needed so later passes and CPS lowering can assume a uniform calling convention.
+# Writing and Running Tests
 
-#### Assignment elimination
+Tests live under `tests/`. `tests/lib/` mirrors the `lib/` directory
+one-to-one: each file tests the corresponding library, using SRFI-64
+style test forms. `tests/r6rs/` contains the R6RS conformance suite,
+driven by `tests/r6rs/run-via-eval.sps`. `tests/phase0/` holds a few
+standalone smoke tests, and there are assorted `.scm`/`.sps` files at
+the top of `tests/`. Rust unit tests live next to the code in
+`crates/` and run with `cargo test`.
 
-This pass removes `lset` forms and replaces them by boxes. Each mutable variable is wrapped by `box`, and accesses are converted to `box-ref` while assignment are converted to `box-set!`.
-
-#### Primitive resolution
-
-This pass must run to produce faster code. It detects calls to primitives, and converts them to `primcall` or `primref` in case of references. Later on, primcalls can be lowered directly to machine code rather than always calling into runtime.
-
-#### Primitive expansion
-
-Performs expansion of `primcall` forms into simpler forms where possible, also sometimes undoes work of primitive resolution by converting primcalls back into regular calls. Some examples of optimizations:
-
-```
-(memq x '(a b c)) => (if (eq? x 'a) #t (if (eq? x 'b) #t (if (eq? x 'c) #t) #f))
-(+ 1 2 3 4) => (+ (1 2) (+ 3 4))
-```
-
-If argument count to primitive does not match this pass will convert primitive back to regular call.
-
-### Graph CPS stage
-
-CapyScheme relies on CPS in order to get cheap first-class continuations and easy exception handling. After TreeIL is optimized, `expander/compile_cps.rs` lowers it to **graph CPS** (GCPS), based on ["Compiling with Continuations, Continued"](https://matt.might.net/articles/compile-with-continuations-continued/).
-
-GCPS is a graph-structured IR (`compiler/cps/graph.rs`) with three node kinds:
-
-- **terms** — control flow
-- **expressions** — values and primitive calls
-- **functions** — procedures and continuations
-
-Term forms:
-
-- `(let-val <expr> <body>)`: bind the result of `<expr>` and continue in `<body>`
-- `(fix <functions> <body>)`: bind mutually recursive functions
-- `(letk <continuations> <body>)`: bind continuations, including mutually recursive ones
-- `(if <test> <then> <else>)`: conditional branch
-- `(continue <k> <args> ...)`: jump to continuation `<k>`
-- `(app <proc> <args> ... <retk>)`: call `<proc>` with return continuation `<retk>`
-- `(raise <kind> <args> ...)`: non-local control transfer for exceptions and assertions
-
-Expression forms:
-
-- `(literal <value>)`
-- `(primcall <prim> <args> ...)`
-
-Functions record parameters, optional variadic binder, optional return continuation (present for procedures, absent for continuations), free variables, and metadata used by later contification/reification.
-
-#### Graph CPS optimization
-
-`compiler/cps/optimize.rs` optimizes the graph in place using a worklist algorithm and a gas budget (default `42_000`). Major optimizations include:
-
-- dead binding removal and `let-val` cleanup
-- eta reduction on functions and continuations
-- constant and identical-branch simplification
-- known-primitive propagation
-- singleton call and continuation inlining
-- limited recursive unrolling
-- contification: turn procedures into continuations so they can become basic blocks instead of heap closures. Modes are selectable via `CAPY_GCPS_CONTIFY` (`off`, `scc`, `dom`, or `dom-then-scc`)
-- reification: mark continuations that still need a closure allocation (typically return/handler continuations passed to `app`)
-
-After optimization, `compiler/cps/reify.rs` decides which graph functions become native functions vs reified continuations, and `compiler/cps/linear.rs` converts the graph into linear CPS.
-
-Some primitive checks (for example `car` on a non-pair) are expanded during TreeIL → GCPS lowering into explicit branches and `raise` terms. Later, `primcall` forms in LCPS are lowered directly to machine code where possible.
-
-Globals references are lowered to cache-cell sequences during LCPS lowering (`compiler/ssa/cache.rs`), roughly:
+`make test` runs every `tests/lib/**/*.scm` file with
 
 ```
-cache-ref 'variable
-=> on miss: lookup, cache-set!, then variable-ref; on hit: variable-ref
+capy -L lib --fresh-auto-compile -s <file>
 ```
 
-This allows fast global accesses once they are cached.
+under the `CAPY_ENV` environment, marking the run failed if the
+program exits non-zero or its output mentions unexpected failures or
+successes, and then runs the R6RS suite with `capy -L lib -L .
+--fresh-auto-compile --r6rs -s tests/r6rs/run-via-eval.sps`. By
+default it uses `stage-0/capy` (building stage 0 first if needed);
+set `CAPY=/path/to/capy` to test a different binary, for example an
+installed one. To run a single library test, invoke the same command
+directly, e.g. `capy -L lib --fresh-auto-compile -s
+tests/lib/core/lists.scm`.
 
-### Linear CPS stage
+# Adding Functionality
 
-Graph CPS is linearized into **linear CPS** (LCPS) in `compiler/ssa/`. Despite the module name, this is not traditional SSA yet: it is a collection of procedures, each consisting of basic blocks with explicit predecessors/successors.
+New Scheme libraries go under `lib/` in the appropriate subtree
+(`core/`, `rnrs/`, `scheme/`, `srfi/`, `capy/`, `common/`). To have a
+library compiled during the bootstrap stages and installed, add it to
+the corresponding `*_SRCS` list in the `Makefile`; the per-file
+pattern rules handle the rest.
 
-A `LinearProgram` contains:
+Adding a primitive touches several places, because primitives exist at
+three levels. The primitive name tables and the TreeIL-level
+resolution/expansion logic are defined twice and must be kept in
+agreement: in Rust in `crates/capy/src/expander/primitives.rs` (the
+`interesting_prim_names!` table plus `resolve_primitives` and
+`expand_primitives`, used during bootstrap) and in Scheme in
+`lib/capy/compiler/tree-il/primitives.scm` (the
+`interesting-primitive-names` list plus `resolve-primitives` and
+`expand-primitives`, used by the self-hosted compiler). The runtime
+implementation of a primitive is a thunk under
+`crates/capy/src/runtime/vm/thunks/`, usually exposed to Scheme with a
+`#[scheme]` binding. Finally, to let the compiler lower a primitive
+call directly to machine code instead of a runtime call, add a variant
+to the `Primitive` enum and its lowering under
+`crates/capy/src/compiler/cranelift/primitive/`; SBBV's
+checked/unchecked/overflow splitting for the primitive belongs in
+`crates/capy/src/compiler/cfg/bbv/primitives.rs`.
 
-- an entry `CodeId` (graph function or reified continuation)
-- a list of `Procedure`s, each either a `function` or a `continuation`
+# Scheme Objects
 
-Each procedure has:
+A Scheme value is a single 64-bit word, `Value<'gc>`
+(`crates/capy/src/runtime/value.rs`), using NaN boxing. The word is
+stored in the `EncodedValueDescriptor` union and interpreted by kind:
+values with any of the high tag bits set are immediates, and all other
+nonzero words are raw pointers to GC heap objects ("cells").
 
-- parameters and optional variadic/rest binder
-- free-variable list and source mapping back to TreeIL binders
-- basic `Block`s containing `Instruction`s and a `Terminator`
+The immediates are:
 
-Instructions include `const`, `make-closure`, `closure-ref` / `closure-set`, `cache-ref` / `cache-set`, `prim-call`, and rest-argument helpers (`rest-ref`, `rest-length`, `rest-predicate`, `rest-to-list`).
+ * fixnums — 32-bit signed integers tagged with `NUMBER_TAG`
+   (`0xfffe000000000000`);
+ * flonums — doubles stored with an encode offset of `1 << 49` added
+   to their bits, keeping them disjoint from the fixnum and pointer
+   ranges; NaN payloads are canonicalized on construction so NaN
+   round-trips as a single value;
+ * characters — the Unicode scalar shifted left 16 bits, tagged
+   `0x82`;
+ * the special values `#t`, `#f`, `()`, the undefined sentinel, void,
+   the unspecified value, the EOF object, and the broken-weak-pointer
+   object, all distinguished by low-bit tags under `OTHER_TAG`;
+ * two internal sentinels, empty and deleted, used by the hash table
+   implementations.
 
-Terminators include `call`, `tail-call`, `raise`, `jump`, `branch`, and `switch`.
+Heap objects carry their type in a GC header word stored 8 bytes
+before the object payload (`OBJECT_REF_OFFSET` in
+`crates/capy/src/heap/object.rs`); a `Value` pointer points at the
+payload, and the header is read at a negative offset. The header holds
+a 24-bit class id. Built-in class ids are the constants in
+`heap/object.rs`'s `builtin_class_ids` module (pair, vector, string,
+closure, module, port, thread, and so on), and each id maps to a
+`ClassDescriptor` in the runtime class table
+(`crates/capy/src/runtime/class/`). An optional hashcode word sits in
+front of the header; it records identity hashes lazily, with a
+hashed-and-moved state so identity hash codes survive moving
+collections.
 
-#### LCPS cleanup passes
+Concrete object representations live under
+`crates/capy/src/runtime/value/`: pairs and lists in `list.rs`,
+strings in `string.rs`, vectors in `vector.rs`, symbols in
+`symbols.rs`, the numeric tower (bignums, rationals, complexes) in
+`number/`, procedures in `proc/`, ports in `port.rs`, and the
+HAMT-backed hash tables in `hamt.rs` plus the weak table/set/mapping
+types. A `Closure` (`value/proc/closure.rs`) is a code entry pointer,
+a reference to its `CodeBlock`, a metadata slot, and an inline array
+of free variables; reified continuations are closures of a distinct
+kind. Compiled code itself lives in `CodeBlock` objects whose bytes
+are allocated from executable memory (`runtime/code_memory.rs`).
 
-`compiler/ssa/mod.rs::finish_procedure` runs post-linearization passes on each procedure:
+# Functions and Calls
 
-- switch inference (`ssa/switch.rs`)
-- rest-argument lowering (`ssa/rest.rs`)
-- cache-operation lowering (`ssa/cache.rs`)
-- constant hoisting (`ssa/constant.rs`)
+Compiled Scheme code uses a custom calling convention rather than the
+platform C convention. In the Cranelift backend, every compiled
+function and reified continuation is emitted with Cranelift's `Tail`
+calling convention and a fixed six-argument signature
+(`compiled_scheme_signature` in
+`crates/capy/src/compiler/cranelift/types.rs`): the rator (the
+procedure being called), the argument count, and up to four arguments
+in registers. The runtime `Context`/thread
+`State` pointer is carried in Cranelift's pinned register, read with
+`get_pinned_reg`, so it is materialized on entry rather than passed as
+an argument. Arguments beyond the four register slots spill to a
+fixed-size per-thread runstack (`RUNSTACK_SIZE` is 4096) whose current
+pointer lives in `State::runstack`; the overflow base for a call is
+computed from the argument count (`overflow_base_from_argc`).
 
-### Cranelift backend
+Calls are continuation-passing: a non-tail call passes its return
+continuation as one of the arguments (the CFG `Call` terminator
+carries an explicit `retk`), and a tail call transfers directly. Rust
+enters compiled code through trampolines in
+`crates/capy/src/runtime/vm/trampolines.rs`: a SystemV-convention
+entry pins the context pointer and then tail-calls into
+Tail-convention code. The per-thread `State` (`runtime/thread.rs`)
+holds everything compiled code may address directly: the runstack
+bounds, the `CallData` block mirroring rator/argc/arg0..arg3, the
+`gc_save` area, continuation marks and winders, the dynamic state, and
+— at the very end, so that the offsets of earlier fields are stable
+for compiled code — the root stack used to hold values across native
+calls.
 
-LCPS is lowered to Cranelift IR in `compiler/cranelift/`.
+Compiled function entries contain a yieldpoint. The fast path loads a
+yieldpoint pointer and branches around a cold block; the cold path
+stores the ABI roots (rator, argc, and the register arguments) into
+`State::gc_save`, calls the yieldpoint thunk, reloads them, and clears
+the save area (`crates/capy/src/compiler/cranelift/translate.rs`).
+The GC traces and relocates the `gc_save` slots in place, so this is
+where a mutator parks its live registers across a collection.
 
-`ModuleBuilder` owns the whole compilation unit: symbol tables for functions/data/cache cells/constants, runtime thunks, and FASL emission. For each LCPS procedure, `SSABuilder` (`cranelift/linear.rs`) builds a Cranelift function:
+First-class continuations are reified as ordinary closures capturing
+the current continuation marks and winders; `call/cc` and friends are
+implemented in `crates/capy/src/runtime/vm/control.rs` with Scheme
+wrappers in `lib/boot/control.scm`. Exceptions and assertions
+terminate CFG blocks with a `Raise` terminator carrying a `RaiseKind`,
+which dispatches through the installed exception handler found via
+continuation marks. Because the whole pipeline is CPS-based, both
+continuations and exception handlers are just functions until the
+reify pass decides which of them must become heap-allocated closures.
 
-- continuations that were not reified become intraprocedural basic blocks
-- reified continuations and functions become separate Cranelift functions
-- `PrimitiveLowerer` (`cranelift/primitive.rs`) lowers `prim-call` instructions to Cranelift instructions or runtime calls
+# Compilation Pipeline
 
-`compiler/direct.rs` compiles finalized Cranelift functions to machine code bytes and relocations. `compiler/debuginfo/` attaches source locations used in Cranelift dumps and annotated disassembly.
+A file is compiled as follows. The reader (`lib/boot/reader.scm`)
+reads all forms with `read-syntax`, producing annotated S-expressions
+whose annotations carry source vectors. Psyntax macroexpands the forms
+to TreeIL (`compile-tree-il` in `lib/boot/eval.scm`). The Scheme
+TreeIL passes then run in order: `resolve-primitives`,
+`expand-primitives`, `resolve-free-vars`, and `letrectify` (installed
+by `lib/boot/compiler.scm` from `lib/capy/compiler/tree-il/`).
+Finally the `%compile` primitive
+(`crates/capy/src/runtime/vm/load/scheme.rs`) converts the Scheme
+TreeIL records into Rust TreeIL with `TermConverter`
+(`crates/capy/src/runtime/vm/expand.rs`) and runs the native pipeline.
 
-### Output
+TreeIL is a small explicit term language. The Rust definition is
+`TermKind` in `crates/capy/src/compiler/tree/mod.rs`, mirrored by the
+Scheme records in `lib/boot/expand.scm`: `lref`/`lset` for local
+variables, `module-ref`/`module-set!` and `toplevel-ref`/`toplevel-set!`
+for module bindings, `define`, `primref`/`primcall` for primitives,
+`if`, `seq`, `call`, `values`, `receive`, `with-continuation-mark`,
+`fix` (mutually recursive procedures, produced only by the
+fixing-letrec pass), `let` (annotated with a style: plain, `let*`, or
+`letrec`), `proc` for procedure literals, and `const`.
 
-The normal compiler output is a **unified FASL image** (`compiler/object.rs`), not a platform shared object. `compile_lowered_to_fasl_bytes` builds a `ModuleBuilder` from the linear CPS program, compiles each procedure with Cranelift, and writes a compressed FASL program containing code bytes, constants, cache cells, relocations, and source maps.
+The native pipeline (`crates/capy/src/compiler/pipeline.rs`,
+`lower_expanded_to_cps`) runs three TreeIL-to-TreeIL passes and then
+lowers:
 
-For debugging, `compiler/pipeline.rs` can dump intermediate artifacts:
+ 1. `fix_letrec` (`crates/capy/src/expander/fix_letrec.rs`) rewrites
+    `letrec` into `let` for simple and complex variables and `fix` for
+    mutually recursive functions. Simple variables are bound to
+    lambdas not mutated anywhere; complex variables may be assigned;
+    what remains is genuinely recursive. See also: "Fixing Letrec: A
+    Faithful Yet Efficient Implementation of Scheme's Recursive
+    Binding Construct", Waddell, Sarkar, and Dybvig; and "Fixing
+    Letrec (reloaded)", Ghuloum and Dybvig.
 
-- `.ir.scm` / `.ir.noopt.scm` — TreeIL before/after optimization
-- `.gcps.scm` — graph CPS
-- `.lcps.scm` — linear CPS
-- Cranelift IR and host disassembly (via `BackendDumpOptions`)
+ 2. `eta_expand` (`expander/eta_expand.rs`) eta-expands procedure
+    values where needed so later passes can assume a uniform calling
+    convention.
 
-`compiler/linkutils.rs` contains platform linker helpers, but the main bootstrap and load path uses FASL images (see `docs/BOOTSTRAP.md`).
+ 3. `assignment_elimination`
+    (`expander/assignment_elimination.rs`) removes `lset` by boxing
+    every mutable variable: reads become `box-ref`, writes become
+    `box-set!`.
 
-## Runtime
+ 4. `compile_cps::cps_toplevel` (`expander/compile_cps.rs`) lowers
+    TreeIL to graph CPS.
+
+During bootstrap the Rust side additionally runs its own
+`resolve_primitives`, `expand_primitives`, `resolve_free_vars`, and
+`letrectify` first (the `expand_primitives` path in `pipeline.rs`),
+since there is no self-hosted compiler yet; the core expander used for
+this (`crates/capy/src/expander/core.rs`, behind the `bootstrap`
+feature) supports only the core forms: `define`, `lambda`,
+`case-lambda`, `if`, `quote`, `set!`, `let`/`let*`/`letrec`/`letrec*`,
+`begin`, `cond`, `case`, `and`, `or`, `do`, `when`, `unless`,
+`values`, `receive`, `with-continuation-mark`, `define-struct`, and
+the `@`/`@@` module references.
+
+### Graph CPS
+
+The graph CPS IR (`crates/capy/src/compiler/cps/graph.rs`) is a
+graph-structured term language: nodes are shared by reference rather
+than nested, which makes transformations local. Terms are `let-val`
+(bind an expression result), `fix` (mutually recursive functions),
+`letk` (bind continuations), `if`, `continue` (jump to a
+continuation), `app` (call with an explicit return continuation), and
+`raise`; expressions are literals and primitive calls; functions
+record their parameters, an optional variadic binder, an optional
+return continuation (present for procedures, absent for
+continuations), and free variables. See also: "Compiling with
+Continuations, Continued", Matt Might.
+
+The optimizer (`cps/optimize.rs`) rewrites the graph in place with a
+worklist algorithm bounded by a gas budget (`DEFAULT_GAS` is 42000):
+dead binding removal, eta reduction, constant and identical-branch
+simplification, known-primitive propagation, singleton inlining,
+limited recursive unrolling, contification (turning procedures that
+are only ever called in tail position with a known continuation into
+continuations, so they become basic blocks rather than heap closures),
+and reification analysis. Contification has two implementations, an
+SCC-based one (`cps/scc_contify.rs`) and a dominator-based one
+(`cps/dom_contify.rs`); `CAPY_GCPS_CONTIFY` selects `off`, `scc`,
+`dom` (the default), or `dom-then-scc`. After optimization,
+`cps/reify.rs` decides which graph functions become native functions
+and which continuations must be reified into closures, and
+`cfg/lower.rs` lowers the result to the CFG IR.
+
+### CFG
+
+The CFG IR (`crates/capy/src/compiler/cfg/ir.rs`) is a control-flow
+graph of basic blocks over mutable uvars: an explicit `assign`
+instruction copies a value into a uvar's mutable home, so the IR is
+deliberately not in SSA form. A `Program` is an entry `CodeId` plus a
+list of procedures, each either a function or a continuation, with
+parameters, an optional rest binder, a free-variable list, and blocks
+of instructions ending in a terminator. Instructions are `assign`,
+`const`, `make-closure`, `closure-ref`/`closure-set`,
+`cache-ref`/`cache-set`, `prim-call`, and the rest-argument family
+(`rest-to-list`, `rest-ref`, `rest-length`, `rest-predicate`).
+Terminators are `call`, `tail-call`, `raise`, `jump`, `branch`,
+`branch-prim` (a comparison or type test fused with the branch that
+uses it), and `switch`. Global variable references go through cache
+cells: `cache-ref` checks a per-call-site cell and falls back to a
+module lookup on a miss, so repeated global accesses are a single
+load.
+
+Before codegen, `cfg::finish_procedure` (`compiler/cfg/mod.rs`) runs
+the final pass pipeline on each procedure, in this order:
+
+ 1. rest-argument lowering (`cfg/rest.rs`);
+ 2. dead effect-free instruction elimination (`cfg/effects.rs`);
+ 3. SBBV (`cfg/bbv/`);
+ 4. dead effect-free instruction elimination again;
+ 5. switch inference (`cfg/switch.rs`);
+ 6. cache-operation lowering (`cfg/cache.rs`);
+ 7. constant hoisting (`cfg/constant.rs`).
+
+SBBV (static basic block versioning) duplicates blocks along paths
+where types become known, splits primitives into checked, unchecked,
+and overflow variants (e.g. `FxAdd` versus `FxAddUnchecked` and
+`FxAddOvf`), and fuses single-use comparisons into `branch-prim`
+terminators. See also: "Static Basic Block Versioning", Mélanson,
+Feeley, and Serrano, ECOOP 2024. The version budget is controlled by
+`CAPY_SBBV_VERSION_LIMIT` (default 2; 0 disables SBBV), and
+`CAPY_SBBV_DUMP` (values like `1`, `pre`, `expand`, `specialize`,
+`all`), `CAPY_SBBV_DUMP_DIR`, and `CAPY_SBBV_DUMP_LIMIT` dump the CFG
+around SBBV stages.
+
+### Dumps
+
+`compiler/dump.rs` implements compiler dumps, selected with
+`CAPY_COMPILE_DUMP` (a comma-separated list of `ir`, `gcps`, `ssa`,
+`clif`, `asm`, or `all`), with `CAPY_COMPILE_DUMP_DIR` (or
+`CAPY_DUMP_DIR`) choosing the output directory, `CAPY_COMPILE_DUMP_LIMIT`
+capping how many compilations dump, and `CAPY_COMPILE_DUMP_NOOPT`
+adding the unoptimized TreeIL. The artifacts are `.ir.scm` and
+`.ir.noopt.scm` (TreeIL after and before the Rust passes), `.gcps.txt`
+(graph CPS), `.ssa.txt` (the CFG IR), plus Cranelift IR and annotated
+host disassembly.
+
+# Backends
+
+The Cranelift backend in `crates/capy/src/compiler/cranelift/` is the
+code generator. `ModuleBuilder` (`cranelift/mod.rs`) owns a whole
+compilation unit: symbol tables for functions, data, cache cells, and
+constants, the imported runtime thunks, and FASL emission. For each
+CFG procedure, `SsaBuilder` (`cranelift/translate.rs`) builds one
+Cranelift function; continuations that were not reified become
+ordinary basic blocks inside their procedure, while reified
+continuations and functions become separate entry points.
+`PrimitiveLowerer` (`cranelift/primitive/`) lowers `prim-call`
+instructions to inline Cranelift IR where possible and to runtime
+thunk calls otherwise. The ISA is configured with the pinned register
+enabled (used for the context pointer), frame pointers preserved, and
+`opt_level` set to `speed_and_size` (`host_isa` in `cranelift/mod.rs`).
+`compiler/direct.rs` then compiles each finalized Cranelift function
+to machine code bytes plus a relocation list and source-location
+ranges, translating Cranelift's relocation targets into the compiler's
+own symbol space; a few floating-point libcalls (ceil, floor, trunc,
+nearest) are redirected to runtime thunks. `compiler/debuginfo/`
+produces DWARF and source mappings used by dumps and the GDB JIT
+interface (`runtime/gdb_jit.rs`).
+
+# Linking and FASL
+
+The compiler does not emit platform object files. `compiler/object.rs`
+(`compile_lowered_to_fasl_bytes`) takes a lowered CFG program, compiles
+every procedure through the Cranelift backend, and writes a single
+compressed FASL image containing code bytes, constants, cache cells,
+relocations, and source maps.
+
+Symbols within a compilation unit are numeric and namespaced
+(`compiler/symbols.rs`): function symbols live in namespace 0, data
+symbols in namespaces 1–8 (constants, cache cells, code blocks,
+runtime data, side metadata, root tables, FASL blobs, pointer slots),
+and imported symbols in namespaces 100–101 (runtime thunks and
+trampolines). These map onto Cranelift `UserExternalName`s during code
+generation and back onto relocation targets afterwards, so the FASL
+never stores symbol strings.
+
+The FASL format itself is defined in
+`crates/capy/src/runtime/fasl/mod.rs`: an 8-byte magic `CAPYFSL\0`, a
+format version, a
+compression flag (none or gzip), and a stream of tagged items —
+immediate values, strings, symbols, arbitrary-precision numbers,
+code blocks, closures, and graph markers for shared and cyclic
+structure. Relocation records (`fasl/reloc.rs`) cover both asmkit and
+Cranelift relocation kinds plus absolute words, code entries, data
+slots, runtime thunk and runtime data references, side metadata, and
+cache cells. At load time the `Reader` (`fasl/reader.rs`)
+materializes the objects, allocates code memory, and `fasl/patch.rs`
+applies every relocation against the final addresses, linking the
+image into the running system. `compiler/linkutils.rs` contains some
+platform linker helpers, but the normal compile-and-load path is
+entirely FASL-based.
+
+# Further Reading
+
+The garbage collector, allocation spaces, write barriers, rooting, and
+the MMTk integration are documented in `docs/HEAP.md`. The Scheme
+Native Interface — the C ABI in `c/capy.h` and the `capy-sni` Rust
+crates for writing native extensions — is documented in `docs/SNI.md`.
+The bootstrap process and the build targets are summarized in
+`docs/BOOTSTRAP.md`.

@@ -236,6 +236,7 @@
     call-with-string-output-port
     call-with-values
     call/cc
+    call/1cc
     car
     case
     case-lambda
