@@ -86,6 +86,9 @@
 - *(tree-il)* Add pattern matchers for IL - ([6da6f93](https://codeberg.org/playXE/capy/commit/6da6f9317a062942b46b64f3ee16d4eea46a12bd))
 - *(vm)* More debugging - ([b996149](https://codeberg.org/playXE/capy/commit/b996149c8353af5fed73e1edf49b95f195b80bcb))
 - *(vscode)* Add Capy Scheme LSP extension - ([6b95133](https://codeberg.org/playXE/capy/commit/6b95133a3aa859ee883017f2e34489cded9faa54))
+- Scheme Native Interface + Precise GC - ([194dfde](https://codeberg.org/playXE/capy/commit/194dfde3b39a2acfea1cb58b262a2c2fae937599))
+- Faster call/cc - ([48ed3ef](https://codeberg.org/playXE/capy/commit/48ed3efbff2cb661b262fca70609029b6d9fb8a9))
+- Precise GC - ([baa6ddf](https://codeberg.org/playXE/capy/commit/baa6ddf34a74c15a1191bcf7ba63b181d7577918))
 - Use mutable CFG instead of SSA - ([a0c8128](https://codeberg.org/playXE/capy/commit/a0c81281fe1fa2af59538ff2b35382f9536ea578))
 - GHC callconv - ([8c45d3c](https://codeberg.org/playXE/capy/commit/8c45d3c4a25f53fc8a638e8dba1d13d830e12185))
 - Setjmp/longjmp trampolines to exit/enter Scheme code (simpler callconv) - ([5036be9](https://codeberg.org/playXE/capy/commit/5036be93a960fc889fde20284ddd05bef1f23a31))
@@ -300,6 +303,7 @@
 
 ### 📚 Documentation
 
+- Actualize documentation, add new HEAP.md - ([168ae07](https://codeberg.org/playXE/capy/commit/168ae07a3b939bf9422245905a5d72ce579016d6))
 - Actualize docs - ([5b2a1ce](https://codeberg.org/playXE/capy/commit/5b2a1ce224018ef36b3af2f157d1a110e3cf80f6))
 - Update graph cps realization status - ([e21bd94](https://codeberg.org/playXE/capy/commit/e21bd94e63be3b3a72785115830fb751523a2903))
 - Add graph cps realization plan - ([64983fc](https://codeberg.org/playXE/capy/commit/64983fcfba7f1653d71cfee145f140960542c687))
@@ -323,6 +327,8 @@
 
 - *(ci)* Always generate nightly changelog - ([a337d40](https://codeberg.org/playXE/capy/commit/a337d4061f39815e396db267910fa9f816c54984))
 - *(clippy)* Remove lint suppressions - ([45edac1](https://codeberg.org/playXE/capy/commit/45edac16a46149399299bc3ebf6622364a1ba547))
+- Update Cargo.lock - ([e736800](https://codeberg.org/playXE/capy/commit/e7368003bfee31260000f0331f7186b09dbac1d1))
+- Actualize github CI - ([62162b7](https://codeberg.org/playXE/capy/commit/62162b7de47b19e0edb0098e9538e08e71cba26a))
 - Clippy/cleanup code - ([8b848f4](https://codeberg.org/playXE/capy/commit/8b848f4fd902b346231733f5c96a5f247a92ab38))
 - Update Cargo.lock - ([e9e8efe](https://codeberg.org/playXE/capy/commit/e9e8efe71df584097dbfe387e2f09ac9bfa54ee4))
 - Update to asmkit 0.4 - ([9b36b39](https://codeberg.org/playXE/capy/commit/9b36b39fab19b7cd4d6d1cadd5957a3340cb72e9))
@@ -371,6 +377,10 @@
 ### Compiler
 
 - Codegen graph linear cps - ([e1efa2e](https://codeberg.org/playXE/capy/commit/e1efa2ed33a273688bf9fcf007b9a8e2c2c220d2))
+
+### Format
+
+- Scheme files - ([266a449](https://codeberg.org/playXE/capy/commit/266a44911ad7090973631ebf9ed8e526fe77708e))
 
 ### Gcps
 
