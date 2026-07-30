@@ -105,6 +105,8 @@
 
 (define (make-condition-uid) #f)
 
+
+;; taken from loko: https://gitlab.com/weinholt/loko/-/blob/master/runtime/control.sls#L296
 (define (print-condition exn p)
   (define (sourcev-ref src index default)
     (if (and (vector? src) (< index (vector-length src)))

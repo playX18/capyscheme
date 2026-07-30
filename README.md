@@ -33,4 +33,4 @@ $ capy --r6rs -L . -s tests/r6rs/run-via-eval.sps
 
 ## Thanks
 
-Big thanks to authors of [Larceny](https://github.com/larcenists/larceny), [Guile](https://www.gnu.org/software/guile/) and [Ypsilon](https://github.com/fujita-y/ypsilon). CapyScheme uses stdlib parts from all of them and takes inspiration from them.
+Big thanks to authors of [Loko](https://gitlab.com/weinholt/loko/), [Larceny](https://github.com/larcenists/larceny), [Guile](https://www.gnu.org/software/guile/) and [Ypsilon](https://github.com/fujita-y/ypsilon). CapyScheme uses stdlib parts from all of them and takes inspiration from them.
