@@ -233,7 +233,8 @@ CAPY_SRCS := \
 	lib/capy/compiler/tree-il/primitives.scm \
 	lib/capy/compiler/tree-il/resolve-free-vars.scm \
 	lib/capy/compiler/tree-il/letrectify.scm \
-	lib/capy/compiler/tree-il.scm				
+	lib/capy/compiler/tree-il.scm			\
+	lib/capy/sequence.scm
 
 
 SRFI_SRCS_R7RS := \
