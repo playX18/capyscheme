@@ -303,6 +303,7 @@
 
 ### 📚 Documentation
 
+- Add loko reference note - ([92607a0](https://codeberg.org/playXE/capy/commit/92607a0f9aa06b25564183df1f0d0628bbdfb423))
 - Actualize documentation, add new HEAP.md - ([168ae07](https://codeberg.org/playXE/capy/commit/168ae07a3b939bf9422245905a5d72ce579016d6))
 - Actualize docs - ([5b2a1ce](https://codeberg.org/playXE/capy/commit/5b2a1ce224018ef36b3af2f157d1a110e3cf80f6))
 - Update graph cps realization status - ([e21bd94](https://codeberg.org/playXE/capy/commit/e21bd94e63be3b3a72785115830fb751523a2903))
