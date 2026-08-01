@@ -46,6 +46,7 @@
 - *(io)* Default UTF-8 encoding; port-fd - ([3746fe5](https://codeberg.org/playXE/capy/commit/3746fe5235020fd6244b0cac6c82a320088928c8))
 - *(lcps)* Low level primops - ([ea7b4a4](https://codeberg.org/playXE/capy/commit/ea7b4a45de0588bf5eec4cc780a4e2ff243763a3))
 - *(lib)* Add terminal library - ([a6cdc0b](https://codeberg.org/playXE/capy/commit/a6cdc0b975136ac294016b9d936c34343602b202))
+- *(lib/capy)* Add sequence APIs - ([17b7365](https://codeberg.org/playXE/capy/commit/17b7365c16a6cfb87ffcb37c37544c93fdc33d07))
 - *(library)* Auto-import capy prelims - ([ad642d1](https://codeberg.org/playXE/capy/commit/ad642d15ffb592438c54f6492bfc7b9a2883c6f1))
 - *(lsp)* Dsl docstring - ([f08b653](https://codeberg.org/playXE/capy/commit/f08b653adf61057637625b6f569c37138e9b556f))
 - *(lsp)* One shot workers - ([2365191](https://codeberg.org/playXE/capy/commit/236519132784bf43ddc6372344e7186aac37d96e))
