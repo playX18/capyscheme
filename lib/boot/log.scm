@@ -105,6 +105,10 @@
             (define source (or target module))
             (format (current-output-port) ";; ~a" level-str)
             (if source (format (current-output-port) "(~a)" source))
+            (when file
+              (format (current-output-port) " [~a" file)
+              (when line (format (current-output-port) ":~a" line))
+              (format (current-output-port) "]"))
             (format (current-output-port) ": ")
             (apply format (current-output-port) fmt args)
             (newline (current-output-port))
