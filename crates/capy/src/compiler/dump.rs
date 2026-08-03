@@ -152,22 +152,18 @@ enum SbbvDumpMode {
 }
 
 static SBBV_DUMP_MODE: std::sync::LazyLock<(SbbvDumpMode, Vec<String>)> =
-    std::sync::LazyLock::new(|| {
-        match std::env::var(ENV_CAPY_SBBV_DUMP).ok().as_deref() {
-            None | Some("") | Some("0") | Some("off") | Some("false") | Some("none") => {
-                (SbbvDumpMode::Disabled, Vec::new())
-            }
-            Some("1") | Some("on") | Some("true") | Some("all") => {
-                (SbbvDumpMode::All, Vec::new())
-            }
-            Some(other) => (
-                SbbvDumpMode::Stages,
-                other
-                    .split(',')
-                    .map(|part| part.trim().to_ascii_lowercase())
-                    .collect(),
-            ),
+    std::sync::LazyLock::new(|| match std::env::var(ENV_CAPY_SBBV_DUMP).ok().as_deref() {
+        None | Some("") | Some("0") | Some("off") | Some("false") | Some("none") => {
+            (SbbvDumpMode::Disabled, Vec::new())
         }
+        Some("1") | Some("on") | Some("true") | Some("all") => (SbbvDumpMode::All, Vec::new()),
+        Some(other) => (
+            SbbvDumpMode::Stages,
+            other
+                .split(',')
+                .map(|part| part.trim().to_ascii_lowercase())
+                .collect(),
+        ),
     });
 
 pub(crate) fn sbbv_dump_requested() -> bool {

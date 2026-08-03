@@ -12,7 +12,10 @@ use crate::{
         cranelift::primitive::Primitive,
     },
     expander::core::LVarRef,
-    runtime::{value::Value, vm::exceptions::RaiseKind},
+    runtime::{
+        value::{Symbol, Value},
+        vm::exceptions::RaiseKind,
+    },
 };
 
 use super::{
@@ -21,13 +24,14 @@ use super::{
 };
 
 pub fn lower_graph<'gc>(graph: &Graph<'gc>, reify: &GraphReifyInfo) -> Program<'gc> {
+    let primitives = collect_primitive_map(graph);
     let mut procedures = Vec::new();
 
     for function in reify.functions.iter().copied() {
         let _p = crate::utils::pass_profile::ProfileScope::new("cfg.lower.function");
         let lowered = {
             let _c = crate::utils::pass_profile::ProfileScope::new("cfg.lower.convert");
-            lower_function(graph, reify, function)
+            lower_function(graph, reify, function, &primitives)
         };
         procedures.push(finish_procedure(lowered));
     }
@@ -37,7 +41,7 @@ pub fn lower_graph<'gc>(graph: &Graph<'gc>, reify: &GraphReifyInfo) -> Program<'
             let _p = crate::utils::pass_profile::ProfileScope::new("cfg.lower.continuation");
             let lowered = {
                 let _c = crate::utils::pass_profile::ProfileScope::new("cfg.lower.convert");
-                lower_continuation(graph, reify, continuation)
+                lower_continuation(graph, reify, continuation, &primitives)
             };
             procedures.push(finish_procedure(lowered));
         }
@@ -49,17 +53,31 @@ pub fn lower_graph<'gc>(graph: &Graph<'gc>, reify: &GraphReifyInfo) -> Program<'
     }
 }
 
+fn collect_primitive_map<'gc>(graph: &Graph<'gc>) -> HashMap<Value<'gc>, Primitive> {
+    let mut map = HashMap::new();
+    for (_, expr) in graph.exprs_iter() {
+        if let ExprKind::PrimCall(prim, _) = expr.kind {
+            map.entry(prim).or_insert_with(|| {
+                let name = prim.downcast::<Symbol>().to_string();
+                Primitive::from_name(&name).unwrap_or_else(|| panic!("undefined primitive: {prim}"))
+            });
+        }
+    }
+    map
+}
+
 fn lower_function<'gc>(
     graph: &Graph<'gc>,
     reify: &GraphReifyInfo,
     function: FunctionId,
+    primitives: &HashMap<Value<'gc>, Primitive>,
 ) -> Procedure<'gc> {
     let data = graph[function];
     let return_cont = data
         .cont
         .expect("graph function should have a return continuation");
     let source_free_vars = binder_set_to_vec(reify.free_vars.function(function));
-    let mut builder = ProcedureBuilder::new(graph, reify);
+    let mut builder = ProcedureBuilder::new(graph, reify, primitives);
     let binding = builder.uvar(data.var);
     let return_cont = builder.uvar(return_cont);
     let params = builder.uvars(graph.bound_vars_slice(&data.vars));
@@ -91,6 +109,7 @@ fn lower_continuation<'gc>(
     graph: &Graph<'gc>,
     reify: &GraphReifyInfo,
     continuation: FunctionId,
+    primitives: &HashMap<Value<'gc>, Primitive>,
 ) -> Procedure<'gc> {
     let data = graph[continuation];
     assert!(
@@ -98,7 +117,7 @@ fn lower_continuation<'gc>(
         "graph continuation should not have a return continuation"
     );
     let source_free_vars = binder_set_to_vec(reify.free_vars.continuation(continuation));
-    let mut builder = ProcedureBuilder::new(graph, reify);
+    let mut builder = ProcedureBuilder::new(graph, reify, primitives);
     let binding = builder.uvar(data.var);
     let params = builder.uvars(graph.bound_vars_slice(&data.vars));
     let variadic = data.variadic.map(|var| builder.uvar(var));
@@ -157,6 +176,7 @@ fn closure_refs<'gc>(
 struct ProcedureBuilder<'a, 'gc> {
     graph: &'a Graph<'gc>,
     reify: &'a GraphReifyInfo,
+    primitives: &'a HashMap<Value<'gc>, Primitive>,
     blocks: Vec<Block<'gc>>,
     local_blocks: HashMap<BoundVar, BlockId>,
     /// Contified continuation formals (and optional rest), for Assign-on-continue.
@@ -169,10 +189,15 @@ struct ProcedureBuilder<'a, 'gc> {
 }
 
 impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
-    fn new(graph: &'a Graph<'gc>, reify: &'a GraphReifyInfo) -> Self {
+    fn new(
+        graph: &'a Graph<'gc>,
+        reify: &'a GraphReifyInfo,
+        primitives: &'a HashMap<Value<'gc>, Primitive>,
+    ) -> Self {
         Self {
             graph,
             reify,
+            primitives,
             blocks: Vec::new(),
             local_blocks: HashMap::new(),
             local_formals: HashMap::new(),
@@ -424,8 +449,9 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
                 instructions.push(Instruction::Const { dst, value });
             }
             ExprKind::PrimCall(prim, args) => {
-                let name = prim.downcast::<crate::runtime::value::Symbol>().to_string();
-                let prim = Primitive::from_name(&name)
+                let prim = *self
+                    .primitives
+                    .get(&prim)
                     .unwrap_or_else(|| panic!("undefined primitive: {prim}"));
                 let args = self.atoms_for_prim(prim, &args);
                 let dst = self.uvar(binding);

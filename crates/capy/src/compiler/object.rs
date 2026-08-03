@@ -23,11 +23,11 @@ pub struct CompilationOptions {
 
 pub(crate) fn compile_lowered_to_fasl_bytes<'gc>(
     ctx: Context<'gc>,
-    lowered: &LoweredProgram<'gc>,
+    lowered: LoweredProgram<'gc>,
     opts: CompilationOptions,
 ) -> Result<Vec<u8>, Value<'gc>> {
     let _stats = CompilationBreakdownScope::new(CompilationBreakdownPhase::Cranelift);
-    let mut module_builder = ModuleBuilder::new_with_program(ctx, lowered.ssa.clone());
+    let mut module_builder = ModuleBuilder::new_with_program(ctx, lowered.ssa);
     module_builder.stacktraces = opts.backtraces;
     module_builder
         .compile_loaded_fasl_bytes_with_dumps(&opts.backend_dumps)

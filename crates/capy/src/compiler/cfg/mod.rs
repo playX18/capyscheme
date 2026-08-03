@@ -54,8 +54,7 @@ pub(crate) fn finish_procedure<'gc>(procedure: Procedure<'gc>) -> Procedure<'gc>
     // Dump the IR that actually reaches Cranelift (after all CFG finish passes).
     if crate::compiler::dump::sbbv_dump_stage_enabled("post-finish")
         || crate::compiler::dump::sbbv_dump_stage_enabled("all")
-        || std::env::var_os("CAPY_SBBV_DUMP")
-            .is_some_and(|v| matches!(v.to_str(), Some("1" | "on" | "true" | "all")))
+        || crate::compiler::dump::sbbv_dump_requested()
     {
         bbv::dump::maybe_dump_procedure("post-finish", &finished, None);
     }
