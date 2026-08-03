@@ -37,13 +37,26 @@
           #'((dummy . pattern) #'(syntax-error (dummy . pattern) message arg ...)))
         ;; Normal case
         (((keyword . pattern) template)
-          #'((dummy . pattern) #'template))))
+          #'((dummy . pattern) #'template))
+        ;; An empty pattern () is a legal (degenerate) syntax-rules pattern:
+        ;; keep it as the empty syntax-case pattern.
+        ((() template)
+          #'(() #'template))))
     (define (expand-syntax-rules dots keys docstrings clauses)
+      ;; CLAUSES is a list of raw (pattern template) syntax objects; each is
+      ;; converted individually so that empty patterns are supported.
       (with-syntax
         (((k ...) keys)
           ((docstring ...) docstrings)
-          ((((keyword . pattern) template) ...) clauses)
-          ((clause ...) (map expand-clause clauses)))
+          ((clause ...) (map expand-clause clauses))
+          ;; Keep the pattern as a syntax object (not a datum) for the
+          ;; procedure metadata: raw symbols in macro output are rejected.
+          ((pattern ...)
+            (map (lambda (cl)
+                   (syntax-case cl ()
+                     ((p t) #'p)
+                     (_ #f)))
+              clauses)))
         (with-syntax
           ((form #'(lambda (x)
                     docstring ; optional docstring
@@ -58,17 +71,17 @@
               #'(with-ellipsis dots form))
             #'form))))
     (syntax-case xx ()
-      ((_ (k ...) ((keyword . pattern) template) ...)
-        (expand-syntax-rules #f #'(k ...) #'() #'(((keyword . pattern) template) ...)))
-      ((_ (k ...) docstring ((keyword . pattern) template) ...)
+      ((_ (k ...) docstring clause ...)
         (string? (syntax->datum #'docstring))
-        (expand-syntax-rules #f #'(k ...) #'(docstring) #'(((keyword . pattern) template) ...)))
-      ((_ dots (k ...) ((keyword . pattern) template) ...)
-        (identifier? #'dots)
-        (expand-syntax-rules #'dots #'(k ...) #'() #'(((keyword . pattern) template) ...)))
-      ((_ dots (k ...) docstring ((keyword . pattern) template) ...)
+        (expand-syntax-rules #f #'(k ...) #'(docstring) #'(clause ...)))
+      ((_ (k ...) clause ...)
+        (expand-syntax-rules #f #'(k ...) #'() #'(clause ...)))
+      ((_ dots (k ...) docstring clause ...)
         (and (identifier? #'dots) (string? (syntax->datum #'docstring)))
-        (expand-syntax-rules #'dots #'(k ...) #'(docstring) #'(((keyword . pattern) template) ...))))))
+        (expand-syntax-rules #'dots #'(k ...) #'(docstring) #'(clause ...)))
+      ((_ dots (k ...) clause ...)
+        (identifier? #'dots)
+        (expand-syntax-rules #'dots #'(k ...) #'() #'(clause ...))))))
 
 (define-syntax define-syntax-rule
   (lambda (x)
