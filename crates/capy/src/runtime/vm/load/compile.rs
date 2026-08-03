@@ -218,8 +218,8 @@ fn compile_and_load_source<'gc>(
     let module = current_module(ctx).get(ctx).downcast();
     let _phase = CompilationPhase::new(ctx);
     begin_compilation_artifact(&build_destination.path);
-    let lowered = compile_file(ctx, &source_path, Some(module))?;
     let dump_options = merge_compile_dump_options(DumpArtifactsOptions::default());
+    let lowered = compile_file(ctx, &source_path, Some(module), dump_options.dump_graph)?;
     dump_lowered_program_artifacts(ctx, &build_destination.path, &lowered, dump_options);
     let mut options = CompilationOptions::default();
     if dump_options.dump_cranelift {
@@ -230,18 +230,18 @@ fn compile_and_load_source<'gc>(
         options.backend_dumps.disassembly =
             Some(resolve_artifact_dump_path(&build_destination.path, ".asm"));
     }
-    compile_lowered_to_destination(ctx, &lowered, options, &build_destination)?;
+    compile_lowered_to_destination(ctx, lowered, options, &build_destination)?;
 
     load_artifact(ctx, libs, &build_destination)
 }
 
 pub(super) fn compile_lowered_to_destination<'gc>(
     ctx: Context<'gc>,
-    lowered: &LoweredProgram<'gc>,
+    lowered: LoweredProgram<'gc>,
     options: CompilationOptions,
     destination: &LoadArtifact,
 ) -> Result<(), Value<'gc>> {
-    compile_to_destination(ctx, destination, || {
+    compile_to_destination(ctx, destination, move || {
         compile_lowered_to_fasl_bytes(ctx, lowered, options)
     })
 }

@@ -505,14 +505,20 @@ fn make_raise_condition_impl<'gc>(
             } else {
                 Value::new(false)
             };
-            finish_condition(
-                ConditionBuilder::new(ctx)
-                    .assertion()
-                    .message_value(ctx.str(&message))
-                    .irritants(&[subr, meta])
-                    .marks(),
-                source,
-            )
+            let name = if subr.is::<crate::runtime::value::Closure>() {
+                subr.downcast::<crate::runtime::value::Closure>().name(ctx)
+            } else {
+                None
+            };
+            let mut builder = ConditionBuilder::new(ctx)
+                .assertion()
+                .message_value(ctx.str(&message))
+                .irritants(&[subr, meta])
+                .marks();
+            if let Some(name) = name {
+                builder = builder.who_value(name);
+            }
+            finish_condition(builder, source)
         }
         RaiseKind::NonApplicable => {
             let subr = values.first().copied().unwrap_or(Value::new(false));

@@ -236,8 +236,15 @@ pub(crate) fn reified_cc(ans: &'gc [Value<'gc>]) -> &'gc [Value<'gc>] {
 /// Null continuation: errors if invoked; still a `continuation?`.
 #[scheme(name = " .null-reified-cc ")]
 pub(crate) fn null_reified_cc(_ans: &'gc [Value<'gc>]) -> () {
-    eprintln!("Error: attempted to invoke the null continuation.");
-    std::process::exit(1);
+    crate::runtime::vm::thunk_raise(
+        nctx.ctx,
+        crate::runtime::vm::exceptions::make_assertion_violation(
+            nctx.ctx,
+            Some("null-continuation"),
+            "attempted to invoke the null continuation",
+            &[],
+        ),
+    );
 }
 
 fn replace_or_add_mark<'gc>(

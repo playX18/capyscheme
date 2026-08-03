@@ -889,10 +889,16 @@ pub fn make_io_error<'gc>(
         .root_module()
         .get(ctx, Symbol::from_str(ctx, "%make-io-error").into())
         .unwrap_or_else(|| {
-            panic!(
-                "failed to resolve %make-io-error (pre-boot): who={who}, message={message}, irritants={:?}",
-                irritants
+            // Pre-boot: the Scheme condition machinery is not loaded yet, so
+            // build a minimal string error instead of panicking.
+            Str::new(
+                ctx,
+                format!(
+                    "i/o error (pre-boot): who={who}, message={message}, irritants={irritants:?}",
+                ),
+                true,
             )
+            .into()
         });
 
     match crate::runtime::sni::call_function(ctx, io_error, args) {

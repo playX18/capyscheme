@@ -24,6 +24,10 @@ const GC_ARGS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Flags that must take effect before the Scheme CLI parses them, so that
+/// early loads (the boot stdlib) are covered as well. 
+const PRE_BOOT_ARGS: &[(&str, &str)] = &[("--debug", "CAPY_FASL_DEBUG")];
+
 const COMPILER_ENTRY_ARG: &str = "--capy-compiler-entrypoint";
 
 pub fn run_cli(default_entry: &'static str) -> i32 {
@@ -54,7 +58,18 @@ pub fn run_cli(default_entry: &'static str) -> i32 {
             let null = env.null();
             *out_args = env.cons(prog_args, null);
         },
-        |_env, success, _result| i32::from(!success),
+        |env, success, result| {
+            if !success {
+                // Last-resort reporter: reachable only when no Scheme-level
+                // exception handler printed the condition (e.g. a boot-time
+                // failure before the CLI/REPL handlers are installed).
+                match env.value_to_utf8(result) {
+                    Ok(message) => eprintln!("{message}"),
+                    Err(_) => eprintln!("Unhandled exception (value not printable)"),
+                }
+            }
+            i32::from(!success)
+        },
     )
 }
 
@@ -94,7 +109,9 @@ fn apply_gc_args(args: Vec<OsString>) -> Result<Vec<OsString>, String> {
         }
 
         let arg_str = arg.to_string_lossy();
-        if let Some((env, value)) = split_gc_arg(&arg_str) {
+        if let Some((env, value)) =
+            split_flag(&arg_str, GC_ARGS).or_else(|| split_flag(&arg_str, PRE_BOOT_ARGS))
+        {
             let value = match value {
                 Some(value) => OsString::from(value),
                 None => iter
@@ -114,8 +131,11 @@ fn apply_gc_args(args: Vec<OsString>) -> Result<Vec<OsString>, String> {
     Ok(output)
 }
 
-fn split_gc_arg(arg: &str) -> Option<(&'static str, Option<&str>)> {
-    for (flag, env) in GC_ARGS {
+fn split_flag<'a>(
+    arg: &'a str,
+    table: &[(&'static str, &'static str)],
+) -> Option<(&'static str, Option<&'a str>)> {
+    for (flag, env) in table {
         if arg == *flag {
             return Some((*env, None));
         }

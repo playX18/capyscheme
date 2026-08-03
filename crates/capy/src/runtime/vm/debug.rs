@@ -162,10 +162,17 @@ pub mod debug_ops {
         let ctx = nctx.ctx;
         let bytes = proc.code_block.unlinked.code();
         if bytes.is_empty() {
+            // Primitive/native procedures carry no code block bytes; compiled
+            // code can also have its unlinked buffer discarded after linking.
             return nctx.return_(Err(make_io_error(
                 ctx,
                 "disassembly",
-                Str::new(ctx, "procedure has no unlinked code bytes", true).into(),
+                Str::new(
+                    ctx,
+                    "procedure has no disassemblable code (primitive or linked-only closure)",
+                    true,
+                )
+                .into(),
                 &[],
             )));
         }

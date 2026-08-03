@@ -1,4 +1,4 @@
-use std::sync::RwLock;
+use std::sync::{LazyLock, RwLock};
 
 use crate::runtime::fasl::LoadOptions;
 
@@ -11,7 +11,8 @@ pub(crate) enum ExecutionPolicy {
 }
 
 static EXECUTION_POLICY: RwLock<ExecutionPolicy> = RwLock::new(ExecutionPolicy::Aot);
-static FASL_LOAD_OPTIONS: RwLock<LoadOptions> = RwLock::new(LoadOptions::NORMAL);
+static FASL_LOAD_OPTIONS: LazyLock<RwLock<LoadOptions>> =
+    LazyLock::new(|| RwLock::new(LoadOptions::from_env()));
 
 pub(crate) fn get_execution_policy() -> ExecutionPolicy {
     *EXECUTION_POLICY

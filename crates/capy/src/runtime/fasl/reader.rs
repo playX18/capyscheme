@@ -58,6 +58,13 @@ impl LoadOptions {
     pub const DEBUG: Self = Self {
         debug_entries: true,
     };
+
+    pub fn from_env() -> Self {
+        match std::env::var_os("CAPY_FASL_DEBUG") {
+            Some(v) if v != "0" && v != "false" => Self::DEBUG,
+            _ => Self::NORMAL,
+        }
+    }
 }
 
 struct Roots<'gc> {

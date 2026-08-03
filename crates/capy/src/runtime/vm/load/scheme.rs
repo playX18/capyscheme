@@ -305,12 +305,12 @@ fn compile_expanded_to_destination<'gc>(
     let _phase = CompilationPhase::new(ctx);
     let destination = destination_artifact_for_current_policy(destination);
     begin_compilation_artifact(&destination.path);
-    let lowered = lower_expanded_scheme(ctx, expanded, module)?;
     let dump_options = merge_compile_dump_options(dump_options);
+    let lowered = lower_expanded_scheme(ctx, expanded, module, dump_options.dump_graph)?;
     let mut options = options;
     configure_backend_dump_paths(&mut options.backend_dumps, &destination.path, dump_options);
     dump_lowered_program_artifacts(ctx, &destination.path, &lowered, dump_options);
-    compile_lowered_to_destination(ctx, &lowered, options, &destination)?;
+    compile_lowered_to_destination(ctx, lowered, options, &destination)?;
 
     if !load_thunk {
         return Ok(Str::new(ctx, destination.path.display().to_string(), true).into());
@@ -361,10 +361,17 @@ fn lower_expanded_scheme<'gc>(
     ctx: Context<'gc>,
     expanded: Value<'gc>,
     module: Gc<'gc, Module<'gc>>,
+    dump_graph: bool,
 ) -> Result<LoweredProgram<'gc>, Value<'gc>> {
     let mut converter = TermConverter::new(ctx);
     let ir = converter.convert(expanded)?;
-    lower_expanded_to_cps(ctx, ir, Some(module), cfg!(feature = "bootstrap"))
+    lower_expanded_to_cps(
+        ctx,
+        ir,
+        Some(module),
+        cfg!(feature = "bootstrap"),
+        dump_graph,
+    )
 }
 
 fn load_compiled_library<'gc>(
