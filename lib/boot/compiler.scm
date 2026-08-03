@@ -18,16 +18,38 @@
       (lambda ()
         ((@@ (capy) %runtime-stats-end-reader) token)))))
 
+;; Per-pass timing for the Scheme-side compile pipeline. Enabled by the same
+;; CAPY_PROFILE_PASSES env var as the Rust pass profiler (utils/pass_profile.rs).
+(define (%profile-phase name thunk)
+  (let ([flag ((@@ (capy) getenv) "CAPY_PROFILE_PASSES")])
+    (if (and flag (not (equal? flag "")))
+      (let ([t0 ((@@ (capy) microsecond))])
+        (call-with-values
+          thunk
+          (lambda results
+            (let ([t1 ((@@ (capy) microsecond))])
+              (display
+                (string-append
+                  ";; PERF (capy) phase=" name " elapsed_ms="
+                  (number->string (quotient (- t1 t0) 1000))
+                  "\n")
+                (current-error-port))
+              (apply values results)))))
+      (thunk))))
+
 (%%file-compiler
   (lambda (filename compiled-path env load-thunk? . maybe-dump-options)
     (define dump-options
       (if (null? maybe-dump-options) '() (car maybe-dump-options)))
     (define (read-all in)
-      (let lp ([exps '()])
-        (let ([exp (%runtime-stats-timed-reader (lambda () (read-syntax in)))])
-          (cond
-            [(eof-object? exp) (reverse exps)]
-            [else (lp (cons exp exps))]))))
+      (%profile-phase
+        "scheme.read_all"
+        (lambda ()
+          (let lp ([exps '()])
+            (let ([exp (%runtime-stats-timed-reader (lambda () (read-syntax in)))])
+              (cond
+                [(eof-object? exp) (reverse exps)]
+                [else (lp (cons exp exps))]))))))
     (define output-file (or compiled-path (compiled-file-name filename)))
     (define module (or env (resolve-module '(capy user) #f #f)))
     (*raw-log* log:debug
@@ -45,11 +67,16 @@
             (define exps (read-all in))
             (define reader (get-port-reader in #f))
             (with-continuation-mark *compile-backtrace-key* (not (reader-nobacktrace? reader))
-              (receive (code mod new-mod) (compile-tree-il exps module)
-                (let* ([code (resolve-primitives code mod)]
-                       [code (expand-primitives code)]
-                       [code (resolve-free-vars code)]
-                       [code (letrectify code #t)])
+              (receive (code mod new-mod)
+                (%profile-phase "scheme.compile_tree_il" (lambda () (compile-tree-il exps module)))
+                (let* ([code (%profile-phase "scheme.resolve_primitives"
+                               (lambda () (resolve-primitives code mod)))]
+                       [code (%profile-phase "scheme.expand_primitives"
+                               (lambda () (expand-primitives code)))]
+                       [code (%profile-phase "scheme.resolve_free_vars"
+                               (lambda () (resolve-free-vars code)))]
+                       [code (%profile-phase "scheme.letrectify"
+                               (lambda () (letrectify code #t)))])
                   (%compile code output-file mod load-thunk? dump-options)))))))
       (lambda ()
         ((@@ (capy) %runtime-stats-end-compilation))))))
