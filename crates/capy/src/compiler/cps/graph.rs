@@ -413,6 +413,11 @@ impl<'gc> Graph<'gc> {
         }
     }
 
+    /// Iterate over all expression nodes in the graph.
+    pub fn exprs_iter(&self) -> impl Iterator<Item = (ExprId, &Expr<'gc>)> {
+        self.exprs.iter()
+    }
+
     pub fn new_term_link(&mut self, target: Option<TermId>) -> TermLink {
         self.term_links.push(target)
     }
