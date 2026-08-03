@@ -30,11 +30,18 @@ struct SwitchNode<'gc> {
 pub(crate) fn infer_switches<'gc>(mut procedure: Procedure<'gc>) -> Procedure<'gc> {
     loop {
         let predecessors = local_predecessor_counts(&procedure);
-        let Some(candidate) = procedure
+        // Build the block index once per iteration. It must not be rebuilt per
+        // `find_map` attempt: `infer_switch_candidate` may be tried against
+        // many blocks before the first candidate, and a fresh O(blocks) map per
+        // attempt is quadratic on huge procedures
+        let blocks: HashMap<_, _> = procedure
             .blocks
             .iter()
-            .find_map(|block| infer_switch_candidate(&procedure, block.id, &predecessors))
-        else {
+            .map(|block| (block.id, block))
+            .collect();
+        let Some(candidate) = procedure.blocks.iter().find_map(|block| {
+            infer_switch_candidate(&blocks, &procedure.blocks, block.id, &predecessors)
+        }) else {
             break;
         };
         apply_switch_candidate(&mut procedure, candidate);
@@ -54,16 +61,12 @@ fn local_predecessor_counts<'gc>(procedure: &Procedure<'gc>) -> HashMap<BlockId,
 }
 
 fn infer_switch_candidate<'gc>(
-    procedure: &Procedure<'gc>,
+    blocks: &HashMap<BlockId, &Block<'gc>>,
+    procedure_blocks: &[Block<'gc>],
     start: BlockId,
     predecessors: &HashMap<BlockId, usize>,
 ) -> Option<SwitchCandidate<'gc>> {
-    let blocks = procedure
-        .blocks
-        .iter()
-        .map(|block| (block.id, block))
-        .collect::<HashMap<_, _>>();
-    let first = switch_node(&blocks, predecessors, blocks[&start], true)?;
+    let first = switch_node(blocks, predecessors, blocks[&start], true)?;
     let mut kind = first.kind;
     let scrutinee = first.scrutinee;
     let mut cases = vec![SwitchCase {
@@ -76,11 +79,10 @@ fn infer_switch_candidate<'gc>(
     let mut seen_values = HashSet::from([first.value]);
     let mut next = first.next;
 
-    while let Some((block, skipped_blocks)) = switch_chain_next_block(&blocks, predecessors, &next)
-    {
+    while let Some((block, skipped_blocks)) = switch_chain_next_block(blocks, predecessors, &next) {
         let Some(node) = blocks
             .get(&block)
-            .and_then(|block| switch_node(&blocks, predecessors, block, false))
+            .and_then(|block| switch_node(blocks, predecessors, block, false))
         else {
             break;
         };
@@ -110,7 +112,7 @@ fn infer_switch_candidate<'gc>(
     }
 
     let removed = chain_blocks.iter().copied().skip(1).collect::<HashSet<_>>();
-    let removed_defs = switch_removed_defs(&blocks, start, &chain_blocks, instruction_count);
+    let removed_defs = switch_removed_defs(blocks, start, &chain_blocks, instruction_count);
     if cases
         .iter()
         .any(|case| branch_target_mentions_removed(&case.target, &removed))
@@ -121,7 +123,7 @@ fn infer_switch_candidate<'gc>(
             .any(|case| branch_target_mentions_defs(&case.target, &removed_defs))
         || branch_target_mentions_defs(&next, &removed_defs)
         || surviving_blocks_mention_defs(
-            &procedure.blocks,
+            procedure_blocks,
             start,
             &removed,
             &removed_defs,
