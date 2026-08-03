@@ -1230,12 +1230,11 @@
           (for-each (lambda (sym)
                      (module-add! iface sym
                        (or (module-variable mod sym)
-                         (error 'import (format
-                                         #f
-                                         "no binding '~a' in module ~a"
-                                         sym
-                                         mod
-                                         (module-uses mod)))))
+                         (let ([hint (import-suggestion-string 'binding sym mod)])
+                           (error 'import
+                             (format #f "no binding '~a' in module ~a~a"
+                               sym mod
+                               (if hint (string-append "; " hint) ""))))))
                      (if (core-hash-ref (module-replacements mod) sym)
                        (core-hash-put! (module-replacements iface) sym #t)))
             (syntax->datum #'(identifier ...)))
@@ -1250,7 +1249,11 @@
             mod)
           (for-each (lambda (sym)
                      (if (not (module-local-variable iface sym))
-                       (error 'import (format #f "no binding '~a' in module ~a ~a" sym mod (module-uses mod))))
+                       (let ([hint (import-suggestion-string 'binding sym mod)])
+                         (error 'import
+                           (format #f "no binding '~a' in module ~a~a"
+                             sym mod
+                             (if hint (string-append "; " hint) "")))))
                      (module-remove! iface sym))
             (syntax->datum #'(identifier ...)))
           iface))
@@ -1304,8 +1307,12 @@
                        (to (cdar in))
                        (var (module-variable mod from))
                        (replace? (core-hash-ref replacements from)))
-                  (if (not var) (error 'resolve-r6rs-interface
-                                 (format #f "no binding `~a` in module ~a" from mod)))
+                  (if (not var)
+                    (let ([hint (import-suggestion-string 'binding from mod)])
+                      (error 'resolve-r6rs-interface
+                        (format #f "no binding `~a` in module ~a~a"
+                          from mod
+                          (if hint (string-append "; " hint) "")))))
                   (module-remove! iface from)
                   (core-hash-remove! replacements from)
                   (lp (cdr in) (cons (vector to replace? var) out))))))))
@@ -1878,35 +1885,37 @@
         (values #'name #'prop #'expr w mod)]
       [_ (syntax-violation 'define-property "bad form" (source-wrap e w s mod))]))
 
+  (define (macro-frame-name transformer-stx use-site)
+    (cond
+      ((identifier? transformer-stx) (syntax->datum transformer-stx))
+      ((symbol? transformer-stx) transformer-stx)
+      ((and (syntax? use-site) (pair? (syntax-expression use-site)))
+        (let ((head (car (syntax-expression use-site))))
+          (cond
+            ((identifier? head) (syntax->datum head))
+            ((syntax? head) (syntax->datum head))
+            ((symbol? head) head)
+            (else #f))))
+      ((identifier? use-site) (syntax->datum use-site))
+      ((symbol? use-site) use-site)
+      (else #f)))
+  (define (macro-expansion-frame transformer-stx use-site)
+    (let ((name (macro-frame-name transformer-stx use-site))
+          (use-source (source-annotation use-site))
+          (transformer-source (source-annotation transformer-stx)))
+      (filter
+        values
+        (list
+          (and name (cons 'macro name))
+          (and use-source (cons 'use-site use-source))
+          (and transformer-source (cons 'transformer-site transformer-source))
+          (and use-site (syntax? use-site) (pair? (syntax-expression use-site))
+            (cons 'use-form (syntax->datum use-site)))))))
+
   (define (expand-macro p e r w s rib mod)
     (define transformer (car p))
-    (define transformer-stx (cdr p))
     (define (decorate-source x)
       (source-wrap x empty-wrap s #f))
-    (define (macro-frame-name use-site)
-      (cond
-        ((identifier? transformer-stx) (syntax->datum transformer-stx))
-        ((symbol? transformer-stx) transformer-stx)
-        ((and (syntax? use-site) (pair? (syntax-expression use-site)))
-          (let ((head (car (syntax-expression use-site))))
-            (cond
-              ((identifier? head) (syntax->datum head))
-              ((syntax? head) (syntax->datum head))
-              ((symbol? head) head)
-              (else #f))))
-        ((identifier? use-site) (syntax->datum use-site))
-        ((symbol? use-site) use-site)
-        (else #f)))
-    (define (macro-expansion-frame use-site)
-      (let ((name (macro-frame-name use-site))
-            (use-source (source-annotation use-site))
-            (transformer-source (source-annotation transformer-stx)))
-        (filter
-          values
-          (list
-            (and name (cons 'macro name))
-            (and use-source (cons 'use-site use-source))
-            (and transformer-source (cons 'transformer-site transformer-source))))))
     (define (map* f x)
       (match x
         [() '()]
@@ -1989,16 +1998,18 @@
       (dynamic-wind
         (lambda () (fluid-set! transformer-environment (lambda (k) (k e r w s rib mod))))
         (lambda ()
-          (let ((use-site (source-wrap e (anti-mark w) s mod)))
-            (with-macro-expansion-frame
-              (macro-expansion-frame use-site)
-              (lambda ()
-                (cond
-                  ((procedure? transformer) (apply-transformer transformer use-site))
-                  ((variable-transformer? transformer) (apply-transformer (variable-transformer-procedure transformer) use-site))
-                  (else (syntax-violation #f "invalid transformer" p)))))))
+          (cond
+            ((procedure? transformer) (apply-transformer transformer (source-wrap e (anti-mark w) s mod)))
+            ((variable-transformer? transformer) (apply-transformer (variable-transformer-procedure transformer) (source-wrap e (anti-mark w) s mod)))
+            (else (syntax-violation #f "invalid transformer" p))))
         ;(lambda () (rebuild-macro-output (p (source-wrap e (anti-mark w) s mod)) (new-mark)))
         (lambda () (fluid-set! transformer-environment old)))))
+
+  (define (expand-macro-with-frame p e r w s rib mod k)
+    ;; p = (transformer . transformer-stx)
+    (with-macro-expansion-frame
+      (macro-expansion-frame (cdr p) (source-wrap e (anti-mark w) s mod))
+      (lambda () (k (expand-macro p e r w s rib mod)))))
 
   (define (eval-local-transformer expanded mod)
     (let ((p (local-eval expanded mod)))
@@ -2050,7 +2061,10 @@
             ((macro)
               (if for-car? 
                 (values type value e e w s mod)
-                (syntax-type (expand-macro value e r w s rib mod) r empty-wrap s rib mod #f)))
+                (expand-macro-with-frame
+                  value e r w s rib mod
+                  (lambda (expanded)
+                    (syntax-type expanded r empty-wrap s rib mod #f)))))
             ((global)
               (values type value e value w s mod*))
             (else (values type value e e w s mod)))))
@@ -2061,13 +2075,10 @@
             ((lexical) (values 'call #f e e w s mod))
             ((global) (values 'call #f e e w s mod))
             ((macro)
-              (syntax-type (expand-macro fval e r w s rib mod)
-                r
-                empty-wrap
-                s
-                rib
-                mod
-                for-car?))
+              (expand-macro-with-frame
+                fval e r w s rib mod
+                (lambda (expanded)
+                  (syntax-type expanded r empty-wrap s rib mod for-car?))))
             ((module-ref)
               (call-with-values (lambda () (fval e r w mod))
                 (lambda (e r w s mod) (syntax-type e r w s rib mod for-car?))))
@@ -3413,7 +3424,10 @@
                 (build-global-assignment s value (expand #'val r w mod) id-mod)]
               [(macro)
                 (if (variable-transformer? (car value))
-                  (expand (expand-macro value e r w s #f mod) r empty-wrap mod)
+                  (expand-macro-with-frame
+                    value e r w s #f mod
+                    (lambda (expanded)
+                      (expand expanded r empty-wrap mod)))
                   (syntax-violation
                     'set!
                     "not a variable transformer"

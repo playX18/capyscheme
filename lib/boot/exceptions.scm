@@ -12,12 +12,16 @@
 
 (define (make-nested-exception-handler what old-exn)
   (lambda (exn)
-    (default-uncaught-exception-handler
-      (condition
-        (make-non-continuable-violation)
-        (make-who-condition (if what what "handler for uncaught exceptions"))
-        (make-message-condition "Exception raised while handling exception")
-        (make-irritants-condition (list exn old-exn))))))
+    (if (and (condition? exn) (not (serious-condition? exn)))
+      ;; A handler re-raised a non-serious condition (e.g. a warning): let it
+      ;; propagate to the remaining handlers instead of printing here.
+      exn
+      (default-uncaught-exception-handler
+        (condition
+          (make-non-continuable-violation)
+          (make-who-condition (if what what "handler for uncaught exceptions"))
+          (make-message-condition "Exception raised while handling exception")
+          (make-irritants-condition (list exn old-exn)))))))
 
 (define (do-raise v)
   (define init-v v)
@@ -30,6 +34,9 @@
   (let loop ([set set] [v init-v])
     (cond
       [(null? set)
+        ;; No handlers remain: the exception is uncaught.  Resumption happens
+        ;; only when a handler returns, so even a continuable exception is
+        ;; reported by the uncaught handler here (R6RS 7.1).
         (call-with-nested-handler
           (lambda ()
             ((uncaught-exception-handler) v)))]
@@ -50,12 +57,10 @@
                       exn))
         (if (and (condition? base) (serious-condition? base))
           (ueh base)
-          ;; not &serious, try to 'continue'
-          (begin
-            ((current-exception-printer) base (current-error-port))
-            (newline (current-error-port))
-            (when (continuable-exception? exn)
-              ((continuable-exception-continuation exn) (lambda () (values)))))))))
+          ;; A handler re-raised a non-serious condition: propagate it to the
+          ;; remaining handlers.  Resumption happens only when a handler
+          ;; returns (R6RS 7.1), never because a handler raised.
+          exn))))
   (define (swap)
     (let ([t (p)])
       (p y)

@@ -103,11 +103,97 @@
         #f)]
     [else #f]))
 
+;; Convert a source vector ([file line col ...]) to an &source condition, or #f.
+(define (sourcev->source-condition src)
+  (if (and (vector? src) (>= (vector-length src) 3))
+    (make-source-condition (vector-ref src 0) (vector-ref src 1) (vector-ref src 2))
+    #f))
+
 (define (make-condition-uid) #f)
+
+;; Render the source line of FILE at LINE (1-based) with a caret under column
+;; COL (0-based), extended to END-COL when the span lies on the same line.
+;; For a span that continues past LINE, the caret covers the rest of LINE and
+;; the last line of the span is rendered underneath. Prints to port P; returns
+;; #t when a line was printed, #f otherwise.
+(define (render-source-line p file line col end-line end-col)
+  (define (ref src index default)
+    (if (and (vector? src) (< index (vector-length src)))
+      (vector-ref src index)
+      default))
+  (define (caret-run start end len)
+    (display (make-string (min start len) #\space) p)
+    (display (make-string (max 1 (- (min end len) (min start len))) #\^) p)
+    (newline p))
+  (if (and (string? file) (exact-integer? line) (exact-integer? col)
+       (>= line 1) (>= col 0))
+    (if (file-exists? file)
+      (call-with-input-file
+        file
+        (lambda (in)
+          (let skip ([n (- line 1)])
+            (if (> n 0)
+              (if (eof-object? (get-line in))
+                #f
+                (skip (- n 1)))
+              (let ([text (get-line in)])
+                (if (eof-object? text)
+                  #f
+                  (let* ([len (string-length text)]
+                         [caret-start (min col len)]
+                         [same-line? (and (exact-integer? end-line)
+                                      (= end-line line)
+                                      (exact-integer? end-col)
+                                      (> end-col caret-start))]
+                         [multi-line? (and (exact-integer? end-line)
+                                       (> end-line line))]
+                         [caret-end (cond
+                                      [same-line? (min end-col len)]
+                                      [multi-line? len]
+                                      [else (+ caret-start 1)])])
+                    (display text p)
+                    (newline p)
+                    (caret-run caret-start caret-end len)
+                    (if multi-line?
+                      ;; render the last line of the span too
+                      (let skip-end ([n (- end-line line 1)])
+                        (if (> n 0)
+                          (if (eof-object? (get-line in))
+                            #t
+                            (skip-end (- n 1)))
+                          (let ([last (get-line in)])
+                            (if (eof-object? last)
+                              #t
+                              (let ([last-len (string-length last)])
+                                (display last p)
+                                (newline p)
+                                (caret-run 0
+                                  (if (exact-integer? end-col)
+                                    (min end-col last-len)
+                                    last-len)
+                                  last-len)
+                                #t)))))
+                      #t))))))))
+      #f)
+    #f))
 
 
 ;; taken from loko: https://gitlab.com/weinholt/loko/-/blob/master/runtime/control.sls#L296
+;; When set to #f, print-condition prints only the summary line and source
+;; location; the full component dump is available on demand.
+(define print-condition-verbose? (make-parameter #t))
+
 (define (print-condition exn p)
+  (define (print-summary)
+    (when (condition? exn)
+      (display (if (warning? exn) "warning" "error") p)
+      (when (who-condition? exn)
+        (format p ": ~a" (condition-who exn)))
+      (when (message-condition? exn)
+        (format p ": ~a" (condition-message exn)))
+      (when (irritants-condition? exn)
+        (format p ": ~s" (condition-irritants exn)))
+      (newline p)))
   (define (sourcev-ref src index default)
     (if (and (vector? src) (< index (vector-length src)))
       (vector-ref src index)
@@ -127,10 +213,22 @@
   (define (alist-ref alist key)
     (let ((entry (and (pair? alist) (assq key alist))))
       (and entry (cdr entry))))
+  (define (print-datum p x)
+    ;; Convert any datum that may embed syntax objects (a &syntax form can be
+    ;; either a syntax object or a raw list of syntax objects, depending on
+    ;; the caller) into a plain datum before printing.
+    (define (convert x)
+      (cond
+        [(syntax? x) (syntax->datum x)]
+        [(pair? x) (cons (convert (car x)) (convert (cdr x)))]
+        [(vector? x) (list->vector (map convert (vector->list x)))]
+        [else x]))
+    (format p "~a" (convert x)))
   (define (print-expansion-frame frame index)
     (let ((name (alist-ref frame 'macro))
           (use-source (alist-ref frame 'use-site))
-          (transformer-source (alist-ref frame 'transformer-site)))
+          (transformer-source (alist-ref frame 'transformer-site))
+          (use-form (alist-ref frame 'use-form)))
       (format p "~%       ~a. " index)
       (if name
         (format p "while expanding ~a" name)
@@ -138,12 +236,15 @@
       (when use-source
         (format p " at ")
         (fmt-source use-source))
+      (when use-form
+        (format p "~%          in: ")
+        (print-datum p use-form))
       (when transformer-source
         (format p "~%          transformer defined at ")
         (fmt-source transformer-source))))
   (define (print-expansion-trace frames)
     (if (pair? frames)
-      (let loop ([frames (reverse frames)] [index 1])
+      (let loop ([frames frames] [index 1])
         (unless (null? frames)
           (print-expansion-frame (car frames) index)
           (loop (cdr frames) (+ index 1))))
@@ -151,24 +252,60 @@
   (define (print-syntax form subform)
     (define form-src (if (syntax? form) (syntax-sourcev form) #f))
     (define subform-src (if (and subform (syntax? subform)) (syntax-sourcev subform) #f))
-    (format p "~a" (syntax->datum form))
+    (print-datum p form)
     (when form-src
       (format p "~%       in ")
       (fmt-source form-src))
     (when subform
-      (format p "~a" (syntax->datum subform))
+      (print-datum p subform)
       (when subform-src
         (format p "~%     in ")
         (fmt-source subform-src))))
+  ;; The expansion trace is (innermost ... outermost); the outermost frame is
+  ;; the user's macro invocation. Its `use-site` source vector carries the
+  ;; full span of the call, which is the most useful location to point at.
+  (define (last-pair ls)
+    (if (and (pair? ls) (pair? (cdr ls)))
+      (last-pair (cdr ls))
+      ls))
+  (define (invocation-sourcev exn)
+    (and (expansion-trace? exn)
+      (let ((frames (condition-expansion-trace exn)))
+        (and (pair? frames)
+          (alist-ref (car (last-pair frames)) 'use-site)))))
 
   (cond
     [(condition? exn)
-      (let ((src (condition-sourcev exn)))
+      (print-summary)
+      (when (syntax-violation? exn)
+        (let ((form (syntax-violation-form exn))
+              (subform (syntax-violation-subform exn)))
+          (when form
+            (format p "in: ")
+            (print-datum p form)
+            (newline p))
+          (when subform
+            (format p "in: ")
+            (print-datum p subform)
+            (newline p))))
+      (let ((src (or (invocation-sourcev exn) (condition-sourcev exn))))
         (when src
           (format p "At: ")
           (fmt-source src)
+          (newline p)
+          (render-source-line p
+            (sourcev-ref src 0 #f)
+            (sourcev-ref src 1 #f)
+            (sourcev-ref src 2 #f)
+            (sourcev-ref src 3 #f)
+            (sourcev-ref src 4 #f))))
+      (let ((trace (and (expansion-trace? exn) (condition-expansion-trace exn))))
+        (when (pair? trace)
+          (format p "Expansion trace:")
+          (print-expansion-trace trace)
           (newline p)))
-      (let ([c* (simple-conditions exn)])
+      (when (print-condition-verbose?)
+        (let ([c* (simple-conditions exn)])
         (format p "The condition has ~a components:~%" (length c*))
         (do ([i 1 (+ 1 i)]
              [c* c* (cdr c*)])
@@ -224,6 +361,6 @@
                           (cdr x))
                         (display ")" p)]
                       [else (write x p)]))))))
-          (newline p)))]
+          (newline p))))]
     [else
       (format p "A non-condition object was raised:~%~s" exn)]))

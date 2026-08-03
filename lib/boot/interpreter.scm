@@ -1,3 +1,16 @@
+(define (raise-undefined-violation src who message)
+  (raise
+    (apply
+      condition
+      (filter
+        values
+        (list
+          (make-undefined-violation)
+          (make-marks-condition (current-continuation-marks))
+          (and who (make-who-condition who))
+          (and message (make-message-condition message))
+          (sourcev->source-condition src))))))
+
 (define (interpret/preprocess expr env)
   (define src (term-src expr))
   (cond
@@ -68,7 +81,7 @@
               (begin
                 (set! var (module-variable (current-module) name))
                 (if (or (not var) (not (variable-bound? var)))
-                  (undefined-violation #f (format #f "undefined variable: ~a" name)))
+                  (raise-undefined-violation src #f (format #f "undefined variable: ~a" name)))
                 (variable-ref var))))))]
     [(module-ref? expr)
       (let ([module (module-ref-module expr)]
@@ -82,7 +95,7 @@
               (begin
                 (set! var (lookup-bound module name public?))
                 (if (or (not var) (not (variable-bound? var)))
-                  (undefined-violation #f (format #f "undefined variable: ~a in module ~a" name module)))
+                  (raise-undefined-violation src #f (format #f "undefined variable: ~a in module ~a" name module)))
                 (variable-ref var))))))]
     [(module-set? expr)
       (let ([module (module-set-module expr)]

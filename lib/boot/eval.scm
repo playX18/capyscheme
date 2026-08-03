@@ -130,8 +130,11 @@
             (with-exception-handler
               (lambda (exn)
                 (format (current-error-port) ";; Error loading file '~a'~%" filename)
-                ((current-exception-printer) exn (current-error-port))
-                (flush-output-port (current-error-port))
+                ;; Serious conditions die in the re-raise path before reaching
+                ;; the outer printer; non-serious ones (e.g. warnings) flow on
+                ;; and are reported there. Print only the former.
+                (when (and (condition? exn) (serious-condition? exn))
+                  ((current-exception-printer) exn (current-error-port)))
                 (raise exn))
               (lambda ()
                 (*raw-log* log:info
@@ -144,8 +147,8 @@
             (with-exception-handler
               (lambda (exn)
                 (format (current-error-port) ";; Error compiling file '~a'~%" filename)
-                ((current-exception-printer) exn (current-error-port))
-                (flush-output-port (current-error-port))
+                (when (and (condition? exn) (serious-condition? exn))
+                  ((current-exception-printer) exn (current-error-port)))
                 (raise exn))
               (lambda ()
                 (define filename (list-ref thunk-or-path 0))

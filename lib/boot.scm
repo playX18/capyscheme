@@ -77,8 +77,8 @@
                                       (with-exception-handler
                                         (lambda (exn)
                                           (format (current-error-port) ";; (primitive) Error loading file '~a'~%" filename)
-                                          ((current-exception-printer) exn (current-error-port))
-                                          (flush-output-port (current-error-port))
+                                          (when (and (condition? exn) (serious-condition? exn))
+                                            ((current-exception-printer) exn (current-error-port)))
                                           (raise exn))
                                         (lambda ()
                                           (*raw-log* log:info
@@ -91,8 +91,8 @@
                                       (with-exception-handler
                                         (lambda (exn)
                                           (format (current-error-port) ";; (primitive) Error compiling file '~a'~%" filename)
-                                          ((current-exception-printer) exn (current-error-port))
-                                          (flush-output-port (current-error-port))
+                                          (when (and (condition? exn) (serious-condition? exn))
+                                            ((current-exception-printer) exn (current-error-port)))
                                           (raise exn))
                                         (lambda ()
                                           (define filename (list-ref thunk-or-path 0))

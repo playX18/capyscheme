@@ -90,16 +90,25 @@
 (define (make-reader port file)
   (%make-reader port file 1 0 1 0 #f 'capy #f #f))
 
-(define (lexical-condition reader msg irritants)
+(define (lexical-condition reader msg irritants . maybe-src)
+  (define src (if (pair? maybe-src) (car maybe-src) #f))
   (condition
     (make-lexical-violation)
     (make-message-condition msg)
-    (make-source-condition (reader-file reader) (reader-saved-line reader) (reader-saved-column reader))
+    (if (vector? src)
+      (make-source-condition (vector-ref src 0) (vector-ref src 1) (vector-ref src 2))
+      (make-source-condition (reader-file reader) (reader-saved-line reader) (reader-saved-column reader)))
     (make-irritants-condition irritants)))
 
 (define (reader-error reader msg . irritants)
   (raise
     (lexical-condition reader msg irritants)))
+
+;; Like reader-error, but reports the location from source vector SRC (e.g. the
+;; opening delimiter of an unclosed compound) instead of the current lexeme.
+(define (reader-error-at reader msg src . irritants)
+  (raise
+    (lexical-condition reader msg irritants src)))
 
 (define (reader-warning reader msg . irritants)
   (if (reader-tolerant? reader)
@@ -517,7 +526,7 @@
                       ((atmosphere? type)
                         (lp (cons (cons type token) atmosphere)))
                       (else
-                        (receive (d _) (handle-lexeme p type token #f #t)
+                        (receive (d _) (handle-lexeme p type token #f #t #f)
                           (if keep-atmosphere?
                             (values 'inline-comment (cons (reverse atmosphere) d))
                             (reader:get-token* p keep-atmosphere?))))))))
@@ -752,7 +761,7 @@
   (define (reader:get-token p)
     (reader:get-token* p #t))
 
-  (define (get-compound-datum p src terminator type labels)
+  (define (get-compound-datum p src terminator type labels build-annotated?)
     (define vec #f)
     (define vec^ #f)
     (let lp ((head '()) (head^ '()) (prev #f) (prev^ #f) (len 0))
@@ -763,26 +772,26 @@
             [(closep closeb eof)
               (unless (eq? lextype terminator)
                 (if (eof-object? x)
-                  (eof-warning p)
-                  (reader-error p "Mismatched parenthesis/brackes" src lextype x terminator)))
+                  (reader-error-at p "unexpected end of file: unclosed list" src)
+                  (reader-error p "Mismatched parenthesis/bracket" src lextype x terminator)))
               (case type
                 [(vector)
                   (let ([s (list->vector head)]
-                        [s^ (list->vector head^)])
+                        [s^ (if build-annotated? (list->vector head^) #f)])
                     (set! vec s)
-                    (set! vec^ (annotate (finish-source p src) s s^))
+                    (set! vec^ (if build-annotated? (annotate (finish-source p src) s s^) s))
                     (values vec vec^))]
                 [(list)
-                  (values head (annotate (finish-source p src) head head^))]
+                  (values head (if build-annotated? (annotate (finish-source p src) head head^) head))]
                 [(bytevector)
                   (let ([s (u8-list->bytevector head)])
-                    (values s (annotate (finish-source p src) s s)))]
+                    (values s (if build-annotated? (annotate (finish-source p src) s s) s)))]
                 [else (reader-error p "internal error in get-compound-datum" type)])]
             [(dot)
               (cond
                 [(eq? type 'list)
                   (receive (lextype x) (get-lexeme p)
-                    (receive (d d^) (handle-lexeme p lextype x labels #t)
+                    (receive (d d^) (handle-lexeme p lextype x labels #t build-annotated?)
                       (begin
                         (receive (termtype _) (get-lexeme p)
                           (cond
@@ -792,14 +801,14 @@
                         (cond
                           [(pair? prev)
                             (set-cdr! prev d)
-                            (set-cdr! prev^ d^)]
+                            (when build-annotated? (set-cdr! prev^ d^))]
                           [else (reader-warning p "unexpected dot")])
-                        (values head (annotate (finish-source p src) head head^)))))]
+                        (values head (if build-annotated? (annotate (finish-source p src) head head^) head)))))]
                 [else
                   (reader-warning p "Dot used in non-list datum")
                   (lp head head^ prev prev^ len)])]
             [else
-              (receive (d d^) (handle-lexeme p lextype x labels #t)
+              (receive (d d^) (handle-lexeme p lextype x labels #t build-annotated?)
                 (cond
                   [(and (eq? type 'bytevector)
                       (not (and (fixnum? d) (<= 0 d 255))))
@@ -807,28 +816,29 @@
                     (lp head head^ prev prev^ len)]
                   [else
                     (let ([new-prev (cons d '())]
-                          [new-prev^ (cons d^ '())])
+                          [new-prev^ (if build-annotated? (cons d^ '()) #f)])
                       (when (pair? prev)
-                        (set-cdr! prev new-prev)
+                        (set-cdr! prev new-prev))
+                      (when (and build-annotated? (pair? prev^))
                         (set-cdr! prev^ new-prev^))
 
                       (if (pair? head)
                         (lp head head^ new-prev new-prev^ (+ 1 len))
-                        (lp new-prev new-prev^ new-prev new-prev^ (+ 1 len))))]))])))))
+                        (lp new-prev (if build-annotated? new-prev^ '()) new-prev new-prev^ (+ 1 len))))]))])))))
 
-  (define (handle-lexeme p lextype x labels allow-refs?)
-    (let ([src (reader-source p)])
+  (define (handle-lexeme p lextype x labels allow-refs? build-annotated?)
+    (let ([src (if build-annotated? (reader-source p) #f)])
       (case lextype
         [(openp)
-          (get-compound-datum p src 'closep 'list labels)]
+          (get-compound-datum p src 'closep 'list labels build-annotated?)]
         [(openb)
-          (get-compound-datum p src 'closeb 'list labels)]
+          (get-compound-datum p src 'closeb 'list labels build-annotated?)]
         [(vector)
-          (get-compound-datum p src 'closep 'vector labels)]
+          (get-compound-datum p src 'closep 'vector labels build-annotated?)]
         [(bytevector)
-          (get-compound-datum p src 'closep 'bytevector labels)]
+          (get-compound-datum p src 'closep 'bytevector labels build-annotated?)]
         [(value eof identifier)
-          (values x (annotate (finish-source p src) x x))]
+          (values x (if build-annotated? (annotate (finish-source p src) x x) x))]
         [(abbrev)
           (receive (type lex) (get-lexeme p)
             (cond
@@ -836,21 +846,21 @@
                 (eof-warning p)
                 (values lex lex)]
               [else
-                (receive (d d^) (handle-lexeme p type lex labels #t)
+                (receive (d d^) (handle-lexeme p type lex labels #t build-annotated?)
                   (let ([s (list x d)])
-                    (values s (annotate (finish-source p src) s (list x d^)))))]))]
+                    (values s (if build-annotated? (annotate (finish-source p src) s (list x d^)) s))))]))]
         [else (reader-warning p "unexpected lexeme" lextype x)])))
 
   (set! read-datum (lambda (reader)
                     (let ([labels #f])
                       (receive (type x) (get-lexeme reader)
-                        (receive (d _) (handle-lexeme reader type x labels #f)
+                        (receive (d _) (handle-lexeme reader type x labels #f #f)
                           d)))))
   (set! read-annotated (lambda (reader)
                         (if (not (reader? reader))
                           (assertion-violation 'read-annotated "not a reader" reader))
                         (receive (type x) (get-lexeme reader)
-                          (receive (_ d^) (handle-lexeme reader type x #f #f)
+                          (receive (_ d^) (handle-lexeme reader type x #f #f #t)
                             d^))))
 
   (set! get-token reader:get-token))

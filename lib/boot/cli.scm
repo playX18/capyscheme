@@ -37,7 +37,7 @@
     (define parser (argparser))
 
     (define (error fmt . args)
-      (apply format #t fmt args)
+      (apply format (current-error-port) fmt args)
       (exit 1))
     (define (finish args out)
       (set-program-arguments! (cons arg0 args))
@@ -57,7 +57,9 @@
     (define (run)
       (with-exception-handler
         (lambda (c)
-          (format #t "Failed to parse command line arguments: ~a ~a ~a ~%" (condition-message c) (condition-irritants c) (condition-who c))
+          (format (current-error-port) "Failed to parse command line arguments: ~a: ~a~%"
+            (if (who-condition? c) (condition-who c) '?)
+            (if (message-condition? c) (condition-message c) c))
           (exit 1))
         (lambda ()
           (define res (parse-args parser (cdr args)))
@@ -113,6 +115,12 @@
           (when (arg-results-ref res "command")
             (set! interactive? #f)
             (set! out (cons `((@@ (boot cli) eval-string) ,(arg-results-ref res "command")) out)))
+          ;; `capy file.scm args...`: run the first positional as a script, the
+          ;; rest stay available as program arguments.
+          (let ([files (arg-results-rest res)])
+            (when (and interactive? (pair? files))
+              (set! interactive? #f)
+              (set! out (cons `((@@ (capy) load) ,(car files)) out))))
           (when entrypoint
             (set! interactive? #f)
             (set! out (cons `(,entrypoint) out)))
@@ -189,7 +197,7 @@
     (add-flag! parser
       "debug"
       (defaults-to #f)
-      (help "Load FASL code through debug stacktrace trampolines"))
+      (help "Enable debug stack traces for FASL code (including stdlib)"))
     (argparser-add-separator! parser "Garbage collection options:")
     (add-option! parser
       "gc-plan"
@@ -271,7 +279,7 @@
   (define parser (argparser))
 
   (define (error fmt . args)
-    (apply format #t fmt args)
+    (apply format (current-error-port) fmt args)
     (exit 1))
 
   (define (print-help)
@@ -295,7 +303,7 @@
   (define (run)
     (define res (with-exception-handler
                  (lambda (c)
-                   (format #t "Failed to parse command line arguments: ~a~%" (condition-message c))
+                   (format (current-error-port) "Failed to parse command line arguments: ~a~%" (condition-message c))
                    (exit 1))
                  (lambda ()
                    (parse-args parser (cdr args)))))
@@ -360,22 +368,22 @@
     (when (and out-file
            (or (null? source-files)
              (not (null? (cdr source-files)))))
-      (error #f "--output can only be used when compiling a single file"))
+      (error "--output can only be used when compiling a single file"))
 
     (with-exception-handler
       (lambda (exn)
-        (print-condition exn (current-output-port))
-        (format #t "Compilation failed.~%")
+        (print-condition exn (current-error-port))
+        (format (current-error-port) "Compilation failed.~%")
         (exit 1))
       (lambda ()
         (for-each
           (lambda (file)
             (with-exception-handler
               (lambda (exn)
-                (print-condition exn (current-output-port))
-                (format #t ";; Compilation of file ~a failed.~%" file)
+                (print-condition exn (current-error-port))
+                (format (current-error-port) ";; Compilation of file ~a failed.~%" file)
                 (when (marks-condition? exn)
-                  (stack-trace (condition-marks exn) (current-output-port)))
+                  (stack-trace (condition-marks exn) (current-error-port)))
                 (exit 1))
               (lambda ()
                 (when verbose

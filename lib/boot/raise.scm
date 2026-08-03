@@ -1,24 +1,25 @@
 (define (warning who message . irritants)
-  (define marks (current-continuation-marks))
+  ;; Prints a warning through the exception printer and continues; does not
+  ;; raise (a warning should not abort the program).
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
-      (raise
-        (apply
-          condition
-          (filter
-            values
-            (list
-              (make-warning)
-              (and who (make-who-condition who))
-              (make-message-condition message)
-              (make-irritants-condition irritants)
-              (make-marks-condition marks)))))
+      (begin
+        ((current-exception-printer)
+          (apply
+            condition
+            (filter
+              values
+              (list
+                (make-warning)
+                (and who (make-who-condition who))
+                (make-message-condition message)
+                (make-irritants-condition irritants))))
+          (current-error-port))
+        #t)
       #f)
     #f))
 
 (define (assertion-violation who message . irritants)
-  (define stk (shadow-stack))
-
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
       (raise
@@ -29,6 +30,7 @@
             (list
               (make-assertion-violation)
               (and who (make-who-condition who))
+              (make-current-expansion-trace-condition)
               (make-message-condition message)
               (make-irritants-condition irritants)
               (make-marks-condition (current-continuation-marks))))))
@@ -71,18 +73,23 @@
 
   (if (or (not who) (string? who) (symbol? who) (identifier? who))
     (if (string? message)
-      (raise
-        (apply
-          condition
-          (filter
-            values
-            (list
-              (make-syntax-violation form (if (pair? subform) (car subform) #f))
-              (if who
-                (make-who-condition who)
-                (get-who-from-form form))
-              (make-current-expansion-trace-condition)
-              (make-message-condition message)))))
+      (let ([sub (if (pair? subform) (car subform) #f)])
+        (raise
+          (apply
+            condition
+            (filter
+              values
+              (list
+                (make-syntax-violation form sub)
+                (if who
+                  (make-who-condition who)
+                  (get-who-from-form form))
+                (make-current-expansion-trace-condition)
+                (make-message-condition message)
+                (sourcev->source-condition
+                  (or (and sub (syntax? sub) (syntax-sourcev sub))
+                    (and (syntax? form) (syntax-sourcev form))))
+                (if sub (make-irritants-condition (list sub)) #f))))))
       (assertion-violation 'syntax-violation "expected string as message" message))
     (assertion-violation 'syntax-violation "expected string or symbol or #f as who" who)))
 
@@ -98,6 +105,7 @@
             (list
               (make-error)
               (and who (make-who-condition who))
+              (make-current-expansion-trace-condition)
               (make-message-condition message)
               (make-irritants-condition irritants)
               (make-marks-condition marks)))))
@@ -115,6 +123,7 @@
             (list
               (make-implementation-restriction-violation)
               (and who (make-who-condition who))
+              (make-current-expansion-trace-condition)
               (make-message-condition message)
               (make-irritants-condition irritants)
               (make-marks-condition marks)))))
@@ -131,6 +140,7 @@
         (list
           (make-undefined-violation)
           (make-marks-condition marks)
+          (make-current-expansion-trace-condition)
           (and who (make-who-condition who))
           (and (pair? message) (make-message-condition (car message))))))))
 

@@ -40,6 +40,13 @@
     &implementation-restriction
     make-implementation-restriction-violation
     implementation-restriction-violation?
+    &source
+    make-source-condition
+    source-condition?
+    condition-source-file
+    condition-source-line
+    condition-source-column
+    condition-sourcev
     &lexical
     make-lexical-violation
     lexical-violation?

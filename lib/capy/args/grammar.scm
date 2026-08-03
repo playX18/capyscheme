@@ -485,7 +485,7 @@
       (define (allowed-title option allowed)
         (define default? (cond
                           ((list? (option-defaults-to option))
-                            (member (option-defaults-to option) allowed))
+                            (member allowed (option-defaults-to option)))
                           (else (equal? (option-defaults-to option) allowed))))
 
         (define result (string-append "      [" allowed "]"))

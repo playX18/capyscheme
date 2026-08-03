@@ -1892,14 +1892,21 @@
                                                                             mod
                                                                             sym)))
                                                                 (or tmp.5
-                                                                  (error 'import
-                                                                    (format
-                                                                      '#f
-                                                                      '"no binding '~a' in module ~a"
-                                                                      sym
-                                                                      mod
-                                                                      (module-uses
-                                                                        mod))))))
+                                                                  (let ((hint (import-suggestion-string
+                                                                                'binding
+                                                                                sym
+                                                                                mod)))
+                                                                    (error 'import
+                                                                      (format
+                                                                        '#f
+                                                                        '"no binding '~a' in module ~a~a"
+                                                                        sym
+                                                                        mod
+                                                                        (if hint
+                                                                          (string-append
+                                                                            '"; "
+                                                                            hint)
+                                                                          '"")))))))
                                                             (cond ((core-hash-ref
                                                                      (module-replacements
                                                                        mod)
@@ -1945,14 +1952,21 @@
                                                                     (cond ((not (module-local-variable
                                                                                  iface
                                                                                  sym))
-                                                                           (error 'import
-                                                                             (format
-                                                                               '#f
-                                                                               '"no binding '~a' in module ~a ~a"
-                                                                               sym
-                                                                               mod
-                                                                               (module-uses
-                                                                                 mod))))
+                                                                           (let ((hint (import-suggestion-string
+                                                                                          'binding
+                                                                                          sym
+                                                                                          mod)))
+                                                                             (error 'import
+                                                                               (format
+                                                                                 '#f
+                                                                                 '"no binding '~a' in module ~a~a"
+                                                                                 sym
+                                                                                 mod
+                                                                                 (if hint
+                                                                                   (string-append
+                                                                                     '"; "
+                                                                                     hint)
+                                                                                   '"")))))
                                                                       (#f
                                                                         #f))
                                                                     (module-remove!
@@ -2093,12 +2107,21 @@
                                                                                                           from.1)))
                                                                                                   (begin
                                                                                                     (cond ((not var)
-                                                                                                           (error 'resolve-r6rs-interface
-                                                                                                             (format
-                                                                                                               '#f
-                                                                                                               '"no binding `~a` in module ~a"
-                                                                                                               from.1
-                                                                                                               mod)))
+                                                                                                           (let ((hint (import-suggestion-string
+                                                                                                                          'binding
+                                                                                                                          from.1
+                                                                                                                          mod)))
+                                                                                                             (error 'resolve-r6rs-interface
+                                                                                                               (format
+                                                                                                                 '#f
+                                                                                                                 '"no binding `~a` in module ~a~a"
+                                                                                                                 from.1
+                                                                                                                 mod
+                                                                                                                 (if hint
+                                                                                                                   (string-append
+                                                                                                                     '"; "
+                                                                                                                     hint)
+                                                                                                                   '"")))))
                                                                                                       (#f
                                                                                                         #f))
                                                                                                     (begin
@@ -4565,42 +4588,48 @@
                       (source-wrap e w s mod))))
                 ($sc-dispatch tmp '(_ any any any))))
             e)))
+      (macro-frame-name
+        (lambda (transformer-stx use-site)
+          (cond ((identifier? transformer-stx)
+                 (syntax->datum transformer-stx))
+            ((symbol? transformer-stx) transformer-stx)
+            ((if (syntax? use-site)
+                (pair? (syntax-expression use-site))
+                '#f)
+              (let ((head (car (syntax-expression use-site))))
+                (cond ((identifier? head) (syntax->datum head))
+                  ((syntax? head) (syntax->datum head))
+                  ((symbol? head) head)
+                  (else '#f))))
+            ((identifier? use-site) (syntax->datum use-site))
+            ((symbol? use-site) use-site)
+            (else '#f))))
+      (macro-expansion-frame
+        (lambda (transformer-stx use-site)
+          (let ((name (macro-frame-name transformer-stx use-site))
+                (use-source (source-annotation use-site))
+                (transformer-source
+                  (source-annotation transformer-stx)))
+            (filter
+              values
+              (list (if name (cons 'macro name) '#f)
+                (if use-source (cons 'use-site use-source) '#f)
+                (if transformer-source
+                  (cons 'transformer-site transformer-source)
+                  '#f)
+                (if use-site
+                  (if (syntax? use-site)
+                    (if (pair? (syntax-expression use-site))
+                      (cons 'use-form (syntax->datum use-site))
+                      '#f)
+                    '#f)
+                  '#f))))))
       (expand-macro
         (lambda (p e r w s rib mod)
           (letrec*
             ((transformer (car p))
-              (transformer-stx (cdr p))
               (decorate-source
                 (lambda (x) (source-wrap x empty-wrap s '#f)))
-              (macro-frame-name
-                (lambda (use-site)
-                  (cond ((identifier? transformer-stx)
-                         (syntax->datum transformer-stx))
-                    ((symbol? transformer-stx) transformer-stx)
-                    ((if (syntax? use-site)
-                        (pair? (syntax-expression use-site))
-                        '#f)
-                      (let ((head (car (syntax-expression use-site))))
-                        (cond ((identifier? head) (syntax->datum head))
-                          ((syntax? head) (syntax->datum head))
-                          ((symbol? head) head)
-                          (else '#f))))
-                    ((identifier? use-site) (syntax->datum use-site))
-                    ((symbol? use-site) use-site)
-                    (else '#f))))
-              (macro-expansion-frame
-                (lambda (use-site)
-                  (let ((name (macro-frame-name use-site))
-                        (use-source (source-annotation use-site))
-                        (transformer-source
-                          (source-annotation transformer-stx)))
-                    (filter
-                      values
-                      (list (if name (cons 'macro name) '#f)
-                        (if use-source (cons 'use-site use-source) '#f)
-                        (if transformer-source
-                          (cons 'transformer-site transformer-source)
-                          '#f))))))
               (map* (lambda (f x)
                      (let ((v x))
                        (let ((fk (lambda ()
@@ -4750,23 +4779,28 @@
                     transformer-environment
                     (lambda (k) (k e r w s rib mod))))
                 (lambda ()
-                  (let ((use-site (source-wrap e (anti-mark w) s mod)))
-                    (with-macro-expansion-frame
-                      (macro-expansion-frame use-site)
-                      (lambda ()
-                        (cond ((procedure? transformer)
-                               (apply-transformer transformer use-site))
-                          ((variable-transformer? transformer)
-                            (apply-transformer
-                              (variable-transformer-procedure transformer)
-                              use-site))
-                          (else
-                            (syntax-violation
-                              '#f
-                              '"invalid transformer"
-                              p)))))))
+                  (cond ((procedure? transformer)
+                         (apply-transformer
+                           transformer
+                           (source-wrap e (anti-mark w) s mod)))
+                    ((variable-transformer? transformer)
+                      (apply-transformer
+                        (variable-transformer-procedure transformer)
+                        (source-wrap e (anti-mark w) s mod)))
+                    (else
+                      (syntax-violation
+                        '#f
+                        '"invalid transformer"
+                        p))))
                 (lambda ()
                   (fluid-set! transformer-environment old)))))))
+      (expand-macro-with-frame
+        (lambda (p e r w s rib mod k)
+          (with-macro-expansion-frame
+            (macro-expansion-frame
+              (cdr p)
+              (source-wrap e (anti-mark w) s mod))
+            (lambda () (k (expand-macro p e r w s rib mod))))))
       (eval-local-transformer
         (lambda (expanded mod)
           (let ((p (local-eval expanded mod)))
@@ -4901,14 +4935,23 @@
                        ((macro)
                          (if for-car?
                            (values type value e e w s mod)
-                           (syntax-type
-                             (expand-macro value e r w s rib mod)
+                           (expand-macro-with-frame
+                             value
+                             e
                              r
-                             empty-wrap
+                             w
                              s
                              rib
                              mod
-                             '#f)))
+                             (lambda (expanded)
+                               (syntax-type
+                                 expanded
+                                 r
+                                 empty-wrap
+                                 s
+                                 rib
+                                 mod
+                                 '#f)))))
                        ((global) (values type value e value w s mod*))
                        (else (values type value e e w s mod))))))
             ((pair? e)
@@ -4921,14 +4964,23 @@
                       ((lexical) (values 'call '#f e e w s mod))
                       ((global) (values 'call '#f e e w s mod))
                       ((macro)
-                        (syntax-type
-                          (expand-macro fval e r w s rib mod)
+                        (expand-macro-with-frame
+                          fval
+                          e
                           r
-                          empty-wrap
+                          w
                           s
                           rib
                           mod
-                          for-car?))
+                          (lambda (expanded)
+                            (syntax-type
+                              expanded
+                              r
+                              empty-wrap
+                              s
+                              rib
+                              mod
+                              for-car?))))
                       ((module-ref)
                         (call-with-values
                           (lambda () (fval e r w mod))
@@ -7973,18 +8025,20 @@
                                                                                                         ((macro)
                                                                                                           (if (variable-transformer?
                                                                                                                (car value))
-                                                                                                            (expand
-                                                                                                              (expand-macro
-                                                                                                                value
-                                                                                                                e
-                                                                                                                r
-                                                                                                                w
-                                                                                                                s
-                                                                                                                '#f
-                                                                                                                mod)
+                                                                                                            (expand-macro-with-frame
+                                                                                                              value
+                                                                                                              e
                                                                                                               r
-                                                                                                              empty-wrap
-                                                                                                              mod)
+                                                                                                              w
+                                                                                                              s
+                                                                                                              '#f
+                                                                                                              mod
+                                                                                                              (lambda (expanded)
+                                                                                                                (expand
+                                                                                                                  expanded
+                                                                                                                  r
+                                                                                                                  empty-wrap
+                                                                                                                  mod)))
                                                                                                             (syntax-violation
                                                                                                               'set!
                                                                                                               '"not a variable transformer"

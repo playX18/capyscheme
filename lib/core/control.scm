@@ -69,7 +69,9 @@
           #'((lambda (var ...) clause ...) init ...)))
       (syntax-case x ()
         ((_ args n)
-          #'(assertion-violation #f "unexpected number of arguments" args))
+          #'(assertion-violation 'case-lambda
+             (format #f "unexpected number of arguments, got ~a" n)
+             args))
         ((_ args n ((x ...) b ...) more ...)
           (with-syntax ((let-clause (construct #'args #'(x ...) #'(b ...)))
                         (expect-length (length #'(x ...))))
@@ -113,42 +115,47 @@
             [end-col (sourcev-ref src 4 #f)])
         (cond
           [(and file line col end-line end-col)
-            (format p "  at ~a:~a:~a-~a:~a:~%" file line col end-line end-col)]
+            (format p "  at ~a:~a:~a-~a:~a:~%" file line col end-line end-col)
+            (render-source-line p file line col end-line end-col)]
           [(and file line col)
-            (format p "  at ~a:~a:~a:~%" file line col)]
+            (format p "  at ~a:~a:~a:~%" file line col)
+            (render-source-line p file line col #f #f)]
           [else
             (format p "  at <unknown file>:~%")])))
     (define marks (if k k (current-continuation-marks)))
     (define stack (continuation-mark-set->list marks %stacktrace-key))
 
-    (format p "Stack trace (most recent call first):~%")
-    (let lp ([frame 0] [idx 1] [stk stack])
-      (cond
-        [(null? stk) (format p "End of stack trace.~%")]
-        [else
-          (let* ([fp (car stk)]
-                 [src (vector-ref fp 0)]
-                 [proc (vector-ref fp 1)]
-                 [args (vector-ref fp 2)])
+    (if (null? stack)
+      (values)
+      (begin
+        (format p "Stack trace (most recent call first):~%")
+        (let lp ([frame 0] [idx 1] [stk stack])
+          (cond
+            [(null? stk) (format p "End of stack trace.~%")]
+            [else
+              (let* ([fp (car stk)]
+                     [src (vector-ref fp 0)]
+                     [proc (vector-ref fp 1)]
+                     [args (vector-ref fp 2)])
 
-            (print-source src)
+                (print-source src)
 
-            (cond
-              [(interpreted-procedure? proc)
-                =>
-                (lambda (meta)
-                  (format p "(interpreted ~a)" meta))]
-              [(interpreted-expression? proc)
-                =>
-                (lambda (meta)
-                  (format p "(interpreted expression ~a)" meta))])
+                (cond
+                  [(interpreted-procedure? proc)
+                    =>
+                    (lambda (meta)
+                      (format p "(interpreted ~a)" meta))]
+                  [(interpreted-expression? proc)
+                    =>
+                    (lambda (meta)
+                      (format p "(interpreted expression ~a)" meta))])
 
-            (cond
-              [(procedure-name proc)
-                =>
-                (lambda (name)
-                  (format p "\t~s~%" (cons name (syntax->datum args))))]
-              [else
-                (format p "\t~s~%" (cons '<anonymous> (syntax->datum args)))])
+                (cond
+                  [(procedure-name proc)
+                    =>
+                    (lambda (name)
+                      (format p "\t~s~%" (cons name (syntax->datum args))))]
+                  [else
+                    (format p "\t~s~%" (cons '<anonymous> (syntax->datum args)))])
 
-            (lp (+ frame 1) (+ idx 1) (cdr stk)))]))))
+                (lp (+ frame 1) (+ idx 1) (cdr stk)))]))))))

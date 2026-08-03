@@ -375,7 +375,9 @@
                 (current-module (make-fresh-user-module))
                 (call/cc (lambda (return)
                           (with-exception-handler
-                            (lambda (_x) ((current-exception-printer) _x) (return #f))
+                            (lambda (x)
+                              (%last-autoload-failure (cons (cons dir-hint name) x))
+                              (return #f))
                             (lambda ()
                               (load (string-append dir-hint name))
                               (set! didit #t))))))))
@@ -384,12 +386,43 @@
 
 (define (identity x) x)
 
+;; Records the most recent autoload failure as (dir-hint . condition), so that
+;; resolve-interface can report the underlying cause alongside its own error.
+;; Cleared after use.
+(define %last-autoload-failure (make-parameter #f))
+
+;; Hook installed by `(core suggest)` to append "did you mean" hints to
+;; import-related error messages.  Called as (hook kind . args) with kinds:
+;;   (module name)     - unknown module name -> "did you mean (import ...)?"
+;;   (binding sym mod) - binding not in module -> "sym is exported by ..."
+;; Returns a suggestion string (without leading punctuation) or #f.
+(define %import-suggestion-hook (make-parameter #f))
+
+(define (import-suggestion-string kind . args)
+  (let ([hook (%import-suggestion-hook)])
+    (if hook (apply hook kind args) #f)))
+
+;; Setter for the suggestion hook, callable from other libraries (the
+;; %-prefixed parameter itself is awkward to reference cross-module).
+(define (install-import-suggestion-hook! hook)
+  (%import-suggestion-hook hook))
+
 (define (resolve-interface name select hide prefix)
   (let* ([mod (resolve-module name #t #f)]
          [public-i (and mod (module-public-interface mod))]
          [renamer (if prefix (lambda (symbol) (symbol-append prefix symbol)) identity)])
     (if (not public-i)
-      (assertion-violation 'resolve-interface "no code for module" name))
+      (let* ([hint (import-suggestion-string 'module name)]
+             [failure (%last-autoload-failure)]
+             [failure-text (if (and failure (message-condition? (cdr failure)))
+                             (format #f " [~a]" (condition-message (cdr failure)))
+                             "")])
+        (%last-autoload-failure #f)
+        (assertion-violation 'resolve-interface
+          (format #f "no code for module ~a~a~a"
+            name failure-text
+            (if hint (string-append "; " hint) ""))
+          name)))
 
     (if (and (not select) (null? hide) (eq? renamer identity))
       public-i
@@ -416,7 +449,12 @@
                               [seen (if direct? bspec (cdr bspec))]
                               [var (module-local-variable public-i orig)])
                          (if (not var)
-                           (assertion-violation 'unbound-variable "no binding to select in module" orig name))
+                           (let ([hint (import-suggestion-string 'binding orig name)])
+                             (assertion-violation 'unbound-variable
+                               (if hint
+                                 (format #f "no binding to select in module ~a; ~a" name hint)
+                                 "no binding to select in module")
+                               orig name)))
                          (maybe-export! orig seen var)))
               select)]
           [else (module-for-each (lambda (sym var)
@@ -502,14 +540,15 @@
   (make-parameter
     (lambda (exn . port)
       (define p (if (null? port) (current-error-port) (car port)))
-      (when (syntax-violation? exn)
-
-        (format #t "form=~a, subform=~a~%" (syntax->datum (syntax-violation-form exn)) (syntax-violation-subform exn)))
-      (when (message-condition? exn)
-        (format #t "message=~a~%" (condition-message exn)))
-      (when (irritants-condition? exn)
-        (format #t "irritants=~a~%" (condition-irritants exn)))
-      (format p "Unhandled exception: ~a~!: ~a~%~!" (condition-who exn)))))
+      ;; `print-condition` is defined in `boot/conditions.scm`, which loads
+      ;; after this file; delegate to it lazily once it is available, falling
+      ;; back to a minimal renderer during the early boot window.
+      (if (module-search module-defined? (current-module) 'print-condition)
+        (print-condition exn p)
+        (begin
+          (display "Unhandled exception: " p)
+          (write exn p)
+          (newline p))))))
 
 (define (module-name-part->path-string part)
   (cond
