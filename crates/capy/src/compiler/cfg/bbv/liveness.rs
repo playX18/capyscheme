@@ -1,40 +1,67 @@
-use super::super::{BlockId, Instruction, Operand, Procedure, Terminator, UVar};
-use std::collections::{HashMap, HashSet};
+use super::super::{Block, BlockId, Instruction, Operand, Procedure, Terminator, UVar};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Live values at each block entry (classic backward dataflow).
 ///
 /// A value is live-in at block entry when it is used in the block or needed
 /// by a successor before being defined in this block.
+///
+/// Worklist-driven: a block is only re-visited when one of its successors
+/// live-in sets changed, so convergence is near-linear in the CFG instead of
+/// the O(iterations * blocks) of a full-sweep fixpoint. This matters a lot
+/// for the huge straight-line procedures that SBBV sees (a 20k-block toplevel
+/// tree used to take ~23s here).
 pub(super) fn compute_live_in(procedure: &Procedure<'_>) -> HashMap<BlockId, HashSet<UVar>> {
     let mut live_in: HashMap<BlockId, HashSet<UVar>> = procedure
         .blocks
         .iter()
         .map(|block| (block.id, HashSet::new()))
         .collect();
+    let by_id: HashMap<BlockId, &Block<'_>> = procedure
+        .blocks
+        .iter()
+        .map(|block| (block.id, block))
+        .collect();
 
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for block in &procedure.blocks {
-            let mut live = HashSet::new();
+    // Predecessor index: liveness flows from successors to predecessors, so a
+    // changed live-in at B only requires recomputation of B's predecessors.
+    let mut preds: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
+    for block in &procedure.blocks {
+        for successor in block.terminator.successors() {
+            preds.entry(successor).or_default().push(block.id);
+        }
+    }
 
-            for succ in block.terminator.successors() {
-                if let Some(succ_live) = live_in.get(&succ) {
-                    live.extend(succ_live.iter().copied());
-                }
+    let mut worklist: VecDeque<BlockId> = procedure.blocks.iter().map(|b| b.id).collect();
+    let mut queued: HashSet<BlockId> = worklist.iter().copied().collect();
+
+    while let Some(id) = worklist.pop_front() {
+        queued.remove(&id);
+        let block = by_id[&id];
+        let mut live = HashSet::new();
+
+        for succ in block.terminator.successors() {
+            if let Some(succ_live) = live_in.get(&succ) {
+                live.extend(succ_live.iter().copied());
             }
+        }
 
-            collect_uses(&block.terminator, &mut live);
-            for instruction in block.instructions.iter().rev() {
-                for def in instruction.defs() {
-                    live.remove(&def);
-                }
-                collect_instruction_uses(instruction, &mut live);
+        collect_uses(&block.terminator, &mut live);
+        for instruction in block.instructions.iter().rev() {
+            for def in instruction.defs() {
+                live.remove(&def);
             }
+            collect_instruction_uses(instruction, &mut live);
+        }
 
-            if live != live_in[&block.id] {
-                live_in.insert(block.id, live);
-                changed = true;
+        if live != live_in[&id] {
+            live_in.insert(id, live);
+            if let Some(predecessors) = preds.get(&id) {
+                for pred in predecessors {
+                    if queued.insert(*pred) {
+                        worklist.push_back(*pred);
+                    }
+                }
             }
         }
     }
