@@ -17,6 +17,7 @@ pub fn compile_file<'gc>(
     _: Context<'gc>,
     file: impl AsRef<Path>,
     _: Option<Gc<'gc, Module<'gc>>>,
+    _: bool,
 ) -> Result<LoweredProgram<'gc>, Value<'gc>> {
     unreachable!(
         "compile_file should not be called after bootstrap is complete, trying to compile: {}",
@@ -29,6 +30,7 @@ pub fn compile_file<'gc>(
     ctx: Context<'gc>,
     file: impl AsRef<Path>,
     env: Option<Gc<'gc, Module<'gc>>>,
+    dump_graph: bool,
 ) -> Result<LoweredProgram<'gc>, Value<'gc>> {
     let module = env.unwrap_or_else(|| ctx.globals().root_module());
     let file = file.as_ref();
@@ -80,5 +82,5 @@ pub fn compile_file<'gc>(
     let il = crate::expander::core::expand(&mut env, ls)
         .map_err(|err| make_lexical_violation(ctx, "compile-file", err.to_string()))?;
 
-    lower_to_cps(ctx, il, Some(module), true)
+    lower_to_cps(ctx, il, Some(module), true, dump_graph)
 }

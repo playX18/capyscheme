@@ -144,23 +144,41 @@ pub fn sbbv_dump_directory() -> Option<PathBuf> {
         .or_else(|| sbbv_dump_requested().then(default_dump_directory))
 }
 
-fn sbbv_dump_requested() -> bool {
-    match std::env::var(ENV_CAPY_SBBV_DUMP).ok().as_deref() {
-        None | Some("") | Some("0") | Some("off") | Some("false") | Some("none") => false,
-        Some(_) => true,
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SbbvDumpMode {
+    Disabled,
+    All,
+    Stages,
+}
+
+static SBBV_DUMP_MODE: std::sync::LazyLock<(SbbvDumpMode, Vec<String>)> =
+    std::sync::LazyLock::new(|| {
+        match std::env::var(ENV_CAPY_SBBV_DUMP).ok().as_deref() {
+            None | Some("") | Some("0") | Some("off") | Some("false") | Some("none") => {
+                (SbbvDumpMode::Disabled, Vec::new())
+            }
+            Some("1") | Some("on") | Some("true") | Some("all") => {
+                (SbbvDumpMode::All, Vec::new())
+            }
+            Some(other) => (
+                SbbvDumpMode::Stages,
+                other
+                    .split(',')
+                    .map(|part| part.trim().to_ascii_lowercase())
+                    .collect(),
+            ),
+        }
+    });
+
+pub(crate) fn sbbv_dump_requested() -> bool {
+    SBBV_DUMP_MODE.0 != SbbvDumpMode::Disabled
 }
 
 pub fn sbbv_dump_stage_enabled(stage: &str) -> bool {
-    let Some(raw) = std::env::var(ENV_CAPY_SBBV_DUMP).ok() else {
-        return false;
-    };
-    match raw.to_ascii_lowercase().as_str() {
-        "" | "0" | "off" | "false" | "none" => false,
-        "1" | "on" | "true" | "all" => true,
-        other => other
-            .split(',')
-            .any(|part| part.trim().eq_ignore_ascii_case(stage)),
+    match SBBV_DUMP_MODE.0 {
+        SbbvDumpMode::Disabled => false,
+        SbbvDumpMode::All => true,
+        SbbvDumpMode::Stages => SBBV_DUMP_MODE.1.iter().any(|s| s == stage),
     }
 }
 
