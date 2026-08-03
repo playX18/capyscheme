@@ -6,6 +6,7 @@
     (core control)
     (core parameters)
     (core exceptions)
+    (core suggest)
     (srfi 8))
 
   (define dump-condition (make-parameter #f))
@@ -14,11 +15,14 @@
   (define right-arrow-in-case (make-parameter #t))
   (define repl-startup-version (make-parameter #f))
 
+  (install-import-suggestions)
+
   (define (default-exception-printer c . maybe-out)
     (define out (if (null? maybe-out) (current-error-port) (car maybe-out)))
     (if (marks-condition? c)
       (stack-trace (condition-marks c) out))
-    (print-condition c out))
+    (parameterize ([print-condition-verbose? (dump-condition)])
+      (print-condition c out)))
   (current-exception-printer default-exception-printer)
 
   (define (module-name->string name)
@@ -35,16 +39,21 @@
     (string-append "(" (module-name->string (module-name (current-module))) ")> "))
 
   (define (print-values vals)
-    (cond
-      [(null? vals) (unspecified)]
-      [(null? (cdr vals))
-        (unless (eq? (car vals) (unspecified))
-          (format #t "~a~%" (car vals)))]
-      [else
-        (let loop ([vals vals] [index 0])
-          (unless (null? vals)
-            (format #t "[~a] = ~a~%" index (car vals))
-            (loop (cdr vals) (+ index 1))))])
+    (parameterize ([print-length (or (print-length) 4)]
+                   [print-level (or (print-level) 2)])
+      (cond
+        [(null? vals) (unspecified)]
+        [(null? (cdr vals))
+          (unless (eq? (car vals) (unspecified))
+            (print (car vals) (current-output-port) #f)
+            (newline))]
+        [else
+          (let loop ([vals vals] [index 0])
+            (unless (null? vals)
+              (format #t "[~a] = " index)
+              (print (car vals) (current-output-port) #f)
+              (newline)
+              (loop (cdr vals) (+ index 1))))]))
     (flush-output-port (current-output-port)))
 
   (define (simple-read-eval-print-loop)
