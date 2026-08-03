@@ -420,6 +420,9 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
     }
 
     pub fn debug_local(&mut self, lvar: LVarRef<'gc>, val: ir::Value) {
+        if !self.func_debug_cx.emit_debuginfo {
+            return;
+        }
         let srcloc = self.srcloc;
         let label = self.func_debug_cx.add_variable(lvar, srcloc);
         self.builder.set_val_label(val, label);

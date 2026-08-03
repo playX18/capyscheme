@@ -25,6 +25,7 @@ pub(crate) struct DebugContext<'gc> {
     stack_pointer_register: Register,
     value_type: UnitEntryId,
     usize_type: UnitEntryId,
+    emit_debuginfo: bool,
 }
 
 pub(crate) struct FunctionDebugContext<'gc> {
@@ -34,6 +35,7 @@ pub(crate) struct FunctionDebugContext<'gc> {
     source_loc_set: HashMap<SourceLoc, (FileId, u64, u64)>,
     lvar_to_label: HashMap<LVarRef<'gc>, (ValueLabel, Option<SourceLoc>)>,
     label_to_lvar: HashMap<ValueLabel, LVarRef<'gc>>,
+    pub(crate) emit_debuginfo: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -147,6 +149,7 @@ impl<'gc> DebugContext<'gc> {
             stack_pointer_register,
             value_type: value_type_id,
             usize_type: usize_type_id,
+            emit_debuginfo: false,
         }
     }
 
@@ -161,43 +164,45 @@ impl<'gc> DebugContext<'gc> {
 
         let scope = self.dwarf.unit.root();
         let entry_id = self.dwarf.unit.add(scope, gimli::DW_TAG_subprogram);
-        let entry = self.dwarf.unit.get_mut(entry_id);
-        let linkage_name_id = if linkage_name != name.to_string() {
-            Some(self.dwarf.strings.add(linkage_name))
-        } else {
-            None
-        };
+        if self.emit_debuginfo {
+            let entry = self.dwarf.unit.get_mut(entry_id);
+            let linkage_name_id = if linkage_name != name.to_string() {
+                Some(self.dwarf.strings.add(linkage_name))
+            } else {
+                None
+            };
 
-        let name_id = if name != Value::new(false) {
-            self.dwarf.strings.add(name.to_string())
-        } else {
-            self.dwarf.strings.add(binding.name.to_string())
-        };
+            let name_id = if name != Value::new(false) {
+                self.dwarf.strings.add(name.to_string())
+            } else {
+                self.dwarf.strings.add(binding.name.to_string())
+            };
 
-        entry.set(gimli::DW_AT_low_pc, AttributeValue::Udata(0));
-        entry.set(gimli::DW_AT_high_pc, AttributeValue::Udata(0));
+            entry.set(gimli::DW_AT_low_pc, AttributeValue::Udata(0));
+            entry.set(gimli::DW_AT_high_pc, AttributeValue::Udata(0));
 
-        let mut frame_base_expr = Expression::new();
+            let mut frame_base_expr = Expression::new();
 
-        frame_base_expr.op_reg(self.stack_pointer_register);
-        entry.set(
-            gimli::DW_AT_frame_base,
-            AttributeValue::Exprloc(frame_base_expr),
-        );
-
-        if let Some(linkage_name_id) = linkage_name_id {
+            frame_base_expr.op_reg(self.stack_pointer_register);
             entry.set(
-                gimli::DW_AT_linkage_name,
-                AttributeValue::StringRef(linkage_name_id),
+                gimli::DW_AT_frame_base,
+                AttributeValue::Exprloc(frame_base_expr),
             );
-        }
-        entry.set(gimli::DW_AT_name, AttributeValue::StringRef(name_id));
 
-        entry.set(
-            gimli::DW_AT_decl_file,
-            AttributeValue::FileIndex(Some(file_id)),
-        );
-        entry.set(gimli::DW_AT_decl_line, AttributeValue::Udata(line));
+            if let Some(linkage_name_id) = linkage_name_id {
+                entry.set(
+                    gimli::DW_AT_linkage_name,
+                    AttributeValue::StringRef(linkage_name_id),
+                );
+            }
+            entry.set(gimli::DW_AT_name, AttributeValue::StringRef(name_id));
+
+            entry.set(
+                gimli::DW_AT_decl_file,
+                AttributeValue::FileIndex(Some(file_id)),
+            );
+            entry.set(gimli::DW_AT_decl_line, AttributeValue::Udata(line));
+        }
 
         FunctionDebugContext {
             entry_id,
@@ -206,6 +211,7 @@ impl<'gc> DebugContext<'gc> {
 
             srcloc: (file_id, line, column),
             source_loc_set: HashMap::new(),
+            emit_debuginfo: self.emit_debuginfo,
         }
     }
 

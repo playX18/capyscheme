@@ -54,7 +54,7 @@ pub fn declare_runtime_data(
     declare_data(function, runtime_data(data), false, false)
 }
 
-pub fn host_isa() -> Arc<dyn TargetIsa> {
+static HOST_ISA: std::sync::LazyLock<Arc<dyn TargetIsa>> = std::sync::LazyLock::new(|| {
     let mut shared_builder = settings::builder();
     shared_builder
         .set("enable_probestack", "false")
@@ -74,6 +74,10 @@ pub fn host_isa() -> Arc<dyn TargetIsa> {
         .expect("host target should be supported by Cranelift")
         .finish(shared_flags)
         .expect("host ISA should finish")
+});
+
+pub fn host_isa() -> Arc<dyn TargetIsa> {
+    HOST_ISA.clone()
 }
 
 pub struct CompileContext {
@@ -630,13 +634,14 @@ impl<'gc> ModuleBuilder<'gc> {
     }
 
     pub(crate) fn declare_procedures(&mut self) -> Vec<DeclaredProcedure<'gc>> {
-        let procedures = self.program.procedures.clone();
-
         let sig = compiled_scheme_signature();
         let mut function_index = 0;
         let mut continuation_index = 0;
-        let mut declared = Vec::with_capacity(procedures.len());
-        for procedure in procedures.iter() {
+        let mut declared = Vec::with_capacity(self.program.procedures.len());
+        // Index-based iteration: avoids cloning the whole `procedures` Vec while
+        // still allowing per-procedure mutable `self` calls in the loop body.
+        for index in 0..self.program.procedures.len() {
+            let procedure = self.program.procedures[index].clone();
             match procedure.code {
                 CodeId::GraphFunction(_) => {
                     let i = function_index;
@@ -702,6 +707,7 @@ impl<'gc> ModuleBuilder<'gc> {
         let procedure_function_start = functions.len();
 
         for declared in declared_procedures.iter() {
+            let _profile = crate::utils::pass_profile::ProfileScope::new("cranelift.procedure");
             cache.ctx.func = ir::Function::with_name_signature(
                 ir::UserFuncName::user(0, declared.function.index()),
                 compiled_scheme_signature(),
