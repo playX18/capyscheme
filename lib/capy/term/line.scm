@@ -541,7 +541,14 @@
                       (finish-input-line port)
                       (line-editor-add-history! editor (line-state-result next))
                       (line-state-result next)]
-                    [(or (eq? status 'abort) (eq? status 'eof))
+                    [(eq? status 'abort)
+                      ;; Ctrl-C: cancel the current line and continue with a
+                      ;; fresh prompt ("" evaluates to nothing in the REPL).
+                      (clear-completion-line-if-visible port state)
+                      (move-to-input-end port next)
+                      (finish-input-line port)
+                      ""]
+                    [(eq? status 'eof)
                       (clear-completion-line-if-visible port state)
                       (move-to-input-end port next)
                       (finish-input-line port)

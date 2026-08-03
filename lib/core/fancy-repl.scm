@@ -322,7 +322,7 @@
     (let* ([class (fancy-repl-value-class value)]
            [color (value-style class)])
       (display (styled-string "=> " 'dark-grey))
-      (display (styled-string (format #f "~a" value) color))
+      (display (styled-string (format #f "~s" value) color))
       (newline)))
 
   (define (print-values vals)
@@ -335,7 +335,7 @@
         (let loop ([vals vals] [index 0])
           (unless (null? vals)
             (display (styled-string (format #f "[~a] = " index) 'dark-grey))
-            (display (styled-string (format #f "~a" (car vals))
+            (display (styled-string (format #f "~s" (car vals))
                       (value-style (fancy-repl-value-class (car vals)))))
             (newline)
             (loop (cdr vals) (+ index 1))))])
@@ -397,8 +397,12 @@
               (flush-output-port (current-output-port))
               (exit 0)]
             [else
-              (let ([form (call-with-input-string line read)])
-                (unless (eof-object? form)
-                  (receive ans (eval form (current-module))
-                    (print-values ans))))])))
+              (call-with-input-string line
+                (lambda (in)
+                  (let loop ()
+                    (let ([form (read in)])
+                      (unless (eof-object? form)
+                        (receive ans (eval form (current-module))
+                          (print-values ans))
+                        (loop)))))) ])))
       (loop))))
