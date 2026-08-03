@@ -18,7 +18,6 @@ use crate::compiler::cfg::{
 };
 use crate::compiler::cranelift::primitive::Primitive;
 use crate::runtime::value::Value;
-use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Relation described by a boolean-valued instruction.
@@ -85,9 +84,20 @@ struct Specializer<'gc> {
     replacement: HashMap<BlockId, BlockId>,
     merge_targets: HashSet<BlockId>,
     edges: HashSet<(BlockId, BlockId)>,
-    reachable_cache: RefCell<HashSet<BlockId>>,
-    reachability_dirty: Cell<bool>,
+    /// Resolved successors index (kept in sync with `edges` on insert and with
+    /// `replacement` on merge), used for incremental reachability.
+    succs: HashMap<BlockId, Vec<BlockId>>,
+    /// Resolved block ids reachable from the entry. Maintained incrementally:
+    /// reachability over resolved ids only grows (edges are never removed and
+    /// merges alias a reachable version onto its merge target), so no full-graph
+    /// rescan is ever needed.
+    reachable: HashSet<BlockId>,
     limit_checks: HashSet<BlockId>,
+    /// Originals flagged for a version-limit check that have not been checked
+    /// yet. `ensure_version_limit_tasks` drains this queue instead of rescanning
+    /// every known original on every queue pop (which is O(N) per pop on huge
+    /// procedures).
+    limit_check_queue: VecDeque<BlockId>,
     backedges: HashSet<(BlockId, BlockId)>,
     loop_entry_versions: HashMap<BlockId, BlockId>,
     recurrent_versions: HashMap<BlockId, Vec<BlockId>>,
@@ -132,7 +142,13 @@ impl<'gc> Specializer<'gc> {
         for block in &procedure.blocks {
             orig_blocks.insert(block.id, block.clone());
         }
-        let live_in = compute_live_in(procedure);
+        let live_in = {
+            let mut _p = crate::utils::pass_profile::ProfileScope::new("cfg.bbv.live_in");
+            _p.field("blocks", procedure.blocks.len());
+            let live_in = compute_live_in(procedure);
+            _p.field("live_in_blocks", live_in.len());
+            live_in
+        };
 
         Self {
             orig_blocks,
@@ -146,9 +162,10 @@ impl<'gc> Specializer<'gc> {
             replacement: HashMap::new(),
             merge_targets: HashSet::new(),
             edges: HashSet::new(),
-            reachable_cache: RefCell::new(HashSet::new()),
-            reachability_dirty: Cell::new(true),
+            succs: HashMap::new(),
+            reachable: HashSet::new(),
             limit_checks: HashSet::new(),
+            limit_check_queue: VecDeque::new(),
             backedges: backedges(procedure),
             loop_entry_versions: HashMap::new(),
             recurrent_versions: HashMap::new(),
@@ -170,12 +187,15 @@ impl<'gc> Specializer<'gc> {
 
         let entry_new = self.reach(self.entry_orig, TypeContext::new(), None);
         self.entry_new = Some(entry_new);
+        self.reachable.insert(self.resolve(entry_new));
         loop {
             self.ensure_version_limit_tasks();
-            self.reactivate_pending();
             let Some(queued_task) = self.queue.pop_front() else {
                 self.ensure_reachable_tasks();
-                self.limit_checks.extend(self.versions_of.keys().copied());
+                let originals: Vec<_> = self.versions_of.keys().copied().collect();
+                for orig in originals {
+                    self.flag_limit_check(orig);
+                }
                 self.ensure_version_limit_tasks();
                 self.reactivate_pending();
                 if self.queue.is_empty() {
@@ -223,6 +243,15 @@ impl<'gc> Specializer<'gc> {
         block
     }
 
+    /// Flags an original block for a future version-limit check. The check is
+    /// queued lazily so `ensure_version_limit_tasks` does not rescan every known
+    /// original on every queue pop.
+    fn flag_limit_check(&mut self, orig: BlockId) {
+        if self.limit_checks.insert(orig) {
+            self.limit_check_queue.push_back(orig);
+        }
+    }
+
     fn resolve(&self, mut id: BlockId) -> BlockId {
         while let Some(next) = self.replacement.get(&id) {
             id = *next;
@@ -245,15 +274,13 @@ impl<'gc> Specializer<'gc> {
     }
 
     fn active_versions(&self, orig: BlockId) -> Vec<(BlockId, TypeContext)> {
-        self.refresh_reachability();
-        let reachable = self.reachable_cache.borrow();
         self.versions_of
             .get(&orig)
             .map(|ids| {
                 ids.iter()
                     .filter(|id| {
                         !self.replacement.contains_key(id)
-                            && reachable.contains(&self.resolve(**id))
+                            && self.reachable.contains(&self.resolve(**id))
                     })
                     .map(|id| (*id, self.all_versions[id].ctx.clone()))
                     .collect()
@@ -261,42 +288,30 @@ impl<'gc> Specializer<'gc> {
             .unwrap_or_default()
     }
 
-    fn refresh_reachability(&self) {
-        if !self.reachability_dirty.get() {
+    /// Marks `seed` and everything reachable from it as reachable, following
+    /// the resolved successor index. Returns immediately if already reachable.
+    fn mark_reachable_from(&mut self, seed: BlockId) {
+        let seed = self.resolve(seed);
+        if !self.reachable.insert(seed) {
             return;
         }
-        let Some(entry) = self.entry_new else {
-            self.reachable_cache.borrow_mut().clear();
-            self.reachability_dirty.set(false);
-            return;
-        };
-        let mut successors: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
-        for &(source, destination) in &self.edges {
-            successors
-                .entry(self.resolve(source))
-                .or_default()
-                .push(self.resolve(destination));
-        }
-
-        let mut seen = HashSet::new();
-        let mut queue = VecDeque::from([self.resolve(entry)]);
+        let mut queue = VecDeque::from([seed]);
         while let Some(current) = queue.pop_front() {
-            if !seen.insert(current) {
+            let current = self.resolve(current);
+            let Some(targets) = self.succs.get(&current).cloned() else {
                 continue;
-            }
-            if let Some(destinations) = successors.get(&current) {
-                queue.extend(destinations.iter().copied());
+            };
+            for target in targets {
+                let target = self.resolve(target);
+                if self.reachable.insert(target) {
+                    queue.push_back(target);
+                }
             }
         }
-        *self.reachable_cache.borrow_mut() = seen;
-        self.reachability_dirty.set(false);
     }
 
     fn is_reachable(&self, target: BlockId) -> bool {
-        self.refresh_reachability();
-        self.reachable_cache
-            .borrow()
-            .contains(&self.resolve(target))
+        self.reachable.contains(&self.resolve(target))
     }
 
     fn create_version(&mut self, orig: BlockId, ctx: TypeContext, key: TypeContext) -> BlockId {
@@ -306,7 +321,7 @@ impl<'gc> Specializer<'gc> {
         self.versions_of.entry(orig).or_default().push(new);
         self.version_orig.insert(new, orig);
         self.version_by_key.insert((orig, key), new);
-        self.limit_checks.insert(orig);
+        self.flag_limit_check(orig);
         let task = Task { orig, new, ctx };
         self.pending.insert(new, task.clone());
         self.queued.insert(new);
@@ -351,10 +366,7 @@ impl<'gc> Specializer<'gc> {
         };
         self.version_by_key.insert((orig, key), id);
         if let Some(source) = source {
-            if self.edges.insert((source, id)) {
-                self.reachability_dirty.set(true);
-            }
-            self.limit_checks.insert(orig);
+            self.record_edge(orig, Some(source), id);
         }
         if is_loop_header {
             self.loop_entry_versions.entry(orig).or_insert(id);
@@ -427,9 +439,14 @@ impl<'gc> Specializer<'gc> {
         if let Some(source) = source
             && self.edges.insert((source, target))
         {
-            self.reachability_dirty.set(true);
+            let src = self.resolve(source);
+            let dst = self.resolve(target);
+            self.succs.entry(src).or_default().push(dst);
+            if self.reachable.contains(&src) {
+                self.mark_reachable_from(dst);
+            }
         }
-        self.limit_checks.insert(orig);
+        self.flag_limit_check(orig);
     }
 
     fn same_kind_shape(&self, orig: BlockId, first: &TypeContext, second: &TypeContext) -> bool {
@@ -462,8 +479,13 @@ impl<'gc> Specializer<'gc> {
     fn replace_loop_version(&mut self, orig: BlockId, old: BlockId, ctx: TypeContext) -> BlockId {
         let key = self.ctx_key(orig, &ctx);
         let new = self.create_version(orig, ctx, key);
+        let old_key = self.resolve(old);
+        let old_reachable = self.reachable.contains(&old_key);
         self.replacement.insert(old, new);
-        self.reachability_dirty.set(true);
+        self.merge_succs(old_key, self.resolve(new));
+        if old_reachable {
+            self.mark_reachable_from(new);
+        }
         self.pending.remove(&old);
         self.queued.remove(&old);
         self.ensure_reachable_tasks();
@@ -471,20 +493,28 @@ impl<'gc> Specializer<'gc> {
         new
     }
 
+    /// Moves the successor index entries of `from` onto `to` after `from` was
+    /// replaced/aliased, so incremental reachability keeps following edges.
+    fn merge_succs(&mut self, from: BlockId, to: BlockId) {
+        if from == to {
+            return;
+        }
+        if let Some(mut list) = self.succs.remove(&from) {
+            self.succs.entry(to).or_default().append(&mut list);
+        }
+    }
+
     fn reactivate_pending(&mut self) {
-        self.refresh_reachability();
-        let reachable_cache = self.reachable_cache.borrow();
         let reachable: Vec<_> = self
             .pending
             .iter()
             .filter(|(id, _)| {
-                !self.queued.contains(id) && reachable_cache.contains(&self.resolve(**id))
+                !self.queued.contains(id) && self.reachable.contains(&self.resolve(**id))
             })
             .map(|(id, task)| (*id, task.clone()))
             .collect();
-        drop(reachable_cache);
         for (id, task) in reachable {
-            self.limit_checks.insert(task.orig);
+            self.flag_limit_check(task.orig);
             self.queued.insert(id);
             self.queue.push_back(task);
         }
@@ -522,19 +552,39 @@ impl<'gc> Specializer<'gc> {
         };
         self.merge_targets.insert(merged_id);
 
+        let first_key = if first != merged_id {
+            Some(self.resolve(first))
+        } else {
+            None
+        };
+        let second_key = if second != merged_id {
+            Some(self.resolve(second))
+        } else {
+            None
+        };
+        let first_reachable = first_key.is_some_and(|key| self.reachable.contains(&key));
+        let second_reachable = second_key.is_some_and(|key| self.reachable.contains(&key));
+
         if first != merged_id {
             self.replacement.insert(first, merged_id);
-            self.reachability_dirty.set(true);
             self.pending.remove(&first);
             self.queued.remove(&first);
         }
         if second != merged_id {
             self.replacement.insert(second, merged_id);
-            self.reachability_dirty.set(true);
             self.pending.remove(&second);
             self.queued.remove(&second);
         }
-        self.limit_checks.insert(orig);
+        if let Some(key) = first_key {
+            self.merge_succs(key, self.resolve(merged_id));
+        }
+        if let Some(key) = second_key {
+            self.merge_succs(key, self.resolve(merged_id));
+        }
+        if first_reachable || second_reachable {
+            self.mark_reachable_from(merged_id);
+        }
+        self.flag_limit_check(orig);
         self.ensure_version_task(orig, merged_id);
         self.ensure_reachable_tasks();
         self.reactivate_pending();
@@ -567,8 +617,6 @@ impl<'gc> Specializer<'gc> {
     /// output block. Reconstructing the task from the version record is the
     /// worklist equivalent of reactivating the version in Algorithm 1.
     fn ensure_reachable_tasks(&mut self) {
-        self.refresh_reachability();
-        let reachable_cache = self.reachable_cache.borrow();
         let missing: Vec<_> = self
             .versions_of
             .iter()
@@ -578,7 +626,7 @@ impl<'gc> Specializer<'gc> {
                         || self.out_blocks.contains_key(id)
                         || self.pending.contains_key(id)
                         || self.queued.contains(id)
-                        || !reachable_cache.contains(&self.resolve(*id))
+                        || !self.reachable.contains(&self.resolve(*id))
                     {
                         return None;
                     }
@@ -595,7 +643,6 @@ impl<'gc> Specializer<'gc> {
             })
             .collect();
 
-        drop(reachable_cache);
         for (id, task) in missing {
             self.pending.insert(id, task.clone());
             self.queued.insert(id);
@@ -610,8 +657,9 @@ impl<'gc> Specializer<'gc> {
     /// pending pop, so keep one live version as a merge check until the limit
     /// is restored.
     fn ensure_version_limit_tasks(&mut self) {
-        let originals: Vec<_> = self.limit_checks.drain().collect();
+        let originals: Vec<_> = self.limit_check_queue.drain(..).collect();
         for orig in originals {
+            self.limit_checks.remove(&orig);
             let active = self.active_versions(orig);
             if active.len() <= self.version_limit
                 || active
@@ -669,11 +717,22 @@ impl<'gc> Specializer<'gc> {
             },
         );
         for successor in successors {
-            if let Some(orig) = self.version_orig.get(&self.resolve(successor)).copied() {
-                self.limit_checks.insert(orig);
+            let successor = self.resolve(successor);
+            if let Some(orig) = self.version_orig.get(&successor).copied() {
+                self.flag_limit_check(orig);
+            }
+            // Reactivate a pending successor version locally: this block's walk
+            // is what makes it reachable. (A full `reactivate_pending` scan per
+            // walked block is O(pending) per pop and quadratic on huge
+            // procedures; merge-driven reachability changes are handled by
+            // `ensure_reachable_tasks` in `merge_pair`.)
+            if let Some(task) = self.pending.get(&successor).cloned()
+                && !self.queued.contains(&successor)
+            {
+                self.queued.insert(successor);
+                self.queue.push_back(task);
             }
         }
-        self.reactivate_pending();
     }
 
     fn walk_instruction(
