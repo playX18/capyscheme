@@ -49,8 +49,8 @@
         [(_ (target trgt) (module mod) lvl arg arg* ...)
           #`(*raw-log/src*
              #,(convert-log-level #'lvl)
-             'trgt
              'mod
+             'trgt
              #,(get-filename #'lvl)
              #,(get-line #'lvl)
              arg
@@ -60,10 +60,10 @@
         [(_ (target trgt) level arg arg* ...)
           #`(*raw-log/src*
              #,(convert-log-level #'level)
-             'trgt
              '#,(current-module-name-quote)
-             #,(get-filename #'lvl)
-             #,(get-line #'lvl)
+             'trgt
+             #,(get-filename #'level)
+             #,(get-line #'level)
              arg
              arg*
              ...)]

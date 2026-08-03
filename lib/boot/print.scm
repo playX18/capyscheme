@@ -79,7 +79,7 @@
         (patom x p slashify level)]
       [(and (memq (car x) quoters)
           (pair? (cdr x))
-          (null? (cadr x)))
+          (null? (cddr x)))
         (print-quoted x p slashify level)]
       [(and (not slashify)
           (eqv? 0 (print-length)))

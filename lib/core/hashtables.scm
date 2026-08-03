@@ -70,7 +70,7 @@
 
       (define generic-hashtable-set!
         (lambda (ht-custom key obj)
-          (or mutable? (assertion-violation 'hashtable-set! (format "expected mutable hashtable, but ~s is not" ht-custom) (list ht-custom key obj)))
+          (or mutable? (assertion-violation 'hashtable-set! (format "expected mutable hashtable, but got ~s" ht-custom) (list ht-custom key obj)))
           (let ((slot (hash-function key))
                 (equiv? (lambda (e) (equiv-function e key))))
             (cond ((core-hash-ref ht-root slot #f)
