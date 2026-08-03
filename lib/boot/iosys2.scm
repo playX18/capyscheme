@@ -452,7 +452,7 @@
             (else #f))))
       (define (loop2 j k s i)
         (cond ((< j k)
-               (string-set! s i (.integer->char:trusted
+               (string-set! s i (integer->char
                                  (bytevector-ref buf j)))
                (loop2 (+ j 1) k s (+ i 1)))
           (else
