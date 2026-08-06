@@ -178,7 +178,6 @@
     #f))
 
 
-;; taken from loko: https://gitlab.com/weinholt/loko/-/blob/master/runtime/control.sls#L296
 ;; When set to #f, print-condition prints only the summary line and source
 ;; location; the full component dump is available on demand.
 (define print-condition-verbose? (make-parameter #t))
@@ -249,18 +248,80 @@
           (print-expansion-frame (car frames) index)
           (loop (cdr frames) (+ index 1))))
       (write frames p)))
-  (define (print-syntax form subform)
-    (define form-src (if (syntax? form) (syntax-sourcev form) #f))
-    (define subform-src (if (and subform (syntax? subform)) (syntax-sourcev subform) #f))
-    (print-datum p form)
-    (when form-src
-      (format p "~%       in ")
-      (fmt-source form-src))
-    (when subform
-      (print-datum p subform)
-      (when subform-src
-        (format p "~%     in ")
-        (fmt-source subform-src))))
+  ;; Print one &syntax field (form or subform), followed by the source of the
+  ;; datum when it is a syntax object carrying one.
+  (define (print-syntax-field label x p)
+    (when x
+      (format p "~%     ~a: " label)
+      (print-datum p x)
+      (when (syntax? x)
+        (let ((src (syntax-sourcev x)))
+          (when src
+            (format p "~%           in ")
+            (fmt-source src))))))
+  ;; --- Verbose component dump -----------------------------------------
+  ;; The dump is table-driven: condition types known to the system have a
+  ;; dedicated formatter; anything else (user-defined types) falls back to
+  ;; a generic field dump.
+  (define (print-type-chain rtd p)
+    (let loop ([rtd rtd])
+      (format p "~a" (record-type-name rtd))
+      (let ([parent (record-type-parent rtd)])
+        (unless (or (not parent) (eq? parent (record-type-rtd &condition)))
+          (format p " ")
+          (loop parent)))))
+  (define (print-irritants x p)
+    (display "(" p)
+    (let loop ([x x])
+      (unless (null? x)
+        (write (car x) p)
+        (unless (null? (cdr x))
+          (display "\n                 " p)
+          (loop (cdr x)))))
+    (display ")" p))
+  (define (print-generic-component c p)
+    (define rtd (record-rtd c))
+    (print-type-chain rtd p)
+    (let loop ([rtd rtd])
+      (let ([f* (record-type-field-names rtd)])
+        (when (vector? f*)
+          (do ([i 0 (+ i 1)])
+            [(= i (vector-length f*))]
+            (format p "~%     ~a: " (vector-ref f* i))
+            (write ((record-accessor rtd i) c) p))))
+      (let ([parent (record-type-parent rtd)])
+        (unless (or (not parent) (eq? parent (record-type-rtd &condition)))
+          (loop parent)))))
+  (define (print-message-component c p)
+    (display "&message: " p)
+    (write (condition-message c) p))
+  (define (print-who-component c p)
+    (display "&who: " p)
+    (write (condition-who c) p))
+  (define (print-marks-component c p)
+    (display "&marks: " p)
+    (write (condition-marks c) p))
+  (define (print-irritants-component c p)
+    (display "&irritants: " p)
+    (print-irritants (condition-irritants c) p))
+  (define (print-syntax-component c p)
+    (print-type-chain (record-rtd c) p)
+    (print-syntax-field "form" (syntax-violation-form c) p)
+    (print-syntax-field "subform" (syntax-violation-subform c) p))
+  (define (print-trace-component c p)
+    (print-type-chain (record-rtd c) p)
+    (format p "~%     frames: ")
+    (print-expansion-trace (condition-expansion-trace c)))
+  (define (print-component c p)
+    (let ([rtd (record-rtd c)])
+      (cond
+        [(eq? rtd (record-type-rtd &message)) (print-message-component c p)]
+        [(eq? rtd (record-type-rtd &who)) (print-who-component c p)]
+        [(eq? rtd (record-type-rtd &irritants)) (print-irritants-component c p)]
+        [(eq? rtd (record-type-rtd &marks)) (print-marks-component c p)]
+        [(eq? rtd (record-type-rtd &syntax)) (print-syntax-component c p)]
+        [(eq? rtd (record-type-rtd &expansion-trace)) (print-trace-component c p)]
+        [else (print-generic-component c p)])))
   ;; The expansion trace is (innermost ... outermost); the outermost frame is
   ;; the user's macro invocation. Its `use-site` source vector carries the
   ;; full span of the call, which is the most useful location to point at.
@@ -306,61 +367,12 @@
           (newline p)))
       (when (print-condition-verbose?)
         (let ([c* (simple-conditions exn)])
-        (format p "The condition has ~a components:~%" (length c*))
-        (do ([i 1 (+ 1 i)]
-             [c* c* (cdr c*)])
-          [(null? c*)]
-          (let* ([c (car c*)]
-                 [rtd (record-rtd c)])
+          (format p "The condition has ~a components:~%" (length c*))
+          (do ([i 1 (+ 1 i)]
+               [c* c* (cdr c*)])
+            [(null? c*)]
             (format p " ~a. " i)
-            (let ([supress-type
-                    (and (eq? (record-type-parent rtd)
-                          (record-type-rtd &condition))
-                      (let ((name (symbol->string (record-type-name rtd)))
-                            (fields (record-type-field-names rtd)))
-                        (and (not (eqv? 0 (string-length name)))
-                          (char=? (string-ref name 0) #\&)
-                          (fx>? (vector-length fields) 0)
-                          (string=? (substring name 1 (string-length name))
-                            (symbol->string (vector-ref fields 0))))))])
-              (if supress-type
-                (put-char p #\&)
-                (let loop ([rtd rtd])
-                  (format p "~a" (record-type-name rtd))
-                  (cond
-                    [(record-type-parent rtd) =>
-                      (lambda (parent)
-                        (unless (eq? parent (record-type-rtd &condition))
-                          (format p " ")
-                          (loop parent)))])))
-              (let loop ([rtd rtd])
-                (do ([f* (record-type-field-names rtd)]
-                     [i 0 (+ i 1)])
-                  [(= i (vector-length f*))
-                    (cond [(record-type-parent rtd) => loop])]
-                  (unless (and supress-type (eqv? i 0))
-                    (format p "~%     "))
-                  (format p "~a: " (vector-ref f* i))
-                  (let ([x ((record-accessor rtd i) c)])
-                    (cond
-                      [(and (eq? rtd (record-type-rtd &syntax)) (eqv? i 0))
-                        (print-syntax (syntax-violation-form c) (syntax-violation-subform c))]
-                      [(and (eq? rtd (record-type-rtd &syntax)) (eqv? i 1))
-                        (values)]
-                      [(and (eq? rtd (record-type-rtd &expansion-trace)) (eqv? i 0))
-                        (print-expansion-trace x)]
-                      [(and (eq? rtd (record-type-rtd &irritants))
-                          (pair? x)
-                          (list? x))
-                        (display "(" p)
-                        (write (car x) p)
-                        (for-each
-                          (lambda (x)
-                            (display "\n                 " p)
-                            (write x p))
-                          (cdr x))
-                        (display ")" p)]
-                      [else (write x p)]))))))
-          (newline p))))]
+            (print-component (car c*) p)
+            (newline p))))]
     [else
       (format p "A non-condition object was raised:~%~s" exn)]))
