@@ -44,14 +44,7 @@
     (unless (term? term)
       (error 'tree-il->scheme "not a term" term))
 
-    ;; ------------------------------------------------------------------
-    ;; Datum shaping
-    ;;
-    ;; Helpers that assemble Scheme datums from already-printed pieces.
-    ;; They deliberately match against the printed form, not against the
-    ;; term structure, so the shaping stays in sync with what was emitted.
-    ;; ------------------------------------------------------------------
-
+  
     (define (atomic? x) (not (or (pair? x) (vector? x))))
 
     (define (void-form)
@@ -189,17 +182,7 @@
                                            (take consequents n)))
                   ,@tail)))))))
 
-    ;; ------------------------------------------------------------------
-    ;; Lexical renaming
-    ;;
-    ;; When `rename-lexicals?' is active, each lexical identity is mapped
-    ;; to a stable output name: the readable name from the binding site,
-    ;; minus the "-N-M" suffix that macro expansion appended, plus a ".N"
-    ;; disambiguator when the base name is already taken.  The mapping is
-    ;; threaded through the walk as an association list (env), together
-    ;; with the set of names already handed out (used).
-    ;; ------------------------------------------------------------------
-
+   
     (define (digit-run? s start end)
       (let loop ([i start])
         (cond
@@ -344,10 +327,7 @@
                 env
                 used))))))
 
-    ;; ------------------------------------------------------------------
-    ;; The walk
-    ;; ------------------------------------------------------------------
-
+  
     (define (binding-pair name init)
       `(,name ,init))
 

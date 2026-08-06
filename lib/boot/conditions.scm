@@ -259,10 +259,7 @@
           (when src
             (format p "~%           in ")
             (fmt-source src))))))
-  ;; --- Verbose component dump -----------------------------------------
-  ;; The dump is table-driven: condition types known to the system have a
-  ;; dedicated formatter; anything else (user-defined types) falls back to
-  ;; a generic field dump.
+
   (define (print-type-chain rtd p)
     (let loop ([rtd rtd])
       (format p "~a" (record-type-name rtd))

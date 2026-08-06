@@ -47,10 +47,6 @@
   (import (rnrs)
           (capy))
 
-  ;; ------------------------------------------------------------------
-  ;; Runtime iterator protocol
-  ;; ------------------------------------------------------------------
-
   ;; NEXT! returns all values belonging to one sequence element.
   (define-record-type (iterator %make-iterator iterator?)
     (fields
@@ -735,9 +731,6 @@
           sequence)
         #f)))
 
-  ;; ------------------------------------------------------------------
-  ;; Expansion engine
-  ;; ------------------------------------------------------------------
   ;;
   ;; EXPAND-CLAUSES emits code which calls EMIT for each accepted tuple.
   ;;
@@ -932,10 +925,6 @@
                        (cdr cs)
                        (cons #'#t (cons #'#:when (cons c out))))
                      (loop (cdr cs) (cons c out))))))))))
-
-  ;; ------------------------------------------------------------------
-  ;; Public forms
-  ;; ------------------------------------------------------------------
 
   (define-syntax for
     (syntax-rules ()

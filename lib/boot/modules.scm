@@ -80,9 +80,6 @@
         (current-module saved)
         (set! saved #f)))))
 
-;;; ---------------------------------------------------------------------------
-;;; 2. Module trees and name paths
-;;; ---------------------------------------------------------------------------
 
 ;; A module's submodules live in a hash keyed by name symbol.
 (define (module-ref-submodule module name)
