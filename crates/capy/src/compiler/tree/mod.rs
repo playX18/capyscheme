@@ -1,8 +1,3 @@
-//! TreeIL: intermediate representation produced by macro expansion.
-//!
-//! Defines [`Term`], [`TermKind`], [`LVar`], [`Proc`],
-//! [`Let`], [`Fix`], and their associated builder functions.
-
 use std::{cell::Cell, hash::Hash};
 
 use pretty::{DocAllocator, DocBuilder};

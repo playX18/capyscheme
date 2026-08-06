@@ -235,7 +235,7 @@ impl Effects {
 
     /// True when evaluating the operation has no observable cause and can be
     /// discarded when its result is unused.  Dependencies alone do not force
-    /// execution; this is the distinction needed by letrectify/DCE.
+    /// execution; this is the distinction needed by dead-value elimination.
     pub const fn effect_free(self) -> bool {
         self.causes.is_empty()
             && !self.flags.contains(

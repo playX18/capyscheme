@@ -5,8 +5,9 @@ use crate::compiler::cps::optimize::optimize_graph_func_to_ssa;
 use crate::compiler::dump;
 use crate::expander::core::TermRef;
 use crate::expander::{
-    assignment_elimination, compile_cps, eta_expand::eta_expand, fix_letrec::fix_letrec,
-    free_vars::resolve_free_vars, letrectify::letrectify, primitives,
+    assignment_elimination, compile_cps, free_vars::annotate_free_vars, primitives,
+    rectify_letrec::rectify_letrec, recursive_bindings::rewrite_recursive_bindings,
+    well_known_procs::expand_well_known_procs,
 };
 use crate::heap::Gc;
 use crate::runtime::stats::{CompilationBreakdownPhase, CompilationBreakdownScope};
@@ -65,40 +66,40 @@ pub fn lower_to_cps<'gc>(
     ctx: Context<'gc>,
     il: TermRef<'gc>,
     module: Option<Gc<'gc, Module<'gc>>>,
-    expand_primitives: bool,
+    expand_primitive_calls: bool,
     dump_graph: bool,
 ) -> Result<LoweredProgram<'gc>, Value<'gc>> {
-    lower_expanded_to_cps(ctx, il, module, expand_primitives, dump_graph)
+    lower_expanded_to_cps(ctx, il, module, expand_primitive_calls, dump_graph)
 }
 
 pub(crate) fn lower_expanded_to_cps<'gc>(
     ctx: Context<'gc>,
     mut il: TermRef<'gc>,
     module: Option<Gc<'gc, Module<'gc>>>,
-    expand_primitives: bool,
+    expand_primitive_calls: bool,
     dump_graph: bool,
 ) -> Result<LoweredProgram<'gc>, Value<'gc>> {
     let original_il = il;
     let _stats = CompilationBreakdownScope::new(CompilationBreakdownPhase::Lowering);
 
-    if expand_primitives && let Some(module) = module {
-        il = primitives::resolve_primitives(ctx, il, module);
-        il = primitives::expand_primitives(ctx, il);
-        let _profile = ProfileScope::new("compiler.lower.resolve_free_vars");
-        il = resolve_free_vars(ctx, il);
+    if expand_primitive_calls && let Some(module) = module {
+        il = primitives::resolve_primitive_refs(ctx, il, module);
+        il = primitives::expand_primitive_calls(ctx, il);
+        let _profile = ProfileScope::new("compiler.lower.annotate_free_vars");
+        il = annotate_free_vars(ctx, il);
         drop(_profile);
-        let _profile = ProfileScope::new("compiler.lower.letrectify");
-        il = letrectify(ctx, il);
+        let _profile = ProfileScope::new("compiler.lower.rectify_letrec");
+        il = rectify_letrec(ctx, il);
         drop(_profile);
     }
 
     let optimized_il = {
-        let _profile = ProfileScope::new("compiler.lower.fix_letrec");
-        fix_letrec(ctx, il)
+        let _profile = ProfileScope::new("compiler.lower.rewrite_recursive_bindings");
+        rewrite_recursive_bindings(ctx, il)
     };
     let optimized_il = {
-        let _profile = ProfileScope::new("compiler.lower.eta_expand");
-        eta_expand(ctx, optimized_il)
+        let _profile = ProfileScope::new("compiler.lower.expand_well_known_procs");
+        expand_well_known_procs(ctx, optimized_il)
     };
     let optimized_il = {
         let _profile = ProfileScope::new("compiler.lower.assignment_elimination");
