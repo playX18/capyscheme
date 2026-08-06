@@ -30,7 +30,6 @@
 ;    #f))))
 
 (define (print x p slashify)
-  (define write-char io/write-char)
   (define quoters '(quote quasiquote unquote unquote-splicing
                     syntax
                     quasisyntax
@@ -246,14 +245,12 @@
                          ; special subsequent
                          (< 0 i))
                        ((#\@)
-                         (or (< 0 i)
-                           (io/port-allows-r7rs-weirdness? p)))
+                         #t)
                        ((#\.)
                          ; check for peculiar identifiers
                          (or (< 0 i)
                            (eq? x '...)
-                           (and (io/port-allows-r7rs-weirdness? p)
-                             (< (+ i 1) n)
+                           (and (< (+ i 1) n)
                              (let ((c (string-ref s (+ i 1))))
                                (case c
                                  ((#\. #\+ #\- #\@)
@@ -271,8 +268,7 @@
                          (or (< 0 i)
                            (eq? x '+)
                            (eq? x '-)
-                           (and (io/port-allows-r6rs-weirdness? p)
-                             (char=? c #\-)
+                           (and (char=? c #\-)
                              (< (+ i 1) n)
                              (char=? (string-ref s (+ i 1)) #\>))))
                        (else
@@ -429,9 +425,7 @@
             ((= k **vtab**) (printstr "vtab" p))
             ((= k **page**) (printstr "page" p))
             (else
-              (let ((r7rs?
-                      (or (io/port-allows-r7rs-weirdness? p)
-                        (not (io/port-allows-r6rs-weirdness? p)))))
+              (let ((r7rs? #t))
                 (cond
                   ((= k **nul**)
                     (printstr (if r7rs? "null" "nul") p))
@@ -463,12 +457,7 @@
       p))
   (define (print-bytevector x p slashify level)
     (write-char #\# p)
-    (cond
-      ((io/port-allows-r6rs-weirdness? p)
-        (write-char #\v p))
-      ((io/port-allows-r7rs-weirdness? p) #t)
-
-      (else #t))
+    (write-char #\v p)
     (write-char #\u p)
     (write-char #\8 p)
     (print (bytevector->list x) p slashify (- level 1)))
@@ -484,13 +473,13 @@
   "Simple implementation of display"
   (let [(p (if (null? rest) (current-output-port) (car rest)))]
     (print x p #f)
-    (io/discretionary-flush p)))
+    (%ports/discretionary-flush p)))
 
 (define (write-simple x . rest)
   "Simple implementation of write"
   (let [(p (if (null? rest) (current-output-port) (car rest)))]
     (print x p #t)
-    (io/discretionary-flush p)))
+    (%ports/discretionary-flush p)))
 
 (define (print-with-shared-structure obj outport write)
   (define (lookup key state)

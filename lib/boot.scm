@@ -8,14 +8,6 @@
 ;; is defined here because we do not depend on its overloaded version from
 ;; here.
 
-;(define (load-in-vicinity filename directory)
-;  (let ([thunk (load-thunk-in-vicinity filename #t directory )])
-;    (thunk)))
-;
-;(define (load filename)
-;  (let ([thunk (load-thunk-in-vicinity filename #t)])
-;    (thunk)))
-;
 (define ($primitive-load filename)
   "Loads file by searching only load path or by its absolute path."
   (let ([thunk (load-thunk-in-vicinity filename #t)])
@@ -34,17 +26,14 @@
 ($primitive-load "boot/enums.scm")
 ($primitive-load "boot/sys.scm")
 ($primitive-load "boot/osdep.scm")
-($primitive-load "boot/iosys.scm")
-($primitive-load "boot/iosys2.scm")
-($primitive-load "boot/iosys3.scm")
-($primitive-load "boot/portio.scm")
-($primitive-load "boot/bytevectorio.scm")
-($primitive-load "boot/fileio.scm")
-($primitive-load "boot/conio.scm")
-($primitive-load "boot/stringio.scm")
-($primitive-load "boot/stdio.scm")
-($primitive-load "boot/utf16.scm")
-($primitive-load "boot/customio.scm")
+($primitive-load "boot/ports-core.scm")
+($primitive-load "boot/transcoder.scm")
+($primitive-load "boot/binary-ports.scm")
+($primitive-load "boot/textual-ports.scm")
+($primitive-load "boot/custom-ports.scm")
+($primitive-load "boot/file-ports.scm")
+($primitive-load "boot/console-ports.scm")
+($primitive-load "boot/port-api.scm")
 ($primitive-load "boot/print.scm")
 ($primitive-load "boot/format.scm")
 ($primitive-load "boot/log.scm")

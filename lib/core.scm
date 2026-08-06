@@ -568,8 +568,6 @@
     generate-temporaries
     generate-temporary-symbol
     gensym
-    get-accumulated-bytevector
-    get-accumulated-string
     get-bytevector-all
     get-bytevector-n
     get-bytevector-n!
@@ -745,8 +743,8 @@
     make-string-output-port
     make-syntax-violation
     make-temporary-file-port
-    make-transcoded-port
     make-transcoder
+    make-transcoded-port
     make-tuple
     make-undefined-violation
     make-uuid
@@ -843,7 +841,6 @@
     partition
     peek-char
     port-closed?
-    port-device-subtype
     port-eof?
     port-has-port-position?
     port-has-set-port-position!?
@@ -978,7 +975,6 @@
     slot-set-using-class!
     slot-unbound
     set-top-level-value!
-    shutdown-output-port
     simple-conditions
     sin
     sint-list->bytevector

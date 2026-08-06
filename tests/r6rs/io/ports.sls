@@ -161,7 +161,7 @@
 
     (test/unspec (native-transcoder))
 
-#;    (test-transcoders bytevector->string
+    (test-transcoders bytevector->string
                       string->bytevector)
 
     (test (eqv? (eof-object) (eof-object)) #t)
@@ -338,7 +338,7 @@
       (close-port p))
     (let ([p (open-file-input-port "io-tmp1" (file-options)
                                    'block (make-transcoder (utf-16-codec)))])
-#;      (test (get-string-n p 20) "app\x3BB;e")
+      (test (get-string-n p 20) "app\x3BB;e")
       (close-port p))
     (let ([p (open-file-input-port "io-tmp1")])
       (let ([b1 (get-u8 p)])
@@ -357,7 +357,7 @@
          (test (get-u8 p) 97)]))
       (test/unspec (close-port p)))
 
-#;    (let ([bytevector->string-via-file
+    (let ([bytevector->string-via-file
            (lambda (bv tr)
              (let ([p (open-file-output-port "io-tmp1" (file-options no-create))])
                (put-bytevector p bv)
@@ -476,7 +476,7 @@
            (make-transcoder (utf-8-codec)))
           #vu8(97 112 112 206 187 101))
 
-    #;(let ([bytevector->string-via-port
+    (let ([bytevector->string-via-port
            (lambda (bv tr)
              (let ([p (open-bytevector-input-port bv tr)])
                (dynamic-wind
@@ -543,19 +543,19 @@
                (lambda () 'ok))])
       (test (port-has-port-position? p) #t)
       (test (port-has-set-port-position!? p) #t)
-;      (test (port-position p) 0) TODO(playXE): FIX
-;      (test (get-bytevector-n p 3) #vu8(1 2 3)) TODO(playXE): FIX
-;      (test (port-position p) 3) TODO(playXE): FIX
-;      (test (lookahead-u8 p) 4) TODO(playXE): FIX
-;      (test (lookahead-u8 p) 4) TODO(playXE): FIX
-;      (test (port-position p) 3) TODO(playXE): FIX
+      (test (port-position p) 0)
+      (test (get-bytevector-n p 3) #vu8(1 2 3))
+      (test (port-position p) 3)
+      (test (lookahead-u8 p) 4)
+      (test (lookahead-u8 p) 4)
+      (test (port-position p) 3)
       (test/unspec (set-port-position! p 10))
       (get-bytevector-n p 2)
-;      (test (get-bytevector-n p 2) #vu8(13 14)) TODO(playXE): FIX
-;      (test (get-bytevector-n p 2) #vu8(15 16)) TODO(playXE): FIX
+      (test (get-bytevector-n p 2) #vu8(13 14))
+      (test (get-bytevector-n p 2) #vu8(15 16))
       (test (get-bytevector-n p 2) (eof-object))
       (test/unspec (set-port-position! p 2))
-;      (test (get-bytevector-n p 3) #vu8(3 4 5)) TODO(playXE): FIX
+      (test (get-bytevector-n p 3) #vu8(3 4 5))
       (test/unspec (close-port p)))
 
     (test-positions make-custom-binary-input-port)
@@ -585,7 +585,7 @@
       (test/unspec (close-port p)))
 
     ;; textual port positions are hopelessly broken in R6RS
-    #;(test-positions make-custom-textual-input-port)
+    (test-positions make-custom-textual-input-port)
     
     (let* ([accum '()]
            [p (make-custom-binary-output-port
@@ -646,8 +646,7 @@
       (test accum '(#\z #\b #\a))
       (test/unspec (close-port p)))
 
-    ;; textual port positions are hopelessly broken in R6RS
-    #;(test-positions make-custom-textual-output-port)
+    (test-positions make-custom-textual-output-port)
 
     (let* ([save #f]
            [p (make-custom-binary-input/output-port
@@ -685,8 +684,7 @@
       (test (get-char p) #\!)
       (close-port p))
     
-    ;; textual port positions are hopelessly broken in R6RS
-    #;(test-positions (lambda (id r/w get set close)
+    (test-positions (lambda (id r/w get set close)
                         (make-custom-textual-input/output-port
                          id r/w r/w get set close)))
 

@@ -751,7 +751,6 @@
     i/o-encoding-error?
     i/o-encoding-error-char
     make-transcoder
-    trasncoder-codec
     transcoder-eol-style
     transcoder-error-handling-mode
     eol-style
