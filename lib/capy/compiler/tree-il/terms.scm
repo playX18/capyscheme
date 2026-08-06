@@ -1,3 +1,26 @@
+;; Pattern views over the TreeIL intermediate representation.
+;;
+;; The TreeIL term records live in (boot expand): a family of record types
+;; rooted at &term.  This library has two jobs:
+;;
+;;   * re-export the record interface (type tags, predicates, accessors and
+;;     constructors) so compiler passes can build and inspect terms without
+;;     depending on the boot module directly;
+;;
+;;   * attach an srfi-257 match pattern to each record type so that `match'
+;;     can destructure terms directly, e.g. a <let> term matches
+;;
+;;       (~let src style ids lhs rhs body)
+;;
+;;     with @var{src} bound to the source location, @var{style} to the
+;;     binding kind, and the remaining variables to the corresponding
+;;     record fields.
+;;
+;; The pattern variables follow the field order of the underlying record
+;; exactly; renaming a field here would silently change what every
+;; `match' clause in the compiler sees, so the field names are part of the
+;; stable interface.
+
 (library (capy compiler tree-il terms)
   (export
     &term
@@ -147,12 +170,17 @@
     ~wcm)
   (import (capy) (srfi 257))
 
-  ; pattern matching on TreeIL nodes
+  ;; -- the base term --------------------------------------------------
+  ;; Every node carries a source location; all other patterns extend this
+  ;; one, so `src' is always the first field.
   (define-record-match-pattern
     (~term src)
     term?
     (src term-src))
 
+  ;; -- lexical references and assignments -----------------------------
+  ;; A <lref> names a lexical variable; <lset> additionally holds the
+  ;; value it is assigned.
   (define-record-match-pattern
     (~lref src name sym)
     lref?
@@ -168,6 +196,7 @@
     (sym lset-sym)
     (val lset-value))
 
+  ;; -- module references and assignments ------------------------------
   (define-record-match-pattern
     (~module-ref src module name public?)
     module-ref?
@@ -185,6 +214,7 @@
     (public? module-set-public?)
     (value module-set-value))
 
+  ;; -- top-level references and assignments ---------------------------
   (define-record-match-pattern
     (~toplevel-ref src mod name)
     toplevel-ref?
@@ -200,6 +230,7 @@
     (name toplevel-set-name)
     (value toplevel-set-value))
 
+  ;; -- top-level definitions ------------------------------------------
   (define-record-match-pattern
     (~toplevel-define src mod name value)
     toplevel-define?
@@ -208,6 +239,7 @@
     (name toplevel-define-name)
     (value toplevel-define-value))
 
+  ;; -- conditionals ---------------------------------------------------
   (define-record-match-pattern
     (~if src test then else)
     if?
@@ -216,6 +248,10 @@
     (then if-then)
     (else if-else))
 
+  ;; -- binding forms --------------------------------------------------
+  ;; <let> covers `let', `let*' and the `letrec' variants, distinguished
+  ;; by `style'.  <fix> is a letrec where the right-hand sides are already
+  ;; known lambdas, and <receive> binds the values returned by a producer.
   (define-record-match-pattern
     (~let src style ids lhs rhs body)
     let?
@@ -244,6 +280,9 @@
     (producer receive-producer)
     (consumer receive-consumer))
 
+  ;; -- applications ---------------------------------------------------
+  ;; <application> is a call to a computed operator; <primcall> is a call
+  ;; to a named primitive.
   (define-record-match-pattern
     (~application src operator operands)
     application?
@@ -258,12 +297,23 @@
     (prim primcall-prim)
     (args primcall-args))
 
+  ;; -- procedures and primitive references ----------------------------
   (define-record-match-pattern
     (~primref src name)
     primref?
     (src term-src)
     (name primref-prim))
 
+  (define-record-match-pattern
+    (~proc src args body meta ids)
+    proc?
+    (src term-src)
+    (args proc-args)
+    (body proc-body)
+    (meta proc-meta)
+    (ids proc-ids))
+
+  ;; -- literals -------------------------------------------------------
   (define-record-match-pattern
     (~constant src value)
     constant?
@@ -275,21 +325,14 @@
     void?
     (src term-src))
 
-  (define-record-match-pattern
-    (~proc src args body meta ids)
-    proc?
-    (src term-src)
-    (args proc-args)
-    (body proc-body)
-    (meta proc-meta)
-    (ids proc-ids))
-
+  ;; -- multiple values ------------------------------------------------
   (define-record-match-pattern
     (~values src vals)
     values?
     (src term-src)
     (vals values-values))
 
+  ;; -- sequencing -----------------------------------------------------
   (define-record-match-pattern
     (~sequence src head tail)
     sequence?
@@ -297,6 +340,7 @@
     (head sequence-head)
     (tail sequence-tail))
 
+  ;; -- continuation marks ---------------------------------------------
   (define-record-match-pattern
     (~wcm src key mark result)
     wcm?

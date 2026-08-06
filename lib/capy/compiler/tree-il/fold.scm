@@ -1,3 +1,21 @@
+;; TreeIL traversal combinators.
+;;
+;; This library provides the generic walkers used by the compiler passes
+;; that massage TreeIL terms:
+;;
+;;   * `make-tree-il-folder' builds a closure that visits every sub-term
+;;     of a tree in pre-order, threading one or more seed values through
+;;     a `down' callback (called on entry to a node) and an `up' callback
+;;     (called once the node's children have been visited);
+;;
+;;   * `pre-post-order' / `pre-order' / `post-order' rebuild a term from
+;;     the bottom up.  Each node is first rewritten by the `pre'
+;;     callback, its children are then visited and stitched back together
+;;     with the record constructors, and the result is finally handed to
+;;     the `post' callback.  When no child changed, the original node
+;;     object is returned unchanged, so callers can detect a no-op pass
+;;     with an eq?-test.
+
 (library (capy compiler tree-il fold)
   (export
     pre-order
@@ -6,215 +24,240 @@
     make-tree-il-folder
     tree-il-fold)
   (import (capy compiler tree-il terms)
-    (only (capy) printf)
     (srfi 257)
     (rnrs))
+
+  ;; make-tree-il-folder: expand into a folder closure with the given
+  ;; seed names.  The closure is invoked as
+  ;;
+  ;;   (folder tree down up seed ...)
+  ;;
+  ;; where `down' is called as (down node seed ...) before the node's
+  ;; children are visited and `up' as (up node seed ...) afterwards; the
+  ;; values returned by `up' are the result of the fold.  Children are
+  ;; visited in evaluation order: operator before operands, binding
+  ;; values before the body, test before branches, and so on.
   (define-syntax make-tree-il-folder
     (syntax-rules ()
       [(_ seed ...)
         (lambda (tree down up seed ...)
-          (define (fold-values proc exps seed ...)
+          ;; Thread the seeds through a list of child terms.
+          (define (sweep-children visit exps seed ...)
             (if (null? exps)
               (values seed ...)
-              (let-values ([(seed ...) (proc (car exps) seed ...)])
-                (fold-values proc (cdr exps) seed ...))))
+              (let-values ([(seed ...) (visit (car exps) seed ...)])
+                (sweep-children visit (cdr exps) seed ...))))
 
-          (let foldts ([tree tree] [seed seed] ...)
+          (let recur ([node tree] [seed seed] ...)
             (let*-values
-              (([seed ...] (down tree seed ...))
+              (([seed ...] (down node seed ...))
                 ([seed ...]
-                  (match tree
+                  (match node
+                    ;; single-expression nodes
                     [(~or
                         (~lset _ _ _ exp)
                         (~module-set _ _ _ _ exp)
                         (~toplevel-set _ _ _ exp)
                         (~toplevel-define _ _ _ exp))
-                      (foldts exp seed ...)]
+                      (recur exp seed ...)]
+                    ;; binding forms: values first, then the body
                     [(~or
-                        (~let _ _ _ _ rhs body)
-                        (~fix _ _ _ rhs body))
-                      (let*-values (([seed ...] (fold-values foldts rhs seed ...)))
-                        (foldts body seed ...))]
+                        (~let _ _ _ _ init body)
+                        (~fix _ _ _ init body))
+                      (let*-values (([seed ...] (sweep-children recur init seed ...)))
+                        (recur body seed ...))]
                     [(~receive _ _ _ producer consumer)
-                      (let*-values (([seed ...] (foldts producer seed ...)))
-                        (foldts consumer seed ...))]
+                      (let*-values (([seed ...] (recur producer seed ...)))
+                        (recur consumer seed ...))]
                     [(~application _ operator operands)
-                      (let*-values (([seed ...] (foldts operator seed ...)))
-                        (fold-values foldts operands seed ...))]
+                      (let*-values (([seed ...] (recur operator seed ...)))
+                        (sweep-children recur operands seed ...))]
                     [(~primcall _ _ args)
-                      (fold-values foldts args seed ...)]
+                      (sweep-children recur args seed ...)]
                     [(~proc _ _ body _ _)
-                      (foldts body seed ...)]
+                      (recur body seed ...)]
                     [(~values _ vals)
-                      (fold-values foldts vals seed ...)]
+                      (sweep-children recur vals seed ...)]
                     [(~sequence _ head tail)
-                      (let*-values (([seed ...] (foldts head seed ...)))
-                        (foldts tail seed ...))]
+                      (let*-values (([seed ...] (recur head seed ...)))
+                        (recur tail seed ...))]
                     [(~wcm _ _ mark result)
-                      (let*-values (([seed ...] (foldts mark seed ...)))
-                        (foldts result seed ...))]
+                      (let*-values (([seed ...] (recur mark seed ...)))
+                        (recur result seed ...))]
                     [(~if _ test then els)
-                      (let*-values (([seed ...] (foldts test seed ...))
-                                    ([seed ...] (foldts then seed ...)))
-                        (foldts els seed ...))]
+                      (let*-values (([seed ...] (recur test seed ...))
+                                    ([seed ...] (recur then seed ...)))
+                        (recur els seed ...))]
                     [_ (values seed ...)])))
-              (up tree seed ...))))]))
+              (up node seed ...))))]))
 
   (define (tree-il-fold down up seed tree)
-    ((make-tree-il-folder tree) tree down up seed))
+    ;; Traverse TREE, calling DOWN on the way in and UP on the way out of
+    ;; each sub-term, threading SEED through both as extra values.  Returns
+    ;; the values produced by the outermost UP call.
+    ((make-tree-il-folder seed) tree down up seed))
 
   (define (pre-post-order pre post term)
-    (define (elts-eq? a b)
+    ;; Are two child lists elementwise eq??  Used to detect whether any
+    ;; child was rebuilt during the walk.
+    (define (same-contents? a b)
       (or (null? a)
         (and (eq? (car a) (car b))
-          (elts-eq? (cdr a) (cdr b)))))
-    (let loop ([x term])
+          (same-contents? (cdr a) (cdr b)))))
+
+    (let walk ([node term])
       (post
-        (let ([x (pre x)])
+        (let ([node (pre node)])
           (cond
-            [(or (void? x)
-                (constant? x)
-                (lref? x)
-                (primref? x)
-                (module-ref? x)
-                (toplevel-ref? x))
-              x]
-            [(lset? x)
-              (define exp* (loop (lset-value x)))
-              (if (eq? exp* (lset-value x))
-                x
-                (make-lset (term-src x) (lset-name x) (lset-sym x) exp*))]
-            [(module-set? x)
-              (define exp* (loop (module-set-value x)))
-              (if (eq? exp* (module-set-value x))
-                x
-                (make-module-set (term-src x) (module-set-module x)
-                  (module-set-name x)
-                  (module-set-public? x)
-                  exp*))]
-
-            [(toplevel-set? x)
-              (define exp* (loop (toplevel-set-value x)))
-
-              (if (eq? exp* (toplevel-set-value x))
-                x
-                (make-toplevel-set (term-src x)
-                  (toplevel-set-mod x)
-                  (toplevel-set-name x)
-                  exp*))]
-            [(toplevel-define? x)
-              (define exp* (loop (toplevel-define-value x)))
-              (if (eq? exp* (toplevel-define-value x))
-                x
-                (make-toplevel-define (term-src x)
-                  (toplevel-define-mod x)
-                  (toplevel-define-name x)
-                  exp*))]
-            [(if? x)
-              (define test* (loop (if-test x)))
-              (define then* (loop (if-then x)))
-              (define else* (loop (if-else x)))
-              (if (and (eq? test* (if-test x))
-                   (eq? then* (if-then x))
-                   (eq? else* (if-else x)))
-                x
-                (make-if (term-src x) test* then* else*))]
-            [(let? x)
-              (unless (list? (let-rhs x))
-                (assertion-violation 'fold "malformed let" (let-rhs x) (let-ids x) (let-lhs x) (term-src x)))
-              (define rhs* (map loop (let-rhs x)))
-              (define body* (loop (let-body x)))
-              (if (and (elts-eq? rhs* (let-rhs x))
-                   (eq? body* (let-body x)))
-                x
-                (make-let (term-src x)
-                  (let-style x)
-                  (let-ids x)
-                  (let-lhs x)
-                  rhs*
-                  body*))]
-            [(fix? x)
-              (unless (list? (fix-rhs x))
-                (assertion-violation 'fold "malformed fix" (fix-rhs x) (term-src x)))
-              (define rhs* (map loop (fix-rhs x)))
-              (define body* (loop (fix-body x)))
-              (if (and (elts-eq? rhs* (fix-rhs x))
-                   (eq? body* (fix-body x)))
-                x
-                (make-fix (term-src x)
-                  (fix-ids x)
-                  (fix-lhs x)
-                  rhs*
-                  body*))]
-            [(receive? x)
-              (define producer* (loop (receive-producer x)))
-              (define consumer* (loop (receive-consumer x)))
-              (if (and (eq? producer* (receive-producer x))
-                   (eq? consumer* (receive-consumer x)))
-                x
-                (make-receive (term-src x)
-                  (receive-ids x)
-                  (receive-vars x)
-                  producer*
-                  consumer*))]
-            [(application? x)
-              (define operator* (loop (application-operator x)))
-              (unless (list? (application-operands x))
-                (assertion-violation 'fold "malformed application" (application-operands x) (term-src x)))
-              (define operands* (map loop (application-operands x)))
-              (if (and (eq? operator* (application-operator x))
-                   (elts-eq? operands* (application-operands x)))
-                x
-                (make-application (term-src x)
-                  operator*
-                  operands*))]
-            [(primcall? x)
-              (unless (list? (primcall-args x))
-                (assertion-violation 'fold "malformed primcall" (primcall-prim x) (primcall-args x) (term-src x)))
-              (define args* (map loop (primcall-args x)))
-              (if (elts-eq? args* (primcall-args x))
-                x
-                (make-primcall (term-src x)
-                  (primcall-prim x)
-                  args*))]
-            [(proc? x)
-              (define body* (loop (proc-body x)))
-              (if (eq? body* (proc-body x))
-                x
-                (make-proc (term-src x)
-                  (proc-args x)
-                  body*
-                  (proc-meta x)
-                  (proc-ids x)))]
-
-            [(values? x)
-              (unless (list? (values-values x))
-                (assertion-violation 'fold "malformed values" (values-values x) (term-src x)))
-              (define vals* (map loop (values-values x)))
-              (if (elts-eq? vals* (values-values x))
-                x
-                (make-values (term-src x)
-                  vals*))]
-            [(sequence? x)
-              (define head* (loop (sequence-head x)))
-              (define tail* (loop (sequence-tail x)))
-              (if (and (eq? head* (sequence-head x))
-                   (eq? tail* (sequence-tail x)))
-                x
-                (make-sequence (term-src x)
-                  head*
-                  tail*))]
-            [(wcm? x)
-              (define mark* (loop (wcm-mark x)))
-              (define result* (loop (wcm-result x)))
-              (if (and (eq? mark* (wcm-mark x))
-                   (eq? result* (wcm-result x)))
-                x
-                (make-wcm (term-src x)
-                  (wcm-key x)
-                  mark*
-                  result*))]
-            [else (error 'pre-post-order "unknown TreeIL term" x)])))))
+            ;; leaves: nothing to rebuild
+            [(or (void? node)
+                (constant? node)
+                (lref? node)
+                (primref? node)
+                (module-ref? node)
+                (toplevel-ref? node))
+              node]
+            ;; single-expression nodes
+            [(lset? node)
+              (let ([value* (walk (lset-value node))])
+                (if (not (eq? value* (lset-value node)))
+                  (make-lset (term-src node) (lset-name node) (lset-sym node) value*)
+                  node))]
+            [(module-set? node)
+              (let ([value* (walk (module-set-value node))])
+                (if (not (eq? value* (module-set-value node)))
+                  (make-module-set (term-src node) (module-set-module node)
+                    (module-set-name node)
+                    (module-set-public? node)
+                    value*)
+                  node))]
+            [(toplevel-set? node)
+              (let ([value* (walk (toplevel-set-value node))])
+                (if (not (eq? value* (toplevel-set-value node)))
+                  (make-toplevel-set (term-src node)
+                    (toplevel-set-mod node)
+                    (toplevel-set-name node)
+                    value*)
+                  node))]
+            [(toplevel-define? node)
+              (let ([value* (walk (toplevel-define-value node))])
+                (if (not (eq? value* (toplevel-define-value node)))
+                  (make-toplevel-define (term-src node)
+                    (toplevel-define-mod node)
+                    (toplevel-define-name node)
+                    value*)
+                  node))]
+            ;; conditionals
+            [(if? node)
+              (let* ([test* (walk (if-test node))]
+                    [then* (walk (if-then node))]
+                    [else* (walk (if-else node))])
+                (if (not (and (eq? test* (if-test node))
+                         (eq? then* (if-then node))
+                         (eq? else* (if-else node))))
+                  (make-if (term-src node) test* then* else*)
+                  node))]
+            ;; binding forms
+            [(let? node)
+              (unless (list? (let-rhs node))
+                (assertion-violation 'fold "malformed let" (let-rhs node) (let-ids node) (let-lhs node) (term-src node)))
+              (let* ([rhs* (map walk (let-rhs node))]
+                    [body* (walk (let-body node))])
+                (if (not (and (same-contents? rhs* (let-rhs node))
+                         (eq? body* (let-body node))))
+                  (make-let (term-src node)
+                    (let-style node)
+                    (let-ids node)
+                    (let-lhs node)
+                    rhs*
+                    body*)
+                  node))]
+            [(fix? node)
+              (unless (list? (fix-rhs node))
+                (assertion-violation 'fold "malformed fix" (fix-rhs node) (term-src node)))
+              (let* ([rhs* (map walk (fix-rhs node))]
+                    [body* (walk (fix-body node))])
+                (if (not (and (same-contents? rhs* (fix-rhs node))
+                         (eq? body* (fix-body node))))
+                  (make-fix (term-src node)
+                    (fix-ids node)
+                    (fix-lhs node)
+                    rhs*
+                    body*)
+                  node))]
+            [(receive? node)
+              (let* ([producer* (walk (receive-producer node))]
+                    [consumer* (walk (receive-consumer node))])
+                (if (not (and (eq? producer* (receive-producer node))
+                         (eq? consumer* (receive-consumer node))))
+                  (make-receive (term-src node)
+                    (receive-ids node)
+                    (receive-vars node)
+                    producer*
+                    consumer*)
+                  node))]
+            ;; calls
+            [(application? node)
+              (let ([operator* (walk (application-operator node))])
+                (unless (list? (application-operands node))
+                  (assertion-violation 'fold "malformed application" (application-operands node) (term-src node)))
+                (let* ([operands* (map walk (application-operands node))])
+                  (if (not (and (eq? operator* (application-operator node))
+                           (same-contents? operands* (application-operands node))))
+                    (make-application (term-src node)
+                      operator*
+                      operands*)
+                    node)))]
+            [(primcall? node)
+              (unless (list? (primcall-args node))
+                (assertion-violation 'fold "malformed primcall" (primcall-prim node) (primcall-args node) (term-src node)))
+              (let ([args* (map walk (primcall-args node))])
+                (if (not (same-contents? args* (primcall-args node)))
+                  (make-primcall (term-src node)
+                    (primcall-prim node)
+                    args*)
+                  node))]
+            ;; procedures
+            [(proc? node)
+              (let ([body* (walk (proc-body node))])
+                (if (not (eq? body* (proc-body node)))
+                  (make-proc (term-src node)
+                    (proc-args node)
+                    body*
+                    (proc-meta node)
+                    (proc-ids node))
+                  node))]
+            ;; multiple values
+            [(values? node)
+              (unless (list? (values-values node))
+                (assertion-violation 'fold "malformed values" (values-values node) (term-src node)))
+              (let ([vals* (map walk (values-values node))])
+                (if (not (same-contents? vals* (values-values node)))
+                  (make-values (term-src node)
+                    vals*)
+                  node))]
+            ;; sequencing
+            [(sequence? node)
+              (let* ([head* (walk (sequence-head node))]
+                    [tail* (walk (sequence-tail node))])
+                (if (not (and (eq? head* (sequence-head node))
+                         (eq? tail* (sequence-tail node))))
+                  (make-sequence (term-src node)
+                    head*
+                    tail*)
+                  node))]
+            ;; continuation marks
+            [(wcm? node)
+              (let* ([mark* (walk (wcm-mark node))]
+                    [result* (walk (wcm-result node))])
+                (if (not (and (eq? mark* (wcm-mark node))
+                         (eq? result* (wcm-result node))))
+                  (make-wcm (term-src node)
+                    (wcm-key node)
+                    mark*
+                    result*)
+                  node))]
+            [else (error 'pre-post-order "unknown TreeIL term" node)])))))
 
   (define (post-order f x)
     (pre-post-order (lambda (x) x) f x))

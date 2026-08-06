@@ -295,7 +295,7 @@
       call/1cc
       unspecified
       unspecified?))
-  (define *interesting-primitive-vars*
+  (define *primitive-name->variable*
     (let ([m (resolve-module '(capy) #f #f)]
           [table (make-eq-hashtable)])
       (for-each
@@ -305,18 +305,18 @@
         interesting-primitive-names)
       table))
 
-  (define (collect-local-definitions x set)
+  (define (scan-toplevel-definitions x set)
     (cond
       [(toplevel-define? x)
         (hashtable-set! set (toplevel-define-name x) #t)]
       [(sequence? x)
-        (collect-local-definitions (sequence-head x) set)
-        (collect-local-definitions (sequence-tail x) set)]))
+        (scan-toplevel-definitions (sequence-head x) set)
+        (scan-toplevel-definitions (sequence-tail x) set)]))
 
   (define (resolve-primitives x m)
     (define local-definitions (make-eq-hashtable))
     (unless (eq? m (resolve-module '(capy) #f #f))
-      (collect-local-definitions x local-definitions))
+      (scan-toplevel-definitions x local-definitions))
     (post-order
       (lambda (x)
         (define src (term-src x))
@@ -326,7 +326,7 @@
             (cond
               [(and (not (hashtable-ref local-definitions name #f))
                   (let ([var (module-variable m name)]
-                        [prim-var (hashtable-ref *interesting-primitive-vars* name #f)])
+                        [prim-var (hashtable-ref *primitive-name->variable* name #f)])
                     (and var prim-var (eq? var prim-var))))
                 =>
                 (lambda (_)
@@ -343,7 +343,7 @@
                   (define iface (if public? (or (module-public-interface module) module) module))
                   (cond
                     [(let ([var (module-variable iface name)]
-                           [prim-var (hashtable-ref *interesting-primitive-vars* name #f)])
+                           [prim-var (hashtable-ref *primitive-name->variable* name #f)])
                         (and var prim-var (eq? var prim-var)))
                       =>
                       (lambda (_) (make-primref src name))]
@@ -355,14 +355,14 @@
               x)]
           [else x]))
       x))
-  (define *primitive-expand-table* (make-eq-hashtable))
+  (define *primitive-expanders* (make-eq-hashtable))
 
-  (define-syntax define-primitive-expander!
+  (define-syntax define-primitive-expansion!
     (syntax-rules ()
       [(_ sym proc)
-        (hashtable-set! *primitive-expand-table* sym proc)]))
+        (hashtable-set! *primitive-expanders* sym proc)]))
 
-  (define-syntax primitive-expander
+  (define-syntax clause-driven-expander
     (lambda (stx)
       (define (expand-args args)
         (syntax-case args ()
@@ -388,38 +388,38 @@
               #,@(match-clauses #'(args+body ...))
               (_ #f)))))))
 
-  (define-syntax define-primitive-expander
+  (define-syntax define-primitive-expansion
     (syntax-rules ()
       [(_ sym . clauses)
-        (define-primitive-expander! 'sym (primitive-expander . clauses))]))
+        (define-primitive-expansion! 'sym (clause-driven-expander . clauses))]))
 
-  (define-syntax define-unhandled-primitive
+  (define-syntax declare-unexpandable-primitive
     (syntax-rules ()
       [(_ sym)
-        (define-primitive-expander! 'sym (lambda (src . args) #f))]))
+        (define-primitive-expansion! 'sym (lambda (src . args) #f))]))
 
-  (define-syntax define-primitive-expander*
+  (define-syntax define-primitive-expansion*
     (syntax-rules ()
       [(_ sym (src args) . body)
-        (define-primitive-expander! 'sym (lambda (src . args) . body))]))
+        (define-primitive-expansion! 'sym (lambda (src . args) . body))]))
 
-  (define-primitive-expander identity (x) x)
-  (define-primitive-expander zero? (x)
+  (define-primitive-expansion identity (x) x)
+  (define-primitive-expansion zero? (x)
     (= x 0))
 
-  (define-primitive-expander current-continuation-marks
+  (define-primitive-expansion current-continuation-marks
     ()
     (current-continuation-marks))
 
-  (define-primitive-expander $set-attachments!
+  (define-primitive-expansion $set-attachments!
     (attachments)
     ($set-attachments! attachments))
 
   ;; TODO: Lower into function call
-  (define-unhandled-primitive apply)
-  (define-primitive-expander* values (src args)
+  (declare-unexpandable-primitive apply)
+  (define-primitive-expansion* values (src args)
     (make-values src args))
-  (define-primitive-expander* call-with-values (src args)
+  (define-primitive-expansion* call-with-values (src args)
     (cond
       ;; (call-with-values (lambda ()  ...) (lambda (x ...) ...))
       ;; =>
@@ -440,11 +440,11 @@
           (proc-body consumer))]
       [else #f]))
 
-  (define-primitive-expander eq? (x y) (eq? x y))
-  (define-primitive-expander eqv? (x y) (eqv? x y))
-  (define-primitive-expander equal? (x y) (equal? x y))
+  (define-primitive-expansion eq? (x y) (eq? x y))
+  (define-primitive-expansion eqv? (x y) (eqv? x y))
+  (define-primitive-expansion equal? (x y) (equal? x y))
 
-  (define (expand-memop src args op)
+  (define (expand-list-search src args op)
     (cond
       [(and (= (length args) 2)
           (constant? (cadr args))
@@ -474,16 +474,16 @@
                         result)))]))])]
       [else #f]))
 
-  (define-primitive-expander* memv (src args)
-    (expand-memop src args 'eqv?))
+  (define-primitive-expansion* memv (src args)
+    (expand-list-search src args 'eqv?))
 
-  (define-primitive-expander* memq (src args)
-    (expand-memop src args 'eq?))
+  (define-primitive-expansion* memq (src args)
+    (expand-list-search src args 'eq?))
 
-  (define-primitive-expander* member (src args)
-    (expand-memop src args 'equal?))
+  (define-primitive-expansion* member (src args)
+    (expand-list-search src args 'equal?))
 
-  (define (multi-compare src predicate args not accept-zero?)
+  (define (expand-chain-comparison src predicate args not accept-zero?)
     (cond
       [(and (null? args) (not accept-zero?))
         #f]
@@ -533,22 +533,22 @@
               args
               result)))]))
 
-  (define-primitive-expander* = (src args)
-    (multi-compare src '= args #f #f))
+  (define-primitive-expansion* = (src args)
+    (expand-chain-comparison src '= args #f #f))
 
-  (define-primitive-expander* < (src args)
-    (multi-compare src '< args #f #f))
+  (define-primitive-expansion* < (src args)
+    (expand-chain-comparison src '< args #f #f))
 
-  (define-primitive-expander* > (src args)
-    (multi-compare src '> args #f #f))
+  (define-primitive-expansion* > (src args)
+    (expand-chain-comparison src '> args #f #f))
 
-  (define-primitive-expander* <= (src args)
-    (multi-compare src '<= args #f #f))
+  (define-primitive-expansion* <= (src args)
+    (expand-chain-comparison src '<= args #f #f))
 
-  (define-primitive-expander* >= (src args)
-    (multi-compare src '>= args #f #f))
+  (define-primitive-expansion* >= (src args)
+    (expand-chain-comparison src '>= args #f #f))
 
-  (define (transitive src op args identity one? prefix?)
+  (define (fold-nary-call src op args identity one? prefix?)
     (cond
       [(null? args)
         (and identity (make-constant src identity))]
@@ -560,29 +560,29 @@
       [(null? (cddr args)) ;; (op arg1 arg2)
         (make-primcall src op args)]
       [else
-        (associate-args
+        (fold-call-args
           src
           op
           (car args)
           (cdr args))]))
 
-  (define (associate-args src op first-arg args)
+  (define (fold-call-args src op first-arg args)
     (define next (cdr args))
     (define arg (car args))
     (cond
       [(null? next)
         (make-primcall src op (list first-arg arg))]
       [else
-        (associate-args src op (make-primcall src op (list first-arg arg)) next)]))
+        (fold-call-args src op (make-primcall src op (list first-arg arg)) next)]))
 
-  (define-primitive-expander* + (src args)
-    (transitive src '+ args 0 #t #f))
+  (define-primitive-expansion* + (src args)
+    (fold-nary-call src '+ args 0 #t #f))
 
-  (define-primitive-expander* * (src args)
-    (transitive src '* args 1 #t #f))
+  (define-primitive-expansion* * (src args)
+    (fold-nary-call src '* args 1 #t #f))
 
-  (define-primitive-expander* - (src args)
-    (transitive src
+  (define-primitive-expansion* - (src args)
+    (fold-nary-call src
       '-
       args
       #f
@@ -593,109 +593,109 @@
           '-
           (list (make-constant src 0) arg)))))
 
-  (define-primitive-expander* / (src args)
-    (transitive src '/ args #f #f (lambda (src arg) (make-primcall src '/ (list (make-constant src 1) arg)))))
+  (define-primitive-expansion* / (src args)
+    (fold-nary-call src '/ args #f #f (lambda (src arg) (make-primcall src '/ (list (make-constant src 1) arg)))))
 
-  (define-primitive-expander quotient
+  (define-primitive-expansion quotient
     (x y)
     (quotient x y))
 
-  (define-primitive-expander remainder
+  (define-primitive-expansion remainder
     (x y)
     (remainder x y))
 
-  (define-primitive-expander modulo
+  (define-primitive-expansion modulo
     (x y)
     (modulo x y))
 
-  (define-primitive-expander exact->inexact
+  (define-primitive-expansion exact->inexact
     (x)
     (exact->inexact x))
 
-  (define-primitive-expander inexact->exact
+  (define-primitive-expansion inexact->exact
     (x)
     (inexact->exact x))
 
-  (define-primitive-expander expt
+  (define-primitive-expansion expt
     (x y)
     (expt x y))
 
-  (define-primitive-expander ash
+  (define-primitive-expansion ash
     (x y)
     (ash x y))
 
-  (define-primitive-expander bitwise-arithmetic-shift
+  (define-primitive-expansion bitwise-arithmetic-shift
     (x y)
     (ash x y))
 
-  (define-primitive-expander logtest
+  (define-primitive-expansion logtest
     (x y)
     (logtest x y))
 
-  (define-primitive-expander logbit?
+  (define-primitive-expansion logbit?
     (x y)
     (logbit? x y))
 
-  (define-primitive-expander sqrt
+  (define-primitive-expansion sqrt
     (x)
     (sqrt x))
 
-  (define-primitive-expander abs
+  (define-primitive-expansion abs
     (x)
     (abs x))
 
-  (define-primitive-expander floor
+  (define-primitive-expansion floor
     (x)
     (floor x))
 
-  (define-primitive-expander ceiling
+  (define-primitive-expansion ceiling
     (x)
     (ceiling x))
 
-  (define-primitive-expander sin (x) (sin x))
-  (define-primitive-expander cos (x) (cos x))
-  (define-primitive-expander tan (x) (tan x))
-  (define-primitive-expander asin (x) (asin x))
-  (define-primitive-expander acos (x) (acos x))
-  (define-primitive-expander atan (x) (atan x))
-  (define-primitive-expander not (x) (not x))
-  (define-primitive-expander fixnum? (x) (fixnum? x))
-  (define-primitive-expander flonum? (x) (flonum? x))
-  (define-primitive-expander pair? (x) (pair? x))
-  (define-primitive-expander null? (x) (null? x))
-  (define-primitive-expander list? (x) (list? x))
-  (define-primitive-expander symbol? (x) (symbol? x))
-  (define-primitive-expander vector? (x) (vector? x))
-  (define-primitive-expander string? (x) (string? x))
-  (define-primitive-expander number? (x) (number? x))
-  (define-primitive-expander char? (x) (char? x))
-  (define-primitive-expander boolean? (x) (boolean? x))
-  (define-primitive-expander eof-object? (x) (eof-object? x))
-  (define-primitive-expander tuple? (x) (tuple? x))
-  (define-primitive-expander bytevector? (x) (bytevector? x))
-  (define-primitive-expander symbol->string (x) (symbol->string x))
-  (define-primitive-expander string->symbol (x) (string->symbol x))
-  (define-primitive-expander procedure? (x) (procedure? x))
-  (define-primitive-expander complex? (x) (complex? x))
-  (define-primitive-expander real? (x) (real? x))
-  (define-primitive-expander rational? (x) (rational? x))
-  (define-primitive-expander inf? (x) (inf? x))
-  (define-primitive-expander nan? (x) (nan? x))
-  (define-primitive-expander integer? (x) (integer? x))
-  (define-primitive-expander exact? (x) (exact? x))
-  (define-primitive-expander inexact? (x) (inexact? x))
-  (define-primitive-expander even? (x) (even? x))
-  (define-primitive-expander odd? (x) (odd? x))
-  (define-primitive-expander zero? (x) (= x 0))
-  (define-primitive-expander positive? (x) (> x 0))
-  (define-primitive-expander negative? (x) (< x 0))
-  (define-primitive-expander exact-integer? (x) (exact-integer? x))
+  (define-primitive-expansion sin (x) (sin x))
+  (define-primitive-expansion cos (x) (cos x))
+  (define-primitive-expansion tan (x) (tan x))
+  (define-primitive-expansion asin (x) (asin x))
+  (define-primitive-expansion acos (x) (acos x))
+  (define-primitive-expansion atan (x) (atan x))
+  (define-primitive-expansion not (x) (not x))
+  (define-primitive-expansion fixnum? (x) (fixnum? x))
+  (define-primitive-expansion flonum? (x) (flonum? x))
+  (define-primitive-expansion pair? (x) (pair? x))
+  (define-primitive-expansion null? (x) (null? x))
+  (define-primitive-expansion list? (x) (list? x))
+  (define-primitive-expansion symbol? (x) (symbol? x))
+  (define-primitive-expansion vector? (x) (vector? x))
+  (define-primitive-expansion string? (x) (string? x))
+  (define-primitive-expansion number? (x) (number? x))
+  (define-primitive-expansion char? (x) (char? x))
+  (define-primitive-expansion boolean? (x) (boolean? x))
+  (define-primitive-expansion eof-object? (x) (eof-object? x))
+  (define-primitive-expansion tuple? (x) (tuple? x))
+  (define-primitive-expansion bytevector? (x) (bytevector? x))
+  (define-primitive-expansion symbol->string (x) (symbol->string x))
+  (define-primitive-expansion string->symbol (x) (string->symbol x))
+  (define-primitive-expansion procedure? (x) (procedure? x))
+  (define-primitive-expansion complex? (x) (complex? x))
+  (define-primitive-expansion real? (x) (real? x))
+  (define-primitive-expansion rational? (x) (rational? x))
+  (define-primitive-expansion inf? (x) (inf? x))
+  (define-primitive-expansion nan? (x) (nan? x))
+  (define-primitive-expansion integer? (x) (integer? x))
+  (define-primitive-expansion exact? (x) (exact? x))
+  (define-primitive-expansion inexact? (x) (inexact? x))
+  (define-primitive-expansion even? (x) (even? x))
+  (define-primitive-expansion odd? (x) (odd? x))
+  (define-primitive-expansion zero? (x) (= x 0))
+  (define-primitive-expansion positive? (x) (> x 0))
+  (define-primitive-expansion negative? (x) (< x 0))
+  (define-primitive-expansion exact-integer? (x) (exact-integer? x))
 
   ;; (char=? x y ...)
   ;; =>
   ;; (= (char->integer x) (char->integer y) ...)
 
-  (define (expand-charcmp src args op)
+  (define (expand-char-comparison src args op)
     (define nargs (length args))
     (cond
       [(< nargs 2) #f]
@@ -703,7 +703,7 @@
         (let lp ([ints '()] [ls args])
           (cond
             [(null? ls)
-              (expand-primcall
+              (expand-single-primcall
                 (make-primcall src op (reverse ints)))]
             [else
               (lp (cons
@@ -711,26 +711,26 @@
                    ints)
                 (cdr ls))]))]))
 
-  (define-primitive-expander* char=? (src args)
-    (expand-charcmp src args '=))
+  (define-primitive-expansion* char=? (src args)
+    (expand-char-comparison src args '=))
 
-  (define-primitive-expander* char<? (src args)
-    (expand-charcmp src args '<))
+  (define-primitive-expansion* char<? (src args)
+    (expand-char-comparison src args '<))
 
-  (define-primitive-expander* char>? (src args)
-    (expand-charcmp src args '>))
+  (define-primitive-expansion* char>? (src args)
+    (expand-char-comparison src args '>))
 
-  (define-primitive-expander* char<=? (src args)
-    (expand-charcmp src args '<=))
+  (define-primitive-expansion* char<=? (src args)
+    (expand-char-comparison src args '<=))
 
-  (define-primitive-expander* char>=? (src args)
-    (expand-charcmp src args '>=))
+  (define-primitive-expansion* char>=? (src args)
+    (expand-char-comparison src args '>=))
 
-  (define-primitive-expander char->integer (x) (char->integer x))
-  (define-primitive-expander integer->char (x) (integer->char x))
+  (define-primitive-expansion char->integer (x) (char->integer x))
+  (define-primitive-expansion integer->char (x) (integer->char x))
 
-  (define-primitive-expander cons (x y) (cons x y))
-  (define-primitive-expander* cons* (src args)
+  (define-primitive-expansion cons (x y) (cons x y))
+  (define-primitive-expansion* cons* (src args)
     (cond
       [(null? args) #f]
       [(null? (cdr args)) (car args)]
@@ -741,9 +741,9 @@
           'cons
           (list
             (car args)
-            (expand-primcall (make-primcall src 'cons* (cdr args)))))]))
+            (expand-single-primcall (make-primcall src 'cons* (cdr args)))))]))
 
-  (define-primitive-expander* append (src args)
+  (define-primitive-expansion* append (src args)
     (cond
       [(null? args) (make-constant src '())]
       [(null? (cdr args))
@@ -756,50 +756,50 @@
           'append
           (list
             (car args)
-            (expand-primcall (make-primcall src 'append (cdr args)))))]))
+            (expand-single-primcall (make-primcall src 'append (cdr args)))))]))
 
-  (define-primitive-expander acons (x y z)
+  (define-primitive-expansion acons (x y z)
     (cons (cons x y) z))
 
-  (define-primitive-expander set-car! (pair val)
+  (define-primitive-expansion set-car! (pair val)
     (set-car! pair val))
 
-  (define-primitive-expander set-cdr! (pair val)
+  (define-primitive-expansion set-cdr! (pair val)
     (set-cdr! pair val))
 
-  (define-primitive-expander car (x) (car x))
-  (define-primitive-expander cdr (x) (cdr x))
+  (define-primitive-expansion car (x) (car x))
+  (define-primitive-expansion cdr (x) (cdr x))
 
-  (define-primitive-expander caar (x) (car (car x)))
-  (define-primitive-expander cadr (x) (car (cdr x)))
-  (define-primitive-expander cdar (x) (cdr (car x)))
-  (define-primitive-expander cddr (x) (cdr (cdr x)))
-  (define-primitive-expander caaar (x) (car (car (car x))))
-  (define-primitive-expander caadr (x) (car (car (cdr x))))
-  (define-primitive-expander cadar (x) (car (cdr (car x))))
-  (define-primitive-expander caddr (x) (car (cdr (cdr x))))
-  (define-primitive-expander cdaar (x) (cdr (car (car x))))
-  (define-primitive-expander cdadr (x) (cdr (car (cdr x))))
-  (define-primitive-expander cddar (x) (cdr (cdr (car x))))
-  (define-primitive-expander cdddr (x) (cdr (cdr (cdr x))))
-  (define-primitive-expander caaaar (x) (car (car (car (car x)))))
-  (define-primitive-expander caaadr (x) (car (car (car (cdr x)))))
-  (define-primitive-expander caadar (x) (car (car (cdr (car x)))))
-  (define-primitive-expander caaddr (x) (car (car (cdr (cdr x)))))
-  (define-primitive-expander cadaar (x) (car (cdr (car (car x)))))
-  (define-primitive-expander cadadr (x) (car (cdr (car (cdr x)))))
-  (define-primitive-expander caddar (x) (car (cdr (cdr (car x)))))
-  (define-primitive-expander cadddr (x) (car (cdr (cdr (cdr x)))))
-  (define-primitive-expander cdaaar (x) (cdr (car (car (car x)))))
-  (define-primitive-expander cdaadr (x) (cdr (car (car (cdr x)))))
-  (define-primitive-expander cdadar (x) (cdr (car (cdr (car x)))))
-  (define-primitive-expander cdaddr (x) (cdr (car (cdr (cdr x)))))
-  (define-primitive-expander cddaar (x) (cdr (cdr (car (car x)))))
-  (define-primitive-expander cddadr (x) (cdr (cdr (car (cdr x)))))
-  (define-primitive-expander cdddar (x) (cdr (cdr (cdr (car x)))))
-  (define-primitive-expander cddddr (x) (cdr (cdr (cdr (cdr x)))))
-  (define-primitive-expander length (x) (length x))
-  (define-primitive-expander* list (src args)
+  (define-primitive-expansion caar (x) (car (car x)))
+  (define-primitive-expansion cadr (x) (car (cdr x)))
+  (define-primitive-expansion cdar (x) (cdr (car x)))
+  (define-primitive-expansion cddr (x) (cdr (cdr x)))
+  (define-primitive-expansion caaar (x) (car (car (car x))))
+  (define-primitive-expansion caadr (x) (car (car (cdr x))))
+  (define-primitive-expansion cadar (x) (car (cdr (car x))))
+  (define-primitive-expansion caddr (x) (car (cdr (cdr x))))
+  (define-primitive-expansion cdaar (x) (cdr (car (car x))))
+  (define-primitive-expansion cdadr (x) (cdr (car (cdr x))))
+  (define-primitive-expansion cddar (x) (cdr (cdr (car x))))
+  (define-primitive-expansion cdddr (x) (cdr (cdr (cdr x))))
+  (define-primitive-expansion caaaar (x) (car (car (car (car x)))))
+  (define-primitive-expansion caaadr (x) (car (car (car (cdr x)))))
+  (define-primitive-expansion caadar (x) (car (car (cdr (car x)))))
+  (define-primitive-expansion caaddr (x) (car (car (cdr (cdr x)))))
+  (define-primitive-expansion cadaar (x) (car (cdr (car (car x)))))
+  (define-primitive-expansion cadadr (x) (car (cdr (car (cdr x)))))
+  (define-primitive-expansion caddar (x) (car (cdr (cdr (car x)))))
+  (define-primitive-expansion cadddr (x) (car (cdr (cdr (cdr x)))))
+  (define-primitive-expansion cdaaar (x) (cdr (car (car (car x)))))
+  (define-primitive-expansion cdaadr (x) (cdr (car (car (cdr x)))))
+  (define-primitive-expansion cdadar (x) (cdr (car (cdr (car x)))))
+  (define-primitive-expansion cdaddr (x) (cdr (car (cdr (cdr x)))))
+  (define-primitive-expansion cddaar (x) (cdr (cdr (car (car x)))))
+  (define-primitive-expansion cddadr (x) (cdr (cdr (car (cdr x)))))
+  (define-primitive-expansion cdddar (x) (cdr (cdr (cdr (car x)))))
+  (define-primitive-expansion cddddr (x) (cdr (cdr (cdr (cdr x)))))
+  (define-primitive-expansion length (x) (length x))
+  (define-primitive-expansion* list (src args)
     (cond
       [(null? args) (make-constant src '())]
       [(null? (cdr args)) (make-primcall src 'cons (list (car args) (make-constant src '())))]
@@ -809,9 +809,9 @@
           'cons
           (list
             (car args)
-            (expand-primcall (make-primcall src 'list (cdr args)))))]))
+            (expand-single-primcall (make-primcall src 'list (cdr args)))))]))
 
-  (define-primitive-expander* vector (src args)
+  (define-primitive-expansion* vector (src args)
     (define tmp (gensym "vec-alloc"))
     (define len (length args))
     (define init (make-primcall src 'make-vector (list (make-constant src len))))
@@ -838,7 +838,7 @@
                 (list (make-lref src tmp tmp) (make-constant src i) (car args)))
               result))])))
 
-  (define-primitive-expander* tuple (src args)
+  (define-primitive-expansion* tuple (src args)
     (define tmp (gensym "tuple-alloc"))
     (define len (length args))
     (define init (make-primcall src 'make-tuple (list (make-constant src len))))
@@ -865,47 +865,47 @@
                 (list (make-lref src tmp tmp) (make-constant src i) (car args)))
               result))])))
 
-  (define-primitive-expander make-tuple
+  (define-primitive-expansion make-tuple
     (len)
     (make-tuple len (unspecified))
     (len init)
     (make-tuple len init))
 
-  (define-primitive-expander make-vector
+  (define-primitive-expansion make-vector
     (len)
     (make-vector len (unspecified))
     (len init)
     (make-vector len init))
 
-  (define-primitive-expander vector? (x) (vector? x))
-  (define-primitive-expander vector-length (x) (vector-length x))
-  (define-primitive-expander vector-ref (x i) (vector-ref x i))
-  (define-primitive-expander vector-set! (x i v) (vector-set! x i v))
+  (define-primitive-expansion vector? (x) (vector? x))
+  (define-primitive-expansion vector-length (x) (vector-length x))
+  (define-primitive-expansion vector-ref (x i) (vector-ref x i))
+  (define-primitive-expansion vector-set! (x i v) (vector-set! x i v))
 
-  (define-primitive-expander tuple-size (x) (tuple-size x))
-  (define-primitive-expander tuple-ref (x i) (tuple-ref x i))
-  (define-primitive-expander tuple-set! (x i v) (tuple-set! x i v))
-  (define-primitive-expander current-module
+  (define-primitive-expansion tuple-size (x) (tuple-size x))
+  (define-primitive-expansion tuple-ref (x i) (tuple-ref x i))
+  (define-primitive-expansion tuple-set! (x i v) (tuple-set! x i v))
+  (define-primitive-expansion current-module
     ()
     (current-module)
     (mod)
     (current-module mod))
-  (define-primitive-expander define! (x y) (define! x y))
-  (define-primitive-expander make-syntax
+  (define-primitive-expansion define! (x y) (define! x y))
+  (define-primitive-expansion make-syntax
     (x y z w)
     (make-syntax x y z w '())
     (x y z w props)
     (make-syntax x y z w props))
-  (define-primitive-expander $winders
+  (define-primitive-expansion $winders
     ()
     ($winders)
     (x)
     ($winders x))
 
-  (define-primitive-expander unspecified () (unspecified))
-  (define-primitive-expander unspecified? (x) (unspecified? x))
+  (define-primitive-expansion unspecified () (unspecified))
+  (define-primitive-expansion unspecified? (x) (unspecified? x))
 
-  (define (expand-primcall x)
+  (define (expand-single-primcall x)
     (cond
       [(primref? x)
         (define src (term-src x))
@@ -913,7 +913,7 @@
       [(primcall? x)
         (let ([src (term-src x)]
               [args (primcall-args x)]
-              [expand (hashtable-ref *primitive-expand-table* (primcall-prim x) #f)])
+              [expand (hashtable-ref *primitive-expanders* (primcall-prim x) #f)])
           (cond
             ;; if expander exists and returns a term, use it.
             [(and expand (apply expand src args))
@@ -927,4 +927,4 @@
       [else x]))
 
   (define (expand-primitives x)
-    (pre-order expand-primcall x)))
+    (pre-order expand-single-primcall x)))

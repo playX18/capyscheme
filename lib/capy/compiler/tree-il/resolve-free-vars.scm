@@ -10,9 +10,12 @@
     (srfi 257)
     (srfi 1))
 
-  (define (compute-assigned-lexicals exp)
+  ;; Collects the lexicals that are ever the target of an lset!, so
+  ;; that they are never treated as module-valued.
+
+  (define (collect-assigned-lexicals exp)
     (define assigned-lexicals '())
-    (define (add-assigned-lexical! var)
+    (define (record-assigned-lexical! var)
       (set! assigned-lexicals (cons var assigned-lexicals)))
 
     ((make-tree-il-folder)
@@ -20,108 +23,119 @@
       (lambda (exp)
         (match exp
           [(~lset _ _ var _)
-            (add-assigned-lexical! var)
+            (record-assigned-lexical! var)
             (values)]
           [_ (values)]))
       (lambda (exp) (values)))
     assigned-lexicals)
 
+  ;; Builds a function that resolves a name to its binding module for
+  ;; one imported interface: (module . public-name), or #f when the
+  ;; name is not found there.
+  ;;
+  ;; The text of a program cannot tell us which of several used
+  ;; interfaces provides a binding: renamers run at run-time, and using
+  ;; an interface does not reveal what it defines.  The first-class
+  ;; module interface is the only reliable source.
+  ;;
+  ;; An interface backed by an autoload may fail to load; in that case
+  ;; the binding is treated as absent from that module, matching what
+  ;; happens at expand time and run time.
+
   (define (make-resolver mod local-definitions)
-    ;; Given that module A imports B and C, and X is free in A,
-    ;; unfortunately there are a few things preventing us from knowing
-    ;; whether the binding proceeds from B or C, just based on the text:
-    ;;
-    ;;  - Renamers are evaluated at run-time.
-    ;;  - Just using B doesn't let us know what definitions are in B.
-    ;;
-    ;; So instead of using the source program to determine where a binding
-    ;; comes from, we use the first-class module interface.
-    (define (imported-resolver iface)
-      (let ((by-var (make-eq-hashtable)))
-        ;; When resolving a free variable, Guile visits all used modules
-        ;; to see if there is a binding.  If one of those imports is an
-        ;; autoload, it's possible that the autoload interface fails to
-        ;; load.  In that case Guile will issue a warning and consider the
-        ;; binding not found in that module.  Here we try to produce the
-        ;; same behavior at optimization time that we do at expand time
-        ;; that we would do at run time.
+    (define (make-import-resolver iface)
+      (let ((public-names (make-eq-hashtable)))
         (guard (e (else #f))
           (let ([public-iface (resolve-interface (module-name iface) #f '() #f)])
             (module-for-each
               (lambda (name var)
-                (hashtable-set! by-var var name))
+                (hashtable-set! public-names var name))
               public-iface)))
 
         (lambda (name)
           (let ((var (module-variable iface name)))
             (and var
               (cons (module-name iface)
-                (hashtable-ref by-var var)))))))
+                (hashtable-ref public-names var)))))))
 
-    (define the-module (resolve-module mod #t #f))
-    (define resolvers
-      (map imported-resolver (module-uses the-module)))
+    (define target-module (resolve-module mod #t #f))
+    (define import-resolvers
+      (map make-import-resolver (module-uses target-module)))
 
     (lambda (name)
       (cond
-        ((or (module-local-variable the-module name)
+        ((or (module-local-variable target-module name)
             (memq name local-definitions))
           'local)
         (else
-          (match (filter-map (lambda (resolve)
-                              (resolve name))
-                  resolvers)
+          (match (filter-map (lambda (resolver)
+                              (resolver name))
+                  import-resolvers)
             ('() 'unknown)
             ((~list (~cons mod '#f)) 'unknown)
             ((~list (~cons mod public-name)) (cons mod public-name))
             (_ 'duplicate))))))
 
-  (define (compute-free-var-resolver exp)
-    (define assigned-lexicals (compute-assigned-lexicals exp))
-    (define module-definitions '())
-    (define module-lexicals '())
-    (define bindings '())
-    (define (add-module-definition! mod args)
-      (set! module-definitions (cons (cons mod args) module-definitions)))
-    (define (add-module-lexical! var mod)
-      (unless (memq var assigned-lexicals)
-        (set! module-lexicals (cons (cons var mod) module-lexicals))))
-    (define (add-binding! mod name)
-      (set! bindings (cons (cons mod name) bindings)))
+  ;; Analyzes a whole term and returns a resolver for toplevel
+  ;; references: (lambda (mod name) verdict) where verdict is 'unknown,
+  ;; 'local, 'duplicate, or (module . public-name).
 
-    (define (record-bindings! mod vars vals)
+  (define (make-free-var-resolver exp)
+    (define assigned-lexicals (collect-assigned-lexicals exp))
+    (define module-defs '())
+    (define module-valued-lexicals '())
+    (define toplevel-bindings '())
+    (define (record-module-definition! mod args)
+      (set! module-defs (cons (cons mod args) module-defs)))
+    (define (record-module-lexical! var mod)
+      (unless (memq var assigned-lexicals)
+        (set! module-valued-lexicals (cons (cons var mod) module-valued-lexicals))))
+    (define (record-toplevel-binding! mod name)
+      (set! toplevel-bindings (cons (cons mod name) toplevel-bindings)))
+
+    ;; A let/fix whose right-hand sides include a define-module* call
+    ;; (or a current-module reference) tells us which module the bound
+    ;; lexicals stand for; that lets us rewrite references to them in
+    ;; terms of that module even though they are lexicals.
+
+    (define (collect-module-bindings! mod vars vals)
       (for-each
         (lambda (var val)
           (match val
             [(~application _ (~module-ref _ '(capy) 'define-module* _)
                 (~cons (~constant _ mod) args))
-              (add-module-definition! mod args)
-              (add-module-lexical! var mod)]
+              (record-module-definition! mod args)
+              (record-module-lexical! var mod)]
             [(~primcall _ 'current-module '())
               (when mod
-                (add-module-lexical! var mod))]
+                (record-module-lexical! var mod))]
             [_ #f]))
         vars
         vals))
 
-    (define (visit exp) (visit/mod exp #f))
-    (define (visit* exp)
+    (define (scan exp) (scan-in-module exp #f))
+    (define (scan-each exp)
       (unless (null? exp)
-        (visit (car exp))
-        (visit* (cdr exp))))
+        (scan (car exp))
+        (scan-each (cdr exp))))
 
-    (define (visit+ exps mod)
+    ;; Scans a sequence of expressions, threading the current module.
+    ;; The result is the module implied by the last expression, or #f
+    ;; once the thread breaks (an expression whose module is unknown
+    ;; or disagrees with the running thread).
+
+    (define (scan-threaded exps mod)
       (match exps
         ['() mod]
         [(~cons exp rest)
-          (let loop ([mod* (visit/mod exp mod)] [exps rest])
+          (let loop ([first-mod (scan-in-module exp mod)] [exps rest])
             (match exps
-              ['() mod*]
+              ['() first-mod]
               [(~cons exp rest)
-                (let ([mod** (visit/mod exp mod*)])
-                  (loop (and (equal? mod* mod**) mod*) rest))]))]))
+                (let ([next-mod (scan-in-module exp first-mod)])
+                  (loop (and (equal? first-mod next-mod) first-mod) rest))]))]))
 
-    (define (visit/mod exp mod)
+    (define (scan-in-module exp mod)
       (match exp
         [(~or
             (~void _)
@@ -135,52 +149,56 @@
             (~module-ref _ '(capy) 'current-module _)
             (~list (~lref _ _ var)))
           (cond
-            [(assq var module-lexicals) => cdr]
+            [(assq var module-valued-lexicals) => cdr]
             [else #f])]
         [(~application _ proc args)
-          (visit proc)
-          (visit* args)
+          (scan proc)
+          (scan-each args)
           #f]
         [(~primcall _ 'current-module (~list (~lref _ _ var)))
           (cond
-            [(assq var module-lexicals) => cdr]
+            [(assq var module-valued-lexicals) => cdr]
             [else #f])]
         [(~primcall _ _ args)
-          (visit+ args mod)]
+          (scan-threaded args mod)]
 
         [(~if _ test consequent alternate)
-          (visit+ (list test consequent alternate) mod)]
+          (scan-threaded (list test consequent alternate) mod)]
         [(~lset _ _ _ val)
-          (visit/mod val mod)]
-        [(~toplevel-set _ _ _ val) (visit/mod val mod)]
-        [(~module-set _ _ _ _ val) (visit/mod val mod)]
+          (scan-in-module val mod)]
+        [(~toplevel-set _ _ _ val) (scan-in-module val mod)]
+        [(~module-set _ _ _ _ val) (scan-in-module val mod)]
         [(~toplevel-define _ mod name val)
-          (add-binding! mod name)
-          (visit/mod val mod)]
+          (record-toplevel-binding! mod name)
+          (scan-in-module val mod)]
         [(~proc _ _ body _ _)
-          (visit body)
+          (scan body)
           mod]
         [(~sequence _ head tail)
-          (visit/mod tail (visit/mod head mod))]
+          (scan-in-module tail (scan-in-module head mod))]
         [(~let src style ids lhs rhs body)
-          (record-bindings! mod lhs rhs)
-          (visit/mod body (visit+ rhs mod))]
+          (collect-module-bindings! mod lhs rhs)
+          (scan-in-module body (scan-threaded rhs mod))]
         [(~fix src ids lhs rhs body)
-          (record-bindings! mod lhs rhs)
-          (visit/mod body (visit+ rhs mod))]
+          (collect-module-bindings! mod lhs rhs)
+          (scan-in-module body (scan-threaded rhs mod))]
         [(~receive src ids vars producer consumer)
-          (visit/mod consumer (visit/mod producer mod))]
+          (scan-in-module consumer (scan-in-module producer mod))]
         [(~values _ vals)
-          (visit* vals)
+          (scan-each vals)
           #f]
         [(~wcm _ key mark result)
-          (visit/mod result (visit/mod mark (visit/mod key mod)))]
+          (scan-in-module result (scan-in-module mark (scan-in-module key mod)))]
         [_ mod]))
 
-    (visit exp)
+    (scan exp)
 
-    (define declarative-modules
-      (let loop ([defs module-definitions] [not-declarative '()] [declarative '()])
+    ;; A module is usable as a resolution target only if it is defined
+    ;; exactly once in the term; modules defined more than once are
+    ;; excluded.
+
+    (define singly-defined-modules
+      (let loop ([defs module-defs] [not-declarative '()] [declarative '()])
         (match defs
           ['() declarative]
           [(~cons (~cons mod args) defs)
@@ -191,33 +209,34 @@
                 (loop defs (cons mod not-declarative) declarative)]
               [else
                 (loop defs not-declarative (cons mod declarative))])])))
-    (define resolvers
+    (define module-resolvers
       (map (lambda (mod)
-            (define resolve
+            (define resolver
               (make-resolver mod
                 (filter-map (lambda (binding)
                              (match binding
                                [(~cons mod* name)
                                  (and (equal? mod* mod) name)]
                                [_ #f]))
-                  bindings)))
-            (cons mod resolve))
-        declarative-modules))
+                  toplevel-bindings)))
+            (cons mod resolver))
+        singly-defined-modules))
 
     (lambda (mod name)
 
       (cond
-        [(assoc mod resolvers) =>
+        [(assoc mod module-resolvers) =>
           (lambda (cell)
 
-            (define resolve (cdr cell))
-            (resolve name))]
+            (define resolver (cdr cell))
+            (resolver name))]
         [else 'unknown])))
 
   (define (resolve-free-vars exp)
-    "Traverse exp, extracting module level definitions."
+    "Traverses exp, extracting module-level definitions and rewriting
+     free toplevel references into public module references."
 
-    (define resolve (compute-free-var-resolver exp))
+    (define resolve (make-free-var-resolver exp))
 
     (post-order
       (lambda (exp)

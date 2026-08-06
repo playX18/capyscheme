@@ -1,274 +1,341 @@
+;; Rendering TreeIL terms as Scheme source.
+;;
+;; `tree-il->scheme' is the inverse of macro expansion: it walks a TreeIL
+;; term and produces the equivalent Scheme datum.  Besides the plain
+;; one-to-one mapping of nodes to syntax, the printer also
+;;
+;;   * folds nested conditionals back into `cond' / `case' forms, and
+;;     recognizes a few idempotent simplifications such as
+;;     (if (eqv? v 'a) #t (eqv? v 'b))  =>  (memv v '(a b));
+;;
+;;   * can replace the generated identifiers of a term with readable
+;;     names derived from the original source names, stripping the
+;;     "-N-M" suffixes that macro expansion attaches and disambiguating
+;;     collisions with a ".N" suffix.
+;;
+;; The printer operates on the unparsed output: sub-terms are first
+;; converted to Scheme datums and the resulting structure is then matched
+;; and reshaped.  Options are passed as a list of symbols; recognized
+;; options are:
+;;
+;;   denoise-lexicals?       use readable names for lexical variables
+;;   strip-numeric-suffixes? same as denoise-lexicals?
+;;   use-case?               prefer `case' over `cond' when rebuilding
+;;                           chains of equivalence tests
+
 (library (capy compiler tree-il)
   (export
 
     tree-il->scheme)
   (import (capy compiler tree-il terms)
-    (capy compiler tree-il fold)
     (srfi 1)
     (srfi 26)
 
     (capy)
     (core match))
 
-  (define (tree-il->scheme t . ops?)
-    (define ops (if (null? ops?) '() (car ops?)))
-    (define denoise-lexicals?
-      (or (memq 'denoise-lexicals? ops)
-        (memq 'strip-numeric-suffixes? ops)))
-    (define use-case? (memq 'use-case? ops))
+  (define (tree-il->scheme term . option-arg)
+    (define options (if (null? option-arg) '() (car option-arg)))
+    (define rename-lexicals?
+      (or (memq 'denoise-lexicals? options)
+        (memq 'strip-numeric-suffixes? options)))
+    (define case-style? (memq 'use-case? options))
 
-    (define (atom? x) (not (or (pair? x) (vector? x))))
-    (define (const x) (lambda (_) x))
+    (unless (term? term)
+      (error 'tree-il->scheme "not a term" term))
 
-    (define (simplify-test e)
+    ;; ------------------------------------------------------------------
+    ;; Datum shaping
+    ;;
+    ;; Helpers that assemble Scheme datums from already-printed pieces.
+    ;; They deliberately match against the printed form, not against the
+    ;; term structure, so the shaping stays in sync with what was emitted.
+    ;; ------------------------------------------------------------------
+
+    (define (atomic? x) (not (or (pair? x) (vector? x))))
+
+    (define (void-form)
+      '(if #f #f))
+
+    (define (shape-begin es)
+      (match es
+        (() (void-form))
+        ((e) e)
+        (_ `(begin ,@es))))
+
+    (define (shape-begin-body e)
       (match e
-        (('if ('eqv? (? atom? v) ('quote a)) #t ('eqv? v ('quote b)))
-          `(memv ,v '(,a ,b)))
-        (('if ('eqv? (? atom? v) ('quote a)) #t ('memv v ('quote (bs ...))))
-          `(memv ,v '(,a ,@bs)))
-        (('case (? atom? v)
-            ((datum) #t)
-            ...
-            ('else ('eqv? v ('quote last-datum))))
-          `(memv ,v '(,@datum ,last-datum)))
-        (_ e)))
+        [('begin es ...) es]
+        [_ (list e)]))
 
-    (define (build-and xs)
+    (define (shape-if test consequent alternate)
+      (match alternate
+        [('if #f _) `(if ,test ,consequent)]
+        [_ `(if ,test ,consequent ,alternate)]))
+
+    (define (shape-and xs)
       (match xs
         [() #t]
         [(x) x]
         [_ `(and ,@xs)]))
 
-    (define (build-or xs)
+    (define (shape-or xs)
       (match xs
         [() #f]
         [(x) x]
         [_ `(or ,@xs)]))
 
-    (define (build-begin-body e)
+    ;; Reassemble nested equivalence tests as a single memv lookup.
+    (define (condense-test e)
       (match e
-        [('begin es ...) es]
-        [_ (list e)]))
+        [('if ('eqv? (? atomic? v) ('quote a)) #t ('eqv? v ('quote b)))
+          `(memv ,v '(,a ,b))]
+        [('if ('eqv? (? atomic? v) ('quote a)) #t ('memv v ('quote (bs ...))))
+          `(memv ,v '(,a ,@bs))]
+        [('case (? atomic? v)
+            ((datum) #t)
+            ...
+            ('else ('eqv? v ('quote last-datum))))
+          `(memv ,v '(,@datum ,last-datum))]
+        [_ e]))
 
-    (define (case-test-var test)
+    ;; If all the tests of a cond-shaped chain compare the same variable,
+    ;; return that variable; otherwise #f.
+    (define (case-subject test)
       (match test
-        (('memv (? atom? v) ('quote (datums ...)))
-          v)
-        (('eqv? (? atom? v) ('quote datum))
-          v)
-        (_ #f)))
+        [('memv (? atomic? v) ('quote (datums ...))) v]
+        [('eqv? (? atomic? v) ('quote datum)) v]
+        [_ #f]))
 
-    (define (test->datums v test)
-      (match (cons v test)
-        ((v 'memv v ('quote (xs ...)))
+    ;; The datum list tested by one equivalence test on SUBJECT.
+    (define (test-datums subject test)
+      (match (cons subject test)
+        ((subject 'memv subject ('quote (xs ...)))
           xs)
-        ((v 'eqv? v ('quote x))
+        ((subject 'eqv? subject ('quote x))
           (list x))
         (_ #f)))
 
-    (define (build-else-tail e)
+    ;; The tail of a rebuilt cond / case: either the else clause, or a
+    ;; chunk that can serve as further case clauses.
+    (define (else-tail e)
       (match e
         [('if #f _) '()]
-        [('and xs ... x) `((,(build-and xs) ,@(build-begin-body x))
-                           (else #f))]
-        [_ `((else ,@(build-begin-body e)))]))
+        [('and xs ... x)
+          `((,(shape-and xs) ,@(shape-begin-body x))
+            (else #f))]
+        [_ `((else ,@(shape-begin-body e)))]))
 
-    (define (build-cond-else-tail e)
+    (define (cond-tail e)
       (match e
         [('cond clauses ...) clauses]
-        [_ (build-else-tail e)]))
+        [_ (else-tail e)]))
 
-    (define (build-case-else-tail v e)
-      (match (cons v e)
-        ((v 'case v clauses ...)
+    (define (case-tail subject e)
+      (match (cons subject e)
+        ((subject 'case subject clauses ...)
           clauses)
-        ((v 'if ('memv v ('quote (xs ...))) consequent . alternate*)
-          `((,xs ,@(build-begin-body consequent))
-            ,@(build-case-else-tail v (build-begin alternate*))))
-        ((v 'if ('eqv? v ('quote x)) consequent . alternate*)
-          `(((,x) ,@(build-begin-body consequent))
-            ,@(build-case-else-tail v (build-begin alternate*))))
-        (_ (build-else-tail e))))
+        ((subject 'if ('memv subject ('quote (xs ...))) consequent . alternate*)
+          `((,xs ,@(shape-begin-body consequent))
+            ,@(case-tail subject (shape-begin alternate*))))
+        ((subject 'if ('eqv? subject ('quote x)) consequent . alternate*)
+          `(((,x) ,@(shape-begin-body consequent))
+            ,@(case-tail subject (shape-begin alternate*))))
+        (_ (else-tail e))))
 
-    (define (clauses+tail clauses)
+    ;; Split a clause list into the clauses before an (else . _) clause
+    ;; and that trailing else clause, if present.
+    (define (split-else-clause clauses)
       (match clauses
         ((cs ... (and c ('else . _))) (values cs (list c)))
         (_ (values clauses '()))))
 
-    (define (build-if test consequent alternate)
-      (match alternate
-        (('if #f _) `(if ,test ,consequent))
-        (_ `(if ,test ,consequent ,alternate))))
-
-    (define (build-cond tests consequents alternate)
+    (define (shape-cond tests consequents alternate)
       (case (length tests)
         ((0) alternate)
-        ((1) (build-if (car tests) (car consequents) alternate))
-        (else `(cond ,@(map (lambda (test consequent)
-                             `(,test ,@(build-begin-body consequent)))
-                        tests
-                        consequents)
-                ,@(build-cond-else-tail alternate)))))
+        ((1) (shape-if (car tests) (car consequents) alternate))
+        (else
+          `(cond
+            ,@(map (lambda (test consequent)
+                     `(,test ,@(shape-begin-body consequent)))
+               tests
+               consequents)
+            ,@(cond-tail alternate)))))
 
-    (define (build-cond-or-case tests consequents alternate)
-      (if (not use-case?)
-        (build-cond tests consequents alternate)
-        (let* ((v (and (not (null? tests))
-                   (case-test-var (car tests))))
+    (define (shape-cond-or-case tests consequents alternate)
+      (if (not case-style?)
+        (shape-cond tests consequents alternate)
+        (let* ((subject (and (not (null? tests))
+                         (case-subject (car tests))))
                (datum-lists (take-while identity
-                             (map (cut test->datums v <>)
-                               tests)))
+                             (map (cut test-datums subject <>) tests)))
                (n (length datum-lists))
-               (tail (build-case-else-tail v (build-cond
-                                              (drop tests n)
-                                              (drop consequents n)
-                                              alternate))))
-          (receive (clauses tail) (clauses+tail tail)
+               (tail (case-tail subject
+                       (shape-cond
+                         (drop tests n)
+                         (drop consequents n)
+                         alternate))))
+          (receive (clauses tail) (split-else-clause tail)
             (let ((n (+ n (length clauses)))
                   (datum-lists (append datum-lists
                                 (map car clauses)))
                   (consequents (append consequents
-                                (map build-begin
+                                (map shape-begin
                                   (map cdr clauses)))))
               (if (< n 2)
-                (build-cond tests consequents alternate)
-                `(case ,v
-                  ,@(map cons datum-lists (map build-begin-body
+                (shape-cond tests consequents alternate)
+                `(case ,subject
+                  ,@(map cons datum-lists (map shape-begin-body
                                            (take consequents n)))
                   ,@tail)))))))
 
-    (define (build-begin es)
-      (match es
-        (() (build-void))
-        ((e) e)
-        (_ `(begin ,@es))))
+    ;; ------------------------------------------------------------------
+    ;; Lexical renaming
+    ;;
+    ;; When `rename-lexicals?' is active, each lexical identity is mapped
+    ;; to a stable output name: the readable name from the binding site,
+    ;; minus the "-N-M" suffix that macro expansion appended, plus a ".N"
+    ;; disambiguator when the base name is already taken.  The mapping is
+    ;; threaded through the walk as an association list (env), together
+    ;; with the set of names already handed out (used).
+    ;; ------------------------------------------------------------------
 
-    (define (build-void)
-      '(if #f #f))
-
-    (define (string-all-digits? s start end)
-      (let loop ((i start))
+    (define (digit-run? s start end)
+      (let loop ([i start])
         (cond
           [(= i end) (< start i)]
           [(char-numeric? (string-ref s i)) (loop (+ i 1))]
           [else #f])))
 
-    (define (generated-suffix-start s)
-      (let loop ((end (string-length s)) (segments 0))
-        (let scan ((i (- end 1)))
+    ;; Position of the generated "-N-M" suffix in a name, if any.  The
+    ;; suffix must consist of two dash-separated digit runs so that plain
+    ;; user names ending in "-1" are left alone.
+    (define (generated-tail s)
+      (let loop ([end (string-length s)] [segments 0])
+        (let scan ([i (- end 1)])
           (cond
             [(< i 0) #f]
             [(char=? (string-ref s i) #\-)
-              (if (string-all-digits? s (+ i 1) end)
+              (if (digit-run? s (+ i 1) end)
                 (if (= segments 1)
                   i
                   (loop i (+ segments 1)))
                 #f)]
             [else (scan (- i 1))]))))
 
-    (define (clean-symbol name)
-      (let* ((s (symbol->string name))
-             (start (generated-suffix-start s))
-             (base (if start (substring s 0 start) s)))
+    (define (base-symbol name)
+      (let* ([s (symbol->string name)]
+             [start (generated-tail s)]
+             [base (if start (substring s 0 start) s)])
         (if (= (string-length base) 0)
           name
           (string->symbol base))))
 
-    (define (readable-name->symbol identity readable-name)
-      (let ((datum (if (syntax? readable-name)
+    ;; The name a lexical identity would like to be called.
+    (define (name-base identity readable-name)
+      (let ([datum (if (syntax? readable-name)
                     (syntax-expression readable-name)
-                    readable-name)))
-        (clean-symbol
+                    readable-name)])
+        (base-symbol
           (cond
             [(symbol? datum) datum]
             [(symbol? identity) identity]
             [else 'lexical]))))
 
-    (define (alias-used? alias used)
-      (memq alias used))
+    (define (name-in-use? name used)
+      (memq name used))
 
-    (define (numbered-alias base n)
+    (define (suffixed-name base n)
       (string->symbol
         (string-append
           (symbol->string base)
           "."
           (number->string n))))
 
-    (define (fresh-alias base used)
-      (if (not (alias-used? base used))
+    (define (unused-name base used)
+      (if (not (name-in-use? base used))
         base
-        (let loop ((n 1))
-          (let ((candidate (numbered-alias base n)))
-            (if (alias-used? candidate used)
+        (let loop ([n 1])
+          (let ([candidate (suffixed-name base n)])
+            (if (name-in-use? candidate used)
               (loop (+ n 1))
               candidate)))))
 
-    (define (lookup-alias identity env fallback)
-      (let ((entry (and denoise-lexicals? (assq identity env))))
+    ;; The printed name for an identity in ENV, or FALLBACK when the
+    ;; renaming is off or the identity was never bound here.
+    (define (alias-for identity env fallback)
+      (let ([entry (and rename-lexicals? (assq identity env))])
         (if entry (cdr entry) fallback)))
 
-    (define (allocate-alias identity readable-name env used)
-      (if (not denoise-lexicals?)
+    ;; Allocate (or reuse) the output name for one identity.  Returns the
+    ;; name, the extended environment and the extended used-set.
+    (define (assign-alias identity readable-name env used)
+      (if (not rename-lexicals?)
         (values readable-name env used)
-        (let ((entry (assq identity env)))
+        (let ([entry (assq identity env)])
           (if entry
             (values (cdr entry) env used)
-            (let* ((base (readable-name->symbol identity readable-name))
-                   (alias (fresh-alias base used)))
+            (let* ([base (name-base identity readable-name)]
+                   [alias (unused-name base used)])
               (values alias
                 (cons (cons identity alias) env)
                 (cons alias used)))))))
 
-    (define (allocate-aliases identities readable-names env used)
-      (let loop ((identities identities)
-                 (readable-names readable-names)
-                 (aliases '())
-                 (env env)
-                 (used used))
+    (define (assign-aliases identities readable-names env used)
+      (let loop ([identities identities]
+                 [readable-names readable-names]
+                 [aliases '()]
+                 [env env]
+                 [used used])
         (if (null? identities)
           (values (reverse aliases) env used)
           (receive (alias env used)
-            (allocate-alias (car identities) (car readable-names) env used)
+            (assign-alias (car identities) (car readable-names) env used)
             (loop (cdr identities)
               (cdr readable-names)
               (cons alias aliases)
               env
               used)))))
 
-    (define (formal-readable-name readable-names)
+    ;; A single (rest) formal gets the readable name directly.
+    (define (single-formal-name readable-names)
       (if (pair? readable-names)
         (car readable-names)
         readable-names))
 
-    (define (allocate-formals identities readable-names env used)
+    ;; Allocate names for a formal parameter list, which may be empty, a
+    ;; proper list, or a single rest parameter.
+    (define (assign-formals identities readable-names env used)
       (cond
         [(null? identities)
           (values '() env used)]
         [(pair? identities)
           (receive (alias env used)
-            (allocate-alias (car identities) (car readable-names) env used)
+            (assign-alias (car identities) (car readable-names) env used)
             (receive (tail env used)
-              (allocate-formals (cdr identities) (cdr readable-names) env used)
+              (assign-formals (cdr identities) (cdr readable-names) env used)
               (values (cons alias tail) env used)))]
         [else
-          (allocate-alias identities
-            (formal-readable-name readable-names)
+          (assign-alias identities
+            (single-formal-name readable-names)
             env
             used)]))
 
-    (define (convert-let*-bindings identities readable-names expressions env used)
-      (let recur ((identities identities)
-                  (readable-names readable-names)
-                  (expressions expressions)
-                  (aliases '())
-                  (converted '())
-                  (env env)
-                  (used used))
+    ;; let*: each value is printed in the environment extended by the
+    ;; preceding bindings, so the output mirrors the sequential scoping.
+    (define (assign-let*-bindings identities readable-names expressions env used)
+      (let recur ([identities identities]
+                  [readable-names readable-names]
+                  [expressions expressions]
+                  [aliases '()]
+                  [converted '()]
+                  [env env]
+                  [used used])
         (if (null? identities)
           (values (reverse aliases) (reverse converted) env used)
-          (let ((expression (loop (car expressions) env used)))
+          (let ([expression (emit (car expressions) env used)])
             (receive (alias env used)
-              (allocate-alias (car identities) (car readable-names) env used)
+              (assign-alias (car identities) (car readable-names) env used)
               (recur (cdr identities)
                 (cdr readable-names)
                 (cdr expressions)
@@ -277,53 +344,83 @@
                 env
                 used))))))
 
-    (unless (term? t)
-      (error 'tree-il->scheme "not a term" t))
-    (define (loop t env used)
+    ;; ------------------------------------------------------------------
+    ;; The walk
+    ;; ------------------------------------------------------------------
+
+    (define (binding-pair name init)
+      `(,name ,init))
+
+    (define (emit-let-form style ids lhs rhs body env used)
+      (if (not rename-lexicals?)
+        ;; without renaming, the identities themselves are the names
+        (let ([names lhs]
+              [rhs* (map (lambda (x) (emit x env used)) rhs)]
+              [body* (emit body env used)])
+          `(,style ,(map binding-pair names rhs*) ,body*))
+        (cond
+          [(eq? style 'let*)
+            (receive (aliases rhs* body-env body-used)
+              (assign-let*-bindings lhs ids rhs env used)
+              (let ([body* (emit body body-env body-used)])
+                `(let* ,(map binding-pair aliases rhs*) ,body*)))]
+          [(memq style '(letrec letrec*))
+            ;; recursive bindings: values see the extended environment
+            (receive (aliases body-env body-used)
+              (assign-aliases lhs ids env used)
+              (let ([rhs* (map (lambda (x) (emit x body-env body-used)) rhs)]
+                    [body* (emit body body-env body-used)])
+                `(,style ,(map binding-pair aliases rhs*) ,body*)))]
+          [else
+            (let ([rhs* (map (lambda (x) (emit x env used)) rhs)])
+              (receive (aliases body-env body-used)
+                (assign-aliases lhs ids env used)
+                (let ([body* (emit body body-env body-used)])
+                  `(,style ,(map binding-pair aliases rhs*) ,body*))))])))
+
+    (define (emit term env used)
       (cond
-        [(constant? t)
-          `(quote ,(constant-value t))]
-        [(void? t)
-          (build-void)]
-        [(lref? t)
-          (lookup-alias (lref-sym t) env (lref-sym t))]
-        [(lset? t)
-          `(set! ,(lookup-alias (lset-sym t) env (lset-name t))
-            ,(loop (lset-value t) env used))]
-        [(module-ref? t)
-          (define m (if (module-ref-public? t)
-                     '@
-                     '@@))
-          `(,m ,(module-ref-module t) ,(module-ref-name t))]
-        [(module-set? t)
-          (define m (if (module-set-public? t)
-                     '@
-                     '@@))
-          `(set! (,m ,(module-set-module t) ,(module-set-name t))
-            ,(loop (module-set-value t) env used))]
-        [(toplevel-ref? t)
-          (toplevel-ref-name t)]
-        [(toplevel-set? t)
-          `(set! ,(toplevel-set-name t)
-            ,(loop (toplevel-set-value t) env used))]
-        [(toplevel-define? t)
-          `(define ,(toplevel-define-name t)
-            ,(loop (toplevel-define-value t) env used))]
-        [(if? t)
-          (match `(if ,(simplify-test (loop (if-test t) env used))
-                   ,(loop (if-then t) env used)
-                   ,(loop (if-else t) env used))
+        [(constant? term)
+          `(quote ,(constant-value term))]
+        [(void? term)
+          (void-form)]
+        [(lref? term)
+          (alias-for (lref-sym term) env (lref-sym term))]
+        [(lset? term)
+          `(set! ,(alias-for (lset-sym term) env (lset-name term))
+            ,(emit (lset-value term) env used))]
+        [(module-ref? term)
+          `(,(if (module-ref-public? term) '@ '@@)
+            ,(module-ref-module term)
+            ,(module-ref-name term))]
+        [(module-set? term)
+          `(set! (,(if (module-set-public? term) '@ '@@)
+                  ,(module-set-module term)
+                  ,(module-set-name term))
+            ,(emit (module-set-value term) env used))]
+        [(toplevel-ref? term)
+          (toplevel-ref-name term)]
+        [(toplevel-set? term)
+          `(set! ,(toplevel-set-name term)
+            ,(emit (toplevel-set-value term) env used))]
+        [(toplevel-define? term)
+          `(define ,(toplevel-define-name term)
+            ,(emit (toplevel-define-value term) env used))]
+        [(if? term)
+          (match `(if ,(condense-test (emit (if-test term) env used))
+                   ,(emit (if-then term) env used)
+                   ,(emit (if-else term) env used))
             [('if test ('if ('and xs ...) consequent))
-              (build-if (build-and (cons test xs))
+              (shape-if (shape-and (cons test xs))
                 consequent
-                (build-void))]
+                (void-form))]
             [('if test1 ('if test2 consequent))
-              (build-if (build-and (cons test1 test2))
+              (shape-if (shape-and (cons test1 test2))
                 consequent
-                (build-void))]
-            [('if (? atom? x) x ('or ys ...))
+                (void-form))]
+            [('if (? atomic? x) x ('or ys ...))
               `(or ,x ,@ys)]
-            [('if (? atom? x) x y)
+            [('if (? atomic? x) x y)
               `(or ,x ,y)]
             [('if test consequent)
               `(if ,test ,consequent)]
@@ -333,137 +430,99 @@
               `(and ,test ,consequent)]
             [('if test1 consequent1
                 ('if test2 consequent2 . alternate*))
-              (build-cond-or-case
+              (shape-cond-or-case
                 (list test1 test2)
                 (list consequent1 consequent2)
-                (build-begin alternate*))]
+                (shape-begin alternate*))]
             [('if test consequent ('cond clauses ...))
-              `(cond (,test ,@(build-begin-body consequent))
+              `(cond (,test ,@(shape-begin-body consequent))
                 ,@clauses)]
-            [('if ('memv (? atom? v) ('quote (xs ...))) consequent
+            [('if ('memv (? atomic? v) ('quote (xs ...))) consequent
                 ('case v clauses ...))
-              `(case ,v (,xs ,@(build-begin-body consequent))
+              `(case ,v (,xs ,@(shape-begin-body consequent))
                 ,@clauses)]
-            [('if ('eqv? (? atom? v) ('quote x)) consequent
+            [('if ('eqv? (? atomic? v) ('quote x)) consequent
                 ('case v clauses ...))
-              `(case ,v ((,x) ,@(build-begin-body consequent))
+              `(case ,v ((,x) ,@(shape-begin-body consequent))
                 ,@clauses)]
             [e e])]
-        [(let? t)
-          (define style (let-style t))
-          (if (not denoise-lexicals?)
-            (let ((ids (let-lhs t))
-                  (rhs (map (lambda (x) (loop x env used)) (let-rhs t)))
-                  (body (loop (let-body t) env used)))
-              `(,style
-                ,(map (lambda (id rhs) `(,id ,rhs)) ids rhs)
-                ,body))
-            (let ((readable-names (let-ids t))
-                  (identities (let-lhs t)))
-              (cond
-                [(eq? style 'let)
-                  (define rhs (map (lambda (x) (loop x env used)) (let-rhs t)))
-                  (receive (aliases body-env body-used)
-                    (allocate-aliases identities readable-names env used)
-                    (define body (loop (let-body t) body-env body-used))
-                    `(,style
-                      ,(map (lambda (id rhs) `(,id ,rhs)) aliases rhs)
-                      ,body))]
-                [(eq? style 'let*)
-                  (receive (aliases rhs body-env body-used)
-                    (convert-let*-bindings identities readable-names (let-rhs t) env used)
-                    (define body (loop (let-body t) body-env body-used))
-                    `(,style
-                      ,(map (lambda (id rhs) `(,id ,rhs)) aliases rhs)
-                      ,body))]
-                [(memq style '(letrec letrec*))
-                  (receive (aliases body-env body-used)
-                    (allocate-aliases identities readable-names env used)
-                    (define rhs
-                      (map (lambda (x) (loop x body-env body-used)) (let-rhs t)))
-                    (define body (loop (let-body t) body-env body-used))
-                    `(,style
-                      ,(map (lambda (id rhs) `(,id ,rhs)) aliases rhs)
-                      ,body))]
-                [else
-                  (define rhs (map (lambda (x) (loop x env used)) (let-rhs t)))
-                  (receive (aliases body-env body-used)
-                    (allocate-aliases identities readable-names env used)
-                    (define body (loop (let-body t) body-env body-used))
-                    `(,style
-                      ,(map (lambda (id rhs) `(,id ,rhs)) aliases rhs)
-                      ,body))])))]
-        [(receive? t)
-          (define producer (loop (receive-producer t) env used))
-          (if (not denoise-lexicals?)
-            (let ((vars (receive-vars t))
-                  (consumer (loop (receive-consumer t) env used)))
-              `(receive
-                ,vars
-                ,producer
-                ,consumer))
-            (let ((readable-names (receive-ids t))
-                  (identities (receive-vars t)))
-              (receive (aliases consumer-env consumer-used)
-                (allocate-formals identities readable-names env used)
-                (define consumer (loop (receive-consumer t) consumer-env consumer-used))
+        [(let? term)
+          (emit-let-form (let-style term)
+            (let-ids term)
+            (let-lhs term)
+            (let-rhs term)
+            (let-body term)
+            env
+            used)]
+        [(receive? term)
+          (let ([producer (emit (receive-producer term) env used)])
+            (if (not rename-lexicals?)
+              (let ([vars (receive-vars term)]
+                    [consumer (emit (receive-consumer term) env used)])
                 `(receive
-                  ,aliases
+                  ,vars
                   ,producer
-                  ,consumer))))]
-        [(fix? t)
-          (if (not denoise-lexicals?)
-            (let ((ids (fix-ids t))
-                  (rhs (map (lambda (x) (loop x env used)) (fix-rhs t)))
-                  (body (loop (fix-body t) env used)))
-              `(fix ,ids
-                ,rhs
-                ,body))
-            (let ((identities (fix-lhs t))
-                  (readable-names (fix-ids t)))
+                  ,consumer))
+              (let ([identities (receive-vars term)]
+                    [readable-names (receive-ids term)])
+                (receive (aliases consumer-env consumer-used)
+                  (assign-formals identities readable-names env used)
+                  (let ([consumer (emit (receive-consumer term) consumer-env consumer-used)])
+                    `(receive
+                      ,aliases
+                      ,producer
+                      ,consumer))))))]
+        [(fix? term)
+          (if (not rename-lexicals?)
+            (let ([names (fix-ids term)]
+                  [rhs* (map (lambda (x) (emit x env used)) (fix-rhs term))]
+                  [body* (emit (fix-body term) env used)])
+              `(fix ,names
+                ,rhs*
+                ,body*))
+            (let ([identities (fix-lhs term)]
+                  [readable-names (fix-ids term)])
+              ;; like letrec, the values see the extended environment
               (receive (aliases fix-env fix-used)
-                (allocate-aliases identities readable-names env used)
-                (define rhs (map (lambda (x) (loop x fix-env fix-used)) (fix-rhs t)))
-                (define body (loop (fix-body t) fix-env fix-used))
-                `(fix ,aliases
-                  ,rhs
-                  ,body))))]
-        [(application? t)
-          (define operator (loop (application-operator t) env used))
-          (define operands
-            (map (lambda (x) (loop x env used)) (application-operands t)))
-          `(,operator ,@operands)]
-        [(primcall? t)
-          (define prim (primcall-prim t))
-          (define args (map (lambda (x) (loop x env used)) (primcall-args t)))
-          `(,prim ,@args)]
-        [(primref? t)
-          (define prim (primref-prim t))
-          prim]
-        [(proc? t)
-          (if (not denoise-lexicals?)
-            (let ((args (proc-args t))
-                  (body (loop (proc-body t) env used)))
+                (assign-aliases identities readable-names env used)
+                (let ([rhs* (map (lambda (x) (emit x fix-env fix-used)) (fix-rhs term))]
+                      [body* (emit (fix-body term) fix-env fix-used)])
+                  `(fix ,aliases
+                    ,rhs*
+                    ,body*)))))]
+        [(application? term)
+          (let ([operator (emit (application-operator term) env used)]
+                [operands (map (lambda (x) (emit x env used)) (application-operands term))])
+            `(,operator ,@operands))]
+        [(primcall? term)
+          (let ([prim (primcall-prim term)]
+                [args (map (lambda (x) (emit x env used)) (primcall-args term))])
+            `(,prim ,@args))]
+        [(primref? term)
+          (primref-prim term)]
+        [(proc? term)
+          (if (not rename-lexicals?)
+            (let ([args (proc-args term)]
+                  [body (emit (proc-body term) env used)])
               `(lambda ,args
                 ,body))
-            (let ((identities (proc-args t))
-                  (readable-names (proc-ids t)))
+            (let ([identities (proc-args term)]
+                  [readable-names (proc-ids term)])
               (receive (aliases body-env body-used)
-                (allocate-formals identities readable-names env used)
-                (define body (loop (proc-body t) body-env body-used))
-                `(lambda ,aliases
-                  ,body))))]
-        [(values? t)
-          (define vals (map (lambda (x) (loop x env used)) (values-values t)))
-          `(values ,@vals)]
-        [(sequence? t)
-          (define head (loop (sequence-head t) env used))
-          (define tail (loop (sequence-tail t) env used))
-          `(begin ,head ,tail)]
-        [(wcm? t)
-          (define key (wcm-key t))
-          (define mark (loop (wcm-mark t) env used))
-          (define result (loop (wcm-result t) env used))
-          `(with-continuation-mark ,key ,mark ,result)]))
+                (assign-formals identities readable-names env used)
+                (let ([body (emit (proc-body term) body-env body-used)])
+                  `(lambda ,aliases
+                    ,body)))))]
+        [(values? term)
+          (let ([vals (map (lambda (x) (emit x env used)) (values-values term))])
+            `(values ,@vals))]
+        [(sequence? term)
+          (let ([head (emit (sequence-head term) env used)]
+                [tail (emit (sequence-tail term) env used)])
+            `(begin ,head ,tail))]
+        [(wcm? term)
+          (let ([mark (emit (wcm-mark term) env used)]
+                [result (emit (wcm-result term) env used)])
+            `(with-continuation-mark ,(wcm-key term) ,mark ,result))]))
 
-    (loop t '() '())))
+    (emit term '() '())))

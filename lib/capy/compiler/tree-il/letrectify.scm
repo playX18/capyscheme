@@ -12,17 +12,28 @@
     (core lists)
     (capy pretty-print))
 
-  (define for-each-fold (make-tree-il-folder))
+  ;; A plain folder used for whole-term walks that need no seed.
 
-  (define (tree-il-for-each f x)
-    (for-each-fold x (lambda (x) (f x) (values)) (lambda (x) (values))))
+  (define plain-folder (make-tree-il-folder))
 
-  (define (compute-declarative-toplevels exp)
+  (define (for-each-term f x)
+    (plain-folder x (lambda (x) (f x) (values)) (lambda (x) (values))))
+
+  ;; Collects the toplevel definitions that are safe to turn into
+  ;; lexicals: those whose module is declarative and which are neither
+  ;; assigned nor shadowed by a dynamic (unqualified) definition.
+  ;;
+  ;; - toplevel-set! on an unqualified name poisons the name itself;
+  ;;   on a qualified name it poisons the (module . name) pair.
+  ;; - a second toplevel-define of the same (module . name) moves the
+  ;;   pair from `defined` to `assigned`.
+  ;; - unqualified defines poison the name as dynamic.
+  (define (collect-declarative-toplevels exp)
     (define dynamic (make-hashtable equal-hash equal?))
     (define defined (make-hashtable equal-hash equal?))
     (define assigned (make-hashtable equal-hash equal?))
 
-    (tree-il-for-each
+    (for-each-term
       (lambda (exp)
         (match exp
           [(~toplevel-set src mod name _)
@@ -43,8 +54,7 @@
 
     (define declarative (make-hashtable equal-hash equal?))
 
-    (define (declarative-module? mod)
-      ;; all modules are declarative by default
+    (define (module-is-declarative? mod)
       (define m (resolve-module mod #f #f))
       (or (not m) (module-declarative? m)))
     (for-each
@@ -56,13 +66,19 @@
           [(~cons mod name)
             (unless (or (hashtable-ref assigned k #f)
                      (hashtable-ref dynamic name #f)
-                     (not (declarative-module? mod)))
+                     (not (module-is-declarative? mod)))
               (hashtable-set! declarative k expr))]
           [_ #f]))
       (hashtable->alist defined))
     declarative)
 
-  (define (compute-private-toplevels declarative)
+  ;; Of the declarative toplevels, which are not reachable through
+  ;; their module's public interface?  A module that exports a macro
+  ;; cannot have any of its toplevels privatized, because macros are
+  ;; expanded at compile time and the expander may not see the
+  ;; binding's final value.
+
+  (define (collect-private-toplevels declarative)
 
     (define exports (make-hashtable equal-hash equal?))
     (define exports-macro? (make-hashtable equal-hash equal?))
@@ -105,12 +121,10 @@
         alist)
       private))
 
-  (define (all? pred lst)
-    (or (null? lst)
-      (and (pred (car lst))
-        (all? pred (cdr lst)))))
+  ;; A term with no observable effect (no calls, no assignments, no
+  ;; control flow) can be dropped instead of hoisted into a binding.
 
-  (define (transparent? exp)
+  (define (side-effect-free? exp)
     (match exp
       [(~or
           (~void _)
@@ -119,37 +133,40 @@
           (~proc _ _ _ _ _))
         #t]
       [(~if _ test then else) (and
-                               (transparent? test)
-                               (transparent? then)
-                               (transparent? else))]
+                               (side-effect-free? test)
+                               (side-effect-free? then)
+                               (side-effect-free? else))]
       [(~sequence _ head tail)
-        (and (transparent? head) (transparent? tail))]
+        (and (side-effect-free? head) (side-effect-free? tail))]
       [(~receive _ _ _ producer consumer)
-        (and (transparent? producer) (transparent? consumer))]
+        (and (side-effect-free? producer) (side-effect-free? consumer))]
       [_ #f]))
 
   (define (letrectify exp . opt)
-    (define seal-private-bindings? (if (pair? opt) (car opt) #f))
+    (define seal-private? (if (pair? opt) (car opt) #f))
 
-    (define declarative (compute-declarative-toplevels exp))
-    (define private (if seal-private-bindings?
-                     (compute-private-toplevels declarative)
+    (define declarative (collect-declarative-toplevels exp))
+    (define private (if seal-private?
+                     (collect-private-toplevels declarative)
                      (make-hashtable equal-hash equal?)))
-    (define declarative-box+value
+    ;; Each declarative toplevel becomes a box (if exported) and a
+    ;; value gensym.  Boxed bindings are initialized with the module
+    ;; accessor and later patched with variable-set!; unboxed ones are
+    ;; bound directly to their initial value.
+    (define declaration-cell
       (let ([tab (make-hashtable equal-hash equal?)])
         (for-each
           (lambda (kv)
             (define key (car kv))
-            (define val (cdr kv))
 
             (define box (and (not (hashtable-ref private key #f)) (gensym)))
-            (define val (gensym))
+            (define value (gensym))
 
-            (hashtable-set! tab key (cons box val)))
+            (hashtable-set! tab key (cons box value)))
           (hashtable->alist declarative))
         (lambda (mod name) (hashtable-ref tab (cons mod name) #f))))
 
-    (define (add-binding name var val tail)
+    (define (prepend-binding name var val tail)
       (match tail
         [(~let src 'letrec* names vars vals tail)
           (make-let src
@@ -165,103 +182,106 @@
             (list var)
             (list val)
             tail)]))
-    (define (add-statement src stmt tail)
-      (if (transparent? stmt)
+    (define (hoist-statement src stmt tail)
+      (if (side-effect-free? stmt)
         tail
-        (add-binding
+        (prepend-binding
           '_
           (gensym "_")
           (make-sequence src stmt (make-void src))
           tail)))
 
-    (define (visit-expr expr)
+    ;; Rewrites references to declarative toplevels into direct
+    ;; lexical references to their value or box.
+
+    (define (rewrite-expr expr)
       (post-order
         (lambda (expr)
           (match expr
             [(~toplevel-ref src mod name)
-              (match (declarative-box+value mod name)
+              (match (declaration-cell mod name)
                 ['#f expr]
                 [(~cons box value)
                   (make-lref src name value)])]
             [_ expr]))
         expr))
-    (define (visit-top-level expr mod-vars)
+    (define (rewrite-toplevel expr module-vars)
       (match expr
         [(~toplevel-define src mod name exp)
-          (match (declarative-box+value mod name)
-            ['#f (values (visit-expr expr) mod-vars)]
+          (match (declaration-cell mod name)
+            ['#f (values (rewrite-expr expr) module-vars)]
             [(~cons '#f value)
-              (values (add-binding
+              (values (prepend-binding
                        name
                        value
-                       (visit-expr exp)
+                       (rewrite-expr exp)
                        (make-void src))
-                mod-vars)]
+                module-vars)]
             [(~cons box value)
-              (match (assoc mod mod-vars)
+              (match (assoc mod module-vars)
                 ['#f
-                  (let* ([mod-var (gensym "mod")]
-                         [mod-vars (cons (cons mod mod-var) mod-vars)])
-                    (receive (tail mod-vars) (visit-top-level expr mod-vars)
+                  (let* ([module-var (gensym "mod")]
+                         [module-vars (cons (cons mod module-var) module-vars)])
+                    (receive (tail module-vars) (rewrite-toplevel expr module-vars)
                       (values
-                        (add-binding
+                        (prepend-binding
                           'mod
-                          mod-var
+                          module-var
                           (make-primcall src 'current-module '())
                           tail)
-                        mod-vars)))]
-                [(~cons _ mod-var)
+                        module-vars)))]
+                [(~cons _ module-var)
                   (define loc (make-primcall src 'module-ensure-local-variable!
-                               (list (make-lref src 'mod mod-var)
+                               (list (make-lref src 'mod module-var)
                                  (make-constant src name))))
-                  (define exp* (visit-expr exp))
+                  (define exp* (rewrite-expr exp))
                   (define ref (make-lref src name value))
                   (define init (make-primcall
                                 src
                                 'variable-set!
                                 (list (make-lref src name box) ref)))
                   (values
-                    (add-binding
+                    (prepend-binding
                       name
                       box
                       loc
-                      (add-binding
+                      (prepend-binding
                         name
                         value
                         exp*
-                        (add-statement src init (make-void src))))
-                    mod-vars)])])]
+                        (hoist-statement src init (make-void src))))
+                    module-vars)])])]
         [(~let src style names vars vals body)
-          (let loop ([names names] [vars vars] [vals vals] [mod-vars mod-vars])
+          (let loop ([names names] [vars vars] [vals vals] [module-vars module-vars])
             (match (vector names vars vals)
               [(~vector '() '() '())
-                (values (visit-expr body) mod-vars)]
+                (values (rewrite-expr body) module-vars)]
               [(~vector (~cons name names) (~cons var vars) (~cons val vals))
-                (let* ([val (visit-expr val)]
-                       [mod-vars
+                (let* ([val (rewrite-expr val)]
+                       [module-vars
                          (match val
                            [(~application _
                                (~module-ref _ '(capy) 'define-module* _)
                                (~cons (~constant _ mod) _))
-                             (cons (cons mod var) mod-vars)]
-                           [_ mod-vars])])
-                  (receive (exp mod-vars) (loop names vars vals mod-vars)
-                    (values (add-binding name var val exp) mod-vars)))]))]
+                             (cons (cons mod var) module-vars)]
+                           [_ module-vars])])
+                  (receive (exp module-vars) (loop names vars vals module-vars)
+                    (values (prepend-binding name var val exp) module-vars)))]))]
         [(~sequence src head tail)
-          (receive (head mod-vars) (visit-top-level head mod-vars)
-            (receive (tail mod-vars) (visit-top-level tail mod-vars)
+          (receive (head module-vars) (rewrite-toplevel head module-vars)
+            (receive (tail module-vars) (rewrite-toplevel tail module-vars)
               (values
                 (match head
-                  [(~let src2 'letrec* names vars vals head)
+                  [(~let let-src 'letrec* names vars vals head)
                     (fold-right
-                      add-binding
-                      (add-statement src head tail)
+                      prepend-binding
+                      (hoist-statement src head tail)
                       names
                       vars
                       vals)]
-                  [_ (add-statement src head tail)])
-                mod-vars)))]
-        [_ (values (visit-expr expr) mod-vars)]))
-    (receive (exp mod-vars) (visit-top-level exp '())
+                  [_ (hoist-statement src head tail)])
+                module-vars)))]
+        [_ (values (rewrite-expr expr) module-vars)]))
+    (receive (exp module-vars) (rewrite-toplevel exp '())
 
       exp)))
