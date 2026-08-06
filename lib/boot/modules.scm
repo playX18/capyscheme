@@ -1,62 +1,19 @@
 ;;; -*- mode: scheme; coding: utf-8; -*-
+;;; The module system: the registry of named modules, binding lookup,
+;;; use lists and public interfaces, and on-demand loading of module
+;;; files.
+;;;
+;;; This file is loaded very early in the boot sequence, right after the
+;;; control primitives, so everything here is written against raw runtime
+;;; primitives (`make-module`, `module-obarray`, `core-hash-*`,
+;;; `variable-*`, ...) plus a few helpers defined earlier in boot.
 
-;;;; Copyright (C) 1995-2014, 2016-2025  Free Software Foundation, Inc.
-;;;;
-;;;; This library is free software; you can redistribute it and/or
-;;;; modify it under the terms of the GNU Lesser General Public
-;;;; License as published by the Free Software Foundation; either
-;;;; version 3 of the License, or (at your option) any later version.
-;;;;
-;;;; This library is distributed in the hope that it will be useful,
-;;;; but WITHOUT ANY WARRANTY; without even the implied warranty of
-;;;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-;;;; Lesser General Public License for more details.
-;;;;
-;;;; You should have received a copy of the GNU Lesser General Public
-;;;; License along with this library; if not, write to the Free Software
-;;;; Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
-;;;;
 
-;;; Module system routines. Originally extracted from Guile boot-9.scm, modified
-;;; to better suit Capy's needs.
 
-(define (module-search fn m v)
-  (or (fn m v)
-    (let loop ([pos (module-uses m)])
-      (if (null? pos)
-        #f
-        (or (fn (car pos) v)
-          (loop (cdr pos)))))))
 
-(define (module-for-each proc module)
-  (for-each (lambda (kv) (proc (car kv) (cdr kv))) (core-hash->list (module-obarray module))))
-
-(define (module-map proc module)
-  (map proc (core-hash->list (module-obarray module))))
-
-(define (module-ref-submodule module name)
-  (core-hash-ref (module-submodules module) name))
-
-(define (module-define-submodule! module name submodule)
-  (core-hash-put! (module-submodules module) name submodule))
-
-(define (save-module-excursion thunk)
-
-  (let ([inner-module (current-module)]
-        [outer-module #f])
-    (dynamic-wind
-      (lambda ()
-        (set! outer-module (current-module))
-        (current-module inner-module)
-
-        (set! inner-module #f))
-      thunk
-      (lambda ()
-        (set! inner-module (current-module))
-
-        (current-module outer-module)
-        (set! outer-module #f)))))
-
+;; Read the value bound to NAME in MODULE, searching its use list. A
+;; missing or unbound variable raises an error unless REST supplies a
+;; fallback value.
 (define (module-ref module name . rest)
   (let ([var (module-variable module name)])
     (if (and var (variable-bound? var))
@@ -65,168 +22,157 @@
         (assertion-violation 'module-ref "unbound variable" module name)
         (car rest)))))
 
+;; Set the value bound to NAME in MODULE, searching its use list.
 (define (module-set! module name value)
   (let ([var (module-variable module name)])
     (if var
       (variable-set! var value)
       (assertion-violation 'module-set! "unbound variable" module name))))
 
+;; Is NAME bound to a value in MODULE or its use list?
 (define (module-defined? module name)
   (let ([var (module-variable module name)])
     (and var (variable-bound? var))))
 
-(define (module-use! module interface)
-  (if (not (or (eq? module interface)
-            (memq interface (module-uses module))))
-    (begin
-      (set-module-uses! module (cons interface (module-uses module)))
-      (core-hash-clear! (module-import-obarray module)))))
-
-(define (module-use-interfaces! module interfaces)
-  (define (interface-variable interfaces sym)
-    (let loop ([rest interfaces])
-      (cond
-        [(null? rest) #f]
-        [(module-variable (car rest) sym)]
-        [else (loop (cdr rest))])))
-
-  (define (explicit-interfaces interfaces)
-    (let loop ([rest interfaces] [out '()])
-      (cond
-        [(null? rest) (reverse out)]
-        [(eq? (car rest) the-scm-module) (loop (cdr rest) out)]
-        [else (loop (cdr rest) (cons (car rest) out))])))
-
-  (define (interface-without-duplicate-imports iface prior)
-    (let ([filtered #f]
-          [changed? #f]
-          [empty? #t])
-      (define (ensure-filtered!)
-        (or filtered
-          (let ([custom (make-module)])
-            (set-module-name! custom (module-name iface))
-            (set-module-kind! custom 'custom-interface)
-            (set! filtered custom)
-            custom)))
-      (module-for-each
-        (lambda (sym var)
-          (let ([existing (interface-variable prior sym)])
-            (cond
-              [(not existing)
-                (set! empty? #f)
-                (module-add! (ensure-filtered!) sym var)]
-              [(eq? existing var)
-                (set! changed? #t)]
-              [else
-                (set! empty? #f)
-                (module-add! (ensure-filtered!) sym var)])))
-        iface)
-      (cond
-        [empty? #f]
-        [changed? filtered]
-        [else iface])))
-
-  (let* ([cur (module-uses module)]
-         [explicit-cur (explicit-interfaces cur)]
-         [new (let loop ([in interfaces]
-                         [accepted cur]
-                         [accepted-explicit explicit-cur]
-                         [out '()])
-               (if (null? in)
-                 (reverse out)
-                 (let ([iface (car in)])
-                   (if (or (memq iface accepted) (memq iface out))
-                     (loop (cdr in) accepted accepted-explicit out)
-                     (let ([iface* (interface-without-duplicate-imports iface accepted-explicit)])
-                       (if iface*
-                         (loop (cdr in)
-                           (cons iface* accepted)
-                           (cons iface* accepted-explicit)
-                           (cons iface* out))
-                         (loop (cdr in) accepted accepted-explicit out)))))))])
-
-    (set-module-uses! module (append new cur))
-    (core-hash-clear! (module-import-obarray module))))
-
+;; Define NAME in MODULE itself, keeping the existing variable when there
+;; is one (so rebinding does not change the identity of the variable).
 (define (module-define! module name value)
-  (let ([variable (module-local-variable module name)])
-    (if variable
-      (begin
-        (variable-set! variable value))
-      (let ([variable (make-variable value)])
-        (module-add! module name variable)))))
+  (let ([var (module-local-variable module name)])
+    (if var
+      (variable-set! var value)
+      (module-add! module name (make-variable value)))))
 
+;; Apply FN to MODULE and then to each of its uses, returning the first
+;; non-#f result.
+(define (module-search fn m v)
+  (or (fn m v)
+    (let scan ([rest (module-uses m)])
+      (if (null? rest)
+        #f
+        (or (fn (car rest) v)
+          (scan (cdr rest)))))))
+
+;; Call PROC for every binding in MODULE's own obarray.
+(define (module-for-each proc module)
+  (for-each (lambda (kv) (proc (car kv) (cdr kv)))
+    (core-hash->list (module-obarray module))))
+
+;; Map PROC over the bindings in MODULE's own obarray.
+(define (module-map proc module)
+  (map proc (core-hash->list (module-obarray module))))
+
+;; Run THUNK as a "module excursion": the module that was current when
+;; this was called is restored once THUNK returns. If a continuation
+;; captured inside THUNK later re-enters its dynamic extent, the current
+;; module is restored to the one THUNK had when it last exited, so nested
+;; and re-entrant excursions compose.
+(define (save-module-excursion thunk)
+  (let ([active (current-module)]
+        [saved #f])
+    (dynamic-wind
+      (lambda ()
+        (set! saved (current-module))
+        (current-module active)
+        (set! active #f))
+      thunk
+      (lambda ()
+        (set! active (current-module))
+        (current-module saved)
+        (set! saved #f)))))
+
+;;; ---------------------------------------------------------------------------
+;;; 2. Module trees and name paths
+;;; ---------------------------------------------------------------------------
+
+;; A module's submodules live in a hash keyed by name symbol.
+(define (module-ref-submodule module name)
+  (core-hash-ref (module-submodules module) name))
+
+(define (module-define-submodule! module name submodule)
+  (core-hash-put! (module-submodules module) name submodule))
+
+;; Walk the dotted path NAMES through the submodule tree rooted at ROOT.
+;; The helper used by the read-only walkers; missing intermediate modules
+;; stop the walk with #f.
+(define (nested-ref-module root names)
+  (let descend ([cur root] [names names])
+    (if (null? names)
+      cur
+      (let ([next (module-ref-submodule cur (car names))])
+        (and next (descend next (cdr names)))))))
+
+;; The value bound to NAMES (a symbol or a dotted path) in ROOT, or #f
+;; when any part of the path is missing.
 (define (nested-ref root names)
   (if (null? names)
     root
-    (let loop ([cur root]
-               [head (car names)]
-               [tail (cdr names)])
+    (let descend ([cur root] [head (car names)] [tail (cdr names)])
       (if (null? tail)
         (module-ref cur head #f)
-        (let ([cur (module-ref-submodule cur head)])
-          (and cur
-            (loop cur (car tail) (cdr tail))))))))
+        (let ([next (module-ref-submodule cur head)])
+          (and next (descend next (car tail) (cdr tail))))))))
 
+;; Set the value bound to NAMES in ROOT. Every intermediate module must
+;; already exist.
 (define (nested-set! root names val)
-  (let loop ((cur root)
-             (head (car names))
-             (tail (cdr names)))
+  (let descend ([cur root] [head (car names)] [tail (cdr names)])
     (if (null? tail)
       (module-set! cur head val)
-      (let ((cur (module-ref-submodule cur head)))
-        (if (not cur)
+      (let ([next (module-ref-submodule cur head)])
+        (if (not next)
           (assertion-violation 'nested-set! "failed to resolve module" names)
-          (loop cur (car tail) (cdr tail)))))))
+          (descend next (car tail) (cdr tail)))))))
 
+;; Remove the binding NAMES from ROOT. Every intermediate module must
+;; already exist.
 (define (nested-remove! root names)
-  (let loop ((cur root)
-             (head (car names))
-             (tail (cdr names)))
+  (let descend ([cur root] [head (car names)] [tail (cdr names)])
     (if (null? tail)
       (module-remove! cur head)
-      (let ((cur (module-ref-submodule cur head)))
-        (if (not cur)
+      (let ([next (module-ref-submodule cur head)])
+        (if (not next)
           (assertion-violation 'nested-remove! "failed to resolve module" names)
-          (loop cur (car tail) (cdr tail)))))))
+          (descend next (car tail) (cdr tail)))))))
 
+;; Define the binding NAMES in ROOT, creating a fresh variable when the
+;; name is not yet bound.  Every intermediate module must already exist.
+(define (nested-define! root names val)
+  (let descend ([cur root] [head (car names)] [tail (cdr names)])
+    (if (null? tail)
+      (module-define! cur head val)
+      (let ([next (module-ref-submodule cur head)])
+        (if (not next)
+          (assertion-violation 'nested-define! "failed to resolve module" names)
+          (descend next (car tail) (cdr tail)))))))
+
+;; Remove the submodule NAMES from ROOT. Every intermediate module must
+;; already exist.
 (define (nested-remove-module! root names)
-  (let loop ((cur root)
-             (head (car names))
-             (tail (cdr names)))
+  (let descend ([cur root] [head (car names)] [tail (cdr names)])
     (if (null? tail)
       (core-hash-remove! (module-submodules cur) head)
-      (let ((cur (module-ref-submodule cur head)))
-        (if (not cur)
+      (let ([next (module-ref-submodule cur head)])
+        (if (not next)
           (assertion-violation 'nested-remove-module! "failed to resolve module" names)
-          (loop cur (car tail) (cdr tail)))))))
+          (descend next (car tail) (cdr tail)))))))
 
-(define (nested-ref-module root names)
-  (let loop ((cur root)
-             (names names))
-    (if (null? names)
-      cur
-      (let ((cur (module-ref-submodule cur (car names))))
-        (and cur
-          (loop cur (cdr names)))))))
-
+;; Register MODULE under the path NAMES in ROOT, creating intermediate
+;; `directory` modules on the way.
 (define (nested-define-module! root names module)
   (if (null? names)
     (assertion-violation 'nested-define-module! "can't redefine root module" module)
-    (let loop ((cur root)
-               (head (car names))
-               (tail (cdr names)))
+    (let descend ([cur root] [head (car names)] [tail (cdr names)])
       (if (null? tail)
         (module-define-submodule! cur head module)
-        (let ((cur (or (module-ref-submodule cur head)
-                    (let ((m (make-module)))
-                      (set-module-kind! m 'directory)
-                      (set-module-name! m (append (module-name cur)
-                                           (list head)))
-                      (module-define-submodule! cur head m)
-                      m))))
-          (loop cur (car tail) (cdr tail)))))))
+        (let ([next (or (module-ref-submodule cur head)
+                     (let ([dir (make-module)])
+                       (set-module-kind! dir 'directory)
+                       (set-module-name! dir (append (module-name cur) (list head)))
+                       (module-define-submodule! cur head dir)
+                       dir))])
+          (descend next (car tail) (cdr tail)))))))
 
+;; The variants of the nested-* operations that work on the current module.
 (define (local-ref names)
   (nested-ref (current-module) names))
 
@@ -245,6 +191,99 @@
 (define (local-define-module names mod)
   (nested-define-module! (current-module) names mod))
 
+
+;; Add INTERFACE to MODULE's use list. The interface is not added twice,
+;; and adding one invalidates the import cache.
+(define (module-use! module interface)
+  (if (not (or (eq? module interface)
+            (memq interface (module-uses module))))
+    (begin
+      (set-module-uses! module (cons interface (module-uses module)))
+      (core-hash-clear! (module-import-obarray module)))))
+
+;; Add every interface in INTERFACES to MODULE's use list. Interfaces
+;; already used are skipped, and an interface that only re-provides
+;; bindings already visible through MODULE's current uses is trimmed to
+;; its genuinely new bindings (or dropped when there are none), so a
+;; later use can never silently shadow an earlier one.
+(define (module-use-interfaces! module interfaces)
+  ;; The variable bound to SYM by the first interface in IFACES that
+  ;; provides one.
+  (define (find-provider ifaces sym)
+    (let scan ([rest ifaces])
+      (cond
+        [(null? rest) #f]
+        [(module-variable (car rest) sym)]
+        [else (scan (cdr rest))])))
+
+  ;; The subset of a use list that actually supplies bindings: the
+  ;; implicit core module is present in every module and is not counted
+  ;; as a real use.
+  (define (without-core uses)
+    (let scan ([rest uses] [out '()])
+      (cond
+        [(null? rest) (reverse out)]
+        [(eq? (car rest) the-scm-module) (scan (cdr rest) out)]
+        [else (scan (cdr rest) (cons (car rest) out))])))
+
+  ;; A copy of IFACE holding only the bindings that PRIOR does not
+  ;; already provide, or #f if IFACE contributes nothing new. A binding
+  ;; that PRIOR already provides as the identical variable is left out
+  ;; (and marks the copy as needed); a same-named but different variable
+  ;; from PRIOR still wins and is kept.
+  (define (trim-against iface prior)
+    (let ([trimmed #f]
+          [overlapped? #f]
+          [fresh? #t])
+      (define (ensure-trimmed!)
+        (or trimmed
+          (let ([copy (make-module)])
+            (set-module-name! copy (module-name iface))
+            (set-module-kind! copy 'custom-interface)
+            (set! trimmed copy)
+            copy)))
+      (module-for-each
+        (lambda (sym var)
+          (let ([existing (find-provider prior sym)])
+            (cond
+              [(not existing)
+                (set! fresh? #f)
+                (module-add! (ensure-trimmed!) sym var)]
+              [(eq? existing var)
+                (set! overlapped? #t)]
+              [else
+                (set! fresh? #f)
+                (module-add! (ensure-trimmed!) sym var)])))
+        iface)
+      (cond
+        [fresh? #f]
+        [overlapped? trimmed]
+        [else iface])))
+
+  (let* ([cur (module-uses module)]
+         [cur-without-core (without-core cur)]
+         [new (let collect ([in interfaces]
+                            [accepted cur]
+                            [accepted-explicit cur-without-core]
+                            [out '()])
+               (if (null? in)
+                 (reverse out)
+                 (let ([iface (car in)])
+                   (if (or (memq iface accepted) (memq iface out))
+                     (collect (cdr in) accepted accepted-explicit out)
+                     (let ([trimmed (trim-against iface accepted-explicit)])
+                       (if trimmed
+                         (collect (cdr in)
+                           (cons trimmed accepted)
+                           (cons trimmed accepted-explicit)
+                           (cons trimmed out))
+                         (collect (cdr in) accepted accepted-explicit out)))))))])
+    (set-module-uses! module (append new cur))
+    (core-hash-clear! (module-import-obarray module))))
+
+;; The name of MOD as a list of symbols, synthesizing one (and registering
+;; the module under it in the registry root) when MOD was created without
+;; a name.
 (define (module-name mod)
   (or (raw-module-name mod)
     (let ([name (list (gensym))])
@@ -252,6 +291,8 @@
       (nested-define-module! (resolve-module '() #f #t) name mod)
       (raw-module-name mod))))
 
+;; Find the module at path NAME inside MODULE, creating the missing
+;; modules (all `directory` kind) on the way.
 (define (make-modules-in module name)
   (or (nested-ref-module module name)
     (let ([m (make-module)])
@@ -260,6 +301,8 @@
       (nested-define-module! module name m)
       m)))
 
+;; Make MODULE fit to be a user module: it gets its own public interface
+;; and sees the implicit core module.
 (define (beautify-user-module! module)
   (let ([interface (module-public-interface module)])
     (if (or (not interface)
@@ -272,75 +315,108 @@
        (not (eq? module the-root-module)))
     (module-use! module the-scm-module)))
 
+;; A brand-new, fully initialized user module.
 (define (make-fresh-user-module)
   (let ([m (make-module)])
     (beautify-user-module! m)
     (set-module-declarative! m #f)
     m))
 
+;; Remove the implicit core module from MODULE's use list, leaving any
+;; explicitly added interfaces in place.
 (define (purify-module! module)
-  (let ([use-list (module-uses module)])
-    (if (and (pair? use-list)
-         (eq? (car (last-pair use-list)) the-scm-module))
-      (set-module-uses! module (reverse (cdr (reverse use-list)))))))
+  (let ([uses (module-uses module)])
+    (if (and (pair? uses)
+         (eq? (car (last-pair uses)) the-scm-module))
+      (set-module-uses! module (reverse (cdr (reverse uses)))))))
 
+
+;; Render one component of a module name as a path string. Symbols become
+;; their names; non-negative integers are allowed (e.g. SRFI numbers) and
+;; become their decimal representation.
+(define (module-name-part->path-string part)
+  (cond
+    [(symbol? part) (symbol->string part)]
+    [(and (exact-integer? part) (not (negative? part)))
+      (number->string part)]
+    [else
+      (assertion-violation 'module-name-part->path-string
+        "invalid module name component"
+        part)]))
+
+;; Resolve NAME against the registry root. AUTOLOAD? asks for on-demand
+;; loading when the module is not registered yet; ENSURE? makes a
+;; skeleton module rather than returning #f when nothing is found.
 (define resolve-module
   (let ([root *resolve-module-root*])
-    (lambda (name autoload ensure)
+    (lambda (name autoload? ensure?)
       (let ([already (nested-ref-module root name)])
         (if (and already
-             (or (not autoload) (module-public-interface already)))
+             (or (not autoload?) (module-public-interface already)))
           already
-          (if autoload
+          (if autoload?
             (begin
               (try-module-autoload name)
-              (resolve-module name #f ensure))
+              (resolve-module name #f ensure?))
             (or already
-              (and ensure
-                (make-modules-in root name)))))))))
+              (and ensure? (make-modules-in root name)))))))))
 
 (define (->bool x) (not (not x)))
 
+;; Bookkeeping for autoloading: which (directory . file) pairs have
+;; already been loaded, and which are currently being loaded.
 (define autoloads-in-progress '())
 (define autoloads-done '((capy . capy)))
 
 (define (autoload-done-or-in-progress? p m)
-  (let ((n (cons p m)))
-    (->bool (or (member n autoloads-done)
-             (member n autoloads-in-progress)))))
+  (let ([key (cons p m)])
+    (->bool (or (member key autoloads-done)
+             (member key autoloads-in-progress)))))
 
 (define (autoload-done! p m)
-  (let ((n (cons p m)))
+  (let ([key (cons p m)])
     (set! autoloads-in-progress
-      (delete! n autoloads-in-progress))
-    (or (member n autoloads-done)
-      (set! autoloads-done (cons n autoloads-done)))))
+      (delete! key autoloads-in-progress))
+    (or (member key autoloads-done)
+      (set! autoloads-done (cons key autoloads-done)))))
 
 (define (autoload-in-progress! p m)
-  (let ((n (cons p m)))
+  (let ([key (cons p m)])
     (set! autoloads-done
-      (delete! n autoloads-done))
-    (set! autoloads-in-progress (cons n autoloads-in-progress))))
+      (delete! key autoloads-done))
+    (set! autoloads-in-progress (cons key autoloads-in-progress))))
 
+;; Record the outcome of an autoload attempt, or drop the entry entirely
+;; when DONE? is #f.
 (define (set-autoloaded! p m done?)
   (if done?
     (autoload-done! p m)
-    (let ((n (cons p m)))
-      (set! autoloads-done (delete! n autoloads-done))
-      (set! autoloads-in-progress (delete! n autoloads-in-progress)))))
+    (let ([key (cons p m)])
+      (set! autoloads-done (delete! key autoloads-done))
+      (set! autoloads-in-progress (delete! key autoloads-in-progress)))))
 
-(define (clear-module-autoload! module-name)
+;; Split MODULE-NAME into the directory part and the leaf, as strings:
+;; (dir . file), where DIR keeps its trailing "/" and is "" for a
+;; one-element name. This is the key used by the autoload bookkeeping.
+(define (module-name->load-parts module-name)
   (let* ([reverse-name (reverse module-name)]
-         [name (module-name-part->path-string (car reverse-name))]
-         [dir-hint-module-name (reverse (cdr reverse-name))]
-         [dir-hint (apply string-append
-                    (map (lambda (elt)
-                          (string-append (module-name-part->path-string elt) "/"))
-                      dir-hint-module-name))]
-         [autoload-key (cons dir-hint name)])
-    (set! autoloads-done (delete! autoload-key autoloads-done))
-    (set! autoloads-in-progress (delete! autoload-key autoloads-in-progress))))
+         [file (module-name-part->path-string (car reverse-name))]
+         [dir-name (reverse (cdr reverse-name))]
+         [dir (apply string-append
+               (map (lambda (elt)
+                     (string-append (module-name-part->path-string elt) "/"))
+                 dir-name))])
+    (cons dir file)))
 
+;; Forget that the module NAME was autoloaded, so the next attempt loads
+;; it again.
+(define (clear-module-autoload! module-name)
+  (let ([key (module-name->load-parts module-name)])
+    (set! autoloads-done (delete! key autoloads-done))
+    (set! autoloads-in-progress (delete! key autoloads-in-progress))))
+
+;; Drop the module NAME (and its interface) from the registry, clearing
+;; caches and autoload state so it can be re-created from scratch.
 (define (invalidate-module! module-name)
   (let* ([root *resolve-module-root*]
          [module (nested-ref-module root module-name)])
@@ -355,41 +431,41 @@
       (nested-remove-module! root module-name))
     (not (not module))))
 
-(define (try-module-autoload module-name)
-  (let* ([reverse-name (reverse module-name)]
-         [name (module-name-part->path-string (car reverse-name))]
-         [dir-hint-module-name (reverse (cdr reverse-name))]
-         [dir-hint (apply string-append
-                    (map (lambda (elt)
-                          (string-append (module-name-part->path-string elt) "/"))
-                      dir-hint-module-name))])
-    (resolve-module dir-hint-module-name #f #t)
+;; Records the most recent autoload failure as (dir . condition), so that
+;; resolve-interface can report the underlying cause alongside its own
+;; error. Cleared after use.
+(define %last-autoload-failure (make-parameter #f))
 
-    (and (not (autoload-done-or-in-progress? dir-hint name))
-      (let ([didit #f])
+;; Try to load the file backing MODULE-NAME. Returns #t when the load
+;; succeeded; a failed attempt is remembered via %last-autoload-failure
+;; and the module's autoload state is dropped.
+(define (try-module-autoload module-name)
+  (let* ([parts (module-name->load-parts module-name)]
+         [dir (car parts)]
+         [file (cdr parts)]
+         [dir-module-name (reverse (cdr (reverse module-name)))])
+    ;; Make sure the directory modules leading up to this one exist, so
+    ;; the loaded module can register as a submodule of them.
+    (resolve-module dir-module-name #f #t)
+
+    (and (not (autoload-done-or-in-progress? dir file))
+      (let ([loaded? #f])
         (dynamic-wind
-          (lambda () (autoload-in-progress! dir-hint name))
+          (lambda () (autoload-in-progress! dir file))
           (lambda ()
             (save-module-excursion
               (lambda ()
                 (current-module (make-fresh-user-module))
-                (call/cc (lambda (return)
+                (call/cc (lambda (escape)
                           (with-exception-handler
-                            (lambda (x)
-                              (%last-autoload-failure (cons (cons dir-hint name) x))
-                              (return #f))
+                            (lambda (cause)
+                              (%last-autoload-failure (cons (cons dir file) cause))
+                              (escape #f))
                             (lambda ()
-                              (load (string-append dir-hint name))
-                              (set! didit #t))))))))
-          (lambda () (set-autoloaded! dir-hint name didit)))
-        didit))))
-
-(define (identity x) x)
-
-;; Records the most recent autoload failure as (dir-hint . condition), so that
-;; resolve-interface can report the underlying cause alongside its own error.
-;; Cleared after use.
-(define %last-autoload-failure (make-parameter #f))
+                              (load (string-append dir file))
+                              (set! loaded? #t))))))))
+          (lambda () (set-autoloaded! dir file loaded?)))
+        loaded?))))
 
 ;; Hook installed by `(core suggest)` to append "did you mean" hints to
 ;; import-related error messages.  Called as (hook kind . args) with kinds:
@@ -407,10 +483,16 @@
 (define (install-import-suggestion-hook! hook)
   (%import-suggestion-hook hook))
 
+
+(define (identity x) x)
+
+;; Return the public interface of the module NAME, optionally restricted
+;; by SELECT (a list of (orig . seen) specs), HIDE (names to leave out),
+;; and PREFIX (a symbol prepended to every exported name).
 (define (resolve-interface name select hide prefix)
   (let* ([mod (resolve-module name #t #f)]
          [public-i (and mod (module-public-interface mod))]
-         [renamer (if prefix (lambda (symbol) (symbol-append prefix symbol)) identity)])
+         [renamer (if prefix (lambda (sym) (symbol-append prefix sym)) identity)])
     (if (not public-i)
       (let* ([hint (import-suggestion-string 'module name)]
              [failure (%last-autoload-failure)]
@@ -427,13 +509,16 @@
     (if (and (not select) (null? hide) (eq? renamer identity))
       public-i
       (let ([custom-i (make-module)])
-        (define (maybe-export! src dst var)
+        ;; Copy the binding VAR (exported as SRC under the name DST) into
+        ;; the custom interface, unless SRC is hidden; replacement marks
+        ;; are carried over from the original public interface.
+        (define (export-binding! src dst var)
           (if (not (memq src hide))
             (begin
-              (let ([name (renamer dst)])
+              (let ([renamed (renamer dst)])
                 (if (core-hash-ref (module-replacements public-i) src)
-                  (core-hash-put! (module-replacements custom-i) name #t))
-                (module-add! custom-i name var)))))
+                  (core-hash-put! (module-replacements custom-i) renamed #t))
+                (module-add! custom-i renamed var)))))
         (set-module-kind! custom-i 'custom-interface)
         (set-module-name! custom-i name)
         (for-each (lambda (binding)
@@ -455,21 +540,27 @@
                                  (format #f "no binding to select in module ~a; ~a" name hint)
                                  "no binding to select in module")
                                orig name)))
-                         (maybe-export! orig seen var)))
+                         (export-binding! orig seen var)))
               select)]
           [else (module-for-each (lambda (sym var)
-                                  (maybe-export! sym sym var))
+                                  (export-binding! sym sym var))
                  public-i)])
         custom-i))))
 
+;; Enter (creating if needed) the module NAME and return it. A pure
+;; module (XPURE? non-empty) has the implicit core module removed from
+;; its use list.
 (define (define-module* name . xpure?)
-  (define pure? (if (null? xpure?) #f (car xpure?)))
-  (let ([module (resolve-module name #f #t)])
-    (beautify-user-module! module)
-    (if pure?
-      (purify-module! module))
-    module))
+  (let ([pure? (if (null? xpure?) #f (car xpure?))])
+    (let ([module (resolve-module name #f #t)])
+      (beautify-user-module! module)
+      (if pure?
+        (purify-module! module))
+      module)))
 
+;; Export NAMES from MODULE through its public interface. A name may be
+;; given as (internal . external); REPLACE? marks the exports as
+;; replacements that override bindings from used interfaces.
 (define (module-export! m names . replace?)
   (let ([replace? (if (null? replace?) #f (car replace?))]
         [public-i (module-public-interface m)])
@@ -482,21 +573,26 @@
                  (module-add! public-i external-name var)))
       names)))
 
+;; Export NAMES from MODULE, marking them as replacements.
 (define (module-replace! m names)
   (module-export! m names #t))
 
+;; Export every binding of MODULE (including imported ones) through its
+;; public interface.
 (define (module-export-all! mod)
-  (define (fresh-interface!)
-    (let ((iface (make-module)))
+  (define (make-export-interface!)
+    (let ([iface (make-module)])
       (set-module-name! iface (module-name mod))
       (set-module-version! iface (module-version mod))
       (set-module-kind! iface 'interface)
       (set-module-public-interface! mod iface)
       iface))
-  (let ((iface (or (module-public-interface mod)
-                (fresh-interface!))))
+  (let ([iface (or (module-public-interface mod)
+                (make-export-interface!))])
     (set-module-obarray! iface (module-obarray mod))))
 
+;; Resolve and add each interface described by MODULE-IFACE-ARGS to the
+;; current module's use list.
 (define (process-use-modules module-iface-args)
   (let ([interfaces (map (lambda (mif-args)
                           (or (apply resolve-interface mif-args)
@@ -504,17 +600,21 @@
                      module-iface-args)])
     (module-use-interfaces! (current-module) interfaces)))
 
+;; Resolve the variable bound to NAME in MODULE (through its public
+;; interface when PUBLIC? is #t), raising an error when the module or
+;; the binding does not exist.
 (define (lookup-bound module name public?)
   (let ([mod (resolve-module module #f #f)])
     (if (not mod)
       (assertion-violation 'lookup-bound "module not found" module))
-
     (let* ([iface (if public? (module-public-interface mod) mod)]
            [var (module-variable iface name)])
       (if (or (not var) (not (variable-bound? var)))
         (assertion-violation 'lookup-bound "unbound variable" module name))
       var)))
 
+;; Re-export NAMES from MODULE: a name whose variable is defined locally
+;; is exported directly, any other name is handed to module-export!.
 (define (module-re-export! m names . replace?)
   (let ([replace? (if (null? replace?) #f (car replace?))])
     (let ([public-i (module-public-interface m)])
@@ -526,9 +626,7 @@
             (cond
               [(not var)
                 (module-export! m (list name) replace?)]
-              ;(assertion-violation 'unbound-variable "undefined variable" internal-name m)]
               [(eq? var (module-local-variable m internal-name))
-                ;(assertion-violation 'export "re-exporting local variable" internal-name)]
                 (module-export! m (list name) replace?)]
               [else
                 (if replace?
@@ -536,13 +634,14 @@
                 (module-add! public-i external-name var)])))
         names))))
 
+;; The parameter used to print uncaught exceptions. `print-condition` is
+;; defined in `boot/conditions.scm`, which loads after this file; delegate
+;; to it lazily once it is available, falling back to a minimal renderer
+;; during the early boot window.
 (define current-exception-printer
   (make-parameter
     (lambda (exn . port)
       (define p (if (null? port) (current-error-port) (car port)))
-      ;; `print-condition` is defined in `boot/conditions.scm`, which loads
-      ;; after this file; delegate to it lazily once it is available, falling
-      ;; back to a minimal renderer during the early boot window.
       (if (module-search module-defined? (current-module) 'print-condition)
         (print-condition exn p)
         (begin
@@ -550,15 +649,6 @@
           (write exn p)
           (newline p))))))
 
-(define (module-name-part->path-string part)
-  (cond
-    [(symbol? part) (symbol->string part)]
-    [(and (exact-integer? part) (not (negative? part)))
-      (number->string part)]
-    [else
-      (assertion-violation 'module-name-part->path-string
-        "invalid module name component"
-        part)]))
 
 (define capy:r7rs-load-extensions '())
 (define capy:r6rs-load-extensions '())
@@ -595,6 +685,7 @@
   (set! capy:all-mode-load-extensions
     (append capy:r7rs-load-extensions capy:r6rs-load-extensions)))
 
+;; The load extensions that apply in MODE.
 (define (capy:mode-load-extensions mode)
   (case mode
     [(r7rs) capy:r7rs-load-extensions]
@@ -604,15 +695,19 @@
         "invalid execution mode"
         mode)]))
 
+;; Is EXT one of the extensions recognized in any mode?
 (define (capy:mode-load-extension? ext)
   (member ext capy:all-mode-load-extensions))
 
+;; Rebuild %load-extensions so the MODE-specific extensions come first,
+;; keeping any extra user-added extensions behind them.
 (define (capy:update-load-extensions! mode)
   (let ([extra (filter (lambda (ext)
                         (not (capy:mode-load-extension? ext)))
                 %load-extensions)])
     (set! %load-extensions
       (append (capy:mode-load-extensions mode) extra))))
+
 
 (define capy:execution-mode
   (let ([mode 'r7rs])

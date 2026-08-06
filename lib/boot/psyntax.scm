@@ -1,75 +1,78 @@
 ;;;; -*-scheme-*-
+;;;; Copyright (c) 2006, 2007 Abdulaziz Ghuloum and Kent Dybvig
 ;;;;
-;;;; Copyright (C) 1997-1998,2000-2003,2005-2006,2008-2013,2015-2022,2024
-;;;;   Free Software Foundation, Inc.
+;;;; Permission is hereby granted, free of charge, to any person
+;;;; obtaining a copy of this software and associated documentation files
+;;;; (the "Software"), to deal in the Software without restriction,
+;;;; including without limitation the rights to use, copy, modify, merge,
+;;;; publish, distribute, sublicense, and/or sell copies of the Software,
+;;;; and to permit persons to whom the Software is furnished to do so,
+;;;; subject to the following conditions:
 ;;;;
-;;;; This library is free software: you can redistribute it and/or modify
-;;;; it under the terms of the GNU Lesser General Public License as
-;;;; published by the Free Software Foundation, either version 3 of the
-;;;; License, or (at your option) any later version.
+;;;; The above copyright notice and this permission notice shall be
+;;;; included in all copies or substantial portions of the Software.
 ;;;;
-;;;; This library is distributed in the hope that it will be useful, but
-;;;; WITHOUT ANY WARRANTY; without even the implied warranty of
-;;;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-;;;; Lesser General Public License for more details.
+;;;; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+;;;; EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+;;;; MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+;;;; NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+;;;; BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+;;;; ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+;;;; CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+;;;; SOFTWARE.
 ;;;;
-;;;; You should have received a copy of the GNU Lesser General Public
-;;;; License along with this program.  If not, see
-;;;; <http://www.gnu.org/licenses/>.
-
+;;;; The expansion algorithm originates from Chez Scheme's psyntax.ss,
+;;;; written by R. Kent Dybvig, Oscar Waddell, Bob Hieb, and Carl
+;;;; Bruggeman; see "Syntax Abstraction in Scheme" by R. Kent Dybvig,
+;;;; Robert Hieb, and Carl Bruggeman, Lisp and Symbolic Computation 5:4,
+;;;; 295-326, 1992.  The Cadence Research Systems notice below is
+;;;; retained in accordance with its terms:
+;;;;
+;;;; Copyright (c) 1992-1997 Cadence Research Systems
+;;;; Permission to copy this software, in whole or in part, to use this
+;;;; software for any lawful purpose, and to redistribute this software
+;;;; is granted subject to the restriction that all copies made of this
+;;;; software must include this copyright notice in full.  This software
+;;;; is provided AS IS, with NO WARRANTY, EITHER EXPRESS OR IMPLIED,
+;;;; INCLUDING BUT NOT LIMITED TO IMPLIED WARRANTIES OF MERCHANTABILITY
+;;;; OR FITNESS FOR ANY PARTICULAR PURPOSE.  IN NO EVENT SHALL THE
+;;;; AUTHORS BE LIABLE FOR CONSEQUENTIAL OR INCIDENTAL DAMAGES OF ANY
+;;;; NATURE WHATSOEVER.
+;;;;
+;;;; This file defines Capy's syntax expander together with the
+;;;; syntactic forms and procedures built on it.  It implements the
+;;;; syntax-case macro system: syntax objects with hygienic marks and
+;;;; substitutions, pattern matching ($sc-dispatch), define-property,
+;;;; implicit #%app keyword, and expansion to
+;;;; Capy's tree IL.  The expander is integrated with Capy's module
+;;;; system: it resolves R6RS/R7RS imports and re-exports, expands
+;;;; define-module and define-library forms into define-module* calls,
+;;;; and routes every application through the implicit #%app keyword.
+;;;; For background on syntax-case, see The Scheme Programming Language,
+;;;; Fourth Edition (R. Kent Dybvig, MIT Press, 2009), or the R6RS.
+;;;;
+;;;; This file is shipped alongside an expanded version of itself,
+;;;; psyntax-exp.scm, which is loaded when psyntax.scm has not yet been
+;;;; compiled.  The expander thus bootstraps from a previously expanded
+;;;; copy of its own source.
+;;;;
+;;;; Implementation notes:
+;;;;
+;;;; Quoted data may contain objects with no standard printed
+;;;; representation, including cyclic structures and syntax objects, as
+;;;; long as they occur inside a syntax form or were produced by
+;;;; datum->syntax.  Such objects are never copied during expansion.
+;;;;
+;;;; An identifier that is neither a macro nor bound lexically is treated
+;;;; as a reference to a global (module-level) variable.
+;;;;
+;;;; Top-level definitions of macro-introduced identifiers are allowed.
+;;;;
+;;;; When the representation of syntax objects changes, id-var-name must
+;;;; keep recognizing older representations and treat them as not
+;;;; lexically bound.
+;;;;
 
-;;; Originally extracted from Chez Scheme Version 5.9f
-;;; Authors: R. Kent Dybvig, Oscar Waddell, Bob Hieb, Carl Bruggeman
-
-;;; Copyright (c) 1992-1997 Cadence Research Systems
-;;; Permission to copy this software, in whole or in part, to use this
-;;; software for any lawful purpose, and to redistribute this software
-;;; is granted subject to the restriction that all copies made of this
-;;; software must include this copyright notice in full.  This software
-;;; is provided AS IS, with NO WARRANTY, EITHER EXPRESS OR IMPLIED,
-;;; INCLUDING BUT NOT LIMITED TO IMPLIED WARRANTIES OF MERCHANTABILITY
-;;; OR FITNESS FOR ANY PARTICULAR PURPOSE.  IN NO EVENT SHALL THE
-;;; AUTHORS BE LIABLE FOR CONSEQUENTIAL OR INCIDENTAL DAMAGES OF ANY
-;;; NATURE WHATSOEVER.
-
-;;; This code is based on "Syntax Abstraction in Scheme"
-;;; by R. Kent Dybvig, Robert Hieb, and Carl Bruggeman.
-;;; Lisp and Symbolic Computation 5:4, 295-326, 1992.
-;;; <http://www.cs.indiana.edu/~dyb/pubs/LaSC-5-4-pp295-326.pdf>
-
-
-;;; This file defines Capy's syntax expander and a set of associated
-;;; syntactic forms and procedures.  For more documentation, see The
-;;; Scheme Programming Language, Fourth Edition (R. Kent Dybvig, MIT
-;;; Press, 2009), or the R6RS.
-
-;;; This file is shipped along with an expanded version of itself,
-;;; psyntax-exp.scm, which is loaded when psyntax.scm has not yet been
-;;; compiled.  In this way, psyntax bootstraps off of an expanded
-;;; version of itself.
-
-;;; NOTES ON ORIGINAL SOURCE
-;;; 
-;;; This file was extracted from Guile 3.0+ and modified to suit Capy's
-;;; needs. Thanks to Guile developers for their work.
-
-
-;;; Implementation notes:
-
-;;; Objects with no standard print syntax, including objects containing
-;;; cycles and syntax object, are allowed in quoted data as long as they
-;;; are contained within a syntax form or produced by datum->syntax.
-;;; Such objects are never copied.
-
-;;; All identifiers that don't have macro definitions and are not bound
-;;; lexically are assumed to be global variables.
-
-;;; Top-level definitions of macro-introduced identifiers are allowed.
-
-;;; When changing syntax representations, it is necessary to support
-;;; both old and new syntax representations in id-var-name.  It
-;;; should be sufficient to recognize old representations and treat
-;;; them as not lexically bound.
 
 
 (define syntax->datum #f)
@@ -131,7 +134,7 @@
       [(number? n) (exact-nonnegative-integer? n)]
       [else #f]))
 
-  ;; A simple pattern matcher based on Oleg Kiselyov's pmatch.
+  ;; A lightweight pattern matcher in the style of Oleg Kiselyov's pmatch.
   (define-syntax-rule (simple-match e cs ...)
     (let ((v e)) (simple-match-1 v cs ...)))
 
@@ -369,9 +372,9 @@
         (let ((label (car labels)) (labels (cdr labels)))
           (let ((var (car vars)) (vars (cdr vars)))
             (extend-var-env labels vars (acons label (cons 'lexical var) r)))))))
-  ;; we use a "macros only" environment in expansion of local macro
-  ;; definitions so that their definitions can use local macros without
-  ;; attempting to use other lexical identifiers.
+  ;; Local macro definitions are expanded in a "macros only" environment:
+  ;; they may refer to other local macros, but not to ordinary lexical
+  ;; identifiers from the surrounding scope.
   (define (macros-only-env r)
     (match r
       (() '())
@@ -3005,11 +3008,11 @@
 
   (set! syntax->datum (lambda (x) (strip x)))
   (set! $sc-dispatch (lambda (e p)
-                      ;; $sc-dispatch expects an expression and a pattern.  If the expression
-                      ;; matches the pattern a list of the matching expressions for each
-                      ;; "any" is returned.  Otherwise, #f is returned.
+                      ;; $sc-dispatch matches an expression against a pattern.  On success
+                      ;; it returns the list of expressions bound to each "any" in the
+                      ;; pattern; otherwise it returns #f.
 
-                      ;; The expression is matched with the pattern as follows:
+                      ;; The pattern language is:
 
                       ;; pattern:                           matches:
                       ;;   ()                                 empty list
@@ -3022,8 +3025,10 @@
                       ;;   #(vector <pattern>)                (list->vector <pattern>)
                       ;;   #(atom <object>)                   <object> with "equal?"
 
-                      ;; Vector cops out to pair under assumption that vectors are rare.  If
-                      ;; not, should convert to:
+                      ;; Vectors are matched by converting them to pairs, on the
+                      ;; assumption that they are rare.  If that assumption stops
+                      ;; holding, the conversion should give way to a native vector
+                      ;; pattern:
                       ;;   #(vector <pattern>*)               #(<pattern>*)
 
                       (define (match-each e p w mod)

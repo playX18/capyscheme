@@ -231,14 +231,6 @@
 (define (letrec*? expr)
   (and (let? expr) (eq? (let-style expr) 'letrec*)))
 
-(define &void
-  (let* ([rtd (make-record-type-descriptor '&void (record-type-rtd &term) #f #f #f '#())]
-         [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
-    (make-record-type '&void rtd rcd)))
-
-(define void? (record-predicate (record-type-rtd &void)))
-(define make-void (record-constructor (record-type-rcd &void)))
-
 (define &wcm
   (let* ([rtd (make-record-type-descriptor '&wcm (record-type-rtd &term) #f #f #f '#((immutable key) (immutable mark) (immutable result)))]
          [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
