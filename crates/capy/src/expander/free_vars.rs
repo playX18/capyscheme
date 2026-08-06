@@ -6,20 +6,20 @@ use super::*;
 use crate::{
     expander::{
         core::{LVarRef, TermKind, TermRef, module_ref, module_set},
-        letrectify::is_define_module_term,
         primitives::sym_current_module,
+        rectify_letrec::is_define_module_term,
     },
     runtime::{Context, modules::resolve_module},
 };
 
-struct ComputeFreeVarResolver<'gc> {
+struct ModuleBindingAnalysis<'gc> {
     ctx: Context<'gc>,
     module_definitions: Vec<(Value<'gc>, ArrayRef<'gc, TermRef<'gc>>)>,
     module_lexicals: Vec<(Value<'gc>, LVarRef<'gc>)>,
     bindings: Vec<(Value<'gc>, Value<'gc>)>,
 }
 
-impl<'gc> ComputeFreeVarResolver<'gc> {
+impl<'gc> ModuleBindingAnalysis<'gc> {
     pub fn new(ctx: Context<'gc>) -> Self {
         Self {
             ctx,
@@ -65,7 +65,7 @@ impl<'gc> ComputeFreeVarResolver<'gc> {
             let exp = exps[0];
             let exps = &exps[1..];
             fn rec<'gc>(
-                this: &mut ComputeFreeVarResolver<'gc>,
+                this: &mut ModuleBindingAnalysis<'gc>,
                 module: Value<'gc>,
                 exps: &[TermRef<'gc>],
             ) -> Value<'gc> {
@@ -337,9 +337,10 @@ impl<'gc> ImportedResolver<'gc> {
     }
 }
 
-/// Extract module-leve definitions from `exp`.
-pub fn resolve_free_vars<'gc>(ctx: Context<'gc>, exp: TermRef<'gc>) -> TermRef<'gc> {
-    let mut computer = ComputeFreeVarResolver::new(ctx);
+/// Scan `exp` for module-level definitions and rewrite references to them
+/// that reach across module boundaries.
+pub fn annotate_free_vars<'gc>(ctx: Context<'gc>, exp: TermRef<'gc>) -> TermRef<'gc> {
+    let mut computer = ModuleBindingAnalysis::new(ctx);
     let resolve = computer.compute(exp);
 
     exp.post_order(ctx, |ctx, exp| {

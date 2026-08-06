@@ -14,7 +14,7 @@ use crate::runtime::value::Symbol;
 use crate::{runtime::value::Value, static_symbols};
 use std::collections::HashMap;
 
-macro_rules! interesting_prim_names {
+macro_rules! prim_names {
     ($($sname: ident =  $name: literal)*) => {
         paste::paste! {
             static_symbols! {
@@ -35,7 +35,7 @@ macro_rules! interesting_prim_names {
     };
 }
 
-interesting_prim_names!(
+prim_names!(
     apply = "apply"
     call_with_values = "call-with-values"
     ccm = "current-continuation-marks"
@@ -362,7 +362,7 @@ interesting_prim_names!(
     assertion_violation = "assertion-violation"
 );
 
-pub fn resolve_primitives<'gc>(
+pub fn resolve_primitive_refs<'gc>(
     ctx: Context<'gc>,
     x: TermRef<'gc>,
     m: Gc<'gc, Module<'gc>>,
@@ -1844,7 +1844,7 @@ primitive_expanders!(
     }
 );
 
-pub fn expand_primitives<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
+pub fn expand_primitive_calls<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
     let capy_module = list!(ctx, Symbol::from_str(ctx, "capy"));
     t.pre_order(ctx, |ctx, t| match &t.kind {
         TermKind::PrimCall(name, args) => {

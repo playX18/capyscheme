@@ -18,17 +18,17 @@ use std::{
     collections::{HashMap, HashSet},
 };
 
-struct DeclarativeToplevels<'gc> {
+struct ToplevelUsage<'gc> {
     dynamic: HashSet<Value<'gc>>,
     assigned: HashMap<(ValueEqual<'gc>, Value<'gc>), Option<TermRef<'gc>>>,
     defined: HashMap<(ValueEqual<'gc>, Value<'gc>), Option<TermRef<'gc>>>,
 }
 
-fn compute_declarative_toplvels<'gc>(
+fn collect_declarative_definitions<'gc>(
     ctx: Context<'gc>,
     t: TermRef<'gc>,
 ) -> HashMap<(ValueEqual<'gc>, Value<'gc>), Option<TermRef<'gc>>> {
-    let dt = RefCell::new(DeclarativeToplevels {
+    let dt = RefCell::new(ToplevelUsage {
         dynamic: HashSet::new(),
         assigned: HashMap::new(),
         defined: HashMap::new(),
@@ -93,7 +93,7 @@ fn compute_declarative_toplvels<'gc>(
     declarative
 }
 
-fn compute_private_toplevels<'gc>(
+fn collect_private_definitions<'gc>(
     ctx: Context<'gc>,
     declarative: &HashMap<(ValueEqual<'gc>, Value<'gc>), Option<TermRef<'gc>>>,
 ) -> HashSet<(ValueEqual<'gc>, Value<'gc>)> {
@@ -145,34 +145,34 @@ fn compute_private_toplevels<'gc>(
     private
 }
 
-pub fn letrectify<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
-    let declarative = compute_declarative_toplvels(ctx, t);
+pub fn rectify_letrec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
+    let declarative = collect_declarative_definitions(ctx, t);
     let private = if true {
-        compute_private_toplevels(ctx, &declarative)
+        collect_private_definitions(ctx, &declarative)
     } else {
         HashSet::new()
     };
 
-    let mut pass = Letrectify::new(ctx, declarative, private);
+    let mut pass = LetrecRectifier::new(ctx, declarative, private);
 
     pass.visit_top_level(t)
 }
 
-struct Letrectify<'gc> {
+struct LetrecRectifier<'gc> {
     ctx: Context<'gc>,
 
     mod_vars: HashMap<ValueEqual<'gc>, LVarRef<'gc>>,
-    declarative_box_and_value:
+    reified_vars:
         HashMap<(ValueEqual<'gc>, Value<'gc>), (Option<LVarRef<'gc>>, LVarRef<'gc>)>,
 }
 
-impl<'gc> Letrectify<'gc> {
+impl<'gc> LetrecRectifier<'gc> {
     pub fn new(
         ctx: Context<'gc>,
         declarative: HashMap<(ValueEqual<'gc>, Value<'gc>), Option<TermRef<'gc>>>,
         private: HashSet<(ValueEqual<'gc>, Value<'gc>)>,
     ) -> Self {
-        let declarative_box_and_value = {
+        let reified_vars = {
             let mut tab = HashMap::new();
             declarative.iter().for_each(|(&(module, name), _)| {
                 let boxed = if !private.contains(&(module, name)) {
@@ -194,7 +194,7 @@ impl<'gc> Letrectify<'gc> {
         Self {
             ctx,
 
-            declarative_box_and_value,
+            reified_vars,
             mod_vars: HashMap::new(),
         }
     }
@@ -269,7 +269,7 @@ impl<'gc> Letrectify<'gc> {
         match expr.kind {
             TermKind::Define(module, name, exp) => {
                 match self
-                    .declarative_box_and_value
+                    .reified_vars
                     .get(&(module.into(), name))
                     .copied()
                 {
@@ -365,7 +365,7 @@ impl<'gc> Letrectify<'gc> {
         expr.post_order(self.ctx, |ctx, expr| match &expr.kind {
             TermKind::ToplevelRef(module, name) => {
                 match self
-                    .declarative_box_and_value
+                    .reified_vars
                     .get(&(ValueEqual(*module), *name))
                 {
                     None => expr,

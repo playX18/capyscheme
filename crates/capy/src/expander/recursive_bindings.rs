@@ -217,7 +217,7 @@ fn reorder_bindings<'gc>(
     lhs.iter().copied().zip(rhs.iter().copied()).collect()
 }
 
-pub fn fix_letrec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
+pub fn rewrite_recursive_bindings<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
     // remove `let*` bindings. This makes fixing letrec substantially easier.
     let t = remove_letstar(ctx, t);
     let sym_id = compute_ids(&t);

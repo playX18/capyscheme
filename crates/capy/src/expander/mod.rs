@@ -17,14 +17,14 @@ pub mod assignment_elimination;
 pub mod cenv;
 pub mod compile_cps;
 pub mod core;
-pub mod eta_expand;
-pub mod fix_letrec;
 pub mod fold;
 pub mod free_vars;
 pub mod inlining;
-pub mod letrectify;
 pub mod primitives;
+pub mod rectify_letrec;
+pub mod recursive_bindings;
 pub mod term;
+pub mod well_known_procs;
 
 pub fn datum_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
     let Some(props) = get_source_property(ctx, obj) else {

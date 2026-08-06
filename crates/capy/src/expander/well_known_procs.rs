@@ -11,19 +11,20 @@ use crate::{
     static_symbols,
 };
 
-// Disabled by default. CPS optimizer is smart-enough to do similar optimization.
-const ENABE_ETA_EXPANSION: bool = false;
+// Disabled by default. The CPS optimizer is smart enough to do similar
+// optimization.
+const ENABLE_WELL_KNOWN_EXPANSION: bool = false;
 
 /// Make lexically bound procedures well-known.
-pub fn eta_expand<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
-    if !ENABE_ETA_EXPANSION {
+pub fn expand_well_known_procs<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
+    if !ENABLE_WELL_KNOWN_EXPANSION {
         return term;
     }
     let to_expand = analyze_procs(ctx, term);
 
     term.post_order(ctx, |ctx, expr| match expr.kind {
-        TermKind::LRef(_) => do_eta_expand(ctx, expr, &to_expand).unwrap_or(expr),
-        TermKind::Proc(proc) => do_eta_reduce(ctx, proc).unwrap_or(expr),
+        TermKind::LRef(_) => expand_proc_ref(ctx, expr, &to_expand).unwrap_or(expr),
+        TermKind::Proc(proc) => collapse_proc_wrapper(ctx, proc).unwrap_or(expr),
         _ => expr,
     })
 }
@@ -100,7 +101,7 @@ fn analyze_procs<'gc>(_ctx: Context<'gc>, t: TermRef<'gc>) -> HashMap<LVarRef<'g
 
 static_symbols!(SYM_APPLY = "apply");
 
-fn do_eta_expand<'gc>(
+fn expand_proc_ref<'gc>(
     ctx: Context<'gc>,
     lexical: TermRef<'gc>,
     to_expand: &HashMap<LVarRef<'gc>, ProcRef<'gc>>,
@@ -146,7 +147,7 @@ fn do_eta_expand<'gc>(
     }
 }
 
-fn do_eta_reduce<'gc>(ctx: Context<'gc>, proc: ProcRef<'gc>) -> Option<TermRef<'gc>> {
+fn collapse_proc_wrapper<'gc>(ctx: Context<'gc>, proc: ProcRef<'gc>) -> Option<TermRef<'gc>> {
     if let TermKind::Call(rator, rands) = proc.body.kind
         && let TermKind::LRef(var) = rator.kind
     {
