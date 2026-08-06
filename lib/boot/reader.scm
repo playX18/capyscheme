@@ -866,13 +866,13 @@
   (set! get-token reader:get-token))
 
 (define (get-port-reader port fn)
-  (let ([r (io/port-reader port)])
+  (let ([r (%ports/port-reader port)])
     (if r
       r
       (begin
         (let ([reader (make-reader port (or fn (port-name port)))])
           (reader-mode-set! reader 'capy)
-          (io/port-reader-set! port reader)
+          (%ports/port-reader-set! port reader)
           reader)))))
 
 (define (get-datum p)
