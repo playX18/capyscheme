@@ -66,7 +66,8 @@
   (if (not (string? filename))
     (assertion-violation 'open-file-input-port "illegal filename" filename))
   (let* ([fd (%file-ports/open filename 'input '())]
-         [p (%ports/make-port filename 'input #f 'block (%file-handler fd))])
+         [p (%ports/make-port filename 'input #f 'block (%file-handler fd)
+               (list 'fd fd))])
     (if transcoder
       (transcoded-port p transcoder)
       p)))
@@ -94,7 +95,9 @@
                   #f
                   bmode
                   (%file-handler fd)
-                  (if (memq bufmode '(datum flush)) '(flush) '()))])
+                  (if (memq bufmode '(datum flush))
+                    (list 'flush (list 'fd fd))
+                    (list (list 'fd fd))))])
         (if transcoder
           (transcoded-port p transcoder)
           p)))))
@@ -111,13 +114,15 @@
            'open-file-input/output-port "file does not exist" filename))
     (else
       (let* ([fd (%file-ports/open filename 'input+output opts)]
-             [p (%ports/make-port filename 'input-output #f 'block (%file-handler fd))])
+             [p (%ports/make-port filename 'input-output #f 'block (%file-handler fd)
+                   (list 'fd fd))])
         (if transcoder
           (transcoded-port p transcoder)
           p)))))
 
 (define (open-binary-fd-input-port name fd buffer-mode)
-  (%ports/make-port name 'input #f 'block (%file-handler fd)))
+  (%ports/make-port name 'input #f 'block (%file-handler fd)
+    (list 'fd fd)))
 
 (define (open-binary-fd-output-port name fd buffer-mode)
   (%ports/make-port
@@ -129,7 +134,7 @@
       ((line) 'line)
       (else 'block))
     (%file-handler fd)
-    'flush))
+    (list 'flush (list 'fd fd))))
 
 (define (file-exists? filename)
   (osdep/file-exists? filename))
@@ -166,7 +171,8 @@
          [fd (car fd-and-name)]
          [name (cadr fd-and-name)])
     (values
-      (%ports/make-port name 'input-output #f 'block (%file-handler fd))
+      (%ports/make-port name 'input-output #f 'block (%file-handler fd)
+        (list 'fd fd))
       name)))
 
 ;;; eof

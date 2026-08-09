@@ -160,10 +160,12 @@
   (define custom? #f)
   (for-each
     (lambda (opt)
-      (case opt
-        ((flush) (set! flush-datum? #t))
-        ((datum) (set! flush-datum? #t))
-        ((custom) (set! custom? #t))
+      (cond
+        ((eq? opt 'flush) (set! flush-datum? #t))
+        ((eq? opt 'datum) (set! flush-datum? #t))
+        ((eq? opt 'custom) (set! custom? #t))
+        ((and (pair? opt) (eq? (car opt) 'fd))
+         (set! fd (cadr opt)))
         (else
           (assertion-violation '%ports/make-port "invalid port attribute" opt))))
     opts)

@@ -96,7 +96,7 @@
          [p (apply %ports/make-port
               "*console-input*" 'input #f 'block
               (%console-handler fd)
-              '())])
+              (list (list 'fd fd)))])
     p))
 
 (define (standard-output-port)
@@ -104,7 +104,7 @@
          [p (apply %ports/make-port
               "*console-output*" 'output #f 'block
               (%console-handler fd)
-              '(flush))])
+              (list 'flush (list 'fd fd)))])
     p))
 
 (define (standard-error-port)
@@ -112,7 +112,7 @@
          [p (apply %ports/make-port
               "*error-output*" 'output #f 'block
               (%console-handler fd)
-              '(flush))])
+              (list 'flush (list 'fd fd)))])
     p))
 
 

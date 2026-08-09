@@ -33,13 +33,16 @@
 
 (define (console/open-console-port io-mode name)
   (let* ([fd (osdep/open-console io-mode)]
+         [opts (if (eq? io-mode 'input)
+                 (list (list 'fd fd))
+                 (list (list 'fd fd) 'flush))]
          [p (apply %ports/make-port
               name
               (case io-mode ((input) 'input) (else 'output))
               #f
               (if (eq? io-mode 'input) 'block 'line)
               (%console-handler fd)
-              (if (eq? io-mode 'input) '() '(flush)))])
+              opts)])
     (transcoded-port p (console-transcoder))))
 
 (define (console-transcoder)
