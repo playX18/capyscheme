@@ -13,7 +13,8 @@
       [else (assertion-violation who "expected fd or port" source)]))
 
   (define (tty? source)
-    (raw-isatty? (source->fd 'tty? source)))
+    (let ([fd (source->fd 'tty? source)])
+      (and fd (raw-isatty? fd))))
 
   (define (ansi-supported?)
     (not (equal? (getenv "TERM") "dumb")))
