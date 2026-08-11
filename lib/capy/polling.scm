@@ -127,10 +127,12 @@
                       (error "Invalid input source" input-source))))
     (raw:poller-delete! poller fileno))
 
+  ;; Waits for events with an optional timeout in MILLISECONDS. The raw
+  ;; primitive takes microseconds, so convert here.
   (define (poller-wait poller . timeout?)
     (define timeout (if (null? timeout?) #f (car timeout?)))
     (define events (cond
-                    [timeout (raw:poller-wait poller timeout)]
+                    [timeout (raw:poller-wait poller (* timeout 1000))]
                     [else (raw:poller-wait poller)]))
     (map
       (lambda (ev)

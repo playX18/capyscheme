@@ -134,7 +134,8 @@
       ((line) 'line)
       (else 'block))
     (%file-handler fd)
-    (list 'flush (list 'fd fd))))
+    'flush
+    (list 'fd fd)))
 
 (define (file-exists? filename)
   (osdep/file-exists? filename))
