@@ -128,17 +128,14 @@ BOOT_SRCS := \
 	lib/boot/enums.scm \
 	lib/boot/sys.scm \
 	lib/boot/osdep.scm \
-	lib/boot/iosys.scm \
-	lib/boot/iosys2.scm \
-	lib/boot/iosys3.scm \
-	lib/boot/portio.scm \
-	lib/boot/bytevectorio.scm \
-	lib/boot/fileio.scm \
-	lib/boot/conio.scm \
-	lib/boot/stringio.scm \
-	lib/boot/stdio.scm \
-	lib/boot/utf16.scm \
-	lib/boot/customio.scm \
+	lib/boot/ports-core.scm \
+	lib/boot/transcoder.scm \
+	lib/boot/binary-ports.scm \
+	lib/boot/textual-ports.scm \
+	lib/boot/custom-ports.scm \
+	lib/boot/file-ports.scm \
+	lib/boot/console-ports.scm \
+	lib/boot/port-api.scm \
 	lib/boot/print.scm \
 	lib/boot/format.scm \
 	lib/boot/log.scm \
@@ -609,6 +606,9 @@ install-portable: build build-runtime-portable
 	cp c/capy.h $(PREFIX)/capy/$(VERSION)/capy.h
 	ln -sf $(PREFIX)/capy/$(VERSION)/capy $(PREFIX)/capy/$(VERSION)/capy-$(VERSION)
 	cp -r stage-2/compiled $(PREFIX)/capy/$(VERSION)/
+	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy-lsp
+	cp $(TARGET_PATH)/capy-lsp $(PREFIX)/capy/$(VERSION)/capy-lsp
+	chmod +x $(PREFIX)/capy/$(VERSION)/capy-lsp
 	@echo "CapyScheme installed to $(PREFIX)/capy/$(VERSION)"
 	@echo "Add $(PREFIX)/capy/$(VERSION) to your PATH to use CapyScheme"
 
@@ -634,6 +634,9 @@ dist-portable: build build-runtime-portable
 	cp "$(TARGET_PATH)/libcapy.so" "$$stage_install_dir/libcapy.so" 2>/dev/null || true; \
 	cp c/capy.h "$$stage_install_dir/capy.h"; \
 	cp -r stage-2/compiled "$$stage_install_dir/"; \
+	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy-lsp; \
+	cp "$(TARGET_PATH)/capy-lsp" "$$stage_install_dir/capy-lsp"; \
+	chmod +x "$$stage_install_dir/capy-lsp"; \
 	cp LICENSE "$$stage_install_dir/"; \
 	cp CHANGELOG.md "$$stage_install_dir/"; \
 	echo "Creating $$outdir/$$archive_name"; \
@@ -657,6 +660,9 @@ install: build
 	cp "$(TARGET_PATH)/libcapy.so" "$(PREFIX)/bin/libcapy.so" 2>/dev/null || true; \
 	cp c/capy.h "$(PREFIX)/include/capy.h"; \
 	cp -r stage-2/compiled "$(PREFIX)/lib/capy/"; \
+	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy-lsp; \
+	cp "$(TARGET_PATH)/capy-lsp" "$(PREFIX)/bin/capy-lsp"; \
+	chmod +x "$(PREFIX)/bin/capy-lsp"; \
 	echo "Installation complete."
 
 # -------------------------
