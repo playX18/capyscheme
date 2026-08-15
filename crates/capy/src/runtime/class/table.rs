@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::sync::OnceLock;
 
 use super::builtin::{builtin_class_specs, builtin_id, builtin_primitive_layout_hooks};
@@ -13,7 +14,7 @@ use crate::heap::object::{
     AllocationHooks, ClassId, MAX_CLASS_ID, allocate_class_id, builtin_class_ids,
     class_header_word, drain_pending_type_classes, pending_hooks_for_class_id,
 };
-use crate::heap::sync::monitor::Monitor;
+use crate::heap::sync::monitor::ReentrantMonitor;
 use crate::heap::{Gc, Global as GcGlobal, Trace, Visitor, WeakProcessor};
 use crate::runtime::Context;
 use crate::runtime::value::Value;
@@ -110,7 +111,7 @@ pub(crate) struct ClassTableInner<'gc> {
 
 #[derive(Default)]
 struct ClassRedefinitionState {
-    epoch: u64,
+    epoch: Cell<u64>,
 }
 
 // SAFETY: GC trace for `ClassTableInner` — all reachable heap fields are visited
@@ -129,8 +130,8 @@ unsafe impl Trace for ClassTableInner<'_> {
 }
 
 pub struct ClassTable<'gc> {
-    pub(crate) inner: Monitor<ClassTableInner<'gc>>,
-    redefinition: Monitor<ClassRedefinitionState>,
+    pub(crate) inner: ReentrantMonitor<ClassTableInner<'gc>>,
+    redefinition: ReentrantMonitor<ClassRedefinitionState>,
 }
 
 pub(crate) struct DynamicClassOptions {
@@ -310,14 +311,14 @@ impl<'gc> ClassTable<'gc> {
         let page_count = (max_id >> super::builtin::CLASS_TABLE_PAGE_BITS) as usize + 1;
         let pages = Array::with(ctx, page_count, |_, _| Lock::new(None));
         Self {
-            inner: Monitor::new(ClassTableInner { pages, max_id }),
-            redefinition: Monitor::new(ClassRedefinitionState::default()),
+            inner: ReentrantMonitor::new(ClassTableInner { pages, max_id }),
+            redefinition: ReentrantMonitor::new(ClassRedefinitionState::default()),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn redefinition_epoch(&self) -> u64 {
-        self.redefinition.lock().epoch
+        self.redefinition.lock().epoch.get()
     }
 
     pub fn register_builtin(
@@ -331,7 +332,7 @@ impl<'gc> ClassTable<'gc> {
             class_header_word(builtin_id(builtin_class_ids::CLASS)),
         );
         {
-            let mut inner = self.inner.lock();
+            let inner = self.inner.lock();
             inner.register_builtin(ctx, descriptor)?;
         }
         self.link_direct_subclasses(ctx, descriptor);
@@ -371,7 +372,7 @@ impl<'gc> ClassTable<'gc> {
             ),
             class_header_word(builtin_id(builtin_class_ids::CLASS)),
         );
-        let mut inner = self.inner.lock();
+        let inner = self.inner.lock();
         if let Some(existing) = inner.lookup(id) {
             return Ok(existing);
         }
@@ -422,7 +423,7 @@ impl<'gc> ClassTable<'gc> {
     ) -> Result<Gc<'gc, ClassDescriptor<'gc>>, ClassTableError> {
         let direct_supers = normalized_dynamic_direct_supers(category, direct_supers);
         let (id, inherited_slots, cpl) = {
-            let mut inner = self.inner.lock();
+            let inner = self.inner.lock();
             let id = inner.next_free_dynamic_id()?;
             let (inherited_slots, cpl) = collect_dynamic_hierarchy(&inner, id, &direct_supers);
             (id, inherited_slots, cpl)
@@ -448,7 +449,7 @@ impl<'gc> ClassTable<'gc> {
             ),
             class_header_word(builtin_id(builtin_class_ids::CLASS)),
         );
-        let mut inner = self.inner.lock();
+        let inner = self.inner.lock();
         inner.register_dynamic(ctx, descriptor)?;
         drop(inner);
         self.link_direct_subclasses(ctx, descriptor);
@@ -484,7 +485,7 @@ impl<'gc> ClassTable<'gc> {
         direct_supers: &[ClassId],
         direct_slots: &[SlotSpec<'_, 'gc>],
     ) -> Result<Gc<'gc, ClassDescriptor<'gc>>, ClassTableError> {
-        let mut redefinition = self.redefinition.lock();
+        let redefinition = self.redefinition.lock();
         let direct_supers = normalized_dynamic_direct_supers(spec.category, direct_supers);
         let (old, inherited_slots, cpl, direct_subclasses, direct_methods, removed_direct_supers) = {
             let inner = self.inner.lock();
@@ -529,7 +530,7 @@ impl<'gc> ClassTable<'gc> {
             ),
             class_header_word(builtin_id(builtin_class_ids::CLASS)),
         );
-        let mut inner = self.inner.lock();
+        let inner = self.inner.lock();
         let descriptor = inner.redefine_dynamic(ctx, descriptor)?;
         drop(inner);
         for old_super in removed_direct_supers {
@@ -538,7 +539,7 @@ impl<'gc> ClassTable<'gc> {
         ClassDescriptor::invalidate_direct_method_caches(ctx, old);
         self.link_direct_subclasses(ctx, descriptor);
         ClassDescriptor::invalidate_direct_method_caches(ctx, descriptor);
-        redefinition.epoch += 1;
+        redefinition.epoch.set(redefinition.epoch.get() + 1);
         Ok(descriptor)
     }
 
@@ -693,7 +694,7 @@ impl<'gc> ClassTable<'gc> {
 
 impl<'gc> ClassTableInner<'gc> {
     fn register_builtin(
-        &mut self,
+        &self,
         ctx: Context<'gc>,
         descriptor: Gc<'gc, ClassDescriptor<'gc>>,
     ) -> Result<(), ClassTableError> {
@@ -701,7 +702,7 @@ impl<'gc> ClassTableInner<'gc> {
     }
 
     fn register(
-        &mut self,
+        &self,
         ctx: Context<'gc>,
         descriptor: Gc<'gc, ClassDescriptor<'gc>>,
     ) -> Result<(), ClassTableError> {
@@ -723,7 +724,7 @@ impl<'gc> ClassTableInner<'gc> {
     }
 
     fn register_dynamic(
-        &mut self,
+        &self,
         ctx: Context<'gc>,
         descriptor: Gc<'gc, ClassDescriptor<'gc>>,
     ) -> Result<(), ClassTableError> {
@@ -731,7 +732,7 @@ impl<'gc> ClassTableInner<'gc> {
     }
 
     fn redefine_dynamic(
-        &mut self,
+        &self,
         ctx: Context<'gc>,
         descriptor: Gc<'gc, ClassDescriptor<'gc>>,
     ) -> Result<Gc<'gc, ClassDescriptor<'gc>>, ClassTableError> {
@@ -773,7 +774,7 @@ impl<'gc> ClassTableInner<'gc> {
     }
 
     fn empty_slot(
-        &mut self,
+        &self,
         ctx: Context<'gc>,
         id: ClassId,
     ) -> Result<(ClassPage<'gc>, usize), ClassTableError> {
@@ -811,7 +812,7 @@ impl<'gc> ClassTableInner<'gc> {
         }
     }
 
-    fn next_free_dynamic_id(&mut self) -> Result<ClassId, ClassTableError> {
+    fn next_free_dynamic_id(&self) -> Result<ClassId, ClassTableError> {
         let id = allocate_class_id();
         if id.bits() > self.max_id {
             return Err(ClassTableError::Exhausted);

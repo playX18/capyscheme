@@ -1,4 +1,4 @@
-use parking_lot::{Condvar, Mutex, WaitTimeoutResult};
+use parking_lot::{Condvar, Mutex, ReentrantMutex, WaitTimeoutResult};
 
 pub struct Monitor<T = ()> {
     mutex: Mutex<T>,
@@ -126,5 +126,36 @@ impl<'a, T> std::ops::Deref for MonitorGuard<'a, T> {
 impl<'a, T> std::ops::DerefMut for MonitorGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.guard
+    }
+}
+
+/// A reentrant monitor: the same thread may lock it multiple times without
+/// deadlocking.
+
+pub struct ReentrantMonitor<T = ()> {
+    mutex: ReentrantMutex<T>,
+}
+
+impl Default for ReentrantMonitor {
+    fn default() -> Self {
+        ReentrantMonitor {
+            mutex: ReentrantMutex::new(()),
+        }
+    }
+}
+
+impl<T> ReentrantMonitor<T> {
+    pub const fn new(value: T) -> Self {
+        ReentrantMonitor {
+            mutex: ReentrantMutex::new(value),
+        }
+    }
+
+    pub fn lock(&self) -> parking_lot::ReentrantMutexGuard<'_, T> {
+        self.mutex.lock()
+    }
+
+    pub fn get_mut(&mut self) -> &mut T {
+        self.mutex.get_mut()
     }
 }
