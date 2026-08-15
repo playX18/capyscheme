@@ -65,6 +65,7 @@ unsafe impl FinalizerQueue for CodeBlockFinalizerQueue {
             // SAFETY: No concurrent access to the span; we own the code block
             unsafe {
                 let gc_object = GcObject::from(object);
+                
                 let code_block = gc_object.to_address().as_ref::<CodeBlock<'static>>();
                 if let Some(span) = code_block.take_span_for_finalization() {
                     std::mem::forget(span);
@@ -134,6 +135,7 @@ impl<'gc> CodeBlock<'gc> {
             },
             code_block_header_word(),
         );
+
 
         if code_block.has_live_span() {
             ctx.finalizers()

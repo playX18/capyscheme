@@ -1,29 +1,5 @@
 (current-module (resolve-module '(capy) #f #f))
 
-(define-syntax ...
-  (lambda (x)
-    (syntax-violation '... "bad use of '...' syntactic keyword" x x)))
-
-(define-syntax _
-  (lambda (x)
-    (syntax-violation '_ "bad use of '_' syntactic keyword" x x)))
-
-(define-syntax or
-  (lambda (stx)
-    (syntax-case stx ()
-      [(_ e1 e2 e3 ...)
-        #'(let ([tmp e1]) (if tmp tmp (or e2 e3 ...)))]
-      [(_ e) #'e]
-      [(_) #'#f])))
-
-(define-syntax and
-  (lambda (stx)
-    (syntax-case stx ()
-      [(_ e1 e2 e3 ...)
-        #'(if e1 (and e2 e3 ...) #f)]
-      [(_ e) #'e]
-      [(_) #'#t])))
-
 (define-syntax syntax-rules
   (lambda (xx)
     (define (expand-clause clause)
@@ -82,6 +58,34 @@
       ((_ dots (k ...) clause ...)
         (identifier? #'dots)
         (expand-syntax-rules #'dots #'(k ...) #'() #'(clause ...))))))
+
+
+(define-syntax ...
+  (lambda (x)
+    (syntax-violation '... "bad use of '...' syntactic keyword" x x)))(define-syntax _
+  (lambda (x)
+    (syntax-violation '_ "bad use of '_' syntactic keyword" x x)))
+
+(define-syntax or
+  (lambda (stx)
+    (syntax-case stx ()
+      [(_ e1 e2 e3 ...)
+        #'(let ([tmp e1]) (if tmp tmp (or e2 e3 ...)))]
+      [(_ e) #'e]
+      [(_) #'#f])))
+
+(define-syntax and
+  (lambda (stx)
+    (syntax-case stx ()
+      [(_ e1 e2 e3 ...)
+        #'(if e1 (and e2 e3 ...) #f)]
+      [(_ e) #'e]
+      [(_) #'#t])))
+
+;;; Chez-style `time` (see boot/time.scm for `$as-time-goes-by`).
+(define-syntax time
+  (syntax-rules ()
+    ((_ e) ($as-time-goes-by 'e (lambda () e)))))
 
 (define-syntax define-syntax-rule
   (lambda (x)

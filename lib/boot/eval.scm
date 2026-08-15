@@ -100,12 +100,16 @@
 ;; load-thunk? indicates whether to return a thunk to initialize compiled
 ;; file or just compile and return. If its #f use load-thunk-in-vicinity
 (define (compile-file filename compiled-path env load-thunk? . maybe-dump-options)
-  ((%%file-compiler)
-    filename
-    compiled-path
-    env
-    load-thunk?
-    (if (null? maybe-dump-options) '() (car maybe-dump-options))))
+  (define (compile)
+    ((%%file-compiler)
+      filename
+      compiled-path
+      env
+      load-thunk?
+      (if (null? maybe-dump-options) '() (car maybe-dump-options))))
+  (if (%time-loads?)
+    ($as-time-goes-by (list 'compile-file filename) compile)
+    (compile)))
 
 (define load-in-vicinity
   (lambda (filename directory)
@@ -142,7 +146,11 @@
                   'load
                   "Loading file ~a"
                   filename)
-                (thunk-or-path)))]
+                (if (%time-loads?)
+                  ($as-time-goes-by
+                    (list 'load filename)
+                    (lambda () (thunk-or-path)))
+                  (thunk-or-path))))]
           [else
             (with-exception-handler
               (lambda (exn)

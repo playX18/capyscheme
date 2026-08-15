@@ -759,6 +759,7 @@ thunks! {
         gc::post_write_barrier_slow(ctx, src, offset, target)
     }
 
+
     pub fn alloc_with_header_word(ctx: Context<'gc>,
         header_word: usize,
         size: usize) -> Value<'gc> {

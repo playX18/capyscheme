@@ -524,6 +524,10 @@ impl<'env> Env<'env> {
         Ok(unsafe { Ref::from_raw(sys::sni_string(self.ptr, c.as_ptr())) })
     }
 
+    pub fn string_utf8(&mut self, s: &str) -> Ref<'env> {
+        unsafe { Ref::from_raw(sys::sni_string_utf8(self.ptr, s.as_ptr(), s.len())) }
+    }
+
     /// Intern a symbol. Interior NUL is an assertion violation, surfaced as
     /// `Err` with the exception condition.
     pub fn intern_symbol(&mut self, name: &str) -> Result<Ref<'env>, Ref<'env>> {
@@ -565,6 +569,66 @@ impl<'env> Env<'env> {
 
     pub fn is_procedure(&self, obj: Ref<'_>) -> bool {
         unsafe { sys::sni_is_procedure(self.ptr, obj.as_raw()) }
+    }
+
+    pub fn is_null(&self, obj: Ref<'_>) -> bool {
+        unsafe { sys::sni_is_null(self.ptr, obj.as_raw()) }
+    }
+
+    pub fn is_bool(&self, obj: Ref<'_>) -> bool {
+        unsafe { sys::sni_is_bool(self.ptr, obj.as_raw()) }
+    }
+
+    pub fn is_fixnum(&self, obj: Ref<'_>) -> bool {
+        unsafe { sys::sni_is_fixnum(self.ptr, obj.as_raw()) }
+    }
+
+    pub fn is_flonum(&self, obj: Ref<'_>) -> bool {
+        unsafe { sys::sni_is_flonum(self.ptr, obj.as_raw()) }
+    }
+
+    pub fn is_pair(&self, obj: Ref<'_>) -> bool {
+        unsafe { sys::sni_is_pair(self.ptr, obj.as_raw()) }
+    }
+
+    pub fn is_symbol(&self, obj: Ref<'_>) -> bool {
+        unsafe { sys::sni_is_symbol(self.ptr, obj.as_raw()) }
+    }
+
+    pub fn is_vector(&self, obj: Ref<'_>) -> bool {
+        unsafe { sys::sni_is_vector(self.ptr, obj.as_raw()) }
+    }
+
+    pub fn vector_length(&mut self, vec: Ref<'_>) -> Result<usize, Ref<'env>> {
+        let n = unsafe { sys::sni_vector_length(self.ptr, vec.as_raw()) };
+        if n == 0
+            && let Some(e) = self.exception_clear()
+        {
+            return Err(e);
+        }
+        Ok(n)
+    }
+
+    pub fn to_i64(&mut self, obj: Ref<'_>) -> Result<i64, Ref<'env>> {
+        let mut out = 0i64;
+        if unsafe { sys::sni_to_i64(self.ptr, obj.as_raw(), &mut out) } {
+            Ok(out)
+        } else {
+            Err(self.failure())
+        }
+    }
+
+    pub fn to_f64(&mut self, obj: Ref<'_>) -> Result<f64, Ref<'env>> {
+        let mut out = 0f64;
+        if unsafe { sys::sni_to_f64(self.ptr, obj.as_raw(), &mut out) } {
+            Ok(out)
+        } else {
+            Err(self.failure())
+        }
+    }
+
+    pub fn to_bool(&self, obj: Ref<'_>) -> bool {
+        unsafe { sys::sni_to_bool(self.ptr, obj.as_raw()) }
     }
 
     pub fn string_to_utf8(&mut self, obj: Ref<'_>) -> Result<String, Ref<'env>> {

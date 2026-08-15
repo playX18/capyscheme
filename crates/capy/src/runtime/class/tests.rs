@@ -2375,17 +2375,14 @@ fn duplicate_id_is_rejected() {
 #[test]
 fn dynamic_registration_keeps_live_slots() {
     crate::runtime::thread::Scheme::new_uninit().enter(|ctx| {
-        let table = ClassTable::with_max_id(ctx, MAX_CLASS_ID);
+        let mut table = ClassTable::with_max_id(ctx, MAX_CLASS_ID);
         let first = table
             .register_dynamic(ctx, "first", ClassCategory::Scheme)
             .unwrap();
         let first_id = first.id();
         let _ = first;
 
-        {
-            let mut inner = table.inner.lock();
-            inner.max_id = first_id.bits();
-        }
+        table.inner.get_mut().max_id = first_id.bits();
 
         let err = table
             .register_dynamic(ctx, "second", ClassCategory::Scheme)

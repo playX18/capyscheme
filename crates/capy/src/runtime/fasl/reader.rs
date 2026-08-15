@@ -2,34 +2,16 @@ use std::{
     collections::{HashMap, hash_map::Entry},
     io::{self, BufReader, Cursor, Read},
 };
-
 use flate2::read::GzDecoder;
-
 use crate::heap::{Gc, Global, Trace, Visitor, mmtk::util::Address, sync::monitor::Monitor};
-
 use crate::runtime::{
     Context,
     code_memory::{CodeAllocation, runtime_code_memory},
     symbols::{RuntimeData, RuntimeThunk},
-    value::{
-        BigInt, ByteVector, Closure, CodeArity, CodeBlock, Complex, HashTable, HashTableType,
-        IntoValue, LoadedCodeBlockInit, Pair, Rational, RelocatableCodeBlock, Str, Symbol, Tuple,
-        Value, Vector,
-    },
+    value::*,
     vm::{syntax::Syntax, trampolines::get_debug_trampoline_from_scheme},
 };
-
-use super::{
-    CodeSourceLocation, CodeSourceMapEntry, FASL_COMPRESSION_GZIP, FASL_COMPRESSION_NONE,
-    FASL_MAGIC, FASL_TAG_BEGIN, FASL_TAG_BIGINT, FASL_TAG_BVECTOR, FASL_TAG_CHAR, FASL_TAG_CLOSURE,
-    FASL_TAG_CODE_BLOCK, FASL_TAG_COMPLEX, FASL_TAG_DLIST, FASL_TAG_ENTRY, FASL_TAG_F,
-    FASL_TAG_FIXNUM, FASL_TAG_FLONUM, FASL_TAG_GRAPH, FASL_TAG_GRAPH_DEF, FASL_TAG_GRAPH_REF,
-    FASL_TAG_IMMEDIATE, FASL_TAG_KEYWORD, FASL_TAG_LOOKUP, FASL_TAG_NIL, FASL_TAG_PLIST,
-    FASL_TAG_RATIONAL, FASL_TAG_REF, FASL_TAG_REF_INIT, FASL_TAG_STR, FASL_TAG_SYMBOL,
-    FASL_TAG_SYNTAX, FASL_TAG_T, FASL_TAG_TUPLE, FASL_TAG_UNINTERNED_SYMBOL,
-    FASL_TAG_UNLINKED_CODEBLOCK, FASL_TAG_VECTOR, FASL_VERSION, MIN_SUPPORTED_FASL_VERSION, graph,
-    patch, reloc,
-};
+use super::*;
 
 pub struct Reader<'gc, R: io::Read> {
     pub ctx: Context<'gc>,
@@ -69,6 +51,7 @@ impl LoadOptions {
 
 struct Roots<'gc> {
     values: Monitor<Vec<Value<'gc>>>,
+    fill_code_blocks: Monitor<Vec<Value<'gc>>>,
 }
 
 // SAFETY: `gc` for `Roots` upholds all trait invariants
@@ -76,6 +59,9 @@ unsafe impl<'gc> Trace for Roots<'gc> {
     // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         for value in self.values.get_mut().iter_mut() {
+            visitor.trace(value);
+        }
+        for value in self.fill_code_blocks.get_mut().iter_mut() {
             visitor.trace(value);
         }
     }
@@ -110,6 +96,7 @@ struct PendingCodeEntryRelocation {
 struct PendingDataSlotFill {
     target_index: u32,
     slot_address: Address,
+    code_block_index: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -711,7 +698,6 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
             .allocate_copy_with_data_slots(&spec.bytes, data_slots.slots.len())?;
         let result = (|| {
             self.initialize_loaded_data_slots(&loaded, &data_slots);
-            self.add_pending_data_slot_fills(&loaded, &data_slots)?;
             self.add_pending_code_entry_slot_fills(&loaded, &data_slots)?;
             let encoded = reloc::encode_unlinked_relocations(&spec.relocations)?;
             let unlinked = RelocatableCodeBlock::new(
@@ -739,6 +725,7 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
                 },
             );
             self.keep_value(Value::from(code_block));
+            self.add_pending_data_slot_fills(&loaded, &data_slots, Value::from(code_block))?;
             self.register_shared_cache_slots(source_index, code_block, &loaded, &data_slots)?;
             if let Err(err) = self.apply_code_block_relocations(
                 source_index,
@@ -890,6 +877,7 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
         let lites = HashTable::new(ctx, HashTableType::Eq, 32, 0.75);
         let roots = Global::new(Roots {
             values: Monitor::new(vec![Value::from(lites)]),
+            fill_code_blocks: Monitor::new(Vec::new()),
         });
         Self {
             ctx,
@@ -1454,6 +1442,7 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
         &mut self,
         loaded: &CodeAllocation,
         data_slots: &CodeDataSlots<'gc>,
+        code_block: Value<'gc>,
     ) -> io::Result<()> {
         if data_slots.pending_value_indices.is_empty() {
             return Ok(());
@@ -1464,11 +1453,16 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
                 "FASL data slot relocation outside graph context",
             )
         })?;
+        let mut owners = self.roots.fetch(self.ctx).fill_code_blocks.lock();
+        let code_block_index = owners.len();
+        owners.push(code_block);
+        drop(owners);
         for (target, graph_index) in &data_slots.pending_value_indices {
             let slot_index = data_slots.slot_index(*target)?;
             pending.push(PendingDataSlotFill {
                 target_index: *graph_index,
                 slot_address: loaded.data_rw_base + slot_index * std::mem::size_of::<Value<'gc>>(),
+                code_block_index,
             });
         }
         Ok(())
@@ -1688,10 +1682,24 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
             return Ok(());
         }
         let value = self.graph_value(index)?;
+        let owner = {
+            let owners = self.roots.fetch(self.ctx).fill_code_blocks.lock();
+            owners
+                .get(resolved.first().map_or(0, |f| f.code_block_index))
+                .copied()
+        };
         for fill in resolved {
             // SAFETY: Preconditions verified by the surrounding code
             unsafe {
                 (fill.slot_address.as_usize() as *mut Value<'gc>).write(value);
+            }
+        }
+        
+        if value.is_cell() {
+            if let Some(owner) = owner {
+                if let Some(code_block) = owner.try_as::<CodeBlock>() {
+                    Gc::write(self.ctx, code_block);
+                }
             }
         }
         Ok(())

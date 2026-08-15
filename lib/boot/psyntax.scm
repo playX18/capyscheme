@@ -1537,38 +1537,44 @@
         (() out)
         ((item . rest)
           (prepend-reversed-syntax-list #'rest (cons #'item out)))))
-    (define (partition-decls decls exports imports code)
+    (define (partition-decls decls exports imports code doc)
       (syntax-case decls (export import begin include include-ci
                           include-library-declarations
                           cond-expand)
-        (() (values exports imports (reverse code)))
+        (() (values exports imports (reverse code) doc))
         (((export clause ...) . decls)
-          (partition-decls #'decls (append exports #'(clause ...)) imports code))
+          (partition-decls #'decls (append exports #'(clause ...)) imports code doc))
         (((import clause ...) . decls)
-          (partition-decls #'decls exports (append imports #'(clause ...)) code))
+          (partition-decls #'decls exports (append imports #'(clause ...)) code doc))
         (((begin expr ...) . decls)
           (partition-decls #'decls exports imports
-            (prepend-reversed-syntax-list #'(expr ...) code)))
+            (prepend-reversed-syntax-list #'(expr ...) code) doc))
         (((include filename ...) . decls)
           (partition-decls #'decls exports imports
-            (cons #'(begin (include filename) ...) code)))
+            (cons #'(begin (include filename) ...) code) doc))
         (((include-ci filename ...) . decls)
           (partition-decls #'decls exports imports
-            (cons #'(begin (include-ci filename) ...) code)))
+            (cons #'(begin (include-ci filename) ...) code) doc))
         (((include-library-declarations filename ...) . decls)
           (syntax-case (handle-includes #'(filename ...)) ()
             ((decl ...)
-              (partition-decls #'(decl ... . decls) exports imports code))))
+              (partition-decls #'(decl ... . decls) exports imports code doc))))
         (((cond-expand clause ...) . decls)
           (syntax-case (handle-cond-expand #'(clause ...)) ()
             ((decl ...)
-              (partition-decls #'(decl ... . decls) exports imports code))))))
+              (partition-decls #'(decl ... . decls) exports imports code doc))))
+        ;; A bare string declaration is the library's documentation; it is
+        ;; collected (first one wins) and dropped from the code.
+        ((str . decls)
+          (string? (syntax->datum #'str))
+          (partition-decls #'decls exports imports code
+            (or doc (syntax->datum #'str))))))
 
     (syntax-case stx ()
       ((_ name decl ...)
         (call-with-values (lambda ()
-                           (partition-decls #'(decl ...) '() '() '()))
-          (lambda (exports imports code)
+                           (partition-decls #'(decl ...) '() '() '() #f))
+          (lambda (exports imports code doc)
             #`(library name
                (export . #,exports)
                (import . #,imports)

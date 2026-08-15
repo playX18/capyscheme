@@ -25,6 +25,22 @@ pub fn scm_log_level<'gc>(ctx: Context<'gc>) -> i32 {
     0
 }
 
+/// Monotonic real time in milliseconds since the first call in the process.
+pub(crate) fn real_time_ms() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let start = START.get_or_init(std::time::Instant::now);
+    start.elapsed().as_millis() as u64
+}
+
+/// Process CPU time (user + system) in milliseconds.
+pub(crate) fn cpu_time_ms() -> u64 {
+    let mut ts: libc::timespec = unsafe { std::mem::zeroed() };
+    if unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) } != 0 {
+        return 0;
+    }
+    (ts.tv_sec as u64) * 1000 + (ts.tv_nsec as u64) / 1_000_000
+}
+
 #[scheme(path=capy)]
 pub mod base_ops {
     #[scheme(name = "implementation-version")]
@@ -416,6 +432,16 @@ pub mod base_ops {
             let sec = tv.tv_sec as u128 * 1_000_000 + tv.tv_usec as u128;
             nctx.return_(sec)
         }
+    }
+
+    #[scheme(name = "real-time")]
+    pub fn real_time() -> u128 {
+        nctx.return_(super::real_time_ms() as u128)
+    }
+
+    #[scheme(name = "cpu-time")]
+    pub fn cpu_time() -> u128 {
+        nctx.return_(super::cpu_time_ms() as u128)
     }
 
     #[scheme(name = "tuple-size")]

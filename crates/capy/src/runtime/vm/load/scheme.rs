@@ -234,6 +234,26 @@ pub(super) mod load_ops {
             Err(_) => nctx.return_(Value::new(false)),
         }
     }
+
+    #[scheme(name = "stdlib-path")]
+    pub fn stdlib_path() -> Value<'gc> {
+        let ctx = nctx.ctx;
+
+        let mut load_path = ctx.globals().loc_load_path().get();
+        while load_path.is_pair() {
+            let base = PathBuf::from(load_path.car().downcast::<Str>().to_string());
+            if base.join("boot.scm").is_file() {
+                return nctx.return_(Str::new(ctx, base.to_string_lossy(), true).into());
+            }
+            load_path = load_path.cdr();
+        }
+        let first = ctx.globals().loc_load_path().get();
+        if first.is_pair() {
+            let base = PathBuf::from(first.car().downcast::<Str>().to_string());
+            return nctx.return_(Str::new(ctx, base.to_string_lossy(), true).into());
+        }
+        nctx.return_(Value::new(false))
+    }
 }
 
 #[scheme(continuation)]

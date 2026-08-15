@@ -196,9 +196,27 @@ pub mod gc {
         let Some(snapshot) = runtime_stats_snapshot(Some(&ctx.state().stats)) else {
             return nctx.return_(Value::new(false));
         };
-
         let report = Value::from(Str::new(ctx, snapshot.to_string(), true));
         nctx.return_(report)
+    }
+
+    #[scheme(name = "gc-statistics")]
+    pub fn gc_statistics() -> Value<'gc> {
+        let used = crate::heap::GC
+            .get()
+            .map(|gc| crate::heap::mmtk::memory_manager::used_bytes(&gc.mmtk))
+            .unwrap_or(0);
+        let (collections, bytes, reclaimed, gc_cpu_ms, gc_real_ms) =
+            crate::runtime::gc_stats::snapshot(used);
+        let vector = crate::vector!(
+            nctx.ctx,
+            collections as u64,
+            bytes as u64,
+            reclaimed as u64,
+            gc_cpu_ms,
+            gc_real_ms
+        );
+        nctx.return_(Value::from(vector))
     }
 
     #[scheme(name = "%runtime-stats-begin-compilation")]

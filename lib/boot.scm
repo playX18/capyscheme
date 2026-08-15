@@ -45,6 +45,10 @@
 ($primitive-load "boot/num2str.scm")
 ($primitive-load "boot/reader.scm")
 ($primitive-load "boot/eval.scm")
+($primitive-load "boot/time.scm")
+
+(when (getenv "CAPY_TIME_LOADS")
+  (%time-loads? #t))
 
 ; load file containing base macros
 (define primitive-load
@@ -75,7 +79,11 @@
                                             'primitive-load
                                             "Loading file ~a"
                                             filename)
-                                          (thunk-or-path)))]
+                                          (if (%time-loads?)
+                                            ($as-time-goes-by
+                                              (list 'load filename)
+                                              (lambda () (thunk-or-path)))
+                                            (thunk-or-path))))]
                                     [else
                                       (with-exception-handler
                                         (lambda (exn)

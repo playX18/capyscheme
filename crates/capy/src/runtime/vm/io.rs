@@ -1,6 +1,7 @@
 use crate::heap::object::{ClassId, builtin_class_ids, class_header_word};
 use crate::heap::{Visitor, WeakProcessor};
 use crate::prelude::*;
+use crate::runtime::fasl::{Reader, Writer};
 use crate::static_symbols;
 use rustix::fd::AsRawFd;
 use std::ffi::CString;
@@ -1920,6 +1921,109 @@ pub mod io_ops {
                     "poller-notify",
                     &error,
                     Value::new(false),
+                )
+            }
+        }
+    }
+
+    /// Serialize DATUM with the runtime FASL writer (compression off) to the
+    /// file at PATH.
+    #[scheme(name = "fasl-write")]
+    pub fn fasl_write(datum: Value<'gc>, path: Gc<'gc, Str<'gc>>) -> bool {
+        let ctx = nctx.ctx;
+        match std::fs::File::create(path.to_string()) {
+            Ok(file) => {
+                let writer = Writer::new(ctx, std::io::BufWriter::new(file));
+                match writer.write(datum) {
+                    Ok(()) => nctx.return_(true),
+                    Err(err) => {
+                        let error = err.to_string();
+                        nctx.raise_io_error(
+                            err,
+                            IoOperation::Write,
+                            "fasl-write",
+                            &error,
+                            path.into(),
+                        )
+                    }
+                }
+            }
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_error(err, IoOperation::Open, "fasl-write", &error, path.into())
+            }
+        }
+    }
+
+    /// Deserialize one value from the FASL file at PATH.
+    #[scheme(name = "fasl-read")]
+    pub fn fasl_read(path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
+        let ctx = nctx.ctx;
+        match std::fs::File::open(path.to_string()) {
+            Ok(file) => {
+                let reader = Reader::new(ctx, std::io::BufReader::new(file));
+                match reader.read() {
+                    Ok(value) => nctx.return_(value),
+                    Err(err) => {
+                        let error = err.to_string();
+                        nctx.raise_io_error(
+                            err,
+                            IoOperation::Read,
+                            "fasl-read",
+                            &error,
+                            path.into(),
+                        )
+                    }
+                }
+            }
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_error(err, IoOperation::Open, "fasl-read", &error, path.into())
+            }
+        }
+    }
+
+    /// Serialize DATUM to a bytevector.
+    #[scheme(name = "fasl-write->bytevector")]
+    pub fn fasl_write_to_bytevector(datum: Value<'gc>) -> Value<'gc> {
+        let ctx = nctx.ctx;
+        let mut bytes: Vec<u8> = Vec::new();
+        let writer = Writer::new(ctx, &mut bytes);
+        match writer.write(datum) {
+            Ok(()) => {
+                let bv = ByteVector::new::<false>(ctx, bytes.len(), true);
+                bv.copy_from(bytes.as_slice());
+                nctx.return_(bv.into())
+            }
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_error(
+                    err,
+                    IoOperation::Write,
+                    "fasl-write->bytevector",
+                    &error,
+                    Value::new(false),
+                )
+            }
+        }
+    }
+
+    /// Deserialize one value from the FASL bytevector BV.
+    #[scheme(name = "fasl-read-bytevector")]
+    pub fn fasl_read_bytevector(bv: Gc<'gc, ByteVector>) -> Value<'gc> {
+        let bytes = bv.as_slice();
+        let ctx = nctx.ctx;
+        let reader = Reader::new(ctx, std::io::Cursor::new(bytes));
+        match reader.read() {
+            Ok(value) => nctx.return_(value),
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_error(
+                    err,
+                    IoOperation::Read,
+                    "fasl-read-bytevector",
+                    &error,
+                    bv.into(),
                 )
             }
         }

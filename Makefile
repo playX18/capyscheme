@@ -60,10 +60,10 @@ PORTABLE ?= 1
 # Environment used when invoking capy/capyc (mirrors Justfile defaults).
 # Optional dump knobs (pass on the make command line), e.g.:
 #   make PROFILE=release stage-0 CAPY_SBBV_DUMP=1 CAPY_SBBV_DUMP_DIR=capy-dumps/sbbv
-MMTK_PLAN ?= StickyImmix
+MMTK_PLAN ?= ConcurrentImmix
 XDG_CACHE_HOME = stage-0/cache
 CAPY_LOAD_PATH ?= ./lib
-CAPY_GC_MAX_HEAP ?= 8G
+CAPY_GC_MAX_HEAP ?= 2G
 RUST_MIN_STACK ?= 134217728
 CAPY_SBBV_DUMP ?=
 CAPY_SBBV_DUMP_DIR ?=
@@ -87,6 +87,10 @@ CAPY_ENV = \
 	$(if $(CAPY_COMPILE_DUMP_DIR),CAPY_COMPILE_DUMP_DIR="$(CAPY_COMPILE_DUMP_DIR)") \
 	$(if $(CAPY_DUMP_DIR),CAPY_DUMP_DIR="$(CAPY_DUMP_DIR)") \
 	$(if $(CAPY_BARRIER_KIND),CAPY_BARRIER_KIND="$(CAPY_BARRIER_KIND)")
+
+# Per-load timing during bootstrap stages (Chez-style `time` in load/compile).
+# Override with `make TIME_ENV= stage-0` to disable.
+TIME_ENV ?= CAPY_TIME_LOADS=1
 
 SBBV_BENCH_RUNS ?= 7
 SBBV_BENCH_LIMITS ?= 0,1,2,3,4
@@ -145,6 +149,7 @@ BOOT_SRCS := \
 	lib/boot/num2str.scm \
 	lib/boot/reader.scm \
 	lib/boot/eval.scm \
+	lib/boot/time.scm \
 	lib/boot/base.scm \
 	lib/boot/compiler.scm \
 	lib/boot/libraries.scm \
@@ -231,7 +236,8 @@ CAPY_SRCS := \
 	lib/capy/compiler/tree-il/resolve-free-vars.scm \
 	lib/capy/compiler/tree-il/letrectify.scm \
 	lib/capy/compiler/tree-il.scm			\
-	lib/capy/sequence.scm
+	lib/capy/sequence.scm \
+	lib/capy/cst-reader.scm \
 
 
 SRFI_SRCS_R7RS := \
@@ -419,7 +425,7 @@ test:
 compile-psyntax:
 	$(call require_var,BIN)
 	@echo "Compiling psyntax"
-	$(CAPY_ENV) $(BIN) -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
+	$(TIME_ENV) $(CAPY_ENV) $(BIN) -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
 
 
 # Stage 0 of bootstrapping.
@@ -431,14 +437,14 @@ stage-0: build-runtime-bootstrap
 	cp $(TARGET_PATH)/libcapy.so stage-0/libcapy.so 2>/dev/null || true
 	chmod +x stage-0/capy stage-0/capyc
 	
-	$(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c 42
-	$(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (rnrs))'
-	$(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base))'
-	$(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 1))'
-	$(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 13))'
+	$(TIME_ENV) $(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c 42
+	$(TIME_ENV) $(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (rnrs))'
+	$(TIME_ENV) $(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base))'
+	$(TIME_ENV) $(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 1))'
+	$(TIME_ENV) $(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 13))'
 ifeq ($(COMPILE_PSYNTAX),1)
-	$(CAPY_ENV) stage-0/capy -L lib -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
-	$(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base) (rnrs))'
+	$(TIME_ENV) $(CAPY_ENV) stage-0/capy -L lib -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
+	$(TIME_ENV) $(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base) (rnrs))'
 endif
 	
 
@@ -475,45 +481,45 @@ OUT ?=
 # Boot
 $(OUT)/boot/%.$(COMPILED_SCM_EXT): lib/boot/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy" -L lib $<
+	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ -m "capy" -L lib $<
 
 # Core
 $(OUT)/core/%.$(COMPILED_SCM_EXT): lib/core/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
 
 $(OUT)/core.$(COMPILED_SCM_EXT): lib/core.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
 
 # RNRS
 $(OUT)/rnrs/%.$(COMPILED_SCM_EXT): lib/rnrs/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
 
 $(OUT)/rnrs.$(COMPILED_SCM_EXT): lib/rnrs.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
 
 # Capy
 $(OUT)/capy/%.$(COMPILED_SCM_EXT): lib/capy/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
 
 # SRFI
 $(OUT)/srfi/%.$(COMPILED_SCM_EXT): lib/srfi/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
 
 # R7RS
 $(OUT)/scheme/%.$(COMPILED_SCM_EXT): lib/scheme/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
 
 # Common
 $(OUT)/common/%.$(COMPILED_SCM_EXT): lib/common/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
 
 $(OUT)/capy/args/option.$(COMPILED_SCM_EXT): $(OUT)/capy/args/help/optional.$(COMPILED_SCM_EXT)
 $(OUT)/capy/args/grammar.$(COMPILED_SCM_EXT): $(OUT)/capy/args/option.$(COMPILED_SCM_EXT) $(OUT)/capy/args/help/optional.$(COMPILED_SCM_EXT) $(OUT)/capy/args/string.$(COMPILED_SCM_EXT)
@@ -532,8 +538,8 @@ compile-cli: compile-capy-args
 	$(call require_var,OUT)
 	@echo "Compiling CLI"
 	@mkdir -p $(OUT)
-	$(CAPY_ENV) $(COMPILER) -o $(OUT)/boot/cli.$(COMPILED_SCM_EXT) -m "capy" -L lib lib/boot/cli.scm
-	$(CAPY_ENV) $(COMPILER) -o $(OUT)/boot.$(COMPILED_SCM_EXT) -m "capy" -L lib lib/boot.scm
+	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $(OUT)/boot/cli.$(COMPILED_SCM_EXT) -m "capy" -L lib lib/boot/cli.scm
+	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $(OUT)/boot.$(COMPILED_SCM_EXT) -m "capy" -L lib lib/boot.scm
 
 compile-boot:
 	$(call require_var,COMPILER)
@@ -606,9 +612,6 @@ install-portable: build build-runtime-portable
 	cp c/capy.h $(PREFIX)/capy/$(VERSION)/capy.h
 	ln -sf $(PREFIX)/capy/$(VERSION)/capy $(PREFIX)/capy/$(VERSION)/capy-$(VERSION)
 	cp -r stage-2/compiled $(PREFIX)/capy/$(VERSION)/
-	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy-lsp
-	cp $(TARGET_PATH)/capy-lsp $(PREFIX)/capy/$(VERSION)/capy-lsp
-	chmod +x $(PREFIX)/capy/$(VERSION)/capy-lsp
 	@echo "CapyScheme installed to $(PREFIX)/capy/$(VERSION)"
 	@echo "Add $(PREFIX)/capy/$(VERSION) to your PATH to use CapyScheme"
 
@@ -634,9 +637,6 @@ dist-portable: build build-runtime-portable
 	cp "$(TARGET_PATH)/libcapy.so" "$$stage_install_dir/libcapy.so" 2>/dev/null || true; \
 	cp c/capy.h "$$stage_install_dir/capy.h"; \
 	cp -r stage-2/compiled "$$stage_install_dir/"; \
-	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy-lsp; \
-	cp "$(TARGET_PATH)/capy-lsp" "$$stage_install_dir/capy-lsp"; \
-	chmod +x "$$stage_install_dir/capy-lsp"; \
 	cp LICENSE "$$stage_install_dir/"; \
 	cp CHANGELOG.md "$$stage_install_dir/"; \
 	echo "Creating $$outdir/$$archive_name"; \
@@ -660,9 +660,6 @@ install: build
 	cp "$(TARGET_PATH)/libcapy.so" "$(PREFIX)/bin/libcapy.so" 2>/dev/null || true; \
 	cp c/capy.h "$(PREFIX)/include/capy.h"; \
 	cp -r stage-2/compiled "$(PREFIX)/lib/capy/"; \
-	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy-lsp; \
-	cp "$(TARGET_PATH)/capy-lsp" "$(PREFIX)/bin/capy-lsp"; \
-	chmod +x "$(PREFIX)/bin/capy-lsp"; \
 	echo "Installation complete."
 
 # -------------------------

@@ -79,10 +79,6 @@ impl mmtk::vm::Collection<MemoryManager> for Collection {
         0
     }
 
-    fn is_collection_enabled() -> bool {
-        true
-    }
-
     fn create_gc_trigger() -> Box<dyn mmtk::util::heap::GCTriggerPolicy<MemoryManager>> {
         super::heuristics::create_gc_trigger()
     }

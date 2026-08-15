@@ -3297,12 +3297,12 @@
                     ($sc-dispatch tmp '())))
                  items)))
             (partition-decls
-              (lambda (decls exports imports code)
+              (lambda (decls exports imports code doc)
                 ((lambda (tmp)
                    ((lambda (tmp.1)
                       (if tmp.1
                           (apply (lambda ()
-                                   (values exports imports (reverse code)))
+                                   (values exports imports (reverse code) doc))
                                  tmp.1)
                           ((lambda (tmp.2)
                              (if tmp.2
@@ -3311,7 +3311,8 @@
                                             decls.1
                                             (append exports clause)
                                             imports
-                                            code))
+                                            code
+                                            doc))
                                         tmp.2)
                                  ((lambda (tmp.3)
                                     (if tmp.3
@@ -3320,7 +3321,8 @@
                                                    decls.1
                                                    exports
                                                    (append imports clause)
-                                                   code))
+                                                   code
+                                                   doc))
                                                tmp.3)
                                         ((lambda (tmp.4)
                                            (if tmp.4
@@ -3331,7 +3333,8 @@
                                                           imports
                                                           (prepend-reversed-syntax-list
                                                             expr
-                                                            code)))
+                                                            code)
+                                                          doc))
                                                       tmp.4)
                                                ((lambda (tmp.5)
                                                   (if tmp.5
@@ -3354,7 +3357,8 @@
                                                                                                capy))
                                                                                           tmp.6))
                                                                                   filename))
-                                                                       code)))
+                                                                       code)
+                                                                 doc))
                                                              tmp.5)
                                                       ((lambda (tmp.6)
                                                          (if tmp.6
@@ -3377,7 +3381,8 @@
                                                                                                       capy))
                                                                                                  tmp.7))
                                                                                          filename))
-                                                                              code)))
+                                                                              code)
+                                                                        doc))
                                                                     tmp.6)
                                                              ((lambda (tmp.7)
                                                                 (if tmp.7
@@ -3393,7 +3398,8 @@
                                                                                                     decls.1)
                                                                                                   exports
                                                                                                   imports
-                                                                                                  code))
+                                                                                                  code
+                                                                                                  doc))
                                                                                               tmp.9)
                                                                                        (syntax-violation
                                                                                          '#f
@@ -3419,7 +3425,8 @@
                                                                                                            decls.1)
                                                                                                          exports
                                                                                                          imports
-                                                                                                         code))
+                                                                                                         code
+                                                                                                         doc))
                                                                                                      tmp.10)
                                                                                               (syntax-violation
                                                                                                 '#f
@@ -3431,10 +3438,36 @@
                                                                                      (handle-cond-expand
                                                                                        clause)))
                                                                                   tmp.8)
-                                                                           (syntax-violation
-                                                                             '#f
-                                                                             '"source expression failed to match any pattern"
-                                                                             tmp)))
+                                                                           ((lambda (tmp.9)
+                                                                              (if (if tmp.9
+                                                                                      (apply (lambda (str
+                                                                                                      decls.1)
+                                                                                               (string?
+                                                                                                 (syntax->datum
+                                                                                                   str)))
+                                                                                             tmp.9)
+                                                                                      '#f)
+                                                                                  (apply (lambda (str
+                                                                                                  decls.1)
+                                                                                           (partition-decls
+                                                                                             decls.1
+                                                                                             exports
+                                                                                             imports
+                                                                                             code
+                                                                                             (let ((tmp.10
+                                                                                                     doc))
+                                                                                               (or tmp.10
+                                                                                                   (syntax->datum
+                                                                                                     str)))))
+                                                                                         tmp.9)
+                                                                                  (syntax-violation
+                                                                                    '#f
+                                                                                    '"source expression failed to match any pattern"
+                                                                                    tmp)))
+                                                                            ($sc-dispatch
+                                                                              tmp
+                                                                              '(any .
+                                                                                    any)))))
                                                                      ($sc-dispatch
                                                                        tmp
                                                                        (cons (cons (vector
@@ -3516,8 +3549,9 @@
                  (if tmp.1
                      (apply (lambda (name decl)
                               (call-with-values
-                                (lambda () (partition-decls decl '() '() '()))
-                                (lambda (exports imports code)
+                                (lambda ()
+                                  (partition-decls decl '() '() '() '#f))
+                                (lambda (exports imports code doc)
                                   ((lambda (tmp.2)
                                      ((lambda (tmp.3)
                                         (if tmp.3
@@ -3895,7 +3929,7 @@
                                                                                                    #(m)
                                                                                                    #((top))
                                                                                                    #(#((capy)
-                                                                                                       id4087))))
+                                                                                                       id4104))))
                                                                                                '(hygiene
                                                                                                   capy))
                                                                                              (list (list (make-syntax
@@ -3932,7 +3966,7 @@
                                                                                                    #(m)
                                                                                                    #((top))
                                                                                                    #(#((capy)
-                                                                                                       id4087))))
+                                                                                                       id4104))))
                                                                                                '(hygiene
                                                                                                   capy)))))))
                                                                (map (lambda (tmp.2)
@@ -4012,7 +4046,7 @@
                                                                                                    #(m)
                                                                                                    #((top))
                                                                                                    #(#((capy)
-                                                                                                       id4087))))
+                                                                                                       id4104))))
                                                                                                '(hygiene
                                                                                                   capy))
                                                                                              (cons (list (make-syntax
@@ -4050,7 +4084,7 @@
                                                                                                    #(m)
                                                                                                    #((top))
                                                                                                    #(#((capy)
-                                                                                                       id4087))))
+                                                                                                       id4104))))
                                                                                                '(hygiene
                                                                                                   capy)))))))
                                                                (map (lambda (tmp.2)

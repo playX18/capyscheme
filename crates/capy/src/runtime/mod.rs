@@ -4,6 +4,7 @@ pub mod class;
 pub mod code_memory;
 pub mod fasl;
 pub mod fluids;
+pub mod gc_stats;
 pub mod global;
 pub mod libs;
 pub mod modules;

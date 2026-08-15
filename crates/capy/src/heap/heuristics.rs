@@ -640,6 +640,24 @@ impl GCTriggerPolicy<MemoryManager> for CapyTriggerPolicy {
         self.lock_state().record_cycle_start(now);
     }
 
+    fn on_pause_start(&self, _mmtk: &'static MMTK<MemoryManager>) {
+        crate::runtime::gc_stats::mark_pause_start(
+            crate::runtime::vm::base::real_time_ms(),
+            crate::runtime::vm::base::cpu_time_ms(),
+        );
+    }
+
+    fn on_pause_end(&self, _mmtk: &'static MMTK<MemoryManager>) {
+        crate::runtime::gc_stats::mark_pause_end(
+            crate::runtime::vm::base::real_time_ms(),
+            crate::runtime::vm::base::cpu_time_ms(),
+        );
+    }
+
+    fn on_gc_release(&self, mmtk: &'static MMTK<MemoryManager>) {
+        crate::runtime::gc_stats::mark_gc_release(mmtk::memory_manager::used_bytes(mmtk));
+    }
+
     fn on_gc_end(&self, mmtk: &'static MMTK<MemoryManager>) {
         let now = Instant::now();
         {
@@ -648,6 +666,7 @@ impl GCTriggerPolicy<MemoryManager> for CapyTriggerPolicy {
         }
         let plan = mmtk.get_plan();
         let used_bytes = pages_to_bytes(plan.get_used_pages());
+        crate::runtime::gc_stats::mark_gc_end(used_bytes);
         self.used_at_last_gc_end
             .store(used_bytes, Ordering::Relaxed);
         let snapshot = HeapSnapshot {

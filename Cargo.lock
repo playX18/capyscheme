@@ -769,7 +769,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1410,7 +1410,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1678,8 +1678,8 @@ dependencies = [
 
 [[package]]
 name = "mmtk"
-version = "0.32.0"
-source = "git+https://github.com/mmtk/mmtk-core#8504bffd13fcf0783a394b1f31aad1f0086351f4"
+version = "0.33.0"
+source = "git+https://github.com/mmtk/mmtk-core#c128174c3a3cf4fdaa9cc4caf4531319adc6be92"
 dependencies = [
  "atomic",
  "atomic-traits",
@@ -1713,8 +1713,8 @@ dependencies = [
 
 [[package]]
 name = "mmtk-macros"
-version = "0.32.0"
-source = "git+https://github.com/mmtk/mmtk-core#8504bffd13fcf0783a394b1f31aad1f0086351f4"
+version = "0.33.0"
+source = "git+https://github.com/mmtk/mmtk-core#c128174c3a3cf4fdaa9cc4caf4531319adc6be92"
 dependencies = [
  "proc-macro-error",
  "proc-macro2",
@@ -2164,7 +2164,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
