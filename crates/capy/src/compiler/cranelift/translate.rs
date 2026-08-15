@@ -1218,9 +1218,22 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                 let Operand::Constant(cache_key) = cache_key else {
                     panic!("invalid cache-set!: expected constant cache key, got {cache_key:?}");
                 };
-                let value = self.emit_atom(*value);
+                let code_block = self.builder.ins().load(
+                    types::I64,
+                    ir::MemFlagsData::trusted(),
+                    self.rator,
+                    offset_of!(Closure, code_block) as i32,
+                );
                 let cell = self.module_builder.intern_cache_cell(*cache_key);
+
+                let cell_addr = self.data_slot_address(cell);
+
+                let value = self.emit_atom(*value);
+
+                self.pre_write_barrier(code_block, 0, cell_addr);
                 self.store_data_value(cell, value);
+                self.post_write_barrier(code_block, 0, cell_addr);
+
                 let undefined = self
                     .builder
                     .ins()

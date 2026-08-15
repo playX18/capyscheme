@@ -533,12 +533,6 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                     self.builder.ins().jump(done, &[]);
                 }
                 self.builder.switch_to_block(done);
-                /*
-                let ctx = self.ctx;
-                let offset = self.builder.ins().iconst(types::I32, offset as i64);
-                self.builder
-                    .ins()
-                    .call(self.thunks.pre_write_barrier, &[ctx, src, offset, target]);*/
             }
 
             BarrierSelector::NoBarrier | BarrierSelector::ObjectBarrier => { /* no-op */ }
