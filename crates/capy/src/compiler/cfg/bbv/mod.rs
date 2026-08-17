@@ -10,11 +10,16 @@ mod specialize;
 mod types;
 
 pub use specialize::BlockAnnotation;
+pub(crate) use specialize::RetkSeeds;
 
 use crate::compiler::cfg::Procedure;
 
 /// Runs the SBBV pipeline on a procedure when enabled by configuration.
-pub(crate) fn run<'gc>(procedure: Procedure<'gc>) -> Procedure<'gc> {
+///
+/// `seeds` collects `retk`-continuation slot types from this procedure's `Call`
+/// sites while it is specialized, and provides the seed for this procedure's
+/// own code (a continuation seeded by its single call site).
+pub(crate) fn run<'gc>(procedure: Procedure<'gc>, seeds: &mut RetkSeeds) -> Procedure<'gc> {
     if !config::enabled() {
         return procedure;
     }
@@ -26,7 +31,7 @@ pub(crate) fn run<'gc>(procedure: Procedure<'gc>) -> Procedure<'gc> {
     dump::maybe_dump_procedure("post-expand", &expanded, None);
     let (specialized, annotations) = {
         let _p = crate::utils::pass_profile::ProfileScope::new("cfg.bbv.specialize");
-        specialize::specialize_procedure(expanded, config::version_limit())
+        specialize::specialize_procedure(expanded, config::version_limit(), seeds)
     };
     dump::maybe_dump_procedure("post-specialize", &specialized, Some(&annotations));
     specialized

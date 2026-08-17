@@ -69,7 +69,7 @@ pub fn lower_to_cps<'gc>(
     expand_primitive_calls: bool,
     dump_graph: bool,
 ) -> Result<LoweredProgram<'gc>, Value<'gc>> {
-    lower_expanded_to_cps(ctx, il, module, expand_primitive_calls, dump_graph)
+    lower_expanded_to_cps(ctx, il, module, expand_primitive_calls, dump_graph, false)
 }
 
 pub(crate) fn lower_expanded_to_cps<'gc>(
@@ -78,11 +78,15 @@ pub(crate) fn lower_expanded_to_cps<'gc>(
     module: Option<Gc<'gc, Module<'gc>>>,
     expand_primitive_calls: bool,
     dump_graph: bool,
+    preprocessed: bool,
 ) -> Result<LoweredProgram<'gc>, Value<'gc>> {
     let original_il = il;
     let _stats = CompilationBreakdownScope::new(CompilationBreakdownPhase::Lowering);
 
-    if expand_primitive_calls && let Some(module) = module {
+    if !preprocessed
+        && expand_primitive_calls
+        && let Some(module) = module
+    {
         il = primitives::resolve_primitive_refs(ctx, il, module);
         il = primitives::expand_primitive_calls(ctx, il);
         let _profile = ProfileScope::new("compiler.lower.annotate_free_vars");
@@ -93,17 +97,28 @@ pub(crate) fn lower_expanded_to_cps<'gc>(
         drop(_profile);
     }
 
-    let optimized_il = {
+    // When the Scheme pipeline has preprocessed the IR (preprocessed=true),
+    // these passes have already run self-hosted in lib/boot/compiler.scm
+    // (fix-letrec, expand-well-known-procs, eliminate-assignments); the Rust
+    // copies only run on raw macroexpander output from the cold-cache
+    // bootstrap path.
+    let optimized_il = if !preprocessed {
         let _profile = ProfileScope::new("compiler.lower.rewrite_recursive_bindings");
         rewrite_recursive_bindings(ctx, il)
+    } else {
+        il
     };
-    let optimized_il = {
+    let optimized_il = if !preprocessed {
         let _profile = ProfileScope::new("compiler.lower.expand_well_known_procs");
         expand_well_known_procs(ctx, optimized_il)
+    } else {
+        optimized_il
     };
-    let optimized_il = {
+    let optimized_il = if !preprocessed {
         let _profile = ProfileScope::new("compiler.lower.assignment_elimination");
         assignment_elimination::eliminate_assignments(ctx, optimized_il)
+    } else {
+        optimized_il
     };
 
     let graph = {
@@ -121,7 +136,7 @@ pub(crate) fn lower_expanded_to_cps<'gc>(
         .graph
         .read_term_link(graph.root())
         .expect("graph root");
-   
+
     let graph_cps =
         dump_graph.then(|| crate::compiler::cps::pretty::render_graph(&graph.graph, graph_root));
     let ssa = {

@@ -17,7 +17,10 @@ pub use pretty::{render_program, render_program_with_annotations};
 use rest::lower_rest_arguments;
 pub(crate) use switch::infer_switches;
 
-pub(crate) fn finish_procedure<'gc>(procedure: Procedure<'gc>) -> Procedure<'gc> {
+pub(crate) fn finish_procedure<'gc>(
+    procedure: Procedure<'gc>,
+    seeds: &mut bbv::RetkSeeds,
+) -> Procedure<'gc> {
     // Rest lowering must run before SBBV expand. Otherwise `car`/`cdr` on a rest
     // formal become `pair?` + `car/unchecked` (and a raise that mentions rest),
     // which `lower_rest_arguments` treats as incompatible and falls back to
@@ -33,7 +36,7 @@ pub(crate) fn finish_procedure<'gc>(procedure: Procedure<'gc>) -> Procedure<'gc>
     };
     let after_sbbv = {
         let _p = crate::utils::pass_profile::ProfileScope::new("cfg.finish.sbbv");
-        bbv::run(after_effects)
+        bbv::run(after_effects, seeds)
     };
     let after_sbbv_effects = {
         let _p = crate::utils::pass_profile::ProfileScope::new("cfg.finish.dce2");

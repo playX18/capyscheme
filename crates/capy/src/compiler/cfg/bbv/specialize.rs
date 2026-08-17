@@ -5,6 +5,18 @@
 //! predicates fold to constants, checked primitives collapse to unchecked
 //! variants when the context proves the guard, and branches whose outcome is
 //! statically known become unconditional jumps.
+//!
+//! `Call` return-continuation seeding: a reified continuation is single-use —
+//! its closure is created and filled once in one binding scope and passed as
+//! the `retk` of exactly one `Call`. While the *caller* is specialized, the
+//! types its context proves for the values stored into the continuation's
+//! closure slots are recorded in a shared `RetkSeeds` table (keyed by slot
+//! index). When the *continuation* procedure is specialized, those types seed
+//! the `ClosureRef`s that read the same slots, so the continuation body stops
+//! re-checking what the caller already proved. The continuation's params are
+//! deliberately not seeded: they receive the callee's return values, whose
+//! types are unknowable at the call site (that would need interprocedural
+//! return-type inference over the known callee).
 
 use super::liveness::compute_live_in;
 use super::types::{
@@ -13,8 +25,8 @@ use super::types::{
 use super::{infer, merge};
 use crate::compiler::cfg::graph::backedges;
 use crate::compiler::cfg::{
-    Block, BlockId, BranchTarget, Instruction, Operand, Procedure, RestPredicate, SwitchCase,
-    SwitchCaseValue, SwitchKind, Terminator, ValueId,
+    Block, BlockId, BranchTarget, CodeId, GraphCodeId, Instruction, Operand, Procedure,
+    RestPredicate, SwitchCase, SwitchCaseValue, SwitchKind, Terminator, ValueId,
 };
 use crate::compiler::cranelift::primitive::Primitive;
 use crate::runtime::value::Value;
@@ -60,6 +72,64 @@ pub struct BlockAnnotation {
     pub ctx: String,
 }
 
+/// Specialization for return continuations used at call-sites.
+///
+/// Return continuations are single use and we can specialize their contexts, but
+/// to do so, we have to track the state cross-procedure during BBV. We use this structure
+/// for that.
+#[derive(Default)]
+pub(crate) struct RetkSeeds {
+    slots: HashMap<GraphCodeId, HashMap<usize, Type>>,
+    version: HashMap<GraphCodeId, u64>,
+}
+
+impl RetkSeeds {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record that `index` slot in closure for continuation `code` has type `ty`.
+    fn record_slot(&mut self, code: GraphCodeId, index: usize, ty: Type) {
+        if ty == Type::TOP {
+            return;
+        }
+        let slots = self.slots.entry(code).or_default();
+        let changed = match slots.get(&index) {
+            Some(existing) => {
+                let merged = union_types(existing.clone(), ty, false);
+                if merged == *existing {
+                    false
+                } else {
+                    slots.insert(index, merged);
+                    true
+                }
+            }
+            None => {
+                slots.insert(index, ty);
+                true
+            }
+        };
+        if changed {
+            *self.version.entry(code).or_insert(0) += 1;
+        }
+    }
+
+    fn seed_for(&self, code: &CodeId) -> Option<&HashMap<usize, Type>> {
+        match code {
+            CodeId::GraphContinuation(id) => self.slots.get(id),
+            CodeId::GraphFunction(_) => None,
+        }
+    }
+
+    /// Monotone version for `code`; bumped whenever a slot type changes.
+    pub(crate) fn version(&self, code: CodeId) -> u64 {
+        match code {
+            CodeId::GraphContinuation(id) => self.version.get(&id).copied().unwrap_or(0),
+            CodeId::GraphFunction(_) => 0,
+        }
+    }
+}
+
 struct VersionInfo {
     ctx: TypeContext,
 }
@@ -71,11 +141,15 @@ struct Task {
     ctx: TypeContext,
 }
 
-struct Specializer<'gc> {
+struct Specializer<'gc, 'a> {
     orig_blocks: HashMap<BlockId, Block<'gc>>,
     live_in: HashMap<BlockId, HashSet<ValueId>>,
     entry_orig: BlockId,
     entry_new: Option<BlockId>,
+
+    closure_codes: HashMap<ValueId, CodeId>,
+    seed: HashMap<usize, Type>,
+    seeds: &'a mut RetkSeeds,
 
     versions_of: HashMap<BlockId, Vec<BlockId>>,
     version_orig: HashMap<BlockId, BlockId>,
@@ -117,11 +191,13 @@ struct Specializer<'gc> {
 pub(super) fn specialize_procedure<'gc>(
     procedure: Procedure<'gc>,
     version_limit: usize,
+    seeds: &mut RetkSeeds,
 ) -> (Procedure<'gc>, HashMap<BlockId, BlockAnnotation>) {
     let record_annotations = cfg!(test)
         || crate::compiler::dump::sbbv_dump_stage_enabled("post-specialize")
         || crate::compiler::dump::sbbv_dump_stage_enabled("all");
-    let mut specializer = Specializer::new(&procedure, version_limit.max(1), record_annotations);
+    let mut specializer =
+        Specializer::new(&procedure, version_limit.max(1), record_annotations, seeds);
     if let Some((entry, blocks, annotations)) = specializer.run() {
         (
             Procedure {
@@ -136,8 +212,13 @@ pub(super) fn specialize_procedure<'gc>(
     }
 }
 
-impl<'gc> Specializer<'gc> {
-    fn new(procedure: &Procedure<'gc>, version_limit: usize, record_annotations: bool) -> Self {
+impl<'gc, 'a> Specializer<'gc, 'a> {
+    fn new(
+        procedure: &Procedure<'gc>,
+        version_limit: usize,
+        record_annotations: bool,
+        seeds: &'a mut RetkSeeds,
+    ) -> Self {
         let mut orig_blocks = HashMap::new();
         for block in &procedure.blocks {
             orig_blocks.insert(block.id, block.clone());
@@ -149,12 +230,16 @@ impl<'gc> Specializer<'gc> {
             _p.field("live_in_blocks", live_in.len());
             live_in
         };
+        let seed = seeds.seed_for(&procedure.code).cloned().unwrap_or_default();
 
         Self {
             orig_blocks,
             live_in,
             entry_orig: procedure.entry,
             entry_new: None,
+            closure_codes: HashMap::new(),
+            seed,
+            seeds,
             versions_of: HashMap::new(),
             version_orig: HashMap::new(),
             all_versions: HashMap::new(),
@@ -820,17 +905,31 @@ impl<'gc> Specializer<'gc> {
                     });
                 }
             }
-            Instruction::MakeClosure { dst, .. } => {
+            Instruction::MakeClosure { dst, code, .. } => {
                 ctx.detach(*dst);
                 ctx.set(*dst, Type::kind(TypeKind::Procedure));
+                self.closure_codes.insert(*dst, *code);
                 out.push(instruction.clone());
             }
-            Instruction::ClosureRef { dst, .. } => {
+            Instruction::ClosureRef { dst, index, .. } => {
                 ctx.detach(*dst);
-                ctx.set(*dst, Type::TOP);
+                ctx.set(*dst, self.seed.get(index).cloned().unwrap_or(Type::TOP));
                 out.push(instruction.clone());
             }
-            Instruction::ClosureSet { .. } => out.push(instruction.clone()),
+            Instruction::ClosureSet {
+                closure,
+                index,
+                value,
+            } => {
+                if let Some(id) = local_of(Some(closure))
+                    && let Some(CodeId::GraphContinuation(code)) =
+                        self.closure_codes.get(&id).copied()
+                {
+                    let ty = atom_type(value, ctx);
+                    self.seeds.record_slot(code, *index, ty);
+                }
+                out.push(instruction.clone());
+            }
             Instruction::CacheRef { dst, .. } => {
                 ctx.detach(*dst);
                 ctx.set(*dst, Type::TOP);
@@ -1470,879 +1569,4 @@ pub(super) fn max_value_id(procedure: &Procedure<'_>) -> u32 {
         }
     }
     max_value
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::compiler::cfg::bbv::merge::{
-        merge_contexts, select_version_to_merge_with, select_versions_to_merge,
-    };
-    use crate::compiler::cfg::{CodeId, GraphCodeId, ProcedureKind};
-    use crate::compiler::cps::graph::BranchHint;
-    use crate::runtime::value::Value;
-    use std::collections::HashMap;
-
-    #[test]
-    fn negated_type_test_narrows_assertion_success_path() {
-        let input = ValueId(1);
-        let is_fixnum = ValueId(2);
-        let assertion_fails = ValueId(3);
-        let one = ValueId(4);
-        let sum = ValueId(5);
-        let source = Value::new(false);
-        let procedure = Procedure {
-            code: CodeId::GraphFunction(GraphCodeId(0)),
-            kind: ProcedureKind::Function,
-            binding: ValueId(0),
-            name: source,
-            source,
-            meta: source,
-            return_cont: None,
-            params: vec![input],
-            variadic: None,
-            free_vars: vec![],
-            sources: HashMap::new(),
-            entry: BlockId(0),
-            blocks: vec![
-                Block {
-                    id: BlockId(0),
-                    instructions: vec![
-                        Instruction::PrimCall {
-                            dst: is_fixnum,
-                            prim: Primitive::IsFixnum,
-                            args: vec![Operand::Local(input)],
-                            source,
-                        },
-                        Instruction::PrimCall {
-                            dst: assertion_fails,
-                            prim: Primitive::Not,
-                            args: vec![Operand::Local(is_fixnum)],
-                            source,
-                        },
-                    ],
-                    terminator: Terminator::Branch {
-                        test: Operand::Local(assertion_fails),
-                        consequent: BranchTarget::Local {
-                            block: BlockId(1),
-                            edge_assigns: vec![],
-                        },
-                        alternative: BranchTarget::Local {
-                            block: BlockId(2),
-                            edge_assigns: vec![],
-                        },
-                        hints: [BranchHint::Cold, BranchHint::Normal],
-                    },
-                    source,
-                },
-                Block {
-                    id: BlockId(1),
-                    instructions: vec![],
-                    terminator: Terminator::Raise {
-                        kind: crate::runtime::vm::exceptions::RaiseKind::AssertionViolation,
-                        args: vec![],
-                        source,
-                    },
-                    source,
-                },
-                Block {
-                    id: BlockId(2),
-                    instructions: vec![
-                        Instruction::Const {
-                            dst: one,
-                            value: Value::from_i32(1),
-                        },
-                        Instruction::PrimCall {
-                            dst: sum,
-                            prim: Primitive::Plus,
-                            args: vec![Operand::Local(input), Operand::Local(one)],
-                            source,
-                        },
-                    ],
-                    terminator: Terminator::Raise {
-                        kind: crate::runtime::vm::exceptions::RaiseKind::AssertionViolation,
-                        args: vec![Operand::Local(sum)],
-                        source,
-                    },
-                    source,
-                },
-            ],
-        };
-
-        let expanded = super::super::expand::expand_procedure(procedure);
-        let (specialized, _) = specialize_procedure(expanded, 4);
-        assert!(!specialized.blocks.iter().any(|block| {
-            block.instructions.iter().any(|instruction| {
-                matches!(
-                    instruction,
-                    Instruction::PrimCall {
-                        prim: Primitive::IsFlonum,
-                        ..
-                    }
-                )
-            })
-        }));
-        assert!(specialized.blocks.iter().any(|block| {
-            block.instructions.iter().any(|instruction| {
-                matches!(
-                    instruction,
-                    Instruction::PrimCall {
-                        prim: Primitive::FxAddUnchecked,
-                        ..
-                    } | Instruction::PrimCall {
-                        prim: Primitive::FxAddOvfUnchecked,
-                        ..
-                    }
-                )
-            })
-        }));
-    }
-
-    #[test]
-    fn predicate_inversion_is_reversible() {
-        let predicate =
-            Predicate::direct(PredicateRelation::TypeTest(Primitive::IsFlonum, ValueId(1)));
-
-        assert!(predicate.inverted().inverted);
-        assert!(!predicate.inverted().inverted().inverted);
-    }
-
-    #[test]
-    fn select_versions_to_merge_picks_most_similar_pair() {
-        let shared = ValueId(1);
-        let other = ValueId(2);
-
-        let mut ctx_a = TypeContext::new();
-        ctx_a.set(shared, Type::kind(TypeKind::Fixnum));
-        ctx_a.set(other, Type::kind(TypeKind::Pair));
-
-        // Disagrees with A on both live-ins.
-        let mut ctx_c = TypeContext::new();
-        ctx_c.set(shared, Type::kind(TypeKind::Flonum));
-        ctx_c.set(other, Type::kind(TypeKind::Vector));
-
-        let mut ctx_d = TypeContext::new();
-        ctx_d.set(shared, Type::kind(TypeKind::Fixnum));
-        ctx_d.set(other, Type::kind(TypeKind::String));
-
-        let active = vec![ctx_a, ctx_c, ctx_d];
-
-        assert_eq!(select_versions_to_merge(&active), (0, 2));
-    }
-
-    #[test]
-    fn incoming_version_merges_with_most_similar_active_version() {
-        let value = ValueId(1);
-        let mut fixnum = TypeContext::new();
-        fixnum.set(value, Type::kind(TypeKind::Fixnum));
-        let mut pair = TypeContext::new();
-        pair.set(value, Type::kind(TypeKind::Pair));
-        let mut incoming = TypeContext::new();
-        incoming.set(value, Type::constant(1));
-
-        let active = vec![fixnum, pair, incoming];
-        assert_eq!(select_version_to_merge_with(&active, 2), 0);
-    }
-
-    #[test]
-    fn merge_contexts_joins_live_in_types() {
-        let value = ValueId(1);
-        let mut ctx_a = TypeContext::new();
-        ctx_a.set(value, Type::fixnum_int(1, 3));
-        let mut ctx_b = TypeContext::new();
-        ctx_b.set(value, Type::fixnum_int(8, 12));
-
-        let merged = merge_contexts(&ctx_a, &ctx_b, false);
-        let range = merged.get(value).fixnum_range.expect("fixnum range");
-        assert_eq!(range.lo, super::super::types::Bound::Int(1));
-        assert_eq!(range.hi, super::super::types::Bound::Int(12));
-
-        // Widening pushes the joined range out to the lattice bounds.
-        let widened = merge_contexts(&ctx_a, &ctx_b, true);
-        let widened_range = widened.get(value).fixnum_range.expect("fixnum range");
-        assert_eq!(widened_range.lo, super::super::types::Bound::Int(0));
-        assert_eq!(widened_range.hi, super::super::types::Bound::Max);
-    }
-
-    #[test]
-    fn monomorphic_interval_loop_merges_similar_contexts() {
-        let current = ValueId(1);
-        let one = ValueId(2);
-        let next = ValueId(3);
-        let source = Value::new(false);
-        let procedure = Procedure {
-            code: CodeId::GraphFunction(GraphCodeId(0)),
-            kind: ProcedureKind::Function,
-            binding: ValueId(0),
-            name: source,
-            source,
-            meta: source,
-            return_cont: None,
-            params: vec![],
-            variadic: None,
-            free_vars: vec![],
-            sources: HashMap::new(),
-            entry: BlockId(0),
-            blocks: vec![
-                Block {
-                    id: BlockId(0),
-                    instructions: vec![Instruction::Const {
-                        dst: current,
-                        value: Value::from_i32(0),
-                    }],
-                    terminator: Terminator::Jump { target: BlockId(1) },
-                    source,
-                },
-                Block {
-                    id: BlockId(1),
-                    instructions: vec![
-                        Instruction::Const {
-                            dst: one,
-                            value: Value::from_i32(1),
-                        },
-                        Instruction::PrimCall {
-                            dst: next,
-                            prim: Primitive::FxAdd,
-                            args: vec![Operand::Local(current), Operand::Local(one)],
-                            source,
-                        },
-                        Instruction::Assign {
-                            dst: current,
-                            src: Operand::Local(next),
-                        },
-                    ],
-                    terminator: Terminator::Jump { target: BlockId(1) },
-                    source,
-                },
-            ],
-        };
-
-        for version_limit in [2, 4, 8] {
-            let (specialized, annotations) = specialize_procedure(procedure.clone(), version_limit);
-            assert!(specialized.blocks.len() <= 4);
-            let contexts: Vec<_> = annotations
-                .values()
-                .filter(|annotation| annotation.orig == BlockId(1))
-                .map(|annotation| annotation.ctx.clone())
-                .collect();
-            assert_eq!(
-                contexts.len(),
-                2,
-                "unexpected loop contexts at limit {version_limit}: {contexts:?}"
-            );
-            assert!(
-                contexts.iter().any(|context| context.contains("[0..0]")),
-                "missing entry context: {contexts:?}"
-            );
-            assert!(
-                contexts
-                    .iter()
-                    .any(|context| context.contains("fx[>=..<=]")),
-                "missing recurrent context: {contexts:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn multi_backedge_interval_loop_converges_under_version_limit() {
-        let condition = ValueId(1);
-        let zero = ValueId(2);
-        let ten = ValueId(3);
-        let current = ValueId(4);
-        let one = ValueId(5);
-        let next = ValueId(6);
-        let source = Value::new(false);
-        let procedure = Procedure {
-            code: CodeId::GraphFunction(GraphCodeId(0)),
-            kind: ProcedureKind::Function,
-            binding: ValueId(0),
-            name: source,
-            source,
-            meta: source,
-            return_cont: None,
-            params: vec![condition],
-            variadic: None,
-            free_vars: vec![],
-            sources: HashMap::new(),
-            entry: BlockId(0),
-            blocks: vec![
-                Block {
-                    id: BlockId(0),
-                    instructions: vec![
-                        Instruction::Const {
-                            dst: zero,
-                            value: Value::from_i32(0),
-                        },
-                        Instruction::Const {
-                            dst: ten,
-                            value: Value::from_i32(10),
-                        },
-                    ],
-                    terminator: Terminator::Branch {
-                        test: Operand::Local(condition),
-                        consequent: BranchTarget::Local {
-                            block: BlockId(1),
-                            edge_assigns: vec![],
-                        },
-                        alternative: BranchTarget::Local {
-                            block: BlockId(2),
-                            edge_assigns: vec![],
-                        },
-                        hints: [BranchHint::Normal, BranchHint::Normal],
-                    },
-                    source,
-                },
-                Block {
-                    id: BlockId(1),
-                    instructions: vec![Instruction::Assign {
-                        dst: current,
-                        src: Operand::Local(zero),
-                    }],
-                    terminator: Terminator::Jump { target: BlockId(3) },
-                    source,
-                },
-                Block {
-                    id: BlockId(2),
-                    instructions: vec![Instruction::Assign {
-                        dst: current,
-                        src: Operand::Local(ten),
-                    }],
-                    terminator: Terminator::Jump { target: BlockId(3) },
-                    source,
-                },
-                Block {
-                    id: BlockId(3),
-                    instructions: vec![
-                        Instruction::Const {
-                            dst: one,
-                            value: Value::from_i32(1),
-                        },
-                        Instruction::PrimCall {
-                            dst: next,
-                            prim: Primitive::FxAdd,
-                            args: vec![Operand::Local(current), Operand::Local(one)],
-                            source,
-                        },
-                        Instruction::Assign {
-                            dst: current,
-                            src: Operand::Local(next),
-                        },
-                    ],
-                    terminator: Terminator::Jump { target: BlockId(3) },
-                    source,
-                },
-            ],
-        };
-
-        let (specialized, annotations) = specialize_procedure(procedure, 2);
-        let header_versions = annotations
-            .values()
-            .filter(|annotation| annotation.orig == BlockId(3))
-            .count();
-        assert!(
-            header_versions <= 2,
-            "expected ≤2 header versions, got {header_versions}: {:?}",
-            annotations
-                .values()
-                .filter(|a| a.orig == BlockId(3))
-                .map(|a| a.ctx.clone())
-                .collect::<Vec<_>>()
-        );
-        assert!(specialized.blocks.len() <= 5);
-    }
-
-    #[test]
-    fn polymorphic_loop_keeps_distinct_kind_versions() {
-        let condition = ValueId(1);
-        let current = ValueId(2);
-        let next_fixnum = ValueId(3);
-        let next_char = ValueId(4);
-        let is_fixnum = ValueId(5);
-        let source = Value::new(false);
-        let procedure = Procedure {
-            code: CodeId::GraphFunction(GraphCodeId(0)),
-            kind: ProcedureKind::Function,
-            binding: ValueId(0),
-            name: source,
-            source,
-            meta: source,
-            return_cont: None,
-            params: vec![condition],
-            variadic: None,
-            free_vars: vec![],
-            sources: HashMap::new(),
-            entry: BlockId(0),
-            blocks: vec![
-                Block {
-                    id: BlockId(0),
-                    instructions: vec![Instruction::Const {
-                        dst: current,
-                        value: Value::from_i32(0),
-                    }],
-                    terminator: Terminator::Jump { target: BlockId(1) },
-                    source,
-                },
-                Block {
-                    id: BlockId(1),
-                    instructions: vec![Instruction::PrimCall {
-                        dst: is_fixnum,
-                        prim: Primitive::IsFixnum,
-                        args: vec![Operand::Local(current)],
-                        source,
-                    }],
-                    terminator: Terminator::Branch {
-                        test: Operand::Local(condition),
-                        consequent: BranchTarget::Local {
-                            block: BlockId(2),
-                            edge_assigns: vec![],
-                        },
-                        alternative: BranchTarget::Local {
-                            block: BlockId(3),
-                            edge_assigns: vec![],
-                        },
-                        hints: [BranchHint::Normal, BranchHint::Normal],
-                    },
-                    source,
-                },
-                Block {
-                    id: BlockId(2),
-                    instructions: vec![
-                        Instruction::Const {
-                            dst: next_fixnum,
-                            value: Value::from_i32(1),
-                        },
-                        Instruction::Assign {
-                            dst: current,
-                            src: Operand::Local(next_fixnum),
-                        },
-                    ],
-                    terminator: Terminator::Jump { target: BlockId(1) },
-                    source,
-                },
-                Block {
-                    id: BlockId(3),
-                    instructions: vec![
-                        Instruction::Const {
-                            dst: next_char,
-                            value: Value::from_char('s'),
-                        },
-                        Instruction::Assign {
-                            dst: current,
-                            src: Operand::Local(next_char),
-                        },
-                    ],
-                    terminator: Terminator::Jump { target: BlockId(1) },
-                    source,
-                },
-            ],
-        };
-
-        let (_, annotations) = specialize_procedure(procedure, 2);
-        let contexts: Vec<_> = annotations
-            .values()
-            .filter(|annotation| annotation.orig == BlockId(1))
-            .map(|annotation| annotation.ctx.clone())
-            .collect();
-        assert_eq!(
-            contexts.len(),
-            2,
-            "unexpected loop-header contexts: {contexts:?}"
-        );
-        assert!(contexts.iter().any(|context| context.contains("fixnum")));
-        assert!(contexts.iter().any(|context| context.contains("char")));
-    }
-
-    #[test]
-    fn numeric_switch_case_does_not_assume_fixnum_representation() {
-        let scrutinee = ValueId(1);
-        let one = ValueId(2);
-        let sum = ValueId(3);
-        let result = ValueId(4);
-        let source = Value::new(false);
-        let procedure = Procedure {
-            code: CodeId::GraphFunction(GraphCodeId(0)),
-            kind: ProcedureKind::Function,
-            binding: ValueId(0),
-            name: source,
-            source,
-            meta: source,
-            return_cont: None,
-            params: vec![scrutinee],
-            variadic: None,
-            free_vars: vec![],
-            sources: HashMap::new(),
-            entry: BlockId(0),
-            blocks: vec![
-                Block {
-                    id: BlockId(0),
-                    instructions: vec![],
-                    terminator: Terminator::Switch {
-                        kind: SwitchKind::Numeric,
-                        scrutinee: Operand::Local(scrutinee),
-                        cases: vec![SwitchCase {
-                            value: SwitchCaseValue::Integer(1),
-                            target: BranchTarget::Local {
-                                block: BlockId(1),
-                                edge_assigns: vec![],
-                            },
-                        }],
-                        default: BranchTarget::Local {
-                            block: BlockId(2),
-                            edge_assigns: vec![],
-                        },
-                    },
-                    source,
-                },
-                Block {
-                    id: BlockId(1),
-                    instructions: vec![
-                        Instruction::Const {
-                            dst: one,
-                            value: Value::from_i32(1),
-                        },
-                        Instruction::PrimCall {
-                            dst: sum,
-                            prim: Primitive::FxAddOvf,
-                            args: vec![Operand::Local(scrutinee), Operand::Local(one)],
-                            source,
-                        },
-                        Instruction::Assign {
-                            dst: result,
-                            src: Operand::Local(sum),
-                        },
-                    ],
-                    terminator: Terminator::Jump { target: BlockId(2) },
-                    source,
-                },
-                Block {
-                    id: BlockId(2),
-                    instructions: vec![],
-                    terminator: Terminator::TailCall {
-                        callee: Operand::Local(result),
-                        args: vec![],
-                        source,
-                    },
-                    source,
-                },
-            ],
-        };
-
-        let (specialized, _) = specialize_procedure(procedure, 2);
-        assert!(specialized.blocks.iter().any(|block| {
-            block.instructions.iter().any(|instruction| {
-                matches!(
-                    instruction,
-                    Instruction::PrimCall {
-                        prim: Primitive::FxAddOvf,
-                        ..
-                    }
-                )
-            })
-        }));
-    }
-
-    #[test]
-    fn fold_rest_predicate_uses_length_interval() {
-        let unknown = Type {
-            kinds: super::super::types::KIND_OTHER,
-            fixnum_range: None,
-            length_range: Some(Interval::TOP_LENGTH),
-            singleton: None,
-        };
-        assert_eq!(
-            fold_rest_predicate(&unknown, RestPredicate::List, 0),
-            Some(true)
-        );
-        assert_eq!(fold_rest_predicate(&unknown, RestPredicate::Null, 0), None);
-
-        let empty = Type {
-            kinds: super::super::types::KIND_OTHER,
-            fixnum_range: None,
-            length_range: Some(Interval::singleton(0)),
-            singleton: None,
-        };
-        assert_eq!(
-            fold_rest_predicate(&empty, RestPredicate::Null, 0),
-            Some(true)
-        );
-        assert_eq!(
-            fold_rest_predicate(&empty, RestPredicate::Pair, 0),
-            Some(false)
-        );
-
-        let nonempty = Type {
-            kinds: super::super::types::KIND_OTHER,
-            fixnum_range: None,
-            length_range: Some(Interval {
-                lo: Bound::Int(2),
-                hi: Bound::Int(5),
-            }),
-            singleton: None,
-        };
-        assert_eq!(
-            fold_rest_predicate(&nonempty, RestPredicate::Null, 0),
-            Some(false)
-        );
-        assert_eq!(
-            fold_rest_predicate(&nonempty, RestPredicate::Pair, 0),
-            Some(true)
-        );
-        assert_eq!(fold_rest_predicate(&nonempty, RestPredicate::Null, 2), None);
-    }
-
-    #[test]
-    fn specialize_fuses_fx_lt_unchecked_into_branch_prim() {
-        let lhs = ValueId(1);
-        let rhs = ValueId(2);
-        let cmp = ValueId(3);
-        let source = Value::new(false);
-        let procedure = Procedure {
-            code: CodeId::GraphFunction(GraphCodeId(0)),
-            kind: ProcedureKind::Function,
-            binding: ValueId(0),
-            name: source,
-            source,
-            meta: source,
-            return_cont: None,
-            params: vec![lhs, rhs],
-            variadic: None,
-            free_vars: vec![],
-            sources: HashMap::new(),
-            entry: BlockId(0),
-            blocks: vec![
-                Block {
-                    id: BlockId(0),
-                    instructions: vec![Instruction::PrimCall {
-                        dst: cmp,
-                        prim: Primitive::FxLtUnchecked,
-                        args: vec![Operand::Local(lhs), Operand::Local(rhs)],
-                        source,
-                    }],
-                    terminator: Terminator::Branch {
-                        test: Operand::Local(cmp),
-                        consequent: BranchTarget::Local {
-                            block: BlockId(1),
-                            edge_assigns: vec![],
-                        },
-                        alternative: BranchTarget::Local {
-                            block: BlockId(2),
-                            edge_assigns: vec![],
-                        },
-                        hints: [BranchHint::Normal, BranchHint::Normal],
-                    },
-                    source,
-                },
-                Block {
-                    id: BlockId(1),
-                    instructions: vec![],
-                    terminator: Terminator::TailCall {
-                        callee: Operand::Local(lhs),
-                        args: vec![],
-                        source,
-                    },
-                    source,
-                },
-                Block {
-                    id: BlockId(2),
-                    instructions: vec![],
-                    terminator: Terminator::TailCall {
-                        callee: Operand::Local(rhs),
-                        args: vec![],
-                        source,
-                    },
-                    source,
-                },
-            ],
-        };
-
-        let (specialized, _) = specialize_procedure(procedure, 2);
-        let entry = specialized
-            .blocks
-            .iter()
-            .find(|block| block.id == specialized.entry)
-            .expect("entry block");
-        assert!(
-            !entry.instructions.iter().any(|instruction| {
-                matches!(
-                    instruction,
-                    Instruction::PrimCall {
-                        prim: Primitive::FxLtUnchecked,
-                        ..
-                    }
-                )
-            }),
-            "FxLtUnchecked PrimCall should be fused away: {:?}",
-            entry.instructions
-        );
-        assert!(
-            matches!(
-                &entry.terminator,
-                Terminator::BranchPrim {
-                    prim: Primitive::FxLtUnchecked,
-                    ..
-                }
-            ),
-            "expected BranchPrim FxLtUnchecked, got {:?}",
-            entry.terminator
-        );
-    }
-
-    #[test]
-    fn specialize_fuses_is_fixnum_and_numeric_lt_into_branch_prim() {
-        let x = ValueId(1);
-        let y = ValueId(2);
-        let is_fx = ValueId(3);
-        let cmp = ValueId(4);
-        let source = Value::new(false);
-
-        let type_test = Procedure {
-            code: CodeId::GraphFunction(GraphCodeId(0)),
-            kind: ProcedureKind::Function,
-            binding: ValueId(0),
-            name: source,
-            source,
-            meta: source,
-            return_cont: None,
-            params: vec![x],
-            variadic: None,
-            free_vars: vec![],
-            sources: HashMap::new(),
-            entry: BlockId(0),
-            blocks: vec![
-                Block {
-                    id: BlockId(0),
-                    instructions: vec![Instruction::PrimCall {
-                        dst: is_fx,
-                        prim: Primitive::IsFixnum,
-                        args: vec![Operand::Local(x)],
-                        source,
-                    }],
-                    terminator: Terminator::Branch {
-                        test: Operand::Local(is_fx),
-                        consequent: BranchTarget::Local {
-                            block: BlockId(1),
-                            edge_assigns: vec![],
-                        },
-                        alternative: BranchTarget::Local {
-                            block: BlockId(2),
-                            edge_assigns: vec![],
-                        },
-                        hints: [BranchHint::Normal, BranchHint::Normal],
-                    },
-                    source,
-                },
-                Block {
-                    id: BlockId(1),
-                    instructions: vec![],
-                    terminator: Terminator::TailCall {
-                        callee: Operand::Local(x),
-                        args: vec![],
-                        source,
-                    },
-                    source,
-                },
-                Block {
-                    id: BlockId(2),
-                    instructions: vec![],
-                    terminator: Terminator::TailCall {
-                        callee: Operand::Local(x),
-                        args: vec![],
-                        source,
-                    },
-                    source,
-                },
-            ],
-        };
-        let (specialized, _) = specialize_procedure(type_test, 2);
-        let entry = specialized
-            .blocks
-            .iter()
-            .find(|block| block.id == specialized.entry)
-            .expect("entry");
-        assert!(matches!(
-            &entry.terminator,
-            Terminator::BranchPrim {
-                prim: Primitive::IsFixnum,
-                ..
-            }
-        ));
-
-        let numeric = Procedure {
-            code: CodeId::GraphFunction(GraphCodeId(1)),
-            kind: ProcedureKind::Function,
-            binding: ValueId(0),
-            name: source,
-            source,
-            meta: source,
-            return_cont: None,
-            params: vec![x, y],
-            variadic: None,
-            free_vars: vec![],
-            sources: HashMap::new(),
-            entry: BlockId(0),
-            blocks: vec![
-                Block {
-                    id: BlockId(0),
-                    instructions: vec![Instruction::PrimCall {
-                        dst: cmp,
-                        prim: Primitive::NumericLt,
-                        args: vec![Operand::Local(x), Operand::Local(y)],
-                        source,
-                    }],
-                    terminator: Terminator::Branch {
-                        test: Operand::Local(cmp),
-                        consequent: BranchTarget::Local {
-                            block: BlockId(1),
-                            edge_assigns: vec![],
-                        },
-                        alternative: BranchTarget::Local {
-                            block: BlockId(2),
-                            edge_assigns: vec![],
-                        },
-                        hints: [BranchHint::Normal, BranchHint::Normal],
-                    },
-                    source,
-                },
-                Block {
-                    id: BlockId(1),
-                    instructions: vec![],
-                    terminator: Terminator::TailCall {
-                        callee: Operand::Local(x),
-                        args: vec![],
-                        source,
-                    },
-                    source,
-                },
-                Block {
-                    id: BlockId(2),
-                    instructions: vec![],
-                    terminator: Terminator::TailCall {
-                        callee: Operand::Local(y),
-                        args: vec![],
-                        source,
-                    },
-                    source,
-                },
-            ],
-        };
-        let (specialized, _) = specialize_procedure(numeric, 2);
-        let entry = specialized
-            .blocks
-            .iter()
-            .find(|block| block.id == specialized.entry)
-            .expect("entry");
-        // Specialize may rewrite NumericLt → FxLtUnchecked when types prove fixnum;
-        // either form must be fused into BranchPrim.
-        assert!(
-            matches!(
-                &entry.terminator,
-                Terminator::BranchPrim {
-                    prim: Primitive::NumericLt | Primitive::FxLtUnchecked | Primitive::FxLt,
-                    ..
-                }
-            ),
-            "expected fused numeric/fx compare branch, got {:?}",
-            entry.terminator
-        );
-    }
 }

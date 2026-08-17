@@ -26,6 +26,11 @@ use super::{
 pub fn lower_graph<'gc>(graph: &Graph<'gc>, reify: &GraphReifyInfo) -> Program<'gc> {
     let primitives = collect_primitive_map(graph);
     let mut procedures = Vec::new();
+    // Shared cross-procedure seed table: `Call` sites record the slot types of
+    // the reified continuation closures they use as `retk`; reified
+    // continuation procedures consume those seeds during their own SBBV
+    // specialization (see bbv::RetkSeeds).
+    let mut seeds = super::bbv::RetkSeeds::new();
 
     for function in reify.functions.iter().copied() {
         let _p = crate::utils::pass_profile::ProfileScope::new("cfg.lower.function");
@@ -33,9 +38,17 @@ pub fn lower_graph<'gc>(graph: &Graph<'gc>, reify: &GraphReifyInfo) -> Program<'
             let _c = crate::utils::pass_profile::ProfileScope::new("cfg.lower.convert");
             lower_function(graph, reify, function, &primitives)
         };
-        procedures.push(finish_procedure(lowered));
+        procedures.push(finish_procedure(lowered, &mut seeds));
     }
 
+    // Raw (unspecialized) continuations are kept so a continuation whose seed
+    // arrives late can be re-finished. `reify.continuations` is in
+    // outer-before-inner binding order, so a nested continuation's seed is
+    // normally recorded before the nested continuation is finished; the
+    // re-finish loop below is a cheap safety net for any ordering surprise.
+    let mut raw_continuations: Vec<Procedure<'gc>> = Vec::new();
+    let mut finished_versions: Vec<u64> = Vec::new();
+    let mut continuation_proc_index: Vec<usize> = Vec::new();
     for continuation in reify.continuations.iter().copied() {
         if graph[continuation].is_reified {
             let _p = crate::utils::pass_profile::ProfileScope::new("cfg.lower.continuation");
@@ -43,7 +56,24 @@ pub fn lower_graph<'gc>(graph: &Graph<'gc>, reify: &GraphReifyInfo) -> Program<'
                 let _c = crate::utils::pass_profile::ProfileScope::new("cfg.lower.convert");
                 lower_continuation(graph, reify, continuation, &primitives)
             };
-            procedures.push(finish_procedure(lowered));
+            raw_continuations.push(lowered.clone());
+            finished_versions.push(seeds.version(lowered.code));
+            continuation_proc_index.push(procedures.len());
+            procedures.push(finish_procedure(lowered, &mut seeds));
+        }
+    }
+
+    for _round in 0..3 {
+        let redo: Vec<usize> = (0..raw_continuations.len())
+            .filter(|&index| seeds.version(raw_continuations[index].code) > finished_versions[index])
+            .collect();
+        if redo.is_empty() {
+            break;
+        }
+        for index in redo {
+            procedures[continuation_proc_index[index]] =
+                finish_procedure(raw_continuations[index].clone(), &mut seeds);
+            finished_versions[index] = seeds.version(raw_continuations[index].code);
         }
     }
 
