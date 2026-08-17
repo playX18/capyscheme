@@ -62,6 +62,7 @@ pub(super) mod load_ops {
         m: Option<Value<'gc>>,
         load_thunk: Option<bool>,
         dump_selections: Option<Value<'gc>>,
+        preprocessed: Option<bool>,
     ) -> LoadResult<'gc> {
         let ctx = nctx.ctx;
         let module = resolve_module_value(ctx, m);
@@ -77,6 +78,7 @@ pub(super) mod load_ops {
             },
             load_thunk.unwrap_or(true),
             dump_options,
+            preprocessed.unwrap_or(false),
         );
         nctx.return_(result)
     }
@@ -280,6 +282,7 @@ pub(crate) fn continue_loading_k(
         CompilationOptions::default(),
         true,
         DumpArtifactsOptions::default(),
+        false,
     );
 
     match result {
@@ -321,12 +324,14 @@ fn compile_expanded_to_destination<'gc>(
     options: CompilationOptions,
     load_thunk: bool,
     dump_options: DumpArtifactsOptions,
+    preprocessed: bool,
 ) -> LoadResult<'gc> {
     let _phase = CompilationPhase::new(ctx);
     let destination = destination_artifact_for_current_policy(destination);
     begin_compilation_artifact(&destination.path);
     let dump_options = merge_compile_dump_options(dump_options);
-    let lowered = lower_expanded_scheme(ctx, expanded, module, dump_options.dump_graph)?;
+    let lowered =
+        lower_expanded_scheme(ctx, expanded, module, dump_options.dump_graph, preprocessed)?;
     let mut options = options;
     configure_backend_dump_paths(&mut options.backend_dumps, &destination.path, dump_options);
     dump_lowered_program_artifacts(ctx, &destination.path, &lowered, dump_options);
@@ -382,6 +387,7 @@ fn lower_expanded_scheme<'gc>(
     expanded: Value<'gc>,
     module: Gc<'gc, Module<'gc>>,
     dump_graph: bool,
+    preprocessed: bool,
 ) -> Result<LoweredProgram<'gc>, Value<'gc>> {
     let mut converter = TermConverter::new(ctx);
     let ir = converter.convert(expanded)?;
@@ -391,6 +397,7 @@ fn lower_expanded_scheme<'gc>(
         Some(module),
         cfg!(feature = "bootstrap"),
         dump_graph,
+        preprocessed,
     )
 }
 

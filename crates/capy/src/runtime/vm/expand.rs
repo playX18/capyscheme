@@ -795,12 +795,14 @@ impl<'gc> TermConverter<'gc> {
 
             let mut ls_ids = ids;
             let mut ls_lhs = lhs;
+            let mut ls_rhs = rhs;
 
             let mut lvars = Vec::new();
             let mut exprs = Vec::new();
             while ls_ids.is_pair() {
                 let id = ls_ids.car();
                 let lhs = ls_lhs.car();
+                let rhs = ls_rhs.car();
 
                 let lvar = Gc::new(
                     self.ctx,
@@ -816,6 +818,7 @@ impl<'gc> TermConverter<'gc> {
                 exprs.push(rhs);
                 ls_ids = ls_ids.cdr();
                 ls_lhs = ls_lhs.cdr();
+                ls_rhs = ls_rhs.cdr();
             }
 
             let mut rhs = Vec::new();
