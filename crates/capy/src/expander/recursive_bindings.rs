@@ -387,8 +387,10 @@ fn compute_sccs<'gc>(
         let init = &graph[node].rhs;
 
         let fv = compute_free_variables.get(*init);
-        for id in fv.iter() {
-            let Some(target) = node_id_map.get(id).copied() else {
+        let mut ids: Vec<u32> = fv.iter().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            let Some(target) = node_id_map.get(&id).copied() else {
                 continue;
             };
 

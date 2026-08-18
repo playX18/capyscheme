@@ -18,7 +18,6 @@ use crate::{
 
 const GC_LOG_FILTER: &str = "capy::gc=trace";
 const GC_TRACE_LOG_FILTER: &str = "mmtk=trace,capy::gc=trace";
-
 static GC_LOGGING_ENABLED: AtomicBool = AtomicBool::new(false);
 static GC_LOG_STATE: OnceLock<Mutex<GcLogState>> = OnceLock::new();
 
