@@ -1,9 +1,12 @@
-42
 
 (import
   (capy compiler tree-il resolve-free-vars)
   (capy compiler tree-il letrectify)
+  (capy compiler tree-il fix-letrec)
+  (capy compiler tree-il assignment-elimination)
+  (capy compiler tree-il well-known-procs)
   (capy compiler tree-il primitives)
+  (capy compiler tree-il terms)
   (capy pretty-print)
   (capy compiler tree-il))
 
@@ -76,7 +79,13 @@
                        [code (%profile-phase "scheme.resolve_free_vars"
                                (lambda () (resolve-free-vars code)))]
                        [code (%profile-phase "scheme.letrectify"
-                               (lambda () (letrectify code #t)))])
-                  (%compile code output-file mod load-thunk? dump-options)))))))
+                               (lambda () (letrectify code #t)))]
+                       [code (%profile-phase "scheme.fix_letrec"
+                               (lambda () (fix-letrec code)))]
+                       [code (%profile-phase "scheme.expand_well_known_procs"
+                               (lambda () (expand-well-known-procs code)))]
+                       [code (%profile-phase "scheme.assignment_elimination"
+                               (lambda () (eliminate-assignments code)))])
+                  (%compile code output-file mod load-thunk? dump-options #t)))))))
       (lambda ()
         ((@@ (capy) %runtime-stats-end-compilation))))))

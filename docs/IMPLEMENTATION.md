@@ -310,7 +310,7 @@ The native pipeline (`crates/capy/src/compiler/pipeline.rs`,
 `lower_expanded_to_cps`) runs three TreeIL-to-TreeIL passes and then
 lowers:
 
- 1. `fix_letrec` (`crates/capy/src/expander/fix_letrec.rs`) rewrites
+ 1. `fix_letrec` (`crates/capy/src/expander/recursive_bindings.rs`) rewrites
     `letrec` into `let` for simple and complex variables and `fix` for
     mutually recursive functions. Simple variables are bound to
     lambdas not mutated anywhere; complex variables may be assigned;
@@ -319,9 +319,10 @@ lowers:
     Binding Construct", Waddell, Sarkar, and Dybvig; and "Fixing
     Letrec (reloaded)", Ghuloum and Dybvig.
 
- 2. `eta_expand` (`expander/eta_expand.rs`) eta-expands procedure
-    values where needed so later passes can assume a uniform calling
-    convention.
+ 2. `expand_well_known_procs` (`expander/well_known_procs.rs`) inlines
+    lexically bound procedures used exactly once as operators. Disabled
+    by default (`ENABLE_WELL_KNOWN_EXPANSION`); the CPS optimizer performs
+    an equivalent optimization.
 
  3. `assignment_elimination`
     (`expander/assignment_elimination.rs`) removes `lset` by boxing

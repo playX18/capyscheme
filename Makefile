@@ -235,7 +235,11 @@ CAPY_SRCS := \
 	lib/capy/compiler/tree-il/primitives.scm \
 	lib/capy/compiler/tree-il/resolve-free-vars.scm \
 	lib/capy/compiler/tree-il/letrectify.scm \
+	lib/capy/compiler/tree-il/fix-letrec.scm \
+	lib/capy/compiler/tree-il/assignment-elimination.scm \
+	lib/capy/compiler/tree-il/well-known-procs.scm \
 	lib/capy/compiler/tree-il.scm			\
+	lib/capy/graph.scm \
 	lib/capy/sequence.scm \
 	lib/capy/cst-reader.scm \
 
