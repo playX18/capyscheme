@@ -90,9 +90,6 @@ impl RetkSeeds {
 
     /// Record that `index` slot in closure for continuation `code` has type `ty`.
     fn record_slot(&mut self, code: GraphCodeId, index: usize, ty: Type) {
-        if ty == Type::TOP {
-            return;
-        }
         let slots = self.slots.entry(code).or_default();
         let changed = match slots.get(&index) {
             Some(existing) => {
