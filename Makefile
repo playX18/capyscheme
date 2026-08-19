@@ -57,10 +57,10 @@ endif
 
 PORTABLE ?= 1
 
-# Environment used when invoking capy/capyc (mirrors Justfile defaults).
+# Environment used when invoking capy/capyc.
 # Optional dump knobs (pass on the make command line), e.g.:
 #   make PROFILE=release stage-0 CAPY_SBBV_DUMP=1 CAPY_SBBV_DUMP_DIR=capy-dumps/sbbv
-MMTK_PLAN ?= ConcurrentImmix
+MMTK_PLAN ?= GenImmix
 XDG_CACHE_HOME = stage-0/cache
 CAPY_LOAD_PATH ?= ./lib
 CAPY_GC_MAX_HEAP ?= 2G
