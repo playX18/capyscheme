@@ -238,62 +238,44 @@
   ;; Tarjan SCC
   (define (tarjan-scc g)
     (define n (graph-vertex-count g))
-    (define rootindex (make-vector n #f))
-    (define stack '())            ; list, head = top of the stack
-    (define sccs '())             ; collected in reverse emission order
-    (define index 1)
-    (define component #x3FFFFFFFFFFFFFFF) ; sentinel > any discovery index
-
-    (define (pop-scc! v)
-      (let loop ([st stack] [collected '()] [adjust 1])
-        (if (null? st)
-          (begin
-            (set! stack '())
-            (set! index (- index adjust))
-            (set! sccs
-              (cons (append (reverse collected) (list v)) sccs)))
-          (let ([w (car st)])
-            (if (< (vector-ref rootindex w) (vector-ref rootindex v))
-              (begin
-                (set! stack st)
-                (set! index (- index adjust))
-                (set! sccs
-                  (cons (append (reverse collected) (list v)) sccs)))
-              (begin
-                (vector-set! rootindex w component)
-                (loop (cdr st) (cons w collected) (+ adjust 1))))))))
-
+    (define index (make-vector n #f))
+    (define lowlink (make-vector n #f))
+    (define onstack (make-vector n #f))
+    (define stack '())
+    (define sccs '())
+    (define idx 0)
     (define (visit v)
-      (define adj (flexvector-ref (graph-adjacency g) v))
-      (define to (graph-edge-to g))
-      (define directed? (graph-directed? g))
-      (let ([v-is-local-root? #t])
-        (vector-set! rootindex v index)
-        (set! index (+ index 1))
+      (vector-set! index v idx)
+      (vector-set! lowlink v idx)
+      (set! idx (+ idx 1))
+      (set! stack (cons v stack))
+      (vector-set! onstack v #t)
+      (let ([adj (flexvector-ref (graph-adjacency g) v)]
+            [to (graph-edge-to g)])
         (when adj
-          (let ([m (flexvector-length adj)])
+          (let ([m (flexvector-length adj)]
+                [directed? (graph-directed? g)])
             (do ([i 0 (+ i 1)]) ((= i m))
-              (let ([e (flexvector-ref adj i)])
-                (let ([w (if directed?
-                           (flexvector-ref to e)
-                           (graph-successor-of g v e))])
-                  (when (not (vector-ref rootindex w))
-                    (visit w))
-                  (when (and (vector-ref rootindex w)
-                             (< (vector-ref rootindex w) (vector-ref rootindex v)))
-                    (vector-set! rootindex v (vector-ref rootindex w))
-                    (set! v-is-local-root? #f)))))))
-        (if v-is-local-root?
-          (begin
-            (pop-scc! v)
-            (set! component (- component 1)))
-          (set! stack (cons v stack)))))
-
-    (let loop ([v 0])
-      (when (< v n)
-        (when (not (vector-ref rootindex v))
-          (visit v))
-        (loop (+ v 1))))
+              (let* ([e (flexvector-ref adj i)]
+                     [w (if directed? (flexvector-ref to e) (graph-successor-of g v e))])
+                (cond
+                  [(not (vector-ref index w))
+                   (visit w)
+                   (vector-set! lowlink v (min (vector-ref lowlink v) (vector-ref lowlink w)))]
+                  [(vector-ref onstack w)
+                   (vector-set! lowlink v (min (vector-ref lowlink v) (vector-ref index w)))]))))))
+      (when (= (vector-ref lowlink v) (vector-ref index v))
+        (let loop ([scc '()])
+          (let ([w (car stack)])
+            (set! stack (cdr stack))
+            (vector-set! onstack w #f)
+            (let ([scc (cons w scc)])
+              (if (= w v)
+                (set! sccs (cons scc sccs))
+                (loop scc)))))))
+    (do ([v 0 (+ v 1)]) ((= v n))
+      (when (not (vector-ref index v))
+        (visit v)))
     (map merge-sort-fixnums (reverse sccs)))
 
   ;; Topological sort (Kahn's algorithm).  Returns the vertex order, or #f
