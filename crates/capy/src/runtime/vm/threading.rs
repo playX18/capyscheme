@@ -331,9 +331,13 @@ pub mod threading_ops {
         let thread_obj = ThreadObject::new(nctx.ctx, Some(thunk.into()));
 
         let val: Value<'gc> = thread_obj.into();
-        let bits = val.bits();
+
+        let scope = crate::runtime::root::RootScope::new(nctx.ctx);
+        let thread_root = scope.root(val);
         let dynamic_state = nctx.ctx.state().dynamic_state.save(nctx.ctx);
-        let dynamic_state_bits = dynamic_state.bits();
+        let dynamic_root = scope.root(dynamic_state);
+        let bits = thread_root.get().bits();
+        let dynamic_state_bits = dynamic_root.get().bits();
         let (thread_started, thread_started_rx) = std::sync::mpsc::channel();
 
         let _handle = std::thread::spawn(move || {
