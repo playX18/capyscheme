@@ -8,7 +8,7 @@
 use super::types::*;
 use crate::compiler::cfg::ValueId;
 use crate::compiler::cranelift::primitive::Primitive;
-use crate::runtime::value::{ByteVector, Pair, Str, Symbol, Value, Vector};
+use crate::runtime::value::{BigInt, ByteVector, Pair, Str, Symbol, Value, Vector};
 
 /// Outcome of specializing a primitive call under a typing context.
 pub(super) struct PrimSpec<'gc> {
@@ -65,6 +65,8 @@ pub(super) fn type_of_constant(value: Value<'_>) -> Type {
         Type::kind(TypeKind::Bytevector)
     } else if value.is::<Pair>() {
         Type::kind(TypeKind::Pair)
+    } else if value.is::<BigInt>() {
+        Type::kind(TypeKind::Bignum)
     } else {
         Type::TOP
     }
@@ -958,4 +960,47 @@ pub(super) fn narrow_binary_test(
 ) -> Option<(TypeContext, TypeContext)> {
     let op = cmp_op(prim)?;
     Some(ctx.narrow_for_predicate(op, lhs, rhs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `fixnum|bignum` values keep a fixnum interval but no singleton: they
+    /// must never fold to constants nor specialize to fixnum ops.
+    fn fixnum_or_bignum() -> Type {
+        union_types(
+            Type::constant(5),
+            Type::kind(TypeKind::Bignum),
+            false,
+        )
+    }
+
+    #[test]
+    fn numeric_lt_on_fixnum_bignum_is_not_folded_or_specialized() {
+        let args = [fixnum_or_bignum(), Type::constant(10)];
+        let spec = specialize_prim(Primitive::NumericLt, &args);
+
+        assert_eq!(spec.prim, Primitive::NumericLt, "must stay generic");
+        assert!(spec.fold.is_none(), "must not fold to a constant");
+        assert!(!spec.result.is_definitely_fixnum());
+    }
+
+    #[test]
+    fn plus_on_fixnum_bignum_is_not_folded() {
+        let spec = specialize_prim(Primitive::Plus, &[fixnum_or_bignum(), Type::constant(1)]);
+
+        assert!(spec.fold.is_none(), "must not fold bignum-possible sum");
+        // Result may be fixnum or bignum; never a definite fixnum singleton.
+        assert!(!spec.result.is_definitely_fixnum());
+        assert_eq!(spec.result.kinds, KIND_FIXNUM | KIND_BIGNUM);
+    }
+
+    #[test]
+    fn is_zero_on_fixnum_bignum_is_not_folded() {
+        let spec = specialize_prim(Primitive::IsZero, &[fixnum_or_bignum()]);
+
+        assert!(spec.fold.is_none());
+        assert_eq!(spec.prim, Primitive::IsZero, "no FxZeroUnchecked");
+    }
 }

@@ -90,7 +90,17 @@ pub fn lower_cache_set<'gc_, 'a, 'f>(
     let value = ssa.atom(args[1]);
 
     let cell = ssa.module_builder.intern_cache_cell(cache_key);
+
+    let code_block = ssa.builder.ins().load(
+        cranelift::prelude::types::I64,
+        cranelift_codegen::ir::MemFlagsData::trusted(),
+        ssa.rator,
+        std::mem::offset_of!(crate::runtime::value::Closure, code_block) as i32,
+    );
+    let slot_addr = ssa.data_slot_address(cell);
+    ssa.pre_write_barrier_n(code_block, slot_addr, value);
     ssa.store_data_value(cell, value);
+    ssa.post_write_barrier_n(code_block, slot_addr, value);
     PrimValue::Value(
         ssa.builder
             .ins()

@@ -427,7 +427,13 @@ impl HeapObjectHeader {
     }
 
     pub fn class_id(&self) -> ClassId {
-        ClassId::new(self.word.read::<ClassIdBits>()).expect("heap object class ID must be nonzero")
+        let bits = self.word.read::<ClassIdBits>();
+        ClassId::new(bits).unwrap_or_else(|| {
+            panic!(
+                "heap object class ID must be nonzero (header word {:#x})",
+                bits
+            )
+        })
     }
 
     pub(crate) fn set_class_id(&self, class_id: ClassId) {
@@ -520,8 +526,9 @@ impl GcObject {
         }
 
         panic!(
-            "missing primitive GC hooks for class id {} while tracing",
-            self.class_id().bits()
+            "missing primitive GC hooks for class id {} while tracing object at {:#x}",
+            self.class_id().bits(),
+            self.0.as_usize()
         );
     }
 
@@ -578,8 +585,9 @@ impl GcObject {
         }
 
         panic!(
-            "missing primitive GC hooks for class id {} while computing instance size",
-            self.class_id().bits()
+            "missing primitive GC hooks for class id {} while computing instance size of object at {:#x}",
+            self.class_id().bits(),
+            self.0.as_usize()
         );
     }
 

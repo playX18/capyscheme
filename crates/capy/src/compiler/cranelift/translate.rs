@@ -1218,21 +1218,23 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                 let Operand::Constant(cache_key) = cache_key else {
                     panic!("invalid cache-set!: expected constant cache key, got {cache_key:?}");
                 };
-                let code_block = self.builder.ins().load(
-                    types::I64,
-                    ir::MemFlagsData::trusted(),
-                    self.rator,
-                    offset_of!(Closure, code_block) as i32,
-                );
                 let cell = self.module_builder.intern_cache_cell(*cache_key);
 
-                let cell_addr = self.data_slot_address(cell);
-
                 let value = self.emit_atom(*value);
-
-                self.pre_write_barrier(code_block, 0, cell_addr);
+                // Data slot is external JIT memory owned by this closure's
+                // CodeBlock (value is traced via bitmap in CodeBlock::trace).
+                // Without a barrier the old CodeBlock stays clean and a young
+                // Value stored here is missed by GenImmix/SATB.
+                let code_block = self.builder.ins().load(
+                    cranelift::prelude::types::I64,
+                    cranelift_codegen::ir::MemFlagsData::trusted(),
+                    self.rator,
+                    std::mem::offset_of!(crate::runtime::value::Closure, code_block) as i32,
+                );
+                let slot_addr = self.data_slot_address(cell);
+                self.pre_write_barrier_n(code_block, slot_addr, value);
                 self.store_data_value(cell, value);
-                self.post_write_barrier(code_block, 0, cell_addr);
+                self.post_write_barrier_n(code_block, slot_addr, value);
 
                 let undefined = self
                     .builder

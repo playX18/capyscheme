@@ -397,10 +397,21 @@ pub(super) fn union_types(a: Type, b: Type, widen: bool) -> Type {
         (None, None) => None,
     };
 
-    let singleton = match (a.singleton, b.singleton) {
-        (Some(x), Some(y)) if x == y => Some(x),
-        _ => None,
+    // Invariant: `singleton` ("known fixnum constant") is only meaningful when
+    // the value is *definitely* a fixnum.  A `fixnum|bignum` union keeps the
+    // fixnum interval from its fixnum side (so subsequent narrowing can still
+    // tighten it) but must never carry a singleton: folding a comparison or an
+    // arithmetic op on a possibly-bignum value as if it were a known fixnum
+    // constant emits wrong constants (bignums are heap pointers, not i64s).
+    let singleton = if kinds == KIND_FIXNUM {
+        match (a.singleton, b.singleton) {
+            (Some(x), Some(y)) if x == y => Some(x),
+            _ => None,
+        }
+    } else {
+        None
     };
+    debug_assert!(singleton.is_none() || kinds == KIND_FIXNUM);
 
     Type {
         kinds,
@@ -442,12 +453,20 @@ pub(super) fn intersect_types(a: Type, b: Type) -> Type {
         _ => None,
     };
 
-    let singleton = match (a.singleton, b.singleton) {
-        (Some(x), Some(y)) if x == y => Some(x),
-        (Some(x), None) => Some(x),
-        (None, Some(y)) => Some(y),
-        _ => None,
+    // Same singleton invariant as `union_types`: only a definite fixnum may
+    // be a singleton.  When `kinds` is exactly `KIND_FIXNUM` the intersection
+    // proves both inputs were fixnums, so keeping the singleton is sound.
+    let singleton = if kinds == KIND_FIXNUM {
+        match (a.singleton, b.singleton) {
+            (Some(x), Some(y)) if x == y => Some(x),
+            (Some(x), None) => Some(x),
+            (None, Some(y)) => Some(y),
+            _ => None,
+        }
+    } else {
+        None
     };
+    debug_assert!(singleton.is_none() || kinds == KIND_FIXNUM);
 
     Type {
         kinds,
@@ -674,6 +693,16 @@ impl TypeContext {
     ) -> (Self, Self) {
         let lhs_ty = self.get(lhs);
         let rhs_ty = self.get(rhs);
+
+        // Interval narrowing is only sound when both operands are *definitely*
+        // fixnums.  A `fixnum|bignum` value keeps the fixnum interval of its
+        // fixnum side through `union_types`; narrowing it would let a
+        // collapsed interval set a `singleton` on a possibly-bignum value,
+        // and `fold_compare`/`fold_arith` would then fold it as a fixnum
+        // constant — wrong results for bignum heap pointers.
+        if !lhs_ty.is_definitely_fixnum() || !rhs_ty.is_definitely_fixnum() {
+            return (self.clone(), self.clone());
+        }
 
         let (lhs_interval, rhs_interval) = match (lhs_ty.fixnum_range, rhs_ty.fixnum_range) {
             (Some(x), Some(y)) => (x, y),
@@ -1520,5 +1549,71 @@ mod tests {
                 hi: Bound::Max,
             })
         );
+    }
+
+    #[test]
+    fn union_fixnum_bignum_keeps_interval_but_drops_singleton() {
+        let a = Type::constant(5);
+        let b = Type::kind(TypeKind::Bignum);
+        let merged = union_types(a, b, false);
+
+        assert_eq!(merged.kinds, KIND_FIXNUM | KIND_BIGNUM);
+        assert_eq!(merged.fixnum_range, Some(Interval::singleton(5)));
+        assert_eq!(merged.singleton, None);
+        assert!(!merged.is_definitely_fixnum());
+    }
+
+    #[test]
+    fn intersect_fixnum_with_fixnum_bignum_keeps_singleton_only_when_definite() {
+        let definite = Type::constant(5);
+        let maybe_bignum = union_types(Type::constant(5), Type::kind(TypeKind::Bignum), false);
+        let inter = intersect_types(maybe_bignum.clone(), definite.clone());
+        assert_eq!(inter.kinds, KIND_FIXNUM);
+        assert_eq!(inter.singleton, Some(5));
+
+        let inter_wide = intersect_types(maybe_bignum, Type::TOP);
+        assert_eq!(inter_wide.kinds, KIND_FIXNUM | KIND_BIGNUM);
+        assert_eq!(inter_wide.singleton, None);
+    }
+
+    #[test]
+    fn narrow_predicate_ignores_fixnum_bignum_values() {
+        let mut ctx = TypeContext::new();
+        let x = UVar(1);
+        let ten = UVar(2);
+        let x_ty = union_types(Type::constant(10), Type::kind(TypeKind::Bignum), false);
+        assert!(
+            x_ty.fixnum_range.is_some(),
+            "precondition: interval survives"
+        );
+        ctx.set(x, x_ty.clone());
+        ctx.set(ten, Type::constant(10));
+
+        let (true_ctx, false_ctx) = ctx.narrow_for_predicate(CmpOp::Lt, x, ten);
+
+        assert_eq!(true_ctx.get(x), x_ty);
+        assert_eq!(false_ctx.get(x), x_ty);
+        assert_eq!(true_ctx.get(x).singleton, None);
+        assert_eq!(false_ctx.get(x).singleton, None);
+        assert!(true_ctx.get(x).has_kind(TypeKind::Bignum));
+        assert!(false_ctx.get(x).has_kind(TypeKind::Bignum));
+    }
+
+    #[test]
+    fn narrow_for_predicate_still_narrows_definite_fixnums() {
+        let mut ctx = TypeContext::new();
+        let x = UVar(1);
+        let y = UVar(2);
+        ctx.set(x, Type::fixnum_int(0, 10));
+        ctx.set(y, Type::constant(10));
+
+        let (true_ctx, false_ctx) = ctx.narrow_for_predicate(CmpOp::Lt, x, y);
+
+        assert_eq!(
+            true_ctx.get(x),
+            Type::from_fixnum_interval(Interval::fixnum_int(0, 9))
+        );
+
+        assert_eq!(false_ctx.get(x).singleton, Some(10));
     }
 }
