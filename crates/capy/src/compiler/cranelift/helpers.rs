@@ -536,12 +536,15 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
             }
 
             BarrierSelector::NoBarrier | BarrierSelector::ObjectBarrier => { /* no-op */ }
+
+            BarrierSelector::FieldBarrier => { /* TODO: Field logging barrier */ }
         }
     }
 
     pub fn post_write_barrier(&mut self, src: ir::Value, offset: i32, target: ir::Value) {
         match compile_barrier(self.module_builder.ctx.mc.barrier()) {
             BarrierSelector::NoBarrier => {}
+            BarrierSelector::FieldBarrier => { /* TODO: Field logging barrier */ }
             BarrierSelector::SATBBarrier => { /* no-op */ }
             BarrierSelector::ObjectBarrier => {
                 let done = self.builder.create_block();
@@ -658,6 +661,8 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                 );*/
             }
 
+            BarrierSelector::FieldBarrier => { /* TODO: Field logging barrier */ }
+
             BarrierSelector::NoBarrier | BarrierSelector::ObjectBarrier => { /* no-op */ }
         }
     }
@@ -666,6 +671,7 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         match compile_barrier(self.module_builder.ctx.mc.barrier()) {
             BarrierSelector::NoBarrier => {}
             BarrierSelector::SATBBarrier => {}
+            BarrierSelector::FieldBarrier => {}
             BarrierSelector::ObjectBarrier => {
                 let done = self.builder.create_block();
                 let check_wb = self.builder.create_block();

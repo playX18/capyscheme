@@ -446,6 +446,7 @@ stage-0: build-runtime-bootstrap
 	$(TIME_ENV) $(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base))'
 	$(TIME_ENV) $(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 1))'
 	$(TIME_ENV) $(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 13))'
+	$(TIME_ENV) $(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (core threading) (srfi 64))'
 ifeq ($(COMPILE_PSYNTAX),1)
 	$(TIME_ENV) $(CAPY_ENV) stage-0/capy -L lib -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
 	$(TIME_ENV) $(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base) (rnrs))'

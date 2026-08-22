@@ -715,6 +715,8 @@ impl mmtk::vm::ObjectModel<MemoryManager> for ObjectModel {
     const VM_WORST_CASE_COPY_EXPANSION: f64 = 1.3;
     const GLOBAL_LOG_BIT_SPEC: mmtk::vm::VMGlobalLogBitSpec =
         mmtk::vm::VMGlobalLogBitSpec::side_first();
+    const GLOBAL_FIELD_UNLOG_BIT_SPEC: mmtk::vm::VMGlobalFieldUnlogBitSpec =
+        mmtk::vm::VMGlobalFieldUnlogBitSpec::side_first();
     const LOCAL_MARK_BIT_SPEC: mmtk::vm::VMLocalMarkBitSpec =
         mmtk::vm::VMLocalMarkBitSpec::side_first();
     const LOCAL_FORWARDING_BITS_SPEC: mmtk::vm::VMLocalForwardingBitsSpec =
@@ -766,6 +768,14 @@ impl mmtk::vm::ObjectModel<MemoryManager> for ObjectModel {
         copy_context.post_copy(to_obj, bytes, semantics);
 
         to_obj
+    }
+
+    fn try_copy(
+        from: ObjectReference,
+        semantics: mmtk::util::copy::CopySemantics,
+        copy_context: &mut mmtk::util::copy::GCWorkerCopyContext<MemoryManager>,
+    ) -> Option<ObjectReference> {
+        Some(Self::copy(from, semantics, copy_context))
     }
 
     fn copy_to(from: ObjectReference, to: ObjectReference, _region: Address) -> Address {

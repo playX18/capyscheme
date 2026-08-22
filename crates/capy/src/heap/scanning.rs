@@ -15,10 +15,10 @@ pub struct RustScanning;
 impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
     const UNIQUE_OBJECT_ENQUEUING: bool = false;
 
-    fn scan_object<SV: mmtk::vm::SlotVisitor<<MemoryManager as mmtk::vm::VMBinding>::VMSlot>>(
+    fn scan_object(
         _tls: mmtk::util::VMWorkerThread,
         object: mmtk::util::ObjectReference,
-        slot_visitor: &mut SV,
+        slot_visitor: &mut impl mmtk::vm::SlotVisitor<<MemoryManager as mmtk::vm::VMBinding>::VMSlot>,
     ) {
         let mut visitor = unsafe { Visitor::new(VisitorKind::Slot(slot_visitor), Some(object)) };
 

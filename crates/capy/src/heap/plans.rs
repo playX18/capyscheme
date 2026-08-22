@@ -59,6 +59,7 @@ pub fn barrier_selector_artifact_kind(barrier: BarrierSelector) -> &'static str 
         BarrierSelector::NoBarrier => "nobarrier",
         BarrierSelector::ObjectBarrier => "objbarrier",
         BarrierSelector::SATBBarrier => "satbbarrier",
+        BarrierSelector::FieldBarrier => "fieldbarrier",
     }
 }
 

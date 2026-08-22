@@ -255,6 +255,7 @@ pub fn user_collect_garbage() -> bool {
     let did_run = mmtk::memory_manager::handle_user_collection_request(
         &crate::heap::GarbageCollector::get().mmtk,
         current_thread().to_mutator_thread(),
+        true,
     );
     drop(guard);
     Thread::enter_native();
@@ -959,6 +960,9 @@ impl<'gc> Mutation<'gc> {
                     }
                 }
             }
+
+            // TODO
+            BarrierSelector::FieldBarrier => {}
 
             BarrierSelector::NoBarrier => {}
         }
