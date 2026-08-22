@@ -120,8 +120,13 @@
 
   ;; Let bindings whose lvar is assigned or whose RHS has effects are
   ;; "complex": they must be initialized before use.
+  ;; Collect the bindings that are "complex" (assigned, or RHS with effects):
+  ;; they must be initialized to undefined before use.  Keyed by sym id.
   (define (compute-complex t assigned sym-id)
-    (define complex (make-eq-hashtable))   ; keyed by sym id
+    (define complex (make-eq-hashtable))
+    (define (complex-id sym)
+      (or (hashtable-ref sym-id sym #f)
+        (assertion-violation 'fix-letrec "lexical without an id" sym)))
     ((make-tree-il-folder)
       t
       (lambda (node) (values))
@@ -131,7 +136,7 @@
             (for-each
               (lambda (l r)
                 (when (or (hashtable-ref assigned l #f) (not (transparent? r)))
-                  (hashtable-set! complex (hashtable-ref sym-id l #f) #t)))
+                  (hashtable-set! complex (complex-id l) #t)))
               lhs
               rhs)
             (values)]
