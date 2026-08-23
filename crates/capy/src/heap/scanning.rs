@@ -88,6 +88,37 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
         mut factory: impl mmtk::vm::RootsWorkFactory<<MemoryManager as mmtk::vm::VMBinding>::VMSlot>,
     ) {
         crate::heap::oop_storage::OopStorageSet::get().scan_strong(&mut factory);
+
+        let threads = crate::heap::GarbageCollector::get().threads.threads();
+        for thread in threads.iter() {
+            if !thread.is_thread_state_initialized() {
+                continue;
+            }
+            let mut sv = RootSlotVisitor::new();
+            let mut visitor = unsafe { Visitor::new(VisitorKind::Slot(&mut sv), None) };
+            unsafe {
+                thread
+                    .state_ptr()
+                    .as_mut()
+                    .expect("thread state initialized")
+                    .trace(&mut visitor);
+
+                let mutator_state = (*thread.native_data_mut_ptr()).mutator_state;
+                if let Some(mut mutator_state) = mutator_state {
+                    let state = mutator_state.as_mut();
+                    state.root.trace(&mut visitor);
+
+                    if visitor.has_weak_refs() {
+                        crate::heap::GarbageCollector::get()
+                            .weak
+                            .add_root_with_weak_ref(&mut state.root as *mut dyn Trace);
+                    }
+                }
+            }
+            factory.create_process_roots_work(sv.set.into_iter().collect());
+        }
+        drop(threads);
+
         crate::heap::GarbageCollector::get()
             .global_registry
             .scan(factory);
