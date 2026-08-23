@@ -33,6 +33,9 @@ pub mod builtin_class_ids {
     pub const PAIR: u32 = 1;
     pub const VARIABLE: u32 = 2;
     pub const CLOSURE: u32 = 3;
+    /// Shared closure environment records. Each closure at a shared site
+    /// stores one pointer to such a record.
+    pub const ENV_RECORD: u32 = 4;
     pub const VECTOR: u32 = 5;
     pub const TUPLE: u32 = 7;
 
@@ -170,6 +173,9 @@ impl<'gc, T: Trace> AllocationHooksOf<'gc, T> {
 
 type ClassIdBits = BitField<u64, u32, 0, 24, false>;
 type PrivateVariantFlag = BitField<u64, bool, { ClassIdBits::NEXT_BIT }, 1, false>;
+/// Set on closure headers whose free-var slot 0 is a shared `EnvRecord`
+/// pointer instead of a captured value.
+type EnvSharedFlag = BitField<u64, bool, { PrivateVariantFlag::NEXT_BIT }, 1, false>;
 type HashBits = BitField<u64, u8, 57, 2, false>;
 type FinalizationState = BitField<u64, bool, { HashBits::NEXT_BIT }, 1, false>;
 
@@ -393,6 +399,12 @@ pub fn class_header_word_with_private_variant_flag(class_id: ClassId) -> u64 {
     PrivateVariantFlag::update(true, class_header_word(class_id))
 }
 
+/// Header word for a closure whose slot 0 is a shared `EnvRecord` pointer
+/// (`EnvSharedFlag`, bit 25).
+pub fn class_header_word_with_env_shared_flag(class_id: ClassId) -> u64 {
+    EnvSharedFlag::update(true, class_header_word(class_id))
+}
+
 unsafe impl Trace for ClassId {
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         let _ = visitor;
@@ -446,6 +458,15 @@ impl HeapObjectHeader {
 
     pub(crate) fn set_private_variant_flag(&self, value: bool) {
         self.word.update::<PrivateVariantFlag>(value);
+    }
+
+    /// Whether this closure's free-var slot 0 is a shared `EnvRecord` pointer.
+    pub(crate) fn env_shared_flag(&self) -> bool {
+        self.word.read::<EnvSharedFlag>()
+    }
+
+    pub(crate) fn set_env_shared_flag(&self, value: bool) {
+        self.word.update::<EnvSharedFlag>(value);
     }
 
     pub fn finalization_state(&self) -> bool {

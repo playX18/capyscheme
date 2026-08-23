@@ -103,6 +103,7 @@ pub fn builtin_primitive_layout_hooks(id: ClassId) -> Option<PrimitiveLayoutHook
             AllocationHooksOf::<'static, crate::runtime::modules::Variable<'static>>::HOOKS
         }
         builtin_class_ids::CLOSURE => crate::runtime::value::CLOSURE_HOOKS,
+        builtin_class_ids::ENV_RECORD => crate::runtime::value::ENV_RECORD_HOOKS,
         builtin_class_ids::VECTOR => crate::runtime::value::Vector::<'static>::HOOKS,
         builtin_class_ids::TUPLE => crate::runtime::value::Tuple::<'static>::HOOKS,
         builtin_class_ids::BIGINT => crate::runtime::value::BigInt::<'static>::HOOKS,
@@ -251,6 +252,7 @@ builtin_specs! {
     "pair" => builtin_class_ids::PAIR, Builtin;
     "variable" => builtin_class_ids::VARIABLE, Builtin;
     "closure" => builtin_class_ids::CLOSURE, Builtin;
+    "env-record" => builtin_class_ids::ENV_RECORD, Builtin;
     "vector" => builtin_class_ids::VECTOR, Builtin;
     "tuple" => builtin_class_ids::TUPLE, Builtin;
     "top" => builtin_class_ids::TOP, Abstract;

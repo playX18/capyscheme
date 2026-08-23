@@ -361,11 +361,15 @@ pub fn eliminate_dead_effect_free_instructions(mut procedure: Procedure<'_>) -> 
 pub fn instruction_effects(instruction: &Instruction<'_>) -> Effects {
     match instruction {
         Instruction::Assign { .. } | Instruction::Const { .. } => Effects::pure(),
-        Instruction::MakeClosure { .. } | Instruction::RestToList { .. } => Effects::allocate(),
-        Instruction::ClosureRef { .. } | Instruction::CacheRef { .. } => {
+        Instruction::MakeClosure { .. }
+        | Instruction::MakeEnv { .. }
+        | Instruction::RestToList { .. } => Effects::allocate(),
+        Instruction::EnvRef { .. } | Instruction::ClosureRef { .. } | Instruction::CacheRef { .. } => {
             Effects::read(MemoryRegion::Heap, SemanticEffects::UNKNOWN)
         }
-        Instruction::ClosureSet { .. } | Instruction::CacheSet { .. } => {
+        Instruction::EnvSet { .. }
+        | Instruction::ClosureSet { .. }
+        | Instruction::CacheSet { .. } => {
             Effects::write(MemoryRegion::Heap, SemanticEffects::UNKNOWN)
         }
         Instruction::PrimCall { prim, .. } => primitive_effects(*prim),

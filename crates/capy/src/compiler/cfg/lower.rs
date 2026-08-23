@@ -8,10 +8,12 @@ use crate::{
                 Graph, Subterm, TermId, TermKind,
             },
             reify::{BinderSet, GraphReifyInfo},
+            share::{FunctionShare, MemberShare, SharePlan},
         },
         cranelift::primitive::Primitive,
     },
     expander::core::LVarRef,
+    heap::Gc,
     runtime::{
         value::{Symbol, Value},
         vm::exceptions::RaiseKind,
@@ -23,7 +25,11 @@ use super::{
     Procedure, ProcedureKind, Program, Terminator, UVar, finish_procedure,
 };
 
-pub fn lower_graph<'gc>(graph: &Graph<'gc>, reify: &GraphReifyInfo) -> Program<'gc> {
+pub fn lower_graph<'gc>(
+    graph: &Graph<'gc>,
+    reify: &GraphReifyInfo,
+    share: &SharePlan,
+) -> Program<'gc> {
     let primitives = collect_primitive_map(graph);
     let mut procedures = Vec::new();
     // Shared cross-procedure seed table: `Call` sites record the slot types of
@@ -36,7 +42,7 @@ pub fn lower_graph<'gc>(graph: &Graph<'gc>, reify: &GraphReifyInfo) -> Program<'
         let _p = crate::utils::pass_profile::ProfileScope::new("cfg.lower.function");
         let lowered = {
             let _c = crate::utils::pass_profile::ProfileScope::new("cfg.lower.convert");
-            lower_function(graph, reify, function, &primitives)
+            lower_function(graph, reify, share, function, &primitives)
         };
         procedures.push(finish_procedure(lowered, &mut seeds));
     }
@@ -54,7 +60,7 @@ pub fn lower_graph<'gc>(graph: &Graph<'gc>, reify: &GraphReifyInfo) -> Program<'
             let _p = crate::utils::pass_profile::ProfileScope::new("cfg.lower.continuation");
             let lowered = {
                 let _c = crate::utils::pass_profile::ProfileScope::new("cfg.lower.convert");
-                lower_continuation(graph, reify, continuation, &primitives)
+                lower_continuation(graph, reify, share, continuation, &primitives)
             };
             raw_continuations.push(lowered.clone());
             finished_versions.push(seeds.version(lowered.code));
@@ -99,6 +105,7 @@ fn collect_primitive_map<'gc>(graph: &Graph<'gc>) -> HashMap<Value<'gc>, Primiti
 fn lower_function<'gc>(
     graph: &Graph<'gc>,
     reify: &GraphReifyInfo,
+    share: &SharePlan,
     function: FunctionId,
     primitives: &HashMap<Value<'gc>, Primitive>,
 ) -> Procedure<'gc> {
@@ -107,14 +114,20 @@ fn lower_function<'gc>(
         .cont
         .expect("graph function should have a return continuation");
     let source_free_vars = binder_set_to_vec(reify.free_vars.function(function));
-    let mut builder = ProcedureBuilder::new(graph, reify, primitives);
+    let mut builder = ProcedureBuilder::new(graph, reify, share, primitives);
     let binding = builder.uvar(data.var);
     let return_cont = builder.uvar(return_cont);
     let params = builder.uvars(graph.bound_vars_slice(&data.vars));
     let variadic = data.variadic.map(|var| builder.uvar(var));
-    let free_vars = builder.uvars(&source_free_vars);
+    let share_info = share.function_share(function).cloned();
+    let (instructions, free_vars, env_shared) = if let Some(fs) = &share_info {
+        closure_refs_shared(&mut builder, graph, function, binding, fs)
+    } else {
+        let (instructions, free_vars) =
+            closure_refs(&mut builder, graph, function, binding, &source_free_vars);
+        (instructions, free_vars, false)
+    };
     let entry = BlockId(0);
-    let instructions = closure_refs(&mut builder, binding, &source_free_vars);
     builder.convert_block(entry, instructions, data.body);
     let (blocks, sources) = builder.finish();
 
@@ -129,6 +142,7 @@ fn lower_function<'gc>(
         params,
         variadic,
         free_vars,
+        env_shared,
         entry,
         sources,
         blocks,
@@ -138,6 +152,7 @@ fn lower_function<'gc>(
 fn lower_continuation<'gc>(
     graph: &Graph<'gc>,
     reify: &GraphReifyInfo,
+    share: &SharePlan,
     continuation: FunctionId,
     primitives: &HashMap<Value<'gc>, Primitive>,
 ) -> Procedure<'gc> {
@@ -147,13 +162,19 @@ fn lower_continuation<'gc>(
         "graph continuation should not have a return continuation"
     );
     let source_free_vars = binder_set_to_vec(reify.free_vars.continuation(continuation));
-    let mut builder = ProcedureBuilder::new(graph, reify, primitives);
+    let mut builder = ProcedureBuilder::new(graph, reify, share, primitives);
     let binding = builder.uvar(data.var);
     let params = builder.uvars(graph.bound_vars_slice(&data.vars));
     let variadic = data.variadic.map(|var| builder.uvar(var));
-    let free_vars = builder.uvars(&source_free_vars);
     let entry = BlockId(0);
-    let instructions = closure_refs(&mut builder, binding, &source_free_vars);
+    let share_info = share.function_share(continuation).cloned();
+    let (instructions, free_vars, env_shared) = if let Some(fs) = &share_info {
+        closure_refs_shared(&mut builder, graph, continuation, binding, fs)
+    } else {
+        let (instructions, free_vars) =
+            closure_refs(&mut builder, graph, continuation, binding, &source_free_vars);
+        (instructions, free_vars, false)
+    };
     builder.convert_block(entry, instructions, data.body);
     let (blocks, sources) = builder.finish();
 
@@ -168,6 +189,7 @@ fn lower_continuation<'gc>(
         params,
         variadic,
         free_vars,
+        env_shared,
         entry,
         sources,
         blocks,
@@ -183,29 +205,138 @@ fn graph_code_id(graph: &Graph<'_>, function: FunctionId) -> CodeId {
     }
 }
 
+/// Closure kind of a graph function: a reified continuation creates a
+/// continuation closure (header tag), everything else a function closure.
+fn closure_kind(graph: &Graph<'_>, function: FunctionId) -> ClosureKind {
+    if graph[function].cont.is_some() {
+        ClosureKind::Function
+    } else {
+        ClosureKind::Continuation
+    }
+}
+
+/// Free-variable set of a function or reified continuation.
+fn free_vars_of<'a>(
+    graph: &Graph<'_>,
+    reify: &'a GraphReifyInfo,
+    function: FunctionId,
+) -> &'a BinderSet {
+    if graph[function].cont.is_some() {
+        reify.free_vars.function(function)
+    } else {
+        reify.free_vars.continuation(function)
+    }
+}
+
 fn binder_set_to_vec(vars: &BinderSet) -> Vec<BoundVar> {
     vars.iter().collect()
 }
 
+/// Whether `var` is the function's own binding (the closure's self reference).
+/// The self capture needs no physical slot: codegen's fast path binds `rator`.
+fn is_self_var<'gc>(graph: &Graph<'gc>, function: FunctionId, var: BoundVar) -> bool {
+    Gc::ptr_eq(graph[var].var, graph[graph[function].var].var)
+}
+
+/// Materialize a flat closure's captures at function entry. The self reference
+/// is materialized last through a dummy slot index (codegen binds `rator`, so
+/// no slot). Returns the entry instructions and physical `free_vars` order.
 fn closure_refs<'gc>(
     builder: &mut ProcedureBuilder<'_, 'gc>,
+    graph: &Graph<'gc>,
+    function: FunctionId,
     binding: UVar,
     free_vars: &[BoundVar],
-) -> Vec<Instruction<'gc>> {
-    free_vars
-        .iter()
-        .enumerate()
-        .map(|(index, free_var)| Instruction::ClosureRef {
-            dst: builder.uvar(*free_var),
+) -> (Vec<Instruction<'gc>>, Vec<UVar>) {
+    let mut instructions = Vec::new();
+    let mut physical = Vec::new();
+    let mut self_uvar = None;
+    for free_var in free_vars.iter().copied() {
+        let uvar = builder.uvar(free_var);
+        if is_self_var(graph, function, free_var) {
+            // Self references are materialized last, after the physical
+            // slots, through the dummy index.
+            self_uvar = Some(uvar);
+            continue;
+        }
+        instructions.push(Instruction::ClosureRef {
+            dst: uvar,
             closure: Operand::Local(binding),
-            index,
-        })
-        .collect()
+            index: physical.len(),
+        });
+        physical.push(uvar);
+    }
+    if let Some(self_uvar) = self_uvar {
+        instructions.push(Instruction::ClosureRef {
+            dst: self_uvar,
+            closure: Operand::Local(binding),
+            index: physical.len(),
+        });
+        physical.push(self_uvar);
+    }
+    (instructions, physical)
+}
+
+/// Materialize a shared closure's captures at function entry: slot 0 is the
+/// `EnvRecord` pointer, slots 1.. are private captures, record-resident vars
+/// are read from the record. Self reference goes last via a dummy index.
+/// Returns the entry instructions and physical `free_vars` (`[env, own...,
+/// self?]`), which `Procedure::free_vars` must reflect for index-accurate
+/// codegen and GC rooting.
+fn closure_refs_shared<'gc>(
+    builder: &mut ProcedureBuilder<'_, 'gc>,
+    graph: &Graph<'gc>,
+    function: FunctionId,
+    binding: UVar,
+    share: &FunctionShare,
+) -> (Vec<Instruction<'gc>>, Vec<UVar>, bool) {
+    let env_uvar = builder.fresh_temp();
+    builder.env_uvar = Some(env_uvar);
+    let mut instructions = vec![Instruction::ClosureRef {
+        dst: env_uvar,
+        closure: Operand::Local(binding),
+        index: 0,
+    }];
+    let mut own_uvars = Vec::new();
+    let mut self_uvar = None;
+    for free_var in share.own.iter().copied() {
+        let uvar = builder.uvar(free_var);
+        if is_self_var(graph, function, free_var) {
+            self_uvar = Some(uvar);
+            continue;
+        }
+        instructions.push(Instruction::ClosureRef {
+            dst: uvar,
+            closure: Operand::Local(binding),
+            index: own_uvars.len() + 1,
+        });
+        own_uvars.push(uvar);
+    }
+    for (free_var, slot) in share.record.iter() {
+        instructions.push(Instruction::EnvRef {
+            dst: builder.uvar(*free_var),
+            env: Operand::Local(env_uvar),
+            index: *slot,
+        });
+    }
+    let mut free_vars = vec![env_uvar];
+    free_vars.extend(own_uvars);
+    if let Some(self_uvar) = self_uvar {
+        // The dummy index must never collide with the env slot (index 0).
+        instructions.push(Instruction::ClosureRef {
+            dst: self_uvar,
+            closure: Operand::Local(binding),
+            index: free_vars.len(),
+        });
+        free_vars.push(self_uvar);
+    }
+    (instructions, free_vars, true)
 }
 
 struct ProcedureBuilder<'a, 'gc> {
     graph: &'a Graph<'gc>,
     reify: &'a GraphReifyInfo,
+    share: &'a SharePlan,
     primitives: &'a HashMap<Value<'gc>, Primitive>,
     blocks: Vec<Block<'gc>>,
     local_blocks: HashMap<BoundVar, BlockId>,
@@ -214,6 +345,9 @@ struct ProcedureBuilder<'a, 'gc> {
     values: HashMap<BoundVar, UVar>,
     known_literals: HashMap<BoundVar, Value<'gc>>,
     sources: HashMap<UVar, LVarRef<'gc>>,
+    /// This procedure's shared `EnvRecord` (slot 0 of its closure); reuse
+    /// sites inside its body point their member closures at it.
+    env_uvar: Option<UVar>,
     next_uvar: u32,
     next_block: usize,
 }
@@ -222,11 +356,13 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
     fn new(
         graph: &'a Graph<'gc>,
         reify: &'a GraphReifyInfo,
+        share: &'a SharePlan,
         primitives: &'a HashMap<Value<'gc>, Primitive>,
     ) -> Self {
         Self {
             graph,
             reify,
+            share,
             primitives,
             blocks: Vec::new(),
             local_blocks: HashMap::new(),
@@ -234,6 +370,7 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
             values: HashMap::new(),
             known_literals: HashMap::new(),
             sources: HashMap::new(),
+            env_uvar: None,
             next_uvar: 0,
             next_block: 1,
         }
@@ -341,20 +478,91 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
 
             TermKind::Fix(functions, body) => {
                 let functions = live_functions(self.graph, &functions);
-                for function in functions.iter().copied() {
-                    let free_vars = binder_set_to_vec(self.reify.free_vars.function(function));
-                    instructions.push(Instruction::MakeClosure {
-                        dst: self.uvar(self.graph[function].var),
-                        code: graph_code_id(self.graph, function),
-                        kind: ClosureKind::Function,
-                        free_count: free_vars.len(),
-                    });
-                }
+                if let Some(site) = self.share.site(term) {
+                    let env_uvar = if site.allocate {
+                        // Allocate a fresh shared record holding the common
+                        // free variables.
+                        let env_uvar = self.fresh_temp();
+                        instructions.push(Instruction::MakeEnv {
+                            dst: env_uvar,
+                            size: site.record_vars.len(),
+                        });
+                        for (index, record_var) in site.record_vars.iter().enumerate() {
+                            instructions.push(Instruction::EnvSet {
+                                env: Operand::Local(env_uvar),
+                                index,
+                                value: Operand::Local(self.uvar(*record_var)),
+                            });
+                        }
+                        env_uvar
+                    } else {
+                        // Reuse: member closures point at this function's own
+                        // shared record.
+                        self.env_uvar
+                            .expect("reuse site requires an enclosing shared env")
+                    };
+                    for member in site.members.iter() {
+                        let own = physical_own_vars(self.graph, member);
+                        if member.flat {
+                            // Compacted member: flat closure, full captures,
+                            // no env record (hot functions).
+                            instructions.push(Instruction::MakeClosure {
+                                dst: self.uvar(self.graph[member.function].var),
+                                code: graph_code_id(self.graph, member.function),
+                                kind: closure_kind(self.graph, member.function),
+                                free_count: own.len(),
+                                env: None,
+                            });
+                        } else {
+                            instructions.push(Instruction::MakeClosure {
+                                dst: self.uvar(self.graph[member.function].var),
+                                code: graph_code_id(self.graph, member.function),
+                                kind: closure_kind(self.graph, member.function),
+                                free_count: 1 + own.len(),
+                                env: Some(Operand::Local(env_uvar)),
+                            });
+                        }
+                    }
+                    for member in site.members.iter() {
+                        let closure = self.uvar(self.graph[member.function].var);
+                        let own = physical_own_vars(self.graph, member);
+                        if member.flat {
+                            for (index, own_var) in own.iter().enumerate() {
+                                instructions.push(Instruction::ClosureSet {
+                                    closure: Operand::Local(closure),
+                                    index,
+                                    value: Operand::Local(self.uvar(*own_var)),
+                                });
+                            }
+                        } else {
+                            for (index, own_var) in own.iter().enumerate() {
+                                instructions.push(Instruction::ClosureSet {
+                                    closure: Operand::Local(closure),
+                                    index: index + 1,
+                                    value: Operand::Local(self.uvar(*own_var)),
+                                });
+                            }
+                        }
+                    }
+                } else {
+                    for function in functions.iter().copied() {
+                        let free_vars = binder_set_to_vec(free_vars_of(self.graph, self.reify, function));
+                        let physical = physical_free_vars(self.graph, function, &free_vars);
+                        instructions.push(Instruction::MakeClosure {
+                            dst: self.uvar(self.graph[function].var),
+                            code: graph_code_id(self.graph, function),
+                            kind: closure_kind(self.graph, function),
+                            free_count: physical.len(),
+                            env: None,
+                        });
+                    }
 
-                for function in functions {
-                    let closure = self.uvar(self.graph[function].var);
-                    let free_vars = binder_set_to_vec(self.reify.free_vars.function(function));
-                    emit_closure_sets(self, instructions, closure, &free_vars);
+                    for function in functions {
+                        let closure = self.uvar(self.graph[function].var);
+                        let free_vars = binder_set_to_vec(free_vars_of(self.graph, self.reify, function));
+                        let physical = physical_free_vars(self.graph, function, &free_vars);
+                        emit_closure_sets(self, instructions, closure, &physical);
+                    }
                 }
 
                 self.convert_term_link(body, instructions)
@@ -366,22 +574,74 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
                     .into_iter()
                     .partition(|continuation| self.graph[*continuation].is_reified);
 
-                for continuation in reified_conts.iter().copied() {
-                    let free_vars =
-                        binder_set_to_vec(self.reify.free_vars.continuation(continuation));
-                    instructions.push(Instruction::MakeClosure {
-                        dst: self.uvar(self.graph[continuation].var),
-                        code: graph_code_id(self.graph, continuation),
-                        kind: ClosureKind::Continuation,
-                        free_count: free_vars.len(),
-                    });
-                }
+                if let Some(site) = self.share.site(term) {
+                    // Shared reified-continuation site: one record, member
+                    // closures point at it, private captures in slots 1..
+                    let env_uvar = if site.allocate {
+                        let env_uvar = self.fresh_temp();
+                        instructions.push(Instruction::MakeEnv {
+                            dst: env_uvar,
+                            size: site.record_vars.len(),
+                        });
+                        for (index, record_var) in site.record_vars.iter().enumerate() {
+                            instructions.push(Instruction::EnvSet {
+                                env: Operand::Local(env_uvar),
+                                index,
+                                value: Operand::Local(self.uvar(*record_var)),
+                            });
+                        }
+                        env_uvar
+                    } else {
+                        self.env_uvar
+                            .expect("reuse site requires an enclosing shared env")
+                    };
+                    for member in site.members.iter() {
+                        let own = physical_own_vars(self.graph, member);
+                        instructions.push(Instruction::MakeClosure {
+                            dst: self.uvar(self.graph[member.function].var),
+                            code: graph_code_id(self.graph, member.function),
+                            kind: ClosureKind::Continuation,
+                            free_count: if member.flat { own.len() } else { 1 + own.len() },
+                            env: if member.flat {
+                                None
+                            } else {
+                                Some(Operand::Local(env_uvar))
+                            },
+                        });
+                    }
+                    for member in site.members.iter() {
+                        let closure = self.uvar(self.graph[member.function].var);
+                        let own = physical_own_vars(self.graph, member);
+                        let base = if member.flat { 0 } else { 1 };
+                        for (index, own_var) in own.iter().enumerate() {
+                            instructions.push(Instruction::ClosureSet {
+                                closure: Operand::Local(closure),
+                                index: index + base,
+                                value: Operand::Local(self.uvar(*own_var)),
+                            });
+                        }
+                    }
+                } else {
+                    for continuation in reified_conts.iter().copied() {
+                        let free_vars =
+                            binder_set_to_vec(self.reify.free_vars.continuation(continuation));
+                        let physical = physical_free_vars(self.graph, continuation, &free_vars);
+                        instructions.push(Instruction::MakeClosure {
+                            dst: self.uvar(self.graph[continuation].var),
+                            code: graph_code_id(self.graph, continuation),
+                            kind: ClosureKind::Continuation,
+                            free_count: physical.len(),
+                            env: None,
+                        });
+                    }
 
-                for continuation in reified_conts {
-                    let closure = self.uvar(self.graph[continuation].var);
-                    let free_vars =
-                        binder_set_to_vec(self.reify.free_vars.continuation(continuation));
-                    emit_closure_sets(self, instructions, closure, &free_vars);
+                    for continuation in reified_conts {
+                        let closure = self.uvar(self.graph[continuation].var);
+                        let free_vars =
+                            binder_set_to_vec(self.reify.free_vars.continuation(continuation));
+                        let physical = physical_free_vars(self.graph, continuation, &free_vars);
+                        emit_closure_sets(self, instructions, closure, &physical);
+                    }
                 }
 
                 for continuation in &local_conts {
@@ -684,6 +944,8 @@ fn emit_closure_sets<'gc>(
     closure: UVar,
     free_vars: &[BoundVar],
 ) {
+    // `free_vars` is physical (self reference removed); the self capture needs
+    // no slot because codegen's fast path binds `rator`.
     for (index, free_var) in free_vars.iter().enumerate() {
         instructions.push(Instruction::ClosureSet {
             closure: Operand::Local(closure),
@@ -691,4 +953,28 @@ fn emit_closure_sets<'gc>(
             value: Operand::Local(builder.uvar(*free_var)),
         });
     }
+}
+
+/// Physical free-var list for a flat closure: the free variables minus the
+/// self reference (which needs no physical slot).
+fn physical_free_vars<'gc>(
+    graph: &Graph<'gc>,
+    function: FunctionId,
+    vars: &[BoundVar],
+) -> Vec<BoundVar> {
+    vars.iter()
+        .copied()
+        .filter(|var| !is_self_var(graph, function, *var))
+        .collect()
+}
+
+/// Physical private-capture list for a member at a shared site: its own
+/// captures minus the self reference.
+fn physical_own_vars<'gc>(graph: &Graph<'gc>, member: &MemberShare) -> Vec<BoundVar> {
+    member
+        .own_vars
+        .iter()
+        .copied()
+        .filter(|v| !is_self_var(graph, member.function, *v))
+        .collect()
 }

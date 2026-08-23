@@ -26,7 +26,7 @@ use crate::{
     runtime::{
         COMPILED_ENTRY_ARG_COUNT, Context, REGISTER_ARG_COUNT, State,
         value::CodeBlock,
-        value::{Closure, Symbol, Value},
+        value::{Closure, EnvRecord, Symbol, Value},
         vm::exceptions::RaiseKind,
     },
 };
@@ -62,7 +62,9 @@ pub enum Callee {
 pub(crate) enum AllocationHeaderPreset {
     Pair,
     ClosureProc,
+    ClosureProcShared,
     ClosureK,
+    EnvRecord,
     MutableVector,
 }
 
@@ -71,7 +73,9 @@ impl AllocationHeaderPreset {
         match self {
             Self::Pair => builtin_class_ids::PAIR as u64,
             Self::ClosureProc => builtin_class_ids::CLOSURE as u64,
+            Self::ClosureProcShared => (1_u64 << 25) | builtin_class_ids::CLOSURE as u64,
             Self::ClosureK => (1_u64 << 24) | builtin_class_ids::CLOSURE as u64,
+            Self::EnvRecord => builtin_class_ids::ENV_RECORD as u64,
             Self::MutableVector => builtin_class_ids::VECTOR as u64,
         }
     }
@@ -80,7 +84,11 @@ impl AllocationHeaderPreset {
         match self {
             Self::Pair => crate::runtime::symbols::RuntimeData::PairHeaderWord,
             Self::ClosureProc => crate::runtime::symbols::RuntimeData::ClosureProcHeaderWord,
+            Self::ClosureProcShared => {
+                crate::runtime::symbols::RuntimeData::ClosureProcSharedHeaderWord
+            }
             Self::ClosureK => crate::runtime::symbols::RuntimeData::ClosureKHeaderWord,
+            Self::EnvRecord => crate::runtime::symbols::RuntimeData::EnvRecordHeaderWord,
             Self::MutableVector => crate::runtime::symbols::RuntimeData::MutableVectorHeaderWord,
         }
     }
@@ -523,8 +531,27 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
         free_count: usize,
         is_cont: bool,
     ) -> ir::Value {
+        self.make_closure_with_env(code_block, entrypoint, free_count, is_cont, None)
+    }
+
+    /// Allocate a closure. When `env` is `Some`, the closure shares an
+    /// `EnvRecord` with the other closures at the same site: slot 0 holds the
+    /// record pointer, slots 1.. hold private captures, and the header carries
+    /// the env-shared flag (bit 25). The env pointer is stored before any
+    /// further allocation so the GC never traces uninitialized slots.
+    pub(crate) fn make_closure_with_env(
+        &mut self,
+        code_block: ir::Value,
+        entrypoint: ir::Value,
+        free_count: usize,
+        is_cont: bool,
+        env: Option<ir::Value>,
+    ) -> ir::Value {
         let preset = if is_cont {
+            debug_assert!(env.is_none(), "shared continuations are not supported");
             AllocationHeaderPreset::ClosureK
+        } else if env.is_some() {
+            AllocationHeaderPreset::ClosureProcShared
         } else {
             AllocationHeaderPreset::ClosureProc
         };
@@ -568,15 +595,53 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
             .ins()
             .iconst(types::I64, Value::undefined().bits() as i64);
         for i in 0..free_count {
+            let value = if i == 0 {
+                env.unwrap_or(undefined)
+            } else {
+                undefined
+            };
             self.builder.ins().store(
                 ir::MemFlagsData::trusted(),
-                undefined,
+                value,
                 closure,
                 Closure::DATA_OFFSET as i32 + (i * size_of::<Value>()) as i32,
             );
         }
 
         closure
+    }
+
+    /// Allocate a shared closure environment record with `size` value slots.
+    ///
+    /// `length` and every slot are initialized before any further allocation
+    /// so the GC never observes uninitialized memory.
+    pub(crate) fn make_env_record(&mut self, size: usize) -> ir::Value {
+        let size_bytes = size_of::<EnvRecord>() + size * size_of::<Value>();
+        let record = self.alloc_with_header_word_preset(
+            AllocationHeaderPreset::EnvRecord,
+            size_bytes,
+            None,
+        );
+        let length = self.builder.ins().iconst(types::I64, size as i64);
+        self.builder.ins().store(
+            ir::MemFlagsData::trusted(),
+            length,
+            record,
+            offset_of!(EnvRecord, length) as i32,
+        );
+        let undefined = self
+            .builder
+            .ins()
+            .iconst(types::I64, Value::undefined().bits() as i64);
+        for i in 0..size {
+            self.builder.ins().store(
+                ir::MemFlagsData::trusted(),
+                undefined,
+                record,
+                EnvRecord::DATA_OFFSET as i32 + (i * size_of::<Value>()) as i32,
+            );
+        }
+        record
     }
 
     pub(crate) fn raise_to_exception_handler(&mut self, err: ir::Value) -> ir::Inst {
@@ -1148,23 +1213,62 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
                 code,
                 kind,
                 free_count,
+                env,
             } => {
                 let code_block = self.load_data_value(self.code_block_data(*code));
                 let entrypoint = self.load_function_entrypoint(self.code_function_symbol(*code));
-                let clos = self.make_closure(
+                let env_value = env.map(|env| self.emit_atom(env));
+                let clos = self.make_closure_with_env(
                     code_block,
                     entrypoint,
                     *free_count,
                     matches!(kind, ClosureKind::Continuation),
+                    env_value,
                 );
                 self.bind_ssa_var(*dst, VarDef::Value(clos));
+            }
+            Instruction::MakeEnv { dst, size } => {
+                let record = self.make_env_record(*size);
+                self.bind_ssa_var(*dst, VarDef::Value(record));
+            }
+            Instruction::EnvRef {
+                dst,
+                env,
+                index,
+            } => {
+                let env = self.emit_atom(*env);
+                let value = self.builder.ins().load(
+                    types::I64,
+                    ir::MemFlagsData::trusted().with_can_move(),
+                    env,
+                    EnvRecord::DATA_OFFSET as i32 + (*index * 8) as i32,
+                );
+                self.bind_ssa_var(*dst, VarDef::Value(value));
+            }
+            Instruction::EnvSet {
+                env,
+                index,
+                value,
+            } => {
+                let env = self.emit_atom(*env);
+                let value = self.emit_atom(*value);
+                self.builder.ins().store(
+                    ir::MemFlagsData::trusted().with_can_move(),
+                    value,
+                    env,
+                    EnvRecord::DATA_OFFSET as i32 + (*index * 8) as i32,
+                );
             }
             Instruction::ClosureRef {
                 dst,
                 closure,
                 index,
             } => {
+                // Shared closures store the EnvRecord pointer in slot 0, so
+                // the self-reference shortcut must not fire for index 0 (the
+                // env is never the closure itself).
                 if matches!(closure, Operand::Local(binding) if *binding == self.target.binding)
+                    && (*index != 0 || !self.target.env_shared)
                     && let Some(source) = self.target.free_vars.get(*index)
                     && self.is_self_reference(self.target.sources[source])
                 {

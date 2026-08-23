@@ -94,12 +94,31 @@ impl ConstantHoister {
             },
             Instruction::Const { .. }
             | Instruction::MakeClosure { .. }
+            | Instruction::MakeEnv { .. }
             | Instruction::CacheRef { .. }
             | Instruction::CacheSet { .. }
             | Instruction::RestToList { .. }
             | Instruction::RestRef { .. }
             | Instruction::RestLength { .. }
             | Instruction::RestPredicate { .. } => instruction,
+            Instruction::EnvRef {
+                dst,
+                env,
+                index,
+            } => Instruction::EnvRef {
+                dst,
+                env: self.atom(env, instructions),
+                index,
+            },
+            Instruction::EnvSet {
+                env,
+                index,
+                value,
+            } => Instruction::EnvSet {
+                env: self.atom(env, instructions),
+                index,
+                value: self.atom(value, instructions),
+            },
             Instruction::ClosureRef {
                 dst,
                 closure,

@@ -1,13 +1,17 @@
 //! Graphical CPS from "Compiling with Continuations, Continued".
 
+pub mod analysis;
 pub mod clone;
 pub mod convert;
 mod dom_contify;
+pub mod fixmerge;
+pub mod flow;
 pub mod fold;
 pub mod graph;
 pub mod optimize;
 pub mod pretty;
 pub mod reify;
+pub mod share;
 mod scc_contify;
 pub mod worklist;
 

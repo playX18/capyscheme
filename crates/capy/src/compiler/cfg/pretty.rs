@@ -92,12 +92,43 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
             code,
             kind,
             free_count,
+            env,
+        } => {
+            let env_part = match env {
+                Some(env) => format!(" env {}", render_operand(*env)),
+                None => String::new(),
+            };
+            format!(
+                "{} = make_closure {} {} {}{}",
+                render_uvar(*dst),
+                render_code_id(code),
+                render_closure_kind(*kind),
+                free_count,
+                env_part
+            )
+        }
+        Instruction::MakeEnv { dst, size } => {
+            format!("{} = make_env {}", render_uvar(*dst), size)
+        }
+        Instruction::EnvRef {
+            dst,
+            env,
+            index,
         } => format!(
-            "{} = make_closure {} {} {}",
+            "{} = env_ref {}[{}]",
             render_uvar(*dst),
-            render_code_id(code),
-            render_closure_kind(*kind),
-            free_count
+            render_operand(*env),
+            index
+        ),
+        Instruction::EnvSet {
+            env,
+            index,
+            value,
+        } => format!(
+            "env_set {}[{}], {}",
+            render_operand(*env),
+            index,
+            render_operand(*value)
         ),
         Instruction::ClosureRef {
             dst,

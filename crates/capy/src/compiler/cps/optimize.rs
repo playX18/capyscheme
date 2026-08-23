@@ -154,6 +154,8 @@ pub fn optimize_graph_func_to_ssa<'gc>(
 ) -> ConvertResult<OptimizedProgram<'gc>> {
     let mut program = optimize_graph_program(ctx, program);
 
+    // Reify before group merging (the merge needs `is_reified`). The merge
+    // changes no bindings or uses, so `GraphReifyInfo` stays valid.
     let mut graph_reify_profile = ProfileScope::new("compiler.lower.gcps.graph_reify");
     let graph_reify = reify_graph(&mut program.graph, program.entry);
     if graph_reify_profile.is_enabled() {
@@ -162,8 +164,75 @@ pub fn optimize_graph_func_to_ssa<'gc>(
     }
     drop(graph_reify_profile);
 
+    // Merge adjacent Fix/Letk groups so lambdas and reified continuations bound
+    // at the same point share one closure-creation site (see fixmerge.rs).
+    let root = program.root();
+    super::fixmerge::merge_nested_groups(&mut program.graph, root);
+
+    // Shared-environment analysis (disabled with CAPY_CLOSURE_SHARING=0;
+    // decisions dumped with CAPY_SHARE_DUMP=1).
+    let mut share_profile = ProfileScope::new("compiler.lower.gcps.closure_share");
+    let sharing_enabled = env::var("CAPY_CLOSURE_SHARING").map_or(true, |v| v != "0");
+    let root = program
+        .graph
+        .read_term_link(program.root())
+        .expect("graph root");
+    let stages = super::analysis::StageAnalysis::new(&program.graph, &graph_reify);
+    // Flow analysis (call web, closure classes, escape).
+    let flow = super::flow::FlowAnalysis::new(&program.graph, &graph_reify);
+    if env::var("CAPY_SHARE_DUMP").map_or(false, |v| v != "0") {
+        let recursive = super::analysis::recursive_functions(&program.graph, &graph_reify);
+        let escaping = graph_reify
+            .functions
+            .iter()
+            .filter(|f| flow.function(**f).map_or(false, |info| info.escapes))
+            .count();
+        let classes = flow.classes().len();
+        eprintln!(
+            "share: {} functions, {} recursive, {} escaping, {} closure classes",
+            graph_reify.functions.len(),
+            recursive.len(),
+            escaping,
+            classes,
+        );
+    }
+    let share = super::share::analyze_sharing(
+        &program.graph,
+        &graph_reify,
+        &stages,
+        &flow,
+        root,
+        sharing_enabled,
+    );
+    if share_profile.is_enabled() {
+        share_profile.field("shared_sites", share.sites().count());
+    }
+    if env::var("CAPY_SHARE_DUMP").map_or(false, |v| v != "0") {
+        for (site, decision) in share.sites() {
+            let kinds: Vec<&str> = decision
+                .members
+                .iter()
+                .map(|m| {
+                    if program.graph[m.function].cont.is_some() {
+                        "fn"
+                    } else {
+                        "cont"
+                    }
+                })
+                .collect();
+            eprintln!(
+                "share: site {site:?} allocate={} record_vars={} members={} kinds=[{}]",
+                decision.allocate,
+                decision.record_vars.len(),
+                decision.members.len(),
+                kinds.join(" ")
+            );
+        }
+    }
+    drop(share_profile);
+
     let mut ssa_profile = ProfileScope::new("compiler.lower.gcps.ssa");
-    let ssa = crate::compiler::cfg::lower::lower_graph(&program.graph, &graph_reify);
+    let ssa = crate::compiler::cfg::lower::lower_graph(&program.graph, &graph_reify, &share);
     if ssa_profile.is_enabled() {
         ssa_profile.field("procedures", ssa.procedures.len());
     }

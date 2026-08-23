@@ -105,6 +105,7 @@ mod tests {
             params: vec![],
             variadic: None,
             free_vars: vec![],
+            env_shared: false,
             sources: HashMap::new(),
             entry: BlockId(0),
             blocks,

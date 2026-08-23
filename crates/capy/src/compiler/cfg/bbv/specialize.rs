@@ -908,6 +908,19 @@ impl<'gc, 'a> Specializer<'gc, 'a> {
                 self.closure_codes.insert(*dst, *code);
                 out.push(instruction.clone());
             }
+            Instruction::MakeEnv { dst, .. } => {
+                ctx.detach(*dst);
+                ctx.set(*dst, Type::TOP);
+                out.push(instruction.clone());
+            }
+            Instruction::EnvRef { dst, .. } => {
+                ctx.detach(*dst);
+                ctx.set(*dst, Type::TOP);
+                out.push(instruction.clone());
+            }
+            Instruction::EnvSet { .. } => {
+                out.push(instruction.clone());
+            }
             Instruction::ClosureRef { dst, index, .. } => {
                 ctx.detach(*dst);
                 ctx.set(*dst, self.seed.get(index).cloned().unwrap_or(Type::TOP));

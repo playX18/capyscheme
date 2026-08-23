@@ -1,7 +1,8 @@
 use crate::heap::{
     mmtk::util::Address,
     object::{
-        ClassId, builtin_class_ids, class_header_word, class_header_word_with_private_variant_flag,
+        ClassId, builtin_class_ids, class_header_word,
+        class_header_word_with_env_shared_flag, class_header_word_with_private_variant_flag,
     },
 };
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -15,12 +16,19 @@ pub enum RuntimeData {
     ClosureProcHeaderWord = 8,
     ClosureKHeaderWord = 9,
     MutableVectorHeaderWord = 10,
+    /// Header word for `EnvRecord` heap objects (class id 4).
+    EnvRecordHeaderWord = 11,
+    /// Header word for closures whose slot 0 is a shared `EnvRecord` pointer
+    /// (class id 3 plus the env-shared flag, bit 25).
+    ClosureProcSharedHeaderWord = 12,
 }
 
 static PAIR_HEADER_WORD: AtomicU64 = AtomicU64::new(0);
 static CLOSURE_PROC_HEADER_WORD: AtomicU64 = AtomicU64::new(0);
 static CLOSURE_K_HEADER_WORD: AtomicU64 = AtomicU64::new(0);
 static MUTABLE_VECTOR_HEADER_WORD: AtomicU64 = AtomicU64::new(0);
+static ENV_RECORD_HEADER_WORD: AtomicU64 = AtomicU64::new(0);
+static CLOSURE_PROC_SHARED_HEADER_WORD: AtomicU64 = AtomicU64::new(0);
 
 impl RuntimeData {
     pub const ALL: &'static [Self] = &[
@@ -28,6 +36,8 @@ impl RuntimeData {
         Self::ClosureProcHeaderWord,
         Self::ClosureKHeaderWord,
         Self::MutableVectorHeaderWord,
+        Self::EnvRecordHeaderWord,
+        Self::ClosureProcSharedHeaderWord,
     ];
 
     pub fn id(self) -> u32 {
@@ -40,6 +50,10 @@ impl RuntimeData {
             x if x == Self::ClosureProcHeaderWord as u32 => Some(Self::ClosureProcHeaderWord),
             x if x == Self::ClosureKHeaderWord as u32 => Some(Self::ClosureKHeaderWord),
             x if x == Self::MutableVectorHeaderWord as u32 => Some(Self::MutableVectorHeaderWord),
+            x if x == Self::EnvRecordHeaderWord as u32 => Some(Self::EnvRecordHeaderWord),
+            x if x == Self::ClosureProcSharedHeaderWord as u32 => {
+                Some(Self::ClosureProcSharedHeaderWord)
+            }
             _ => None,
         }
     }
@@ -68,6 +82,18 @@ impl RuntimeData {
                 &MUTABLE_VECTOR_HEADER_WORD,
                 class_header_word(
                     ClassId::new(builtin_class_ids::VECTOR).expect("builtin class id is nonzero"),
+                ),
+            ),
+            Self::EnvRecordHeaderWord => static_class_header_word_address(
+                &ENV_RECORD_HEADER_WORD,
+                class_header_word(
+                    ClassId::new(builtin_class_ids::ENV_RECORD).expect("builtin class id is nonzero"),
+                ),
+            ),
+            Self::ClosureProcSharedHeaderWord => static_class_header_word_address(
+                &CLOSURE_PROC_SHARED_HEADER_WORD,
+                class_header_word_with_env_shared_flag(
+                    ClassId::new(builtin_class_ids::CLOSURE).expect("builtin class id is nonzero"),
                 ),
             ),
         }

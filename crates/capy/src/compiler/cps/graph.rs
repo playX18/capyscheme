@@ -531,7 +531,7 @@ impl<'gc> Graph<'gc> {
         }
     }
 
-    fn find_root_const(&self, point: PointId) -> PointId {
+    pub fn find_root_const(&self, point: PointId) -> PointId {
         let mut cursor = point;
         loop {
             let parent = self.points[cursor].parent;
@@ -539,6 +539,22 @@ impl<'gc> Graph<'gc> {
                 return cursor;
             }
             cursor = parent;
+        }
+    }
+
+    /// The union-find root of an occurrence's point, resolving any binder
+    /// merging performed by the optimizer (`free_binder` may return a stale
+    /// descriptor after substitutions).
+    pub fn free_binder_rooted(&self, occ: FreeOcc) -> BoundVar {
+        let root = self.find_root_const(self.free_occ_links[occ].point);
+        self.point_descriptor_const(root)
+    }
+
+    /// The current (root-resolved) binder of a function's binding variable.
+    pub fn function_binder_rooted(&self, var: BoundVar) -> BoundVar {
+        match self.bound_var_occ(var) {
+            Some(occ) => self.free_binder_rooted(occ),
+            None => var,
         }
     }
 

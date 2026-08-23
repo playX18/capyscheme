@@ -62,6 +62,9 @@ pub struct Procedure<'gc> {
     pub params: Vec<UVar>,
     pub variadic: Option<UVar>,
     pub free_vars: Vec<UVar>,
+    /// True when slot 0 is a shared `EnvRecord` pointer rather than a captured
+    /// value.
+    pub env_shared: bool,
     pub sources: HashMap<UVar, LVarRef<'gc>>,
     pub entry: BlockId,
     pub blocks: Vec<Block<'gc>>,
@@ -108,7 +111,30 @@ pub enum Instruction<'gc> {
         dst: UVar,
         code: CodeId,
         kind: ClosureKind,
+        /// Physical free-var slot count (including the env pointer at slot 0
+        /// when `env` is `Some`).
         free_count: usize,
+        /// Shared `EnvRecord` operand: holds the free vars common to all
+        /// closures at this site; stored in slot 0, private captures in
+        /// slots 1.. `free_count`.
+        env: Option<Operand<'gc>>,
+    },
+    /// Allocate a shared closure environment record with `size` value slots.
+    MakeEnv {
+        dst: UVar,
+        size: usize,
+    },
+    /// Read slot `index` of the `EnvRecord` in `env`.
+    EnvRef {
+        dst: UVar,
+        env: Operand<'gc>,
+        index: usize,
+    },
+    /// Write slot `index` of the `EnvRecord` in `env`.
+    EnvSet {
+        env: Operand<'gc>,
+        index: usize,
+        value: Operand<'gc>,
     },
     ClosureRef {
         dst: UVar,
@@ -253,6 +279,8 @@ impl<'gc> Instruction<'gc> {
             Self::Assign { dst, .. }
             | Self::Const { dst, .. }
             | Self::MakeClosure { dst, .. }
+            | Self::MakeEnv { dst, .. }
+            | Self::EnvRef { dst, .. }
             | Self::ClosureRef { dst, .. }
             | Self::CacheRef { dst, .. }
             | Self::CacheSet { dst, .. }
@@ -261,7 +289,7 @@ impl<'gc> Instruction<'gc> {
             | Self::RestRef { dst, .. }
             | Self::RestLength { dst, .. }
             | Self::RestPredicate { dst, .. } => Some(*dst),
-            Self::ClosureSet { .. } => None,
+            Self::ClosureSet { .. } | Self::EnvSet { .. } => None,
         }
     }
 
@@ -276,7 +304,10 @@ impl<'gc> Instruction<'gc> {
         match self {
             Self::Assign { src, .. } => vec![*src],
             Self::Const { .. } => vec![],
-            Self::MakeClosure { .. } => vec![],
+            Self::MakeClosure { env, .. } => env.map_or(vec![], |env| vec![env]),
+            Self::MakeEnv { .. } => vec![],
+            Self::EnvRef { env, .. } => vec![*env],
+            Self::EnvSet { env, value, .. } => vec![*env, *value],
             Self::ClosureRef { closure, .. } => vec![*closure],
             Self::ClosureSet { closure, value, .. } => vec![*closure, *value],
             Self::CacheRef { cache_key, .. } => vec![*cache_key],
@@ -451,6 +482,7 @@ mod tests {
                     code: CodeId::GraphFunction(GraphCodeId(0)),
                     kind: ClosureKind::Function,
                     free_count: 1,
+                    env: None,
                 },
                 Instruction::ClosureSet {
                     closure: Operand::Local(closure),

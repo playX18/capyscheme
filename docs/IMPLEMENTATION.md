@@ -372,6 +372,19 @@ SCC-based one (`cps/scc_contify.rs`) and a dominator-based one
 and which continuations must be reified into closures, and
 `cfg/lower.rs` lowers the result to the CFG IR.
 
+### Closure Sharing
+
+Closures created at the same site share one heap `EnvRecord`
+(`runtime/value/env.rs`) instead of each carrying its common free
+variables inline. Whether a site shares is decided per site by
+`cps/share.rs` (disable with `CAPY_CLOSURE_SHARING=0`, dump decisions
+with `CAPY_SHARE_DUMP=1`), using escape information from `cps/flow.rs`.
+
+For example, five closures at one site all capture the same two
+variables; without sharing that costs 5 × 2 = 10 capture slots. With
+sharing, one `EnvRecord` holding `[x y]` is allocated and each closure
+stores a single pointer to it (slot 0) plus its own private captures.
+
 ### CFG
 
 The CFG IR (`crates/capy/src/compiler/cfg/ir.rs`) is a control-flow
