@@ -1638,7 +1638,7 @@ pub mod io_ops {
         let poller = ctx.allocate_with_header_word(
             Poller { inner },
             poller_header_word(),
-            crate::heap::mmtk::AllocationSemantics::NonMoving,
+            crate::heap::mmtk::AllocationSemantics::Los,
         );
 
         nctx.return_(poller)

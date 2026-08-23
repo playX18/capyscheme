@@ -196,7 +196,10 @@ impl<'gc> ThreadObject<'gc> {
                 interrupt_level: AtomicUsize::new(0),
             },
             thread_object_header_word(),
-            AllocationSemantics::NonMoving,
+            // Los: mmtk 0.33 generational plans never mark the NonMoving space
+            // during nursery GCs, so NonMoving objects are swept while live.
+            // LOS objects are non-moving but are traced and marked every GC.
+            AllocationSemantics::Los,
         )
     }
 
@@ -405,7 +408,7 @@ pub mod threading_ops {
         let gc_mutex = nctx.ctx.allocate_with_header_word(
             mutex,
             mutex_header_word(),
-            AllocationSemantics::NonMoving,
+            AllocationSemantics::Los,
         );
         nctx.return_(gc_mutex.into())
     }
@@ -438,10 +441,10 @@ pub mod threading_ops {
                 let scope = RootScope::new(nctx.ctx);
                 let retk = scope.root(nctx.retk);
                 let mutex_root = scope.root(mutex_obj.into());
-                // Mutex is NonMoving; interior stays stable across GC.
+                // Mutex is non-moving (LOS); interior stays stable across GC.
                 let mutex_ptr = NonNull::from(&*mutex_obj);
                 nctx.ctx.call_in_native(|| {
-                    // SAFETY: Mutex is NonMoving and rooted for the wait.
+                    // SAFETY: Mutex is non-moving and rooted for the wait.
                     let mutex_obj = unsafe { mutex_ptr.as_ref() };
                     loop {
                         match &mutex_obj.mutex {
@@ -549,7 +552,7 @@ pub mod threading_ops {
         let gc_condition = nctx.ctx.allocate_with_header_word(
             condition,
             condition_header_word(),
-            AllocationSemantics::NonMoving,
+            AllocationSemantics::Los,
         );
         nctx.return_(gc_condition.into())
     }
@@ -599,7 +602,7 @@ pub mod threading_ops {
         let _mutex_root = scope.root(mutex_obj.into());
         let _cond_root = scope.root(condition_obj.into());
         nctx.ctx.call_in_native(|| {
-            // SAFETY: Mutex/Condition are NonMoving and rooted for the wait.
+            // SAFETY: Mutex/Condition are non-moving (LOS) and rooted for the wait.
             let mutex_obj = unsafe { mutex_ptr.as_ref() };
             match &mutex_obj.mutex {
                 // SAFETY: Preconditions verified by the surrounding code
@@ -651,7 +654,7 @@ mod tests {
             let mutex = ctx.allocate_with_header_word(
                 mutex,
                 mutex_header_word(),
-                AllocationSemantics::NonMoving,
+                AllocationSemantics::Los,
             );
             assert_eq!(
                 mutex.as_gc_object().header().class_id(),
@@ -663,7 +666,7 @@ mod tests {
                     cond: parking_lot::Condvar::new(),
                 },
                 condition_header_word(),
-                AllocationSemantics::NonMoving,
+                AllocationSemantics::Los,
             );
             assert_eq!(
                 condition.as_gc_object().header().class_id(),
