@@ -146,6 +146,7 @@
 
 ### 🐛 Bug Fixes
 
+- *(bbv)* Widen slots of closures: prevents garbage values - ([5380a4a](https://codeberg.org/playXE/capy/commit/5380a4a12a82814c8b861c146840805109afc450))
 - *(bbv)* Paper algo more closely implemented - ([91e94e7](https://codeberg.org/playXE/capy/commit/91e94e7c2d7497d5040a2751b86d6a5051b9d0e5))
 - *(boot)* Add inf?, $set-attachments! and $winders wrapper functions - ([f113334](https://codeberg.org/playXE/capy/commit/f11333434a9702c25ec2e8806256f93396339ff3))
 - *(boot)* Make accessor and mutator for records safe - ([59a95d6](https://codeberg.org/playXE/capy/commit/59a95d694c2ca39100bbde5f4a5f4104512acbba))
@@ -163,6 +164,7 @@
 - *(ci)* Label names fix - ([8c12b89](https://codeberg.org/playXE/capy/commit/8c12b89c4c47586029004e4fac57b4674e866936))
 - *(cli)* Exit after --version instead of falling through to REPL - ([cb32802](https://codeberg.org/playXE/capy/commit/cb32802434fc6c8249ad977ae964450d9f6aee79))
 - *(compile-psyntax)* Compile psyntax in (capy) module - ([1a58feb](https://codeberg.org/playXE/capy/commit/1a58feb770bc67d3da71c1f28dcca7aec904c4c6))
+- *(compiler)* Tighten BigInt in BBV + GC write barriers - ([b8eb316](https://codeberg.org/playXE/capy/commit/b8eb316682427ca1317dced2d7d3a5e861ff31af))
 - *(core)* Make generic hashtables work properly - ([41cc6fd](https://codeberg.org/playXE/capy/commit/41cc6fd8ddaf740fe9bd21bd66410544c31d1e14))
 - *(cps)* Lower to wrong arity condition instead of panicking in compiler - ([8520d65](https://codeberg.org/playXE/capy/commit/8520d65e67679230c9be3e0f36fd64043327e774))
 - *(cps)* Disable DCE of primcalls in optimizer - ([7c0d2ab](https://codeberg.org/playXE/capy/commit/7c0d2ab8d61ddafaba25ffe4e571ba06796b113d))
@@ -206,6 +208,7 @@
 - *(srfi)* Re-export :1.scm as (srfi :1) for r6rs compat - ([4793862](https://codeberg.org/playXE/capy/commit/47938624879389932852f82fccc22701c3200de8))
 - *(srfi)* Re-export more procedures from (srfi 1) - ([e64fd9b](https://codeberg.org/playXE/capy/commit/e64fd9b1914216380a1968efbd46225b2e46b8dc))
 - *(tests)* Letrectify outputs letrec* - ([baaeb64](https://codeberg.org/playXE/capy/commit/baaeb64e059dfd8e61d17391e77c16cbb132690f))
+- *(threading)* Root variables during thread creation to avoid GC collection - ([60a710a](https://codeberg.org/playXE/capy/commit/60a710af920b4237355c79e5a1b99069779fbc2f))
 - *(threading)* Wait for thread to be in %thread-join-data - ([da930e1](https://codeberg.org/playXE/capy/commit/da930e1fd842576699fb3af6abdfb23f2af1f5cc))
 - *(tree-il)* Fix tree-il->scheme for receive term - ([fdd819b](https://codeberg.org/playXE/capy/commit/fdd819bcecfd786cd1338c5be2b043af3da7bf10))
 - *(tree-il/primitives)* Expand values to values term - ([29de7f3](https://codeberg.org/playXE/capy/commit/29de7f31acfa3ebccfc809440da9abfa75f9f363))
@@ -297,6 +300,7 @@
 - *(capy)* Infer switches even if block has more than 2 opcodes - ([7a50806](https://codeberg.org/playXE/capy/commit/7a508060197938b613dc1fe9e4db0787a21312d8))
 - *(capy)* Formatting - ([f596d65](https://codeberg.org/playXE/capy/commit/f596d656e66d6e18fcec0e6f53c950774a9650b3))
 - *(capy/gc)* Split heuristics into files; better adaptive heuristic - ([3c9fb07](https://codeberg.org/playXE/capy/commit/3c9fb074c861d7c0aceafcf6105c50977334445a))
+- *(capy/graph)* Rewrite tarjan SCC impl - ([f0020df](https://codeberg.org/playXE/capy/commit/f0020df630a3d66876b88a5ecf2a5acd46fb3bc0))
 - *(ci)* Mark nightly release as pre-release - ([3d33576](https://codeberg.org/playXE/capy/commit/3d3357644b6e7318cefb8f333c8f3935f577c71b))
 - *(compiler)* Cleaner pipeline - ([caaed59](https://codeberg.org/playXE/capy/commit/caaed59d358dbf3b46867e90c0f717e9db3d7b29))
 - *(compiler)* Rewrite self-hosted compiler in more clean code - ([fe13b3c](https://codeberg.org/playXE/capy/commit/fe13b3cf06af17e5ba42ad69e74fe0b33eae8fd9))
@@ -318,6 +322,7 @@
 - *(runtime)* Stats and cleaner code - ([b437c1e](https://codeberg.org/playXE/capy/commit/b437c1ed28183f54af52b1c87f4c66aba0feb51e))
 - *(runtime)* Make modules declarative by default - ([2b72f33](https://codeberg.org/playXE/capy/commit/2b72f33a17441c0f1c89a6bda8161f8cfb88e912))
 - *(srfi)* Full SRFI 214 + performance tuning - ([054c53a](https://codeberg.org/playXE/capy/commit/054c53a0dd0f003d77ef6bfe0b5a1d6a01bb3a8a))
+- Harden fix-letrec - ([06984c2](https://codeberg.org/playXE/capy/commit/06984c244aa6108da9af4b8c8b9b766758ab29ad))
 - Update MMTk, improve GC stats and add Chez-style time syntax - ([08a7c42](https://codeberg.org/playXE/capy/commit/08a7c4258a56bbc97d7e88aba19c9958642f05b6))
 - Rewrite modules cleanly - ([a8a6dde](https://codeberg.org/playXE/capy/commit/a8a6ddeff93414704f2080d217b29cebbf61c8d6))
 - Rewrite port system from scratch - ([eae9a1a](https://codeberg.org/playXE/capy/commit/eae9a1a256ed4c89bbc6d161fdbf0b7f41a9b7ef))
@@ -367,6 +372,7 @@
 
 - *(ci)* Always generate nightly changelog - ([a337d40](https://codeberg.org/playXE/capy/commit/a337d4061f39815e396db267910fa9f816c54984))
 - *(clippy)* Remove lint suppressions - ([45edac1](https://codeberg.org/playXE/capy/commit/45edac16a46149399299bc3ebf6622364a1ba547))
+- Udpate dependencies - ([771d723](https://codeberg.org/playXE/capy/commit/771d723ca59802fba9af4069a27ba904aea32786))
 - Remove .DS_Store - ([c6193bc](https://codeberg.org/playXE/capy/commit/c6193bcea4a3122fffaf205a4f3e30726e016dd1))
 - Update Cargo.lock - ([e736800](https://codeberg.org/playXE/capy/commit/e7368003bfee31260000f0331f7186b09dbac1d1))
 - Actualize github CI - ([62162b7](https://codeberg.org/playXE/capy/commit/62162b7de47b19e0edb0098e9538e08e71cba26a))
@@ -403,6 +409,7 @@
 ### ◀️ Revert
 
 - *(capy/cps)* Optimization caused bugs in bootstrap - ([cac6998](https://codeberg.org/playXE/capy/commit/cac69984aabb2d34e0f3688436d0ea13e8eb4e79))
+- *(makefile)* Use GenImmix during bootstrap, more reliable/less OOMs on 2GB heap - ([a34001d](https://codeberg.org/playXE/capy/commit/a34001d7264b3191d61e0a010e39c722a600182a))
 - GHC callconv - ([af51553](https://codeberg.org/playXE/capy/commit/af515530d3d6b7984c58cd7612b3fc1669b0ec41))
 - Stop checking the whole class hierarchy for primitvies - ([ef7741b](https://codeberg.org/playXE/capy/commit/ef7741bc23b0e92ba677a0c0fb1e3f22b7b92645))
 - Remove syscall:socket - ([e86e166](https://codeberg.org/playXE/capy/commit/e86e166453a84a26eb470dfc720d61b5fc5cbd3d))
