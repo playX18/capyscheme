@@ -16,9 +16,6 @@ use std::collections::HashSet;
 use super::graph::{FunctionLink, FunctionLinks, Graph, Parent, Subterm, TermId, TermKind};
 use crate::utils::flags;
 
-#[cfg(test)]
-use super::graph::Function;
-
 /// Merge every adjacent chain of `Fix`/`Letk` terms reachable from `root`
 /// into a single `Fix` group (functions + reified continuations), keeping
 /// non-reified continuations in a trailing `Letk`.
