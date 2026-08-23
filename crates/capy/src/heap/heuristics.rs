@@ -24,7 +24,11 @@ use mmtk::{
     },
 };
 
-use crate::{heap::mm::MemoryManager, utils::FormattedSize};
+use crate::{
+    heap::mm::MemoryManager,
+    utils::flags::{self, FlagId},
+    utils::FormattedSize,
+};
 
 mod adaptive;
 mod aggressive;
@@ -58,7 +62,7 @@ pub(crate) enum HeuristicMode {
 }
 
 impl HeuristicMode {
-    fn from_env_value(value: &str) -> Option<Self> {
+    fn from_word(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
             "adaptive" => Some(Self::Adaptive),
             "static" => Some(Self::Static),
@@ -144,51 +148,56 @@ impl HeuristicConfig {
     }
 
     pub(crate) fn from_env() -> Self {
-        let mode = env::var("CAPY_GC_HEURISTIC")
-            .ok()
-            .and_then(|value| HeuristicMode::from_env_value(&value))
-            .unwrap_or(HeuristicMode::Adaptive);
+        let mode = HeuristicMode::from_word(flags::gc_heuristic()).unwrap_or(HeuristicMode::Adaptive);
         let mut config = Self::defaults_for_mode(mode);
 
-        config.max_heap_bytes = env_size("CAPY_GC_MAX_HEAP").unwrap_or(config.max_heap_bytes);
-        config.min_free_threshold_percent = env_percent(
-            "CAPY_GC_MIN_FREE_PERCENT",
-            config.min_free_threshold_percent,
-        );
-        config.init_free_threshold_percent = env_percent(
-            "CAPY_GC_INIT_FREE_PERCENT",
-            config.init_free_threshold_percent,
-        );
-        config.allocation_threshold_percent = env_percent(
-            "CAPY_GC_ALLOCATION_THRESHOLD_PERCENT",
-            config.allocation_threshold_percent,
-        );
-        config.alloc_spike_factor_percent = env_percent(
-            "CAPY_GC_ALLOC_SPIKE_PERCENT",
-            config.alloc_spike_factor_percent,
-        );
-        config.learning_steps =
-            env_usize("CAPY_GC_LEARNING_STEPS").unwrap_or(config.learning_steps);
-        config.adaptive_confidence =
-            env_f64("CAPY_GC_ADAPTIVE_CONFIDENCE").unwrap_or(config.adaptive_confidence);
-        config.adaptive_spike_threshold =
-            env_f64("CAPY_GC_ADAPTIVE_SPIKE_THRESHOLD").unwrap_or(config.adaptive_spike_threshold);
-        config.acceleration_sample_count = env_usize("CAPY_GC_ACCELERATION_SAMPLE_COUNT")
-            .filter(|samples| *samples > 0)
-            .unwrap_or(config.acceleration_sample_count);
-        config.momentary_spike_sample_count = env_usize("CAPY_GC_MOMENTARY_SPIKE_SAMPLE_COUNT")
-            .filter(|samples| *samples > 0)
-            .unwrap_or(config.momentary_spike_sample_count);
-
-        if let Some(ms) = env_usize("CAPY_GC_GUARANTEED_INTERVAL_MS") {
+        if flags::is_set(FlagId::gc_max_heap) {
+            config.max_heap_bytes = flags::gc_max_heap();
+        }
+        if flags::is_set(FlagId::gc_min_free_percent) {
+            config.min_free_threshold_percent = flags::gc_min_free_percent();
+        }
+        if flags::is_set(FlagId::gc_init_free_percent) {
+            config.init_free_threshold_percent = flags::gc_init_free_percent();
+        }
+        if flags::is_set(FlagId::gc_allocation_threshold_percent) {
+            config.allocation_threshold_percent = flags::gc_allocation_threshold_percent();
+        }
+        if flags::is_set(FlagId::gc_alloc_spike_percent) {
+            config.alloc_spike_factor_percent = flags::gc_alloc_spike_percent();
+        }
+        if flags::is_set(FlagId::gc_learning_steps) {
+            config.learning_steps = flags::gc_learning_steps();
+        }
+        if flags::is_set(FlagId::gc_adaptive_confidence) {
+            config.adaptive_confidence = flags::gc_adaptive_confidence();
+        }
+        if flags::is_set(FlagId::gc_adaptive_spike_threshold) {
+            config.adaptive_spike_threshold = flags::gc_adaptive_spike_threshold();
+        }
+        if flags::is_set(FlagId::gc_acceleration_sample_count) {
+            let samples = flags::gc_acceleration_sample_count();
+            if samples > 0 {
+                config.acceleration_sample_count = samples;
+            }
+        }
+        if flags::is_set(FlagId::gc_momentary_spike_sample_count) {
+            let samples = flags::gc_momentary_spike_sample_count();
+            if samples > 0 {
+                config.momentary_spike_sample_count = samples;
+            }
+        }
+        if flags::is_set(FlagId::gc_acceleration_sample_period_ms) {
+            config.acceleration_sample_period =
+                Duration::from_millis(flags::gc_acceleration_sample_period_ms() as u64);
+        }
+        if flags::is_set(FlagId::gc_guaranteed_interval_ms) {
+            let ms = flags::gc_guaranteed_interval_ms();
             config.guaranteed_gc_interval = if ms == 0 {
                 None
             } else {
                 Some(Duration::from_millis(ms as u64))
             };
-        }
-        if let Some(ms) = env_usize("CAPY_GC_ACCELERATION_SAMPLE_PERIOD_MS") {
-            config.acceleration_sample_period = Duration::from_millis(ms as u64);
         }
 
         config
@@ -569,7 +578,7 @@ impl HeuristicState {
         snapshot: Option<HeapSnapshot>,
     ) {
         // Non-adaptive reasons reset the adaptive trigger classification.  That
-        // prevents later feedback from tuning rate/spike knobs for a min-free or
+        // prevents later feedback from tuning rate/spike flags for a min-free or
         // guaranteed-interval cycle.
         self.last_trigger_type = adaptive::TriggerType::Other;
         self.most_recent_declined_trigger_count = self.declined_trigger_count;
@@ -752,8 +761,8 @@ pub(crate) fn set_default_max_heap_bytes(bytes: usize) {
 }
 
 pub(crate) fn configured_max_heap_bytes() -> usize {
-    if let Some(bytes) = env_size("CAPY_GC_MAX_HEAP") {
-        return bytes;
+    if flags::is_set(FlagId::gc_max_heap) {
+        return flags::gc_max_heap();
     }
 
     let overridden = DEFAULT_MAX_HEAP_OVERRIDE.load(Ordering::Relaxed);
@@ -779,46 +788,6 @@ fn pages_to_bytes(pages: usize) -> usize {
     pages.saturating_mul(mmtk::util::constants::BYTES_IN_PAGE)
 }
 
-fn env_percent(name: &str, default: usize) -> usize {
-    env_usize(name)
-        .filter(|value| *value <= 100)
-        .unwrap_or(default)
-}
-
-fn env_usize(name: &str) -> Option<usize> {
-    env::var(name).ok()?.parse().ok()
-}
-
-fn env_f64(name: &str) -> Option<f64> {
-    env::var(name).ok()?.parse().ok()
-}
-
-fn env_size(name: &str) -> Option<usize> {
-    parse_size(&env::var(name).ok()?)
-}
-
 fn elapsed_seconds(start: Instant, end: Instant) -> f64 {
     end.saturating_duration_since(start).as_secs_f64()
-}
-
-fn parse_size(value: &str) -> Option<usize> {
-    let value = value.trim();
-    if value.is_empty() {
-        return None;
-    }
-
-    let split_at = value
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(value.len());
-    let (digits, suffix) = value.split_at(split_at);
-    let number = digits.parse::<usize>().ok()?;
-    let multiplier = match suffix.trim().to_ascii_lowercase().as_str() {
-        "" | "b" => 1,
-        "k" | "kb" => 1024,
-        "m" | "mb" => 1024 * 1024,
-        "g" | "gb" => 1024 * 1024 * 1024,
-        _ => return None,
-    };
-
-    number.checked_mul(multiplier)
 }

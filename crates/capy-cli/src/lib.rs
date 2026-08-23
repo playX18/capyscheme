@@ -5,33 +5,38 @@ use std::path::Path;
 
 use capy_sni::Scm;
 
-const GC_ARGS: &[(&str, &str)] = &[
+const MANUAL_FLAG_ROWS: &[(&str, &str)] = &[
     ("--gc-plan", "MMTK_PLAN"),
     ("--gc-trigger", "MMTK_GC_TRIGGER"),
-    ("--gc-max-heap", "CAPY_GC_MAX_HEAP"),
-    ("--gc-heuristic", "CAPY_GC_HEURISTIC"),
-    ("--gc-min-free-percent", "CAPY_GC_MIN_FREE_PERCENT"),
-    ("--gc-init-free-percent", "CAPY_GC_INIT_FREE_PERCENT"),
-    (
-        "--gc-allocation-threshold-percent",
-        "CAPY_GC_ALLOCATION_THRESHOLD_PERCENT",
-    ),
-    ("--gc-alloc-spike-percent", "CAPY_GC_ALLOC_SPIKE_PERCENT"),
-    ("--gc-learning-steps", "CAPY_GC_LEARNING_STEPS"),
-    (
-        "--gc-guaranteed-interval-ms",
-        "CAPY_GC_GUARANTEED_INTERVAL_MS",
-    ),
+    ("--debug", "CAPY_FASL_DEBUG"),
 ];
-
-/// Flags that must take effect before the Scheme CLI parses them, so that
-/// early loads (the boot stdlib) are covered as well. 
-const PRE_BOOT_ARGS: &[(&str, &str)] = &[("--debug", "CAPY_FASL_DEBUG")];
 
 const COMPILER_ENTRY_ARG: &str = "--capy-compiler-entrypoint";
 
+fn flag_table() -> Vec<(&'static str, &'static str)> {
+    let mut table: Vec<(&'static str, &'static str)> = Vec::new();
+    for line in Scm::flags_cli_aliases().lines() {
+        if let Some((flag, env)) = line.split_once(' ') {
+            table.push((flag, env));
+        }
+    }
+    table.extend(MANUAL_FLAG_ROWS.iter().copied());
+    table
+}
+
 pub fn run_cli(default_entry: &'static str) -> i32 {
-    let args = match apply_gc_args(std::env::args_os().collect()) {
+    let raw_args: Vec<OsString> = std::env::args_os().collect();
+
+    if raw_args
+        .iter()
+        .skip(1)
+        .any(|arg| arg == "--help-flags" || arg == "--dump-flags")
+    {
+        print!("{}", Scm::flags_help());
+        return 0;
+    }
+
+    let args = match apply_flag_args(raw_args) {
         Ok(args) => args,
         Err(message) => {
             eprintln!("{message}");
@@ -93,7 +98,8 @@ fn select_entrypoint(
     (default_entry, args)
 }
 
-fn apply_gc_args(args: Vec<OsString>) -> Result<Vec<OsString>, String> {
+fn apply_flag_args(args: Vec<OsString>) -> Result<Vec<OsString>, String> {
+    let table = flag_table();
     let mut output = Vec::with_capacity(args.len());
     let mut iter = args.into_iter();
     let Some(program) = iter.next() else {
@@ -109,9 +115,7 @@ fn apply_gc_args(args: Vec<OsString>) -> Result<Vec<OsString>, String> {
         }
 
         let arg_str = arg.to_string_lossy();
-        if let Some((env, value)) =
-            split_flag(&arg_str, GC_ARGS).or_else(|| split_flag(&arg_str, PRE_BOOT_ARGS))
-        {
+        if let Some((env, value)) = split_flag(&arg_str, &table) {
             let value = match value {
                 Some(value) => OsString::from(value),
                 None => iter

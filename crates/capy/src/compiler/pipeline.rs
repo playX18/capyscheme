@@ -177,14 +177,13 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
         let doc = lowered
             .original_il
             .pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
-        let mut file_noopt = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&path)
-            .expect("infallible allocation callback");
-        dump::log_dump_path("IR noopt", &path);
-        doc.1.render(80, &mut file_noopt).expect("invariant holds");
+        match std::fs::File::create(&path) {
+            Ok(mut file) => {
+                dump::COMPILE_ARTIFACTS.log_path("IR noopt", &path);
+                let _ = doc.1.render(80, &mut file);
+            }
+            Err(err) => dump::COMPILE_ARTIFACTS.warn_write("IR noopt", &path, &err),
+        }
     }
 
     if options.dump_ir {
@@ -192,22 +191,23 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
         let doc = lowered
             .optimized_il
             .pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&path)
-            .expect("infallible allocation callback");
-        dump::log_dump_path("IR", &path);
-        doc.1.render(80, &mut file).expect("invariant holds");
+        match std::fs::File::create(&path) {
+            Ok(mut file) => {
+                dump::COMPILE_ARTIFACTS.log_path("IR", &path);
+                let _ = doc.1.render(80, &mut file);
+            }
+            Err(err) => dump::COMPILE_ARTIFACTS.warn_write("IR", &path, &err),
+        }
     }
 
     if options.dump_graph {
         let path = dump::resolve_artifact_dump_path(destination, ".gcps.txt");
-        if let Some(graph_cps) = &lowered.graph_cps {
-            std::fs::write(&path, graph_cps).expect("invariant holds");
+        if let Some(graph_cps) = &lowered.graph_cps
+            && let Err(err) = std::fs::write(&path, graph_cps)
+        {
+            dump::COMPILE_ARTIFACTS.warn_write("GCPS", &path, &err);
         }
-        dump::log_dump_path("GCPS", &path);
+        dump::COMPILE_ARTIFACTS.log_path("GCPS", &path);
     }
 
     if options.dump_ssa {
@@ -215,7 +215,9 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
         let path = dump::resolve_artifact_dump_path(destination, ".ssa.txt");
         let mut rendered = crate::compiler::cfg::render_program(&lowered.ssa);
         rendered.push('\n');
-        std::fs::write(&path, rendered).expect("invariant holds");
-        dump::log_dump_path("SSA", &path);
+        if let Err(err) = std::fs::write(&path, rendered) {
+            dump::COMPILE_ARTIFACTS.warn_write("SSA", &path, &err);
+        }
+        dump::COMPILE_ARTIFACTS.log_path("SSA", &path);
     }
 }

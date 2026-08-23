@@ -97,10 +97,9 @@ pub fn compile_barrier(live: BarrierSelector) -> BarrierSelector {
     if let Some(b) = get_compile_barrier_override() {
         return b;
     }
-    if let Ok(s) = std::env::var("CAPY_BARRIER_KIND") {
-        if let Some(b) = parse_barrier_artifact_kind(s.trim()) {
-            return b;
-        }
+
+    if let Some(kind) = parse_barrier_artifact_kind(crate::utils::flags::barrier_kind()) {
+        return kind;
     }
     live
 }

@@ -149,7 +149,7 @@ use std::{
     fs::File,
     io::Write,
     mem::offset_of,
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use crate::runtime::vm::thunks::*;
@@ -767,55 +767,55 @@ impl<'gc> ModuleBuilder<'gc> {
             let compiled = match compile_function(&*isa, &mut cache) {
                 Ok(compiled) => compiled,
                 Err(err) => {
-                    // Hard-coded paths so a verify failure is always inspectable,
-                    // independent of CAPY_*_DUMP_DIR ownership / limits.
-                    let dump_dir = std::env::var_os("CAPY_DUMP_DIR")
-                        .map(PathBuf::from)
-                        .unwrap_or_else(|| PathBuf::from("/tmp/capy-verify-fail"));
-                    let _ = std::fs::create_dir_all(&dump_dir);
                     let safe_name = declared.name.replace(['/', '\\', ' '], "_");
-                    let fail_path = dump_dir.join(format!("{safe_name}.clif"));
-                    match File::create(&fail_path) {
-                        Ok(mut file) => {
-                            let _ = write_cranelift_dump(
+                    if let Some(fail_path) =
+                        crate::compiler::dump::resolve_verify_fail_path(&safe_name, "clif")
+                    {
+                        let write_result = (|| -> Result<(), String> {
+                            let mut file =
+                                File::create(&fail_path).map_err(|io_err| io_err.to_string())?;
+                            write_cranelift_dump(
                                 &mut file,
                                 declared.function.index(),
                                 &declared.name,
                                 &cache.ctx.func,
-                            );
-                            eprintln!(
-                                ";; TRACE  (capy)@compile: verify-fail CLIF -> {}",
+                            )
+                        })();
+                        match write_result {
+                            Ok(()) => {
+                                crate::compiler::dump::VERIFY_FAIL
+                                    .log_path("verify-fail CLIF", &fail_path);
+                            }
+                            Err(io_err) => eprintln!(
+                                ";; WARN  (capy)@verify-fail: could not write {}: {io_err}",
                                 fail_path.display()
-                            );
+                            ),
                         }
-                        Err(io_err) => eprintln!(
-                            ";; WARN  (capy)@compile: could not write {}: {io_err}",
-                            fail_path.display()
-                        ),
                     }
-                    let ssa_path = dump_dir.join(format!("{safe_name}.ssa.txt"));
-                    let rendered = crate::compiler::cfg::render_program(&Program {
-                        entry: declared.procedure.code,
-                        procedures: vec![declared.procedure.clone()],
-                    });
-                    match std::fs::write(&ssa_path, &rendered) {
-                        Ok(()) => eprintln!(
-                            ";; TRACE  (capy)@compile: verify-fail SSA -> {}",
-                            ssa_path.display()
-                        ),
-                        Err(io_err) => eprintln!(
-                            ";; WARN  (capy)@compile: could not write {}: {io_err}",
-                            ssa_path.display()
-                        ),
+                    if let Some(ssa_path) =
+                        crate::compiler::dump::resolve_verify_fail_path(&safe_name, "ssa.txt")
+                    {
+                        let rendered = crate::compiler::cfg::render_program(&Program {
+                            entry: declared.procedure.code,
+                            procedures: vec![declared.procedure.clone()],
+                        });
+                        crate::compiler::dump::VERIFY_FAIL.write_at(
+                            "verify-fail SSA",
+                            &ssa_path,
+                            &rendered,
+                        );
                     }
                     // Also dump the full module SSA for cross-procedure context.
-                    let full_path = dump_dir.join("module.ssa.txt");
-                    let full = crate::compiler::cfg::render_program(&self.program);
-                    let _ = std::fs::write(&full_path, full);
-                    eprintln!(
-                        ";; TRACE  (capy)@compile: verify-fail module SSA -> {}",
-                        full_path.display()
-                    );
+                    if let Some(full_path) =
+                        crate::compiler::dump::resolve_verify_fail_path("module", "ssa.txt")
+                    {
+                        let full = crate::compiler::cfg::render_program(&self.program);
+                        crate::compiler::dump::VERIFY_FAIL.write_at(
+                            "verify-fail module SSA",
+                            &full_path,
+                            &full,
+                        );
+                    }
                     return Err(err);
                 }
             };

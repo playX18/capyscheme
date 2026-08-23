@@ -45,6 +45,24 @@ impl Scm {
         self.ptr
     }
 
+    /// Flag introspection from `libcapy` (no VM initialization): the
+    /// human-readable listing of every flag (`capy --help-flags`).
+    pub fn flags_help() -> &'static str {
+        // SAFETY: libcapy returns a static, NUL-terminated UTF-8 string.
+        unsafe { std::ffi::CStr::from_ptr(sys::capy_flags_help()) }
+            .to_str()
+            .expect("flag help text is UTF-8")
+    }
+
+    /// Flag introspection from `libcapy` (no VM initialization): one
+    /// `--cli-alias ENV_VAR` pair per line, feeding the pre-boot flag table.
+    pub fn flags_cli_aliases() -> &'static str {
+        // SAFETY: libcapy returns a static, NUL-terminated UTF-8 string.
+        unsafe { std::ffi::CStr::from_ptr(sys::capy_flags_cli_aliases()) }
+            .to_str()
+            .expect("CLI alias table is UTF-8")
+    }
+
     /// Enter the mutator and run `f` with an [`Env`].
     ///
     /// The env is branded with an anonymous lifetime so neither it nor any

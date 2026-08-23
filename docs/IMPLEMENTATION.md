@@ -93,7 +93,7 @@ that copy binaries always see the fresh build. Environment for running
 capy during the build is collected in `CAPY_ENV`: `MMTK_PLAN`
 (default `StickyImmix`), `XDG_CACHE_HOME` (pointed at
 `stage-0/cache`), `CAPY_LOAD_PATH=./lib`, `CAPY_GC_MAX_HEAP`,
-`RUST_MIN_STACK`, and optional dump/tuning knobs (`CAPY_SBBV_*`,
+`RUST_MIN_STACK`, and optional dump/tuning flags (`CAPY_SBBV_*`,
 `CAPY_COMPILE_DUMP*`, `CAPY_BARRIER_KIND`).
 
 The runtime itself is two cargo builds: the `capy` crate produces
@@ -420,23 +420,7 @@ where types become known, splits primitives into checked, unchecked,
 and overflow variants (e.g. `FxAdd` versus `FxAddUnchecked` and
 `FxAddOvf`), and fuses single-use comparisons into `branch-prim`
 terminators. See also: "Static Basic Block Versioning", Mélanson,
-Feeley, and Serrano, ECOOP 2024. The version budget is controlled by
-`CAPY_SBBV_VERSION_LIMIT` (default 2; 0 disables SBBV), and
-`CAPY_SBBV_DUMP` (values like `1`, `pre`, `expand`, `specialize`,
-`all`), `CAPY_SBBV_DUMP_DIR`, and `CAPY_SBBV_DUMP_LIMIT` dump the CFG
-around SBBV stages.
-
-### Dumps
-
-`compiler/dump.rs` implements compiler dumps, selected with
-`CAPY_COMPILE_DUMP` (a comma-separated list of `ir`, `gcps`, `ssa`,
-`clif`, `asm`, or `all`), with `CAPY_COMPILE_DUMP_DIR` (or
-`CAPY_DUMP_DIR`) choosing the output directory, `CAPY_COMPILE_DUMP_LIMIT`
-capping how many compilations dump, and `CAPY_COMPILE_DUMP_NOOPT`
-adding the unoptimized TreeIL. The artifacts are `.ir.scm` and
-`.ir.noopt.scm` (TreeIL after and before the Rust passes), `.gcps.txt`
-(graph CPS), `.ssa.txt` (the CFG IR), plus Cranelift IR and annotated
-host disassembly.
+Feeley, and Serrano, ECOOP 2024. 
 
 # Backends
 

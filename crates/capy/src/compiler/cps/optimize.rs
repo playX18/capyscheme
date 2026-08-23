@@ -1,15 +1,9 @@
-use std::{
-    env, fs,
-    path::Path,
-    sync::atomic::{AtomicUsize, Ordering},
-};
-
 use cranelift_entity::{EntitySet, SecondaryMap};
 
 use crate::{
-    compiler::cfg::Program,
+    compiler::{cfg::Program, dump},
     runtime::{Context, value::Value},
-    utils::pass_profile::ProfileScope,
+    utils::{flags, pass_profile::ProfileScope},
 };
 
 use super::fold::folding_table;
@@ -30,8 +24,6 @@ use super::{
 pub const DEFAULT_GAS: usize = 42_000;
 const MAX_RECURSIVE_UNROLL_DEPTH: usize = 1;
 const MAX_RECURSIVE_UNROLL_TERMS: usize = 48;
-
-static CONTIFY_DUMP_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OptimizationStats {
@@ -74,12 +66,12 @@ pub enum ContifyMode {
 
 impl ContifyMode {
     fn current() -> Self {
-        match env::var("CAPY_GCPS_CONTIFY").ok().as_deref() {
-            Some("0" | "off" | "none" | "false") => Self::Off,
-            Some("scc" | "legacy") => Self::Scc,
-            Some("both" | "dom+scc" | "dom-then-scc") => Self::DomThenScc,
-            Some("dom" | "dominator" | "dominators") | None => Self::Dom,
-            Some(_) => Self::Dom,
+        match flags::gcps_contify() {
+            "off" | "0" | "none" | "false" => Self::Off,
+            "scc" | "legacy" => Self::Scc,
+            "both" | "dom+scc" | "dom-then-scc" => Self::DomThenScc,
+            // "dom", "dominator", "dominators", or the "" unset marker.
+            _ => Self::Dom,
         }
     }
 }
@@ -172,7 +164,7 @@ pub fn optimize_graph_func_to_ssa<'gc>(
     // Shared-environment analysis (disabled with CAPY_CLOSURE_SHARING=0;
     // decisions dumped with CAPY_SHARE_DUMP=1).
     let mut share_profile = ProfileScope::new("compiler.lower.gcps.closure_share");
-    let sharing_enabled = env::var("CAPY_CLOSURE_SHARING").map_or(true, |v| v != "0");
+    let sharing_enabled = flags::closure_sharing();
     let root = program
         .graph
         .read_term_link(program.root())
@@ -180,7 +172,7 @@ pub fn optimize_graph_func_to_ssa<'gc>(
     let stages = super::analysis::StageAnalysis::new(&program.graph, &graph_reify);
     // Flow analysis (call web, closure classes, escape).
     let flow = super::flow::FlowAnalysis::new(&program.graph, &graph_reify);
-    if env::var("CAPY_SHARE_DUMP").map_or(false, |v| v != "0") {
+    if flags::share_dump() {
         let recursive = super::analysis::recursive_functions(&program.graph, &graph_reify);
         let escaping = graph_reify
             .functions
@@ -207,7 +199,7 @@ pub fn optimize_graph_func_to_ssa<'gc>(
     if share_profile.is_enabled() {
         share_profile.field("shared_sites", share.sites().count());
     }
-    if env::var("CAPY_SHARE_DUMP").map_or(false, |v| v != "0") {
+    if flags::share_dump() {
         for (site, decision) in share.sites() {
             let kinds: Vec<&str> = decision
                 .members
@@ -2462,61 +2454,39 @@ fn next_contify_dump_index(source: ContifySource) -> Option<usize> {
     if !contify_dump_enabled_for(source) {
         return None;
     }
-
-    let index = CONTIFY_DUMP_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    let limit = env::var("CAPY_GCPS_DUMP_LIMIT")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(usize::MAX);
-    (index <= limit).then_some(index)
+    dump::GCPS_CONTIFY.next_slot_id()
 }
 
 fn contify_dump_enabled_for(source: ContifySource) -> bool {
-    let Some(value) = env::var("CAPY_GCPS_DUMP_CONTIFY").ok() else {
+    let words = flags::gcps_dump_contify();
+    if words.is_empty() {
         return false;
-    };
-
-    match value.to_ascii_lowercase().as_str() {
-        "" | "0" | "off" | "none" | "false" => false,
-        "1" | "on" | "true" | "all" => true,
-        "scc" | "legacy" => source == ContifySource::Scc,
-        "dom" | "dominator" | "dominators" => source == ContifySource::Dominator,
-        _ => true,
+    }
+    let disabled = words.iter().any(|w| matches!(*w, "0" | "off" | "none" | "false"));
+    let all = words.iter().any(|w| matches!(*w, "1" | "on" | "true" | "all"));
+    let scc = words.iter().any(|w| matches!(*w, "scc" | "legacy"));
+    let dom = words.iter().any(|w| matches!(*w, "dom" | "dominator" | "dominators"));
+    if disabled {
+        false
+    } else if all {
+        true
+    } else if scc {
+        source == ContifySource::Scc
+    } else if dom {
+        source == ContifySource::Dominator
+    } else {
+        // Only unknown words were given: dump everything, like the old parser.
+        true
     }
 }
 
 fn emit_contification_dump(index: usize, phase: &str, dump: &str) {
-    let Some(dir) = env::var("CAPY_GCPS_DUMP_DIR").ok() else {
+    let Some(path) = dump::GCPS_CONTIFY.resolve_at(index, &format!("contify-{phase}"), "txt") else {
+        // Directory unusable: keep the dump visible on stderr.
         eprint!("{dump}");
         return;
     };
-
-    let dir = Path::new(&dir);
-    if let Err(error) = fs::create_dir_all(dir) {
-        eprintln!(
-            "gcps contify dump #{index} {phase}: failed to create {}: {error}",
-            dir.display()
-        );
-        eprint!("{dump}");
-        return;
-    }
-
-    let path = dir.join(format!("gcps-contify-{index:06}-{phase}.txt"));
-    match fs::write(&path, dump) {
-        Ok(()) => {
-            eprintln!(
-                "gcps contify dump #{index} {phase}: wrote {}",
-                path.display()
-            );
-        }
-        Err(error) => {
-            eprintln!(
-                "gcps contify dump #{index} {phase}: failed to write {}: {error}",
-                path.display()
-            );
-            eprint!("{dump}");
-        }
-    }
+    dump::GCPS_CONTIFY.write_at(&format!("contify {phase}"), &path, dump);
 }
 
 #[cfg(test)]

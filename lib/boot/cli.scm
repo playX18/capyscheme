@@ -22,6 +22,139 @@
   (define (canonicalize-paths paths)
     (map canonicalize-path-string paths))
 
+  (define (add-flag-options! parser)
+    (argparser-add-separator! parser "Compiler tuning options:")
+    (add-option! parser
+      "share-min-overlap"
+      (defaults-to "2")
+      (value-help "N")
+      (help "Min record-resident free vars per member for a site to join a shared env record."))
+    (add-option! parser
+      "share-chain-cost"
+      (defaults-to "3")
+      (value-help "N")
+      (help "Cross-site chain-head record cost in words."))
+    (add-flag! parser
+      "share-order"
+      (defaults-to #f)
+      (help "Restore the FCO stage-ordering gate for closure-sharing reuse sites."))
+    (add-flag! parser
+      "share-dump"
+      (defaults-to #f)
+      (help "Print per-site closure-sharing decisions and flow stats."))
+    (add-flag! parser
+      "closure-sharing"
+      (defaults-to #t)
+      (help "Enable shared closure environments (EnvRecord); 0 disables sharing."))
+    (add-option! parser
+      "gcps-contify"
+      (defaults-to "dom")
+      (value-help "MODE")
+      (help "Contification strategy: off, scc, dom, or both (dom+scc)."))
+    (add-flag! parser
+      "profile-passes"
+      (defaults-to #f)
+      (help "Emit PERF (capy) phase-timing lines to stderr."))
+
+    (argparser-add-separator! parser "Dump options:")
+    (add-option! parser
+      "dump-compile"
+      (value-help "KINDS")
+      (help "Per-compilation artifact dumps (comma-separated): ir, gcps, ssa, clif, asm, noopt, or all."))
+    (add-option! parser
+      "dump-sbbv"
+      (value-help "STAGES")
+      (help "SBBV CFG stage dumps (comma-separated): pre, expand, specialize, or post-* stages."))
+    (add-option! parser
+      "dump-gcps-contify"
+      (value-help "SRC")
+      (help "GCPS contification dumps: scc, dom, or all."))
+    (add-option! parser
+      "dump-dir"
+      (value-help "DIR")
+      (help "Shared fallback directory for dump artifacts (default ./capy-dumps)."))
+
+    (argparser-add-separator! parser "Garbage collection options:")
+    (add-option! parser
+      "gc-plan"
+      (defaults-to "ConcurrentImmix")
+      (value-help "PLAN")
+      (help "Select the MMTK GC plan (StickyImmix, ConcurrentImmix, MarkSweep, Immix, SemiSpace, GenImmix, GenCopy)."))
+    (add-option! parser
+      "gc-trigger"
+      (defaults-to "Delegated")
+      (value-help "TRIGGER")
+      (help "Set the MMTK GC trigger policy."))
+    (add-option! parser
+      "gc-heuristic"
+      (defaults-to "adaptive")
+      (value-help "MODE")
+      (help "GC trigger heuristic: adaptive, static, compact, aggressive, or passive."))
+    (add-option! parser
+      "gc-max-heap"
+      (defaults-to "2G")
+      (value-help "SIZE")
+      (help "Maximum heap size with optional K/M/G suffix (e.g. 2G)."))
+    (add-option! parser
+      "gc-min-free-percent"
+      (defaults-to "10")
+      (value-help "PERCENT")
+      (help "Minimum free heap threshold, percent of the heap (0-100)."))
+    (add-option! parser
+      "gc-init-free-percent"
+      (defaults-to "70")
+      (value-help "PERCENT")
+      (help "Initial free heap threshold, percent of the heap (0-100)."))
+    (add-option! parser
+      "gc-allocation-threshold-percent"
+      (defaults-to "0")
+      (value-help "PERCENT")
+      (help "Allocation-since-GC threshold, percent of the heap (compact mode; 0-100)."))
+    (add-option! parser
+      "gc-alloc-spike-percent"
+      (defaults-to "5")
+      (value-help "PERCENT")
+      (help "Allocation spike detection factor, percent (0-100)."))
+    (add-option! parser
+      "gc-learning-steps"
+      (defaults-to "5")
+      (value-help "STEPS")
+      (help "History length used by the adaptive heuristic."))
+    (add-option! parser
+      "gc-adaptive-confidence"
+      (defaults-to "1.8")
+      (value-help "N")
+      (help "Confidence multiplier for the adaptive heuristic."))
+    (add-option! parser
+      "gc-adaptive-spike-threshold"
+      (defaults-to "1.8")
+      (value-help "N")
+      (help "Spike threshold for the adaptive heuristic."))
+    (add-option! parser
+      "gc-acceleration-sample-period-ms"
+      (defaults-to "15")
+      (value-help "MS")
+      (help "Acceleration sampling period in milliseconds."))
+    (add-option! parser
+      "gc-acceleration-sample-count"
+      (defaults-to "8")
+      (value-help "N")
+      (help "Number of acceleration samples."))
+    (add-option! parser
+      "gc-momentary-spike-sample-count"
+      (defaults-to "3")
+      (value-help "N")
+      (help "Number of momentary spike samples."))
+    (add-option! parser
+      "gc-guaranteed-interval-ms"
+      (defaults-to "300000")
+      (value-help "MS")
+      (help "Force a GC at least this often; 0 = off."))
+    (add-option! parser
+      "barrier-kind"
+      (value-help "KIND")
+      (help "Compile-time barrier override: nobarrier, objbarrier, satbbarrier, or fieldbarrier (unset = live plan).")))
+
   (define (parse-entrypoint str)
     (read (open-input-string str)))
 
@@ -137,6 +270,10 @@
     (add-flag! parser
       "help"
       (help "Show this help message and exit"))
+    (add-flag! parser
+      "help-flags"
+      (aliases '("dump-flags"))
+      (help "List every flag (env var and CLI alias) with current value and exit"))
     (add-option! parser
       "script"
       (abbreviation "s")
@@ -198,57 +335,7 @@
       "debug"
       (defaults-to #f)
       (help "Enable debug stack traces for FASL code (including stdlib)"))
-    (argparser-add-separator! parser "Garbage collection options:")
-    (add-option! parser
-      "gc-plan"
-      (defaults-to "ConcurrentImmix")
-      (value-help "PLAN")
-      (help "Select the MMTK GC plan (StickyImmix, ConcurrentImmix, MarkSweep, Immix, SemiSpace, GenImmix, or GenCopy)"))
-    (add-option! parser
-      "gc-trigger"
-      (defaults-to "Delegated")
-      (value-help "TRIGGER")
-      (help "Set the MMTK GC trigger policy"))
-    (add-option! parser
-      "gc-max-heap"
-      (defaults-to "2G")
-      (value-help "SIZE")
-      (help "Set the maximum heap size"))
-    (add-option! parser
-      "gc-heuristic"
-      (defaults-to "adaptive")
-      (value-help "MODE")
-      (help "Select the Capy GC heuristic"))
-    (add-option! parser
-      "gc-min-free-percent"
-      (defaults-to "10")
-      (value-help "PERCENT")
-      (help "Set the minimum free heap threshold"))
-    (add-option! parser
-      "gc-init-free-percent"
-      (defaults-to "70")
-      (value-help "PERCENT")
-      (help "Set the initial free heap threshold"))
-    (add-option! parser
-      "gc-allocation-threshold-percent"
-      (defaults-to "0")
-      (value-help "PERCENT")
-      (help "Set the allocation threshold for GC heuristics"))
-    (add-option! parser
-      "gc-alloc-spike-percent"
-      (defaults-to "5")
-      (value-help "PERCENT")
-      (help "Set the allocation spike threshold for GC heuristics"))
-    (add-option! parser
-      "gc-learning-steps"
-      (defaults-to "5")
-      (value-help "STEPS")
-      (help "Set the GC heuristic learning window"))
-    (add-option! parser
-      "gc-guaranteed-interval-ms"
-      (defaults-to "300000")
-      (value-help "MILLISECONDS")
-      (help "Set the guaranteed GC interval"))
+    (add-flag-options! parser)
     (argparser-add-separator! parser "Logging options:")
     (add-flag! parser
       "log-trace"
@@ -455,57 +542,7 @@
     (defaults-to #f)
     (help "Dump native-code disassembly for each compiled file"))
 
-  (argparser-add-separator! parser "Garbage collection options:")
-  (add-option! parser
-    "gc-plan"
-    (defaults-to "ConcurrentImmix")
-    (value-help "PLAN")
-    (help "Select the MMTK GC plan (StickyImmix, ConcurrentImmix, MarkSweep, Immix, SemiSpace, GenImmix, or GenCopy)"))
-  (add-option! parser
-    "gc-trigger"
-    (defaults-to "Delegated")
-    (value-help "TRIGGER")
-    (help "Set the MMTK GC trigger policy"))
-  (add-option! parser
-    "gc-max-heap"
-    (defaults-to "2G")
-    (value-help "SIZE")
-    (help "Set the maximum heap size"))
-  (add-option! parser
-    "gc-heuristic"
-    (defaults-to "adaptive")
-    (value-help "MODE")
-    (help "Select the Capy GC heuristic"))
-  (add-option! parser
-    "gc-min-free-percent"
-    (defaults-to "10")
-    (value-help "PERCENT")
-    (help "Set the minimum free heap threshold"))
-  (add-option! parser
-    "gc-init-free-percent"
-    (defaults-to "70")
-    (value-help "PERCENT")
-    (help "Set the initial free heap threshold"))
-  (add-option! parser
-    "gc-allocation-threshold-percent"
-    (defaults-to "0")
-    (value-help "PERCENT")
-    (help "Set the allocation threshold for GC heuristics"))
-  (add-option! parser
-    "gc-alloc-spike-percent"
-    (defaults-to "5")
-    (value-help "PERCENT")
-    (help "Set the allocation spike threshold for GC heuristics"))
-  (add-option! parser
-    "gc-learning-steps"
-    (defaults-to "5")
-    (value-help "STEPS")
-    (help "Set the GC heuristic learning window"))
-  (add-option! parser
-    "gc-guaranteed-interval-ms"
-    (defaults-to "300000")
-    (value-help "MILLISECONDS")
-    (help "Set the guaranteed GC interval"))
+  (add-flag-options! parser)
 
   (add-multi-option! parser
     "load-path"
@@ -542,5 +579,9 @@
   (add-flag! parser
     "help"
     (help "Show this help message and exit"))
+  (add-flag! parser
+    "help-flags"
+    (aliases '("dump-flags"))
+    (help "List every flag (env var and CLI alias) with current value and exit"))
 
   (run))

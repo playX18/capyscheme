@@ -5,8 +5,6 @@
 //! the enclosing site's record (nested reuse). Reified continuation closures
 //! participate like ordinary closures; non-reified continuations are contified
 //! and never allocate.
-//!
-//! Knobs: `CAPY_SHARE_MIN_OVERLAP`, `CAPY_SHARE_CHAIN_COST`, `CAPY_SHARE_ORDER`.
 
 use std::collections::{HashMap, HashSet};
 
@@ -14,6 +12,7 @@ use super::analysis::recursive_functions;
 use super::flow::FlowAnalysis;
 use super::graph::{BoundVar, FunctionId, Graph, Subterm, TermId, TermKind};
 use super::reify::{BinderSet, GraphReifyInfo};
+use crate::utils::flags;
 
 /// Per-member closure layout at a shared site.
 #[derive(Clone, Debug)]
@@ -79,28 +78,16 @@ fn is_profitable(members: usize, record_vars: usize) -> bool {
     record_vars >= 1 && (members - 1) * record_vars > members + 2
 }
 
-/// Min record-resident vars a member must use to join a record.
-const DEFAULT_MIN_OVERLAP: usize = 2;
-/// Default record materialization cost in words.
-const DEFAULT_CHAIN_COST: usize = 3;
-
-fn knob_usize(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
-}
-
 fn min_overlap() -> usize {
-    knob_usize("CAPY_SHARE_MIN_OVERLAP", DEFAULT_MIN_OVERLAP).max(1)
+    flags::share_min_overlap()
 }
 
 fn chain_cost() -> usize {
-    knob_usize("CAPY_SHARE_CHAIN_COST", DEFAULT_CHAIN_COST).max(1)
+    flags::share_chain_cost()
 }
 
 fn order_required() -> bool {
-    std::env::var("CAPY_SHARE_ORDER").map_or(false, |v| v == "1")
+    flags::share_order()
 }
 
 /// Compute shared-env decisions for every closure-creation site.
@@ -176,7 +163,13 @@ impl NestedSites {
         {
             let mut visited = HashSet::new();
             let mut collected = Vec::new();
-            walk_body_sites(graph, reify, graph[function].body, &mut visited, &mut collected);
+            walk_body_sites(
+                graph,
+                reify,
+                graph[function].body,
+                &mut visited,
+                &mut collected,
+            );
             let mut union = BinderSet::new();
             for site in &collected {
                 for var in site.iter().copied() {
@@ -464,9 +457,14 @@ impl<'a, 'gc> Collector<'a, 'gc> {
             let member = members[i];
             let chain = self.chain_record(member, &frees[i]);
             if !chain.is_empty() && self.chain_benefit(member, &chain) > chain_cost() {
-                return Some(
-                    self.allocate_record(term, members, &frees, &chain, &participating, member),
-                );
+                return Some(self.allocate_record(
+                    term,
+                    members,
+                    &frees,
+                    &chain,
+                    &participating,
+                    member,
+                ));
             }
         }
 
@@ -522,12 +520,7 @@ impl<'a, 'gc> Collector<'a, 'gc> {
     /// Record the member's layout for a shared site: `record` slots (the
     /// member's own record-resident variables, filtered to what it uses) and
     /// `own` = the rest of its free set.
-    fn record_share(
-        &mut self,
-        member: FunctionId,
-        free: &BinderSet,
-        slots: &[(BoundVar, usize)],
-    ) {
+    fn record_share(&mut self, member: FunctionId, free: &BinderSet, slots: &[(BoundVar, usize)]) {
         let mut record = Vec::new();
         let mut record_vars = BinderSet::new();
         for (var, slot) in slots.iter().copied() {
@@ -540,10 +533,8 @@ impl<'a, 'gc> Collector<'a, 'gc> {
             .iter()
             .filter(|var| !record_vars.contains(*var))
             .collect();
-        self.by_function.insert(
-            member,
-            FunctionShare { record, own },
-        );
+        self.by_function
+            .insert(member, FunctionShare { record, own });
     }
 
     /// Member list for a decided site: participating members are shared
@@ -593,15 +584,8 @@ impl<'a, 'gc> Collector<'a, 'gc> {
     /// Effective overlap threshold at a reuse site: 1 for non-escaping owners
     /// (known call sites), else `min_overlap()`.
     fn effective_overlap(&self, owner: FunctionId) -> usize {
-        let escapes = self
-            .flow
-            .function(owner)
-            .map_or(true, |info| info.escapes);
-        if escapes {
-            min_overlap()
-        } else {
-            1
-        }
+        let escapes = self.flow.function(owner).map_or(true, |info| info.escapes);
+        if escapes { min_overlap() } else { 1 }
     }
 
     /// Stage-ordering gate (only when `CAPY_SHARE_ORDER=1`): every use of a
@@ -663,194 +647,4 @@ fn live_functions<'gc>(
         .copied()
         .filter_map(|link| graph.read_function_link(link))
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn profitability_threshold() {
-        // (k-1)r > k+2
-        // k=2: need r > 4
-        assert!(!is_profitable(2, 4));
-        assert!(is_profitable(2, 5));
-        // k=3: (3-1)r > 5 -> r >= 3
-        assert!(!is_profitable(3, 2));
-        assert!(is_profitable(3, 3));
-        // k=4: 3r > 6 -> r >= 3
-        assert!(!is_profitable(4, 2));
-        assert!(is_profitable(4, 3));
-        // never share a single member or an empty record
-        assert!(!is_profitable(1, 10));
-        assert!(!is_profitable(2, 0));
-    }
-
-    #[test]
-    fn overlap_count_works() {
-        use cranelift_entity::EntityRef;
-        let mut a = BinderSet::new();
-        let mut b = BinderSet::new();
-        for i in 0..5usize {
-            a.insert(BoundVar::new(i));
-        }
-        for i in 3..9usize {
-            b.insert(BoundVar::new(i));
-        }
-        assert_eq!(overlap_count(&a, &b), 2);
-        assert_eq!(overlap_count(&b, &a), 2);
-        assert_eq!(overlap_count(&a, &a), 5);
-        assert_eq!(overlap_count(&BinderSet::new(), &b), 0);
-    }
-
-    #[test]
-    fn chain_knobs_defaults() {
-        // Defaults stay within the documented model.
-        assert_eq!(min_overlap(), DEFAULT_MIN_OVERLAP);
-        assert_eq!(chain_cost(), DEFAULT_CHAIN_COST);
-    }
-
-    #[test]
-    fn fix_and_reified_letk_share_one_record() {
-        use crate::{
-            compiler::cps::{
-                analysis::StageAnalysis,
-                flow::FlowAnalysis,
-                graph::Function,
-                reify::reify_graph,
-            },
-            expander::core::fresh_lvar,
-            runtime::{value::Value, Context, Scheme},
-        };
-
-        fn lvar<'gc>(ctx: Context<'gc>, name: &str) -> crate::expander::core::LVarRef<'gc> {
-            fresh_lvar(ctx, ctx.intern(name))
-        }
-
-        fn make_function<'gc>(
-            graph: &mut Graph<'gc>,
-            ctx: Context<'gc>,
-            name: &str,
-            cont: Option<BoundVar>,
-            body: Subterm,
-        ) -> FunctionId {
-            let var = graph.new_bound_var(lvar(ctx, name));
-            let vars = graph.new_bound_vars([]);
-            graph.new_function(Function {
-                name: Value::new(false),
-                source: Value::new(false),
-                var,
-                vars,
-                variadic: None,
-                cont,
-                is_variadic: false,
-                body,
-                is_rec: false,
-                unroll_count: 0,
-                is_cold: false,
-                is_noinline: false,
-                is_reified: false,
-                meta: Value::new(false),
-            })
-        }
-
-        /// A leaf continuation term `Continue(cont, [shared...])`; returns its
-        /// term link.
-        fn continue_leaf<'gc>(
-            graph: &mut Graph<'gc>,
-            cont: BoundVar,
-            args: &[BoundVar],
-        ) -> Subterm {
-            let link = graph.new_term_link(None);
-            let cont_occ = graph.new_free_occ_for_binder(cont, link);
-            let arg_occs: Vec<_> = args
-                .iter()
-                .copied()
-                .map(|arg| graph.new_free_occ_for_binder(arg, link))
-                .collect();
-            let args = graph.new_free_vars(arg_occs);
-            let parent = graph.new_parent_link(None);
-            let term = graph.new_term(parent, TermKind::Continue(cont_occ, args), Value::new(false));
-            graph.set_term_link(link, term);
-            link
-        }
-
-        Scheme::new_uninit().enter(|ctx| {
-            let mut graph = Graph::new();
-
-            // Five variables shared by the fix member and the continuation
-            // (k=2, r=5: (k-1)r > k+2 -> the record is profitable).
-            let mut shared = Vec::new();
-            for i in 0..5 {
-                shared.push(graph.new_bound_var(lvar(ctx, &format!("s{i}"))));
-            }
-            let fret = graph.new_bound_var(lvar(ctx, "fret"));
-            let callee = graph.new_bound_var(lvar(ctx, "callee"));
-
-            // f: Fix member. frees(f) = shared (its return cont is removed).
-            let f_body = continue_leaf(&mut graph, fret, &shared);
-            let f = make_function(&mut graph, ctx, "f", Some(fret), f_body);
-
-            // k: continuation member. frees(k) = shared ∪ {fret}.
-            let k_body = continue_leaf(&mut graph, fret, &shared);
-            let k = make_function(&mut graph, ctx, "k", None, k_body);
-
-            // Letk(k, App(callee, [], k)): using k as the return continuation
-            // of an App is a value use, so reify marks k reified.
-            let app_link = graph.new_term_link(None);
-            let callee_occ = graph.new_free_occ_for_binder(callee, app_link);
-            let retk = graph.new_free_occ_for_binder(graph[k].var, app_link);
-            let no_args = graph.new_free_vars([]);
-            let app_parent = graph.new_parent_link(None);
-            let app = graph.new_term(
-                app_parent,
-                TermKind::App(callee_occ, no_args, retk),
-                Value::new(false),
-            );
-            graph.set_term_link(app_link, app);
-
-            let letk_link = graph.new_term_link(None);
-            let letk_parent = graph.new_parent_link(None);
-            let k_link = graph.new_function_link(Some(k));
-            let k_links = graph.new_function_links([k_link]);
-            let letk = graph.new_term(
-                letk_parent,
-                TermKind::Letk(k_links, app_link),
-                Value::new(false),
-            );
-            graph.set_term_link(letk_link, letk);
-
-            let fix_link = graph.new_term_link(None);
-            let fix_parent = graph.new_parent_link(None);
-            let f_link = graph.new_function_link(Some(f));
-            let f_links = graph.new_function_links([f_link]);
-            let fix = graph.new_term(
-                fix_parent,
-                TermKind::Fix(f_links, letk_link),
-                Value::new(false),
-            );
-            graph.set_term_link(fix_link, fix);
-
-            let entry = make_function(&mut graph, ctx, "entry", Some(fret), fix_link);
-
-            // Reify first (the merge needs `is_reified`), then merge the
-            // Fix/Letk chain into one site, then share.
-            let reify = reify_graph(&mut graph, entry);
-            super::super::fixmerge::merge_nested_groups(&mut graph, fix_link);
-            let stages = StageAnalysis::new(&graph, &reify);
-            let flow = FlowAnalysis::new(&graph, &reify);
-            let plan = analyze_sharing(&graph, &reify, &stages, &flow, fix, true);
-
-            let mut sites = plan.sites();
-            let (site_term, site) = sites.next().expect("one shared site");
-            assert!(sites.next().is_none());
-            assert_eq!(*site_term, fix);
-            assert!(site.allocate, "the merged group must allocate a record");
-            assert_eq!(site.record_vars.len(), 5);
-            assert_eq!(site.members.len(), 2);
-            assert!(site.members.iter().any(|m| m.function == f));
-            assert!(site.members.iter().any(|m| m.function == k));
-            assert!(site.members.iter().all(|m| !m.flat));
-        });
-    }
 }

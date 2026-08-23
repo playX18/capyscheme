@@ -125,6 +125,10 @@ unsafe extern "C" {
     pub fn scm_detach_current_thread(scm: *mut Scm);
     pub fn scm_fork(env: *mut SniEnv, init: ThreadFn, arg: *mut c_void) -> ScmRef;
 
+    /// Flag introspection for the thin CLI (`capy --help-flags`); no VM init.
+    pub fn capy_flags_help() -> *const c_char;
+    pub fn capy_flags_cli_aliases() -> *const c_char;
+
     pub fn sni_push_local_frame(env: *mut SniEnv, capacity: c_int) -> c_int;
     pub fn sni_pop_local_frame(env: *mut SniEnv, result: ScmRef) -> ScmRef;
     pub fn sni_ensure_local_capacity(env: *mut SniEnv, capacity: c_int) -> c_int;

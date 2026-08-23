@@ -10,7 +10,7 @@
 #   make dist-portable         # produces dist tarball (no install)
 #   make install               # FHS-ish layout under $(PREFIX) (uses sudo if needed)
 #
-# Override knobs:
+# Override flags:
 #   make PROFILE=debug
 #   make TARGET=x86_64-unknown-linux-gnu
 #   make PORTABLE=0            # default 1
@@ -58,7 +58,7 @@ endif
 PORTABLE ?= 1
 
 # Environment used when invoking capy/capyc.
-# Optional dump knobs (pass on the make command line), e.g.:
+# Optional dump flags (pass on the make command line), e.g.:
 #   make PROFILE=release stage-0 CAPY_SBBV_DUMP=1 CAPY_SBBV_DUMP_DIR=capy-dumps/sbbv
 MMTK_PLAN ?= GenImmix
 XDG_CACHE_HOME = stage-0/cache
@@ -671,7 +671,7 @@ install: build
 # Packaging (deb / rpm)
 # -------------------------
 
-# Output/staging knobs
+# Output/staging flags
 DIST_DIR ?= dist
 PKG_NAME ?= capyscheme
 PKG_ROOT ?= stage-pkg

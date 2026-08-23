@@ -484,6 +484,7 @@ impl<'gc> std::ops::Not for Value<'gc> {
 
 pub mod boxed;
 pub mod conversions;
+pub mod env;
 pub mod environment;
 pub mod eq;
 pub mod global;
@@ -504,6 +505,7 @@ pub mod weak_value;
 
 pub use boxed::*;
 pub use conversions::*;
+pub use env::*;
 pub use global::*;
 pub use hamt::{HamtKind, PersistentMap, PersistentSet};
 pub use hash::*;

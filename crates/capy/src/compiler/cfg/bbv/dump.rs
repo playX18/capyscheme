@@ -119,7 +119,7 @@ pub(crate) fn maybe_dump_procedure<'gc>(
         );
         return;
     }
-    dump::log_dump_path(&format!("SBBV {stage}"), &path);
+    dump::SBBV.log_path(&format!("SBBV {stage}"), &path);
 }
 
 fn render_code_id(code: &crate::compiler::cfg::CodeId) -> String {

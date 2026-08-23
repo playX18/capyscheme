@@ -324,7 +324,7 @@ impl HeuristicState {
         snapshot: Option<HeapSnapshot>,
     ) {
         // Remember which adaptive signal fired; successful cycles use this to
-        // adjust the matching sensitivity rather than all knobs at once.
+        // adjust the matching sensitivity rather than all flags at once.
         self.last_trigger_type = trigger_type;
         self.most_recent_declined_trigger_count = self.declined_trigger_count;
         self.declined_trigger_count = 0;

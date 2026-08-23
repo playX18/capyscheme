@@ -1,8 +1,7 @@
+use crate::utils::flags;
+
 pub(super) fn version_limit() -> usize {
-    std::env::var("CAPY_SBBV_VERSION_LIMIT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(2)
+    flags::sbbv_version_limit()
 }
 
 pub(super) fn enabled() -> bool {

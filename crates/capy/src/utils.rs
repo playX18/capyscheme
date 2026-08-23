@@ -107,5 +107,6 @@ pub fn align_allocation_no_fill(region: Address, alignment: usize, offset: usize
 }
 
 pub mod easy_bitfield;
+pub mod flags;
 pub mod generic_static;
 pub mod pass_profile;
