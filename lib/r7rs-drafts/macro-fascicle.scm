@@ -17,7 +17,7 @@
     syntax-parameterize
 
     syntax-error
-    erroneus-syntax
+    erroneous-syntax
 
     (rename (letrec-syntax splicing-letrec-syntax))
     (rename (let-syntax splicing-let-syntax))
@@ -40,7 +40,7 @@
                 (make-message-condition (syntax->datum #'message))
                 (make-irritants-condition #'(irritant ...))))))))
 
-    (define (erroneus-syntax . message?)
+    (define (erroneous-syntax . message?)
       (define message (if (null? message?) "bad syntax" (car message?)))
       (lambda (stx)
         (raise (condition
