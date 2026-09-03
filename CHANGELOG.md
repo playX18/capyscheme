@@ -198,6 +198,7 @@
 - *(psyntax)* Stabilize implicit #%app bootstrap - ([ff96164](https://codeberg.org/playXE/capy/commit/ff96164c59e1c293dbfcb1638f32e9e36018bca8))
 - *(psyntax)* Re-wrap syntax object to preserve module information - ([278207a](https://codeberg.org/playXE/capy/commit/278207addb3a64e2e42dfabdf3383080205e9050))
 - *(psyntax)* Better source information in datum->syntax - ([c8dfe16](https://codeberg.org/playXE/capy/commit/c8dfe164b429845218b5bc51ab261d44a8121a0a))
+- *(r7rs macro-fascicle)* Typo - ([de53bc0](https://codeberg.org/playXE/capy/commit/de53bc025a10460618a8ee36a4cf28c7982003b6))
 - *(reader)* Use new %ports/port-reader - ([ee2b81c](https://codeberg.org/playXE/capy/commit/ee2b81cea93b26d4e75ac0f6be785d7e0add5819))
 - *(reader)* Less strict number parsing; fix cond match on string->number - ([5ea1137](https://codeberg.org/playXE/capy/commit/5ea113725dd3398991ed6f84434aefaf11ba7770))
 - *(reader)* Wrap objects into syntax only once - ([f92ccc0](https://codeberg.org/playXE/capy/commit/f92ccc0760a8e36e790b10c1397a92c64cf982dc))
@@ -408,7 +409,6 @@
 - Remove unused dependencies - ([6ed3221](https://codeberg.org/playXE/capy/commit/6ed322114b0c94db6b41c00aaeabab25d186ea2e))
 - Document blocking operation - ([bb86ce5](https://codeberg.org/playXE/capy/commit/bb86ce512084c91c23e492fa416012a16407a86d))
 - Remove dead code in load.rs - ([c96b415](https://codeberg.org/playXE/capy/commit/c96b415b92e15629b5d665f2e14f17f83ebb5e09))
-- Add fmt commit to git-blame-ignore-vars - ([187dbb6](https://codeberg.org/playXE/capy/commit/187dbb61974c0421c2d8c15b502e2b88548b866e))
 - The great formatting - ([6d1081c](https://codeberg.org/playXE/capy/commit/6d1081c19e6a24090e377329713a7a815b44913b))
 
 ### ◀️ Revert
@@ -430,10 +430,6 @@
 ### Compiler
 
 - Codegen graph linear cps - ([e1efa2e](https://codeberg.org/playXE/capy/commit/e1efa2ed33a273688bf9fcf007b9a8e2c2c220d2))
-
-### Format
-
-- Scheme files - ([266a449](https://codeberg.org/playXE/capy/commit/266a44911ad7090973631ebf9ed8e526fe77708e))
 
 ### Gcps
 
@@ -478,7 +474,6 @@
 
 ## New Contributors
 
-* @playXE made their first contribution
 * @ made their first contribution
 * @syohex made their first contribution
 
