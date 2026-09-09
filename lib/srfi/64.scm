@@ -26,18 +26,18 @@
 ;; CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 ;; SOFTWARE.
 
-(library (srfi 64)
+(define-library (srfi 64)
+  ;; SRFI-64: A Scheme API for test suites.
+  ;; Non-standard extension: test-compare (custom comparator helper).
   ;; List of exported names
   (export
     test-begin ;; must be listed first, since in Kawa (at least) it is "magic".
-    %test-begin
     test-end
     test-assert
     test-eqv
     test-eq
     test-equal
     test-approximate
-    test-assert
     test-error
     test-apply
     test-with-runner
@@ -107,19 +107,21 @@
     test-on-bad-count-simple
     test-on-bad-end-name-simple
     test-on-final-simple
-    test-on-test-end-simple
-    test-on-final-simple)
+    test-on-test-begin-simple
+    test-on-test-end-simple)
   (import
     (scheme base)
     (scheme file)
     (scheme char)
     (scheme write)
     (scheme complex)
+    (scheme eval)
     (rnrs syntax-case)
     (only (capy) syntax-sourcev)
     (srfi 39)
     (rnrs lists (6))
     (rnrs records syntactic (6)))
+  (begin
 
   (define-record-type
     (test-runner %test-runner-alloc test-runner?)
@@ -430,7 +432,10 @@
     (%test-final-report-simple runner (current-output-port) #t)
     (let ((log (test-runner-aux-value runner)))
       (if (output-port? log)
-        (%test-final-report-simple runner log #f))))
+        (begin
+          (%test-final-report-simple runner log #f)
+          (close-output-port log)
+          (test-runner-aux-value! runner #f)))))
 
   (define (%test-format-line runner)
     (let* ((line-info (test-result-alist runner))
@@ -449,26 +454,30 @@
            (line (%test-format-line r)))
       (test-result-alist! r line-info)
       (if (null? groups)
-        (let ((msg (string-append line "test-end not in a group")))
-          (cond-expand
-            (srfi-23 (error msg))
-            (else (display msg) (newline)))))
+        (error 'test-end (string-append line "test-end not in a group")))
       (if (and suite-name (not (equal? suite-name (car groups))))
         ((test-runner-on-bad-end-name r) r suite-name (car groups)))
       (let* ((count-list (%test-runner-count-list r))
-             (expected-count (cdar count-list))
-             (saved-count (caar count-list))
+             (expected-count (and (pair? count-list) (cdar count-list)))
+             (saved-count (if (pair? count-list)
+                            (caar count-list)
+                            (%test-runner-total-count r)))
              (group-count (- (%test-runner-total-count r) saved-count)))
         (if (and expected-count
              (not (= expected-count group-count)))
           ((test-runner-on-bad-count r) r group-count expected-count))
         ((test-runner-on-group-end r) r)
         (test-runner-group-stack! r (cdr (test-runner-group-stack r)))
-        (%test-runner-skip-list! r (car (%test-runner-skip-save r)))
-        (%test-runner-skip-save! r (cdr (%test-runner-skip-save r)))
-        (%test-runner-fail-list! r (car (%test-runner-fail-save r)))
-        (%test-runner-fail-save! r (cdr (%test-runner-fail-save r)))
-        (%test-runner-count-list! r (cdr count-list))
+        (if (pair? (%test-runner-skip-save r))
+          (begin
+            (%test-runner-skip-list! r (car (%test-runner-skip-save r)))
+            (%test-runner-skip-save! r (cdr (%test-runner-skip-save r)))))
+        (if (pair? (%test-runner-fail-save r))
+          (begin
+            (%test-runner-fail-list! r (car (%test-runner-fail-save r)))
+            (%test-runner-fail-save! r (cdr (%test-runner-fail-save r)))))
+        (if (pair? count-list)
+          (%test-runner-count-list! r (cdr count-list)))
         (if (null? (test-runner-group-stack r))
           ((test-runner-on-final r) r)))))
 
@@ -1124,10 +1133,7 @@
     (let* ((port (open-input-string string))
            (form (read port)))
       (if (eof-object? (read-char port))
-        (cond-expand
-          (guile (eval form (current-module)))
-          (gauche (eval form ((with-module gauche.internal vm-current-module))))
-          (else (eval form)))
-        (cond-expand
-          (srfi-23 (error "(not at eof)"))
-          (else "error"))))))
+        (eval form)
+        (error 'test-read-eval-string "(not at eof)"))))
+  ) ; end begin
+) ; end library

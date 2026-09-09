@@ -264,6 +264,7 @@ SRFI_SRCS_R7RS := \
 	lib/srfi/48.scm \
 	lib/srfi/55.scm \
 	lib/srfi/64.scm \
+	lib/srfi/64/testing.scm \
 	lib/srfi/98.scm \
 	lib/srfi/124.scm \
 	lib/srfi/125.scm \
