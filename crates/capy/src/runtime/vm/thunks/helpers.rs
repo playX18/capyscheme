@@ -68,7 +68,6 @@ pub fn save_register_args<'gc>(
     ctx.state().gc_save.save(argc, [arg0, arg1, arg2, arg3]);
 }
 
-#[cfg(target_arch = "x86_64")]
 unsafe extern "C" {
     #[link_name = "llvm.returnaddress"]
     fn returnaddress(_: i32) -> *const u8;

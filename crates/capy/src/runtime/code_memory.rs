@@ -1,6 +1,7 @@
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
+    collections::HashMap,
     io,
     mem::size_of,
     sync::{LazyLock, Mutex},
@@ -73,7 +74,20 @@ impl CodeAllocation {
 /// architectures that require explicit flushing, e.g., AArch64).
 pub struct CodeMemory {
     allocator: Box<JitAllocator>,
+    /// Data slots allocated outside of the code span, keyed by the span's
+    /// executable address. Only populated when `DATA_SLOTS_IN_CODE_SPAN` is
+    /// false.
+    detached_data: HashMap<usize, Box<[usize]>>,
 }
+
+/// Whether data slots live in the same allocation as the code they belong to.
+///
+/// That requires the allocator to hand out a separate writable view of the
+/// span, so that slots can be mutated while the code is executable. On
+/// macOS asmkit maps JIT memory as a single `MAP_JIT` mapping, which is only
+/// writable through `JitAllocator::write`, and never from running JIT code, so
+/// data slots are allocated on the regular heap instead.
+const DATA_SLOTS_IN_CODE_SPAN: bool = !cfg!(target_os = "macos");
 
 // JIT spans are only accessed through CodeMemory's synchronized API when stored
 // in the runtime-wide allocator. The raw pointers inside asmkit::Span identify
@@ -93,6 +107,7 @@ impl CodeMemory {
     pub fn new() -> Self {
         Self {
             allocator: JitAllocator::new(JitAllocatorOptions::default()),
+            detached_data: HashMap::new(),
         }
     }
 
@@ -109,8 +124,9 @@ impl CodeMemory {
         let data_size = data_slot_count
             .checked_mul(size_of::<usize>())
             .ok_or_else(|| io::Error::other("loaded code data section is too large"))?;
+        let inline_data_size = if DATA_SLOTS_IN_CODE_SPAN { data_size } else { 0 };
         let allocation_size = data_offset
-            .checked_add(data_size)
+            .checked_add(inline_data_size)
             .ok_or_else(|| io::Error::other("loaded code allocation is too large"))?;
         let mut span = self
             .allocator
@@ -124,8 +140,8 @@ impl CodeMemory {
                         span.rw()
                             .copy_from_nonoverlapping(bytes.as_ptr(), bytes.len());
                     }
-                    if data_size != 0 {
-                        span.rw().add(data_offset).write_bytes(0, data_size);
+                    if inline_data_size != 0 {
+                        span.rw().add(data_offset).write_bytes(0, inline_data_size);
                     }
                 })
                 .map_err(|err| io::Error::other(format!("failed to copy JIT memory: {err:?}")))?;
@@ -134,6 +150,11 @@ impl CodeMemory {
         let entrypoint = Address::from_ptr(span.rx());
         let (data_rx_base, data_rw_base) = if data_slot_count == 0 {
             (Address::ZERO, Address::ZERO)
+        } else if !DATA_SLOTS_IN_CODE_SPAN {
+            let mut data = vec![0usize; data_slot_count].into_boxed_slice();
+            let base = Address::from_mut_ptr(data.as_mut_ptr());
+            self.detached_data.insert(span.rx() as usize, data);
+            (base, base)
         } else {
             (
                 // SAFETY: The pointer was derived from a valid allocation or symbol address
@@ -164,9 +185,12 @@ impl CodeMemory {
         bytes: &[u8],
     ) -> io::Result<()> {
         validate_patch_bounds(span, offset, bytes)?;
-        self.allocator
-            .copy_from_slice(span, offset, bytes)
-            .map_err(|err| io::Error::other(format!("failed to patch JIT memory: {err:?}")))?;
+        // SAFETY: Preconditions verified by the surrounding code
+        unsafe {
+            self.allocator
+                .copy_from_slice(span, offset, bytes)
+                .map_err(|err| io::Error::other(format!("failed to patch JIT memory: {err:?}")))?;
+        }
         Ok(())
     }
 
@@ -213,6 +237,7 @@ impl CodeMemory {
                 io::Error::other(format!("failed to release JIT memory: {err:?}"))
             })?;
         }
+        self.detached_data.remove(&(span.rx() as usize));
         // Allocation already released; prevent asmkit 0.4 Span::Drop from
         // attempting a second release.
         std::mem::forget(span);

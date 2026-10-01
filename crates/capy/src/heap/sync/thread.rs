@@ -710,6 +710,22 @@ pub(crate) fn deinit_current_thread() {
     })
 }
 
+#[cfg(target_vendor = "apple")]
+fn query_stack_bounds() -> (Address, Address) {
+    // Darwin has no `pthread_getattr_np`; it reports the stack base (highest
+    // address) and size of a thread directly.
+    unsafe {
+        let thread = libc::pthread_self();
+        let high = Address::from_ptr(libc::pthread_get_stackaddr_np(thread));
+        let stacksize = libc::pthread_get_stacksize_np(thread);
+        if high.is_zero() || stacksize == 0 {
+            return (Address::ZERO, Address::ZERO);
+        }
+        (high - stacksize, high)
+    }
+}
+
+#[cfg(not(target_vendor = "apple"))]
 fn query_stack_bounds() -> (Address, Address) {
     unsafe {
         let mut attr = std::mem::MaybeUninit::uninit();

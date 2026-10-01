@@ -102,9 +102,9 @@ checksum = "23b62fc65de8e4e7f52534fb52b0f3ed04746ae267519eef2a83941e8085068b"
 
 [[package]]
 name = "asmkit-rs"
-version = "0.5.0"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32c427fbf88cdb0c7113db5beba656f2aab32edbf2196613b60ee86b15736d7b"
+checksum = "668ef48298cfddd61006e7414be128f93b31e2b6a3de5aa82fbab45478364a98"
 dependencies = [
  "bitflags 2.13.1",
  "cfgenius",
