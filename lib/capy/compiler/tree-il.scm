@@ -15,7 +15,7 @@
 ;;
 ;; The printer operates on the unparsed output: sub-terms are first
 ;; converted to Scheme datums and the resulting structure is then matched
-;; and reshaped.  Options are passed as a list of symbols; recognized
+;; and reshaped.  Options are passed as a list of symbols. Recognized
 ;; options are:
 ;;
 ;;   denoise-lexicals?       use readable names for lexical variables
@@ -93,7 +93,7 @@
         [_ e]))
 
     ;; If all the tests of a cond-shaped chain compare the same variable,
-    ;; return that variable; otherwise #f.
+    ;; return that variable. Otherwise #f.
     (define (case-subject test)
       (match test
         [('memv (? atomic? v) ('quote (datums ...))) v]

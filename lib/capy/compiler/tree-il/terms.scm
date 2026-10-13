@@ -17,7 +17,7 @@
 ;;     record fields.
 ;;
 ;; The pattern variables follow the field order of the underlying record
-;; exactly; renaming a field here would silently change what every
+;; exactly. Renaming a field here would silently change what every
 ;; `match' clause in the compiler sees, so the field names are part of the
 ;; stable interface.
 

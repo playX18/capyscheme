@@ -95,7 +95,7 @@
 
     ;; A let/fix whose right-hand sides include a define-module* call
     ;; (or a current-module reference) tells us which module the bound
-    ;; lexicals stand for; that lets us rewrite references to them in
+    ;; lexicals stand for. That lets us rewrite references to them in
     ;; terms of that module even though they are lexicals.
 
     (define (collect-module-bindings! mod vars vals)
@@ -194,7 +194,7 @@
     (scan exp)
 
     ;; A module is usable as a resolution target only if it is defined
-    ;; exactly once in the term; modules defined more than once are
+    ;; exactly once in the term. Modules defined more than once are
     ;; excluded.
 
     (define singly-defined-modules

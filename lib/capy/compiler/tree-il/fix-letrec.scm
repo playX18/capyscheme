@@ -13,12 +13,12 @@
 ;;   4. per letrec, computes the strongly connected components of the
 ;;      binding dependency graph (using (capy graph)'s Tarjan SCC) and
 ;;      rewrites each component: single bindings become `seq', `fix',
-;;      or `let'+`set!'; multi-binding components become a `fix' for the
+;;      or `let'+`set!'. Multi-binding components become a `fix' for the
 ;;      mutually recursive lambdas plus `let'+`set!' sequences for the
 ;;      complex (non-lambda or assigned) bindings.
 ;;
 ;; The pass is validated by running after it and observing that the Rust
-;; `rewrite_recursive_bindings' becomes a no-op on the result; on
+;; `rewrite_recursive_bindings' becomes a no-op on the result. On
 ;; preprocessed IR the Rust pass is skipped entirely (see
 ;; `lower_expanded_to_cps' in crates/capy/src/compiler/pipeline.rs).
 
@@ -216,8 +216,8 @@
     get)
 
   ;; The binding-dependency graph of one letrec: vertices are the
-  ;; bindings in order; a binding has an edge to every binding it
-  ;; references; for letrec* (in_order), consecutive complex bindings
+  ;; bindings in order. A binding has an edge to every binding it
+  ;; references. For letrec* (in_order), consecutive complex bindings
   ;; are additionally chained so that initialization order is preserved.
   (define (compute-sccs ids lhs rhs in-order? sym-id complex fv-computer)
     (define g (make-graph))

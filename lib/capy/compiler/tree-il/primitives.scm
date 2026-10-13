@@ -59,17 +59,6 @@
       fx>?
       fx>=?
       fx=?
-      fx+/unchecked
-      fx-/unchecked
-      fx*/unchecked
-      fx+/ovf?/unchecked
-      fx-/ovf?/unchecked
-      fx*/ovf?/unchecked
-      fx</unchecked
-      fx<=/unchecked
-      fx>/unchecked
-      fx>=/unchecked
-      fx=/unchecked
       fxand
       fxior
       fxxor
@@ -79,12 +68,6 @@
       fxlogxor
       fxarithmetic-shift-left
       fxarithmetic-shift-right
-      fxand/unchecked
-      fxior/unchecked
-      fxxor/unchecked
-      fxnot/unchecked
-      fxarithmetic-shift-left/unchecked
-      fxarithmetic-shift-right/unchecked
       fxzero?
       fxpositive?
       fxnegative?
@@ -92,13 +75,6 @@
       fxeven?
       fxmin
       fxmax
-      fxzero?/unchecked
-      fxpositive?/unchecked
-      fxnegative?/unchecked
-      fxodd?/unchecked
-      fxeven?/unchecked
-      fxmin/unchecked
-      fxmax/unchecked
       fl+
       fl-
       fl*
@@ -108,15 +84,6 @@
       fl>?
       fl>=?
       fl=?
-      fl+/unchecked
-      fl-/unchecked
-      fl*/unchecked
-      fl//unchecked
-      fl</unchecked
-      fl<=/unchecked
-      fl>/unchecked
-      fl>=/unchecked
-      fl=/unchecked
       flzero?
       flpositive?
       flnegative?
@@ -139,28 +106,6 @@
       flacos
       flsqrt
       flatan
-      flzero?/unchecked
-      flpositive?/unchecked
-      flnegative?/unchecked
-      flnan?/unchecked
-      flinfinite?/unchecked
-      flfinite?/unchecked
-      flmin/unchecked
-      flmax/unchecked
-      flabs/unchecked
-      flfloor/unchecked
-      flceiling/unchecked
-      fltruncate/unchecked
-      flround/unchecked
-      flsin/unchecked
-      flcos/unchecked
-      fltan/unchecked
-      flexp/unchecked
-      fllog/unchecked
-      flasin/unchecked
-      flacos/unchecked
-      flsqrt/unchecked
-      flatan/unchecked
       not
       fixnum?
       flonum?
@@ -255,6 +200,8 @@
       variable-set!
       make-variable
       variable-bound?
+      slot-ref
+      slot-set!
       current-module
       define!
       string-length
@@ -769,6 +716,21 @@
 
   (define-primitive-expansion car (x) (car x))
   (define-primitive-expansion cdr (x) (cdr x))
+
+  ;; Only a literal slot name stays a primcall (and later a `get_slot`/
+  ;; `put_slot`); anything else falls back to a call to `(capy)`.
+  (define-primitive-expansion* slot-ref (src args)
+    (if (and (= (length args) 2)
+             (constant? (cadr args))
+             (symbol? (constant-value (cadr args))))
+        (make-primcall src 'slot-ref args)
+        #f))
+  (define-primitive-expansion* slot-set! (src args)
+    (if (and (= (length args) 3)
+             (constant? (cadr args))
+             (symbol? (constant-value (cadr args))))
+        (make-primcall src 'slot-set! args)
+        #f))
 
   (define-primitive-expansion caar (x) (car (car x)))
   (define-primitive-expansion cadr (x) (car (cdr x)))

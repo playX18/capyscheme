@@ -56,7 +56,7 @@
       [(_ proto . body)
         (let-values ([(id mk-rhs)
                        (letrec ([simple-proto
-                                  ;; check the args and set up a proc-maker; we return
+                                  ;; check the args and set up a proc-maker. We return
                                   ;; a proc maker instead of a final proc to enable
                                   ;; left-to-right checking of the function protos
                                   (lambda (proto)

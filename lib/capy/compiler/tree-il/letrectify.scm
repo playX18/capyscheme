@@ -151,7 +151,7 @@
                      (make-hashtable equal-hash equal?)))
     ;; Each declarative toplevel becomes a box (if exported) and a
     ;; value gensym.  Boxed bindings are initialized with the module
-    ;; accessor and later patched with variable-set!; unboxed ones are
+    ;; accessor and later patched with variable-set!. Unboxed ones are
     ;; bound directly to their initial value.
     (define declaration-cell
       (let ([tab (make-hashtable equal-hash equal?)])

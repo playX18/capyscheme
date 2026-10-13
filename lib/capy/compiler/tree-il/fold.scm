@@ -33,7 +33,7 @@
   ;;   (folder tree down up seed ...)
   ;;
   ;; where `down' is called as (down node seed ...) before the node's
-  ;; children are visited and `up' as (up node seed ...) afterwards; the
+  ;; children are visited and `up' as (up node seed ...) afterwards. The
   ;; values returned by `up' are the result of the fold.  Children are
   ;; visited in evaluation order: operator before operands, binding
   ;; values before the body, test before branches, and so on.

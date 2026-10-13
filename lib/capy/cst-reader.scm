@@ -3,7 +3,7 @@
 ;; A concrete-syntax-tree front end for tooling (LSP, formatters, ...). Unlike
 ;; the boot reader it:
 ;;
-;;   * never raises on malformed input — it produces a best-effort tree plus
+;;   * never raises on malformed input - it produces a best-effort tree plus
 ;;     `cst-error` records (tolerant parsing);
 ;;   * preserves tokens: parentheses vs brackets, dots, abbreviations,
 ;;     whitespace and comments (line, `#;` datum, `#| |#` block);
@@ -143,7 +143,7 @@
             (else 4))))
 
   (define (make-line-table text)
-    ;; entries[i] = (char-start . byte-start) of line i+1; a final sentinel
+    ;; entries[i] = (char-start . byte-start) of line i+1. A final sentinel
     ;; entry marks the end of the text. A line starts at char 0 and right
     ;; after each newline.
     (let* ((len (string-length text))
@@ -165,7 +165,7 @@
   (define (line-index-line-count idx)
     (- (vector-length (line-index-entries idx)) 1))
 
-  ;; Byte offset of (line, col) — 1-based line, 0-based col. Memoizes a
+  ;; Byte offset of (line, col) - 1-based line, 0-based col. Memoizes a
   ;; cumulative byte table per line. `col` may point one past the end of the
   ;; line (e.g. the EOF position); it is clamped to the line length.
   (define (line-index-byte-at idx line col)
@@ -333,7 +333,7 @@
           (set! errors (cons (%make-cst-error severity message sl sc el ec) errors)))
 
         ;; Read one token; on eof returns #f. Token positions are mapped into
-        ;; document coordinates; the raw (unmapped) positions are used to
+        ;; document coordinates. The raw (unmapped) positions are used to
         ;; slice the token text out of `text`.
         (define (read-raw!)
           (let ((t (next-token)))
@@ -436,7 +436,7 @@
             (cst-node-datum e)))
 
         ;; Datum of a top-level form: a single assembled item is the datum
-        ;; itself (not a list). A top-level form is always one datum — for a
+        ;; itself (not a list). A top-level form is always one datum - for a
         ;; bare element that is the element's datum; for an abbreviation chain
         ;; it is the assembled `(quote ...)` chain.
         (define (top-level-datum elts)
@@ -450,7 +450,7 @@
         ;; lists.
         (define (assemble-datum elts)
           (define (abbrev-chain elts)
-            ;; elts starts with an abbrev token; returns (cons datum rest-elts).
+            ;; elts starts with an abbrev token. Returns (cons datum rest-elts).
             (let ((a (car elts)))
               (cond
                 ((and (pair? (cdr elts))
