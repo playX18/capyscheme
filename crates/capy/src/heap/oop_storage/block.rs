@@ -1,4 +1,4 @@
-//! Block, ActiveArray, and AllocationList — HotSpot oopStorage internals.
+//! Block, ActiveArray, and AllocationList. HotSpot oopStorage internals.
 
 use std::alloc::{Layout, alloc, dealloc};
 use std::cell::UnsafeCell;
@@ -199,7 +199,7 @@ pub struct ActiveArray {
     size: usize,
     block_count: AtomicUsize,
     refcount: AtomicUsize,
-    /// Length == `size`; only the first `block_count` entries are live.
+    /// Length == `size`, only the first `block_count` entries are live.
     blocks: Box<[*mut Block]>,
 }
 
@@ -398,7 +398,7 @@ impl Block {
     #[inline]
     pub fn get_pointer(&self, index: u32) -> *mut Value<'static> {
         debug_assert!((index as usize) < SLOTS_PER_BLOCK);
-        // SAFETY: index in range; data is the slot array.
+        // SAFETY: index in range, data is the slot array.
         unsafe { (self.data.as_ptr() as *mut Value<'static>).add(index as usize) }
     }
 
@@ -431,7 +431,7 @@ impl Block {
         if block.is_null() {
             return 0;
         }
-        // SAFETY: caller may have a false-positive block pointer; we only read
+        // SAFETY: caller may have a false-positive block pointer, we only read
         // a usize-sized field. Unlike HotSpot SafeFetchN we assume the address
         // is mapped when used from allocation_status after validation paths.
         let index_ptr =
@@ -469,7 +469,7 @@ impl Block {
         self.get_pointer(index)
     }
 
-    /// Allocate all remaining free entries; returns the bitmask of newly taken bits.
+    /// Allocate all remaining free entries, returns the bitmask of newly taken bits.
     pub fn allocate_all(&self) -> u64 {
         let new_allocated = !self.allocated_bitmask();
         debug_assert_ne!(new_allocated, 0);
@@ -486,7 +486,7 @@ impl Block {
         let owner_addr = owner as usize;
         for _ in 0..SECTION_COUNT {
             let owner_loc = section + offset_of!(Block, owner_address);
-            // SAFETY: probing candidate block starts; false positives read unrelated words.
+            // SAFETY: probing candidate block starts, false positives read unrelated words.
             let fetched = unsafe { ptr::read(owner_loc as *const usize) };
             if fetched == owner_addr {
                 return section as *mut Block;

@@ -2,7 +2,7 @@ use crate::heap::{
     GarbageCollector, lab::LocalAllocationBuffer, mm::MemoryManager, mutator::MutatorState,
     sync::monitor::Monitor, traits::Trace,
 };
-use crate::runtime::State;
+use crate::runtime::{State, Tc};
 use crate::utils::easy_bitfield::*;
 use mmtk::{
     AllocationSemantics, BarrierSelector, Mutator,
@@ -18,7 +18,7 @@ use std::{
     ptr::NonNull,
     sync::{
         Arc,
-        atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicI32, AtomicPtr, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -110,6 +110,15 @@ type IsAboutToTerminate = BitField<u64, bool, { IsBlockedForGc::NEXT_BIT }, 1, f
 type ActiveMutatorContext = BitField<u64, bool, { IsAboutToTerminate::NEXT_BIT }, 1, false>;
 type ThreadStateInitialized = BitField<u64, bool, { ActiveMutatorContext::NEXT_BIT }, 1, false>;
 
+/// What a [`Thread::request_yieldpoint`] asks for: `Full` (`+1`) is taken
+/// at prologues and loop back-edges, `PrologueOnly` (`-1`) at prologues
+/// only. A pending `Full` is never downgraded to `PrologueOnly`.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum YieldpointKind {
+    Full,
+    PrologueOnly,
+}
+
 #[repr(C)]
 #[derive()]
 pub struct Thread {
@@ -121,6 +130,25 @@ pub struct Thread {
     index_in_thread_list: AtomicUsize,
     heap_base: Address,
     heap_shift: u32,
+    /// The SIGPROF sample ring, allocated while the profiler is armed
+    /// (null otherwise). Written by this thread's signal handler
+    /// through lock-free atomics, read by the aggregator, freed when
+    /// the last `Arc` drops. Appended last so no generated-code
+    /// offset above moves.
+    pub(crate) prof_ring: AtomicPtr<crate::runtime::profile::capture::ProfileRing>,
+    is_mutator_thread: bool,
+}
+
+impl Drop for Thread {
+    fn drop(&mut self) {
+        let ring = self.prof_ring.load(Ordering::Relaxed);
+        if !ring.is_null() {
+            // SAFETY: the ring was heap-allocated at bind/arm, never
+            // freed elsewhere, and no aggregator borrow outlives the
+            // last `Arc<Thread>`.
+            drop(unsafe { Box::from_raw(ring) });
+        }
+    }
 }
 
 impl Thread {
@@ -128,6 +156,8 @@ impl Thread {
     pub const NATIVE_DATA_OFFSET: usize = std::mem::offset_of!(Self, native_data);
     pub const RT_STATE_OFFSET: usize =
         Self::NATIVE_DATA_OFFSET + std::mem::offset_of!(ThreadNativeData, state);
+    pub const TC_OFFSET: usize =
+        Self::NATIVE_DATA_OFFSET + std::mem::offset_of!(ThreadNativeData, tc);
 
     pub const LAB_OFFSET: usize =
         Self::NATIVE_DATA_OFFSET + std::mem::offset_of!(ThreadNativeData, lab);
@@ -166,14 +196,56 @@ impl Thread {
 
     /// Returns the value of `take_yieldpoint` field. When this function
     /// returnrs non-zero value caller is responsible for invoking [`Thread::yieldpoint`].
+    ///
+    /// Sign encoding (JikesRVM-style): `0` means nothing pending, `> 0` is
+    /// taken at prologues and loop back-edges, `< 0` at prologues only.
     #[must_use = "Must check the value and call [`Thread::yieldpoint`] if necessary"]
     pub fn take_yieldpoint(&self) -> i32 {
         self.take_yieldpoint.load(Ordering::Relaxed)
     }
 
-    pub fn request_yieldpoint(&self) {
-        self.take_yieldpoint.store(1, Ordering::Relaxed);
+    pub fn request_yieldpoint(&self, kind: YieldpointKind) {
+        match kind {
+            YieldpointKind::Full => {
+                // `+1` dominates: upgrade `-1` or `0` unconditionally.
+                self.take_yieldpoint.store(1, Ordering::Relaxed);
+            }
+            YieldpointKind::PrologueOnly => {
+                // CAS that never downgrades `+1` to `-1`.
+                let mut current = self.take_yieldpoint.load(Ordering::Relaxed);
+                loop {
+                    if current > 0 {
+                        break;
+                    }
+                    match self.take_yieldpoint.compare_exchange_weak(
+                        current,
+                        -1,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    ) {
+                        Ok(_) => break,
+                        Err(actual) => current = actual,
+                    }
+                }
+            }
+        }
+        self.poke_esp();
         self.monitor.lock().notify_all();
+    }
+
+    /// Store 0 into the thread's `Tc.esp` so its next procedure entry fails
+    /// its overflow check, the overflow path restores the real limit and
+    /// takes the yield slow path. The flag above is stored first, and
+    /// this store is `Release`, so a thread that observes the poke also
+    /// observes the flag.
+    fn poke_esp(&self) {
+        // SAFETY: every `Thread` handle owns initialized native data with a
+        // live `Tc`, and `esp` is atomic precisely for this cross-thread poke.
+        unsafe {
+            (*self.tc_ptr())
+                .esp
+                .store(std::ptr::null_mut(), Ordering::Release)
+        }
     }
 
     pub fn get_exec_status(&self) -> ThreadState {
@@ -264,10 +336,6 @@ impl Thread {
     pub fn yieldpoint() {
         let thread = current_thread();
 
-        // Compiled code may call this only through the yieldpoint thunk after
-        // storing entry ABI roots in State::gc_save (and must reload them after).
-        // Overflow arguments are already rooted by the runstack. Do not add
-        // direct compiled calls here without preserving that invariant.
         thread.status_word.update::<AtYieldpoint>(true);
 
         let mut guard = thread.monitor.lock();
@@ -283,8 +351,6 @@ impl Thread {
     }
 
     fn enter_native_blocked(&self) {
-        // Values held across InNative must be rooted on State::root_stack or
-        // OopStorage; there is no conservative native-stack scan.
         let guard = self.monitor.lock();
         self.status_word
             .update::<ThreadStateField>(ThreadState::InNative);
@@ -321,18 +387,22 @@ impl Thread {
 
     fn attempt_leave_native_no_block() -> bool {
         let t = current_thread();
-        let mut old_state = t.get_exec_status();
 
         loop {
-            let new_state = if old_state == ThreadState::InNative {
-                ThreadState::Mutating
-            } else {
+            let word = t.status_word.load(Ordering::Relaxed);
+            if ThreadStateField::decode(word) != ThreadState::InNative
+                || ShouldBlockForGc::decode(word)
+                || IsBlockedForGc::decode(word)
+            {
                 return false;
-            };
+            }
 
-            match t.attempt_fast_exec_status_transition(old_state, new_state) {
-                Ok(_) => return true,
-                Err(state) => old_state = state,
+            let new_word = ThreadStateField::update(ThreadState::Mutating, word);
+            if t.status_word
+                .compare_exchange_weak(word, new_word, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                return true;
             }
         }
     }
@@ -387,7 +457,9 @@ impl Thread {
         } else if self.is_about_to_terminate() {
             result = ThreadState::Terminated;
         } else {
+            // A GC block is a `Full` (`+1`) request: taken everywhere.
             self.take_yieldpoint.store(1, Ordering::Relaxed);
+            self.poke_esp();
             let new_state = self.set_blocked_exec_status();
             result = new_state;
 
@@ -505,8 +577,12 @@ impl Thread {
         self.native_data().state.get() as *mut State<'static>
     }
 
+    pub(crate) fn tc_ptr(&self) -> *mut Tc<'static> {
+        self.native_data().tc.get()
+    }
+
     /// Create a new thread handle. The returned value
-    /// is not a real system thread but rather an object that can be managed
+    /// is a handle to an object that can be managed
     /// through [`ThreadManager`] efficiently. Once thread is actually spawned (`Mutator::try_new_with_thread` is called)
     /// this handle will get associated with a platform handle to a thread. Not much can be done with the handle except
     /// suspending threads on your own.
@@ -544,12 +620,36 @@ impl Thread {
                 lab: LocalAllocationBuffer::new(),
                 max_non_los_default_alloc_bytes: 0,
                 alloc_fastpath: AllocFastPath::None,
+                nonmoving_semantics: AllocationSemantics::NonMoving,
+                tc: UnsafeCell::new(Tc::new()),
                 state: UnsafeCell::new(MaybeUninit::uninit()),
                 stack_low: Address::ZERO,
                 stack_high: Address::ZERO,
             }),
             index_in_thread_list: AtomicUsize::new(usize::MAX),
+            prof_ring: AtomicPtr::new(std::ptr::null_mut()),
+            is_mutator_thread: for_mutator,
         })
+    }
+
+    /// Whether this thread runs Scheme (as opposed to a GC worker).
+    /// Unlike [`Thread::is_mutator`], fixed at construction, so bind
+    /// hooks can consult it.
+    pub(crate) fn is_mutator_thread(&self) -> bool {
+        self.is_mutator_thread
+    }
+
+    /// The current thread without blocking or panicking: `None` when
+    /// unbound, mid bind/unbind, or reentered. The only `THREAD` access
+    /// the `SIGPROF` handler may use.
+    pub(crate) fn try_current_thread() -> Option<&'static Thread> {
+        THREAD
+            .try_with(|cell| {
+                let borrowed = cell.try_borrow().ok()?;
+                *borrowed
+            })
+            .ok()
+            .flatten()
     }
 
     /// Returns true if thread is managed by thread subsystem.
@@ -569,6 +669,23 @@ impl Thread {
         self.native_data().barrier_selector
     }
 
+    /// The semantics an allocation with `semantics` really gets. MMTk 0.33's
+    /// non-moving space is an `ImmixSpace`. SemiSpace and MarkSweep trace it
+    /// with a trace kind it rejects (`unreachable!` in
+    /// `ImmixSpace::trace_object`), and under ConcurrentImmix objects in it
+    /// are lost (a code buffer read from a FASL file is found corrupt, the
+    /// large object space does not show it). Under those plans non-moving
+    /// objects go where nothing moves them either: the large object space,
+    /// or mark-sweep's own default space.
+    #[inline(always)]
+    pub fn map_semantics(&self, semantics: AllocationSemantics) -> AllocationSemantics {
+        if semantics == AllocationSemantics::NonMoving {
+            self.native_data().nonmoving_semantics
+        } else {
+            semantics
+        }
+    }
+
     pub fn max_non_los_alloc_bytes(&self) -> usize {
         self.native_data().max_non_los_default_alloc_bytes
     }
@@ -583,6 +700,13 @@ impl Thread {
         let native_data = unsafe { &mut *this.native_data_mut_ptr() };
         native_data.max_non_los_default_alloc_bytes = constraints.max_non_los_default_alloc_bytes;
         native_data.barrier_selector = constraints.barrier;
+        native_data.nonmoving_semantics = match *gc.mmtk.get_options().plan {
+            mmtk::util::options::PlanSelector::SemiSpace
+            | mmtk::util::options::PlanSelector::ConcurrentImmix => AllocationSemantics::Los,
+            // Mark-sweep never moves its default space.
+            mmtk::util::options::PlanSelector::MarkSweep => AllocationSemantics::Default,
+            _ => AllocationSemantics::NonMoving,
+        };
         native_data.alloc_fastpath = match selector {
             AllocatorSelector::BumpPointer(_) | AllocatorSelector::Immix(_) => AllocFastPath::TLAB,
             _ => AllocFastPath::None,
@@ -596,6 +720,11 @@ impl Thread {
         native_data.stack_low = stack_low;
         native_data.stack_high = stack_high;
         gc.threads.add_thread(this.clone());
+        // After the manager insert: the profiler's arm enumerates under
+        // the same lock with `ARMED` set first, so a thread is either
+        // seen by the enumeration or allocates here, never missed.
+        crate::runtime::profile::note_thread_bound(this);
+        crate::runtime::profile::maybe_arm_from_env();
         this.status_word
             .update::<ThreadStateField>(ThreadState::InNative);
     }
@@ -603,6 +732,9 @@ impl Thread {
     pub(crate) fn unregister() {
         {
             let this = current_thread();
+            // Drain this thread's samples before it leaves the manager:
+            // afterwards the aggregator can no longer reach its ring.
+            crate::runtime::profile::note_thread_unbinding(this);
 
             let guard = this.monitor.lock();
             this.set_is_about_to_terminate(true);
@@ -674,6 +806,8 @@ pub struct ThreadNativeData {
     pub(crate) barrier_selector: BarrierSelector,
     pub(crate) max_non_los_default_alloc_bytes: usize,
     pub(crate) alloc_fastpath: AllocFastPath,
+    pub(crate) nonmoving_semantics: AllocationSemantics,
+    pub(crate) tc: UnsafeCell<Tc<'static>>,
     pub(crate) state: UnsafeCell<MaybeUninit<State<'static>>>,
     pub(crate) stack_low: Address,
     pub(crate) stack_high: Address,
@@ -712,7 +846,7 @@ pub(crate) fn deinit_current_thread() {
 
 #[cfg(target_vendor = "apple")]
 fn query_stack_bounds() -> (Address, Address) {
-    // Darwin has no `pthread_getattr_np`; it reports the stack base (highest
+    // Darwin has no `pthread_getattr_np`, it reports the stack base (highest
     // address) and size of a thread directly.
     unsafe {
         let thread = libc::pthread_self();
@@ -845,6 +979,13 @@ impl ThreadManager {
         self.cv_join.notify_all();
     }
 
+    /// All currently registered threads. The profiler's arm and
+    /// aggregator drain enumerate through snapshots, each `Arc` keeps
+    /// its thread (and sample ring) alive past unbind.
+    pub(crate) fn snapshot_threads(&self) -> Vec<Arc<Thread>> {
+        self.threads.lock().clone()
+    }
+
     pub fn block_all_mutators_for_gc(&self) {
         let mut handshake_threads = self.handshake_threads.lock();
 
@@ -908,5 +1049,69 @@ impl ThreadManager {
                 thread.flush_tlab();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::Scheme;
+    use std::sync::atomic::Ordering;
+
+    /// `PrologueOnly` (`-1`) never downgrades a pending `Full` (`+1`),
+    /// `Full` upgrades `-1`.
+    #[test]
+    fn request_yieldpoint_kind_merging() {
+        let scheme = Scheme::new_uninit();
+        scheme.enter(|_| {
+            let thread = current_thread();
+            // SAFETY: the mutator owns this thread for the duration of `enter`.
+            let tc = unsafe { &*thread.tc_ptr() };
+            let esp0 = tc.esp.load(Ordering::Relaxed);
+            thread.take_yieldpoint.store(0, Ordering::Relaxed);
+
+            thread.request_yieldpoint(YieldpointKind::PrologueOnly);
+            assert_eq!(thread.take_yieldpoint(), -1);
+
+            // A `Full` request upgrades `-1`.
+            thread.request_yieldpoint(YieldpointKind::Full);
+            assert_eq!(thread.take_yieldpoint(), 1);
+
+            // A `PrologueOnly` request does not downgrade `+1`.
+            thread.request_yieldpoint(YieldpointKind::PrologueOnly);
+            assert_eq!(thread.take_yieldpoint(), 1);
+
+            thread.take_yieldpoint.store(0, Ordering::Relaxed);
+            tc.esp.store(esp0, Ordering::Relaxed);
+        });
+    }
+
+    /// A thread that entered native code while a GC block was pending is acknowledged as blocked
+    /// (`enter_native_blocked`) but is still `InNative`. Leaving native must not take the
+    /// lock-free `InNative -> Mutating` shortcut then, otherwise the thread resumes mutating
+    /// while the collector believes the world is stopped.
+    #[test]
+    fn leave_native_fast_path_respects_gc_block() {
+        let scheme = Scheme::new_uninit();
+        scheme.enter(|_| {
+            let thread = current_thread();
+            Thread::enter_native();
+            assert_eq!(thread.get_exec_status(), ThreadState::InNative);
+
+            // Block acknowledged on entry to native.
+            GC_BLOCK_ADAPTER.set_blocked(thread, true);
+            assert!(!Thread::attempt_leave_native_no_block());
+            assert_eq!(thread.get_exec_status(), ThreadState::InNative);
+
+            // Block requested but not yet acknowledged.
+            GC_BLOCK_ADAPTER.set_blocked(thread, false);
+            GC_BLOCK_ADAPTER.request_block(thread);
+            assert!(!Thread::attempt_leave_native_no_block());
+            assert_eq!(thread.get_exec_status(), ThreadState::InNative);
+
+            GC_BLOCK_ADAPTER.clear_block_request(thread);
+            assert!(Thread::attempt_leave_native_no_block());
+            assert_eq!(thread.get_exec_status(), ThreadState::Mutating);
+        });
     }
 }

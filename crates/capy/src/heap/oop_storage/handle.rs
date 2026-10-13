@@ -57,7 +57,7 @@ impl OopHandle {
 impl Drop for OopHandle {
     fn drop(&mut self) {
         // Clear so a forgotten release does not keep a referent alive forever
-        // in an allocated slot; the slot itself stays allocated until process end.
+        // in an allocated slot, the slot itself stays allocated until process end.
         // Prefer [`OopHandle::release`] or [`HandleScope`].
         unsafe {
             *self.slot.as_ptr() = Value::empty();

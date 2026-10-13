@@ -63,7 +63,7 @@ pub fn barrier_selector_artifact_kind(barrier: BarrierSelector) -> &'static str 
     }
 }
 
-/// 0 = unset (fall through to env / live plan); 1..=3 = BarrierSelector as u8 + 1
+/// 0 = unset (fall through to env / live plan), 1..=3 = BarrierSelector as u8 + 1
 static COMPILE_BARRIER_OVERRIDE: AtomicU8 = AtomicU8::new(0);
 
 fn encode_barrier(barrier: BarrierSelector) -> u8 {

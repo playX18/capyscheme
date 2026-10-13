@@ -1,4 +1,4 @@
-//! OopStorageSet — registry of strong and weak storages.
+//! OopStorageSet, registry of strong and weak storages.
 
 use std::sync::OnceLock;
 
@@ -85,7 +85,7 @@ impl OopStorageSet {
         }
     }
 
-    /// Run empty-block cleanup across all storages; returns true if more work may remain.
+    /// Run empty-block cleanup across all storages, returns true if more work may remain.
     pub fn delete_empty_blocks(&self) -> bool {
         let mut more = false;
         for storage in self.strong_storages() {

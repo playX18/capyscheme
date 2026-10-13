@@ -1,4 +1,4 @@
-//! Allocation space selectors for [`crate::runtime::Context::alloc_in`].
+//! Allocation space selectors for [`crate::runtime::MutationContext::alloc_in`].
 
 /// Where to place a freshly allocated object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

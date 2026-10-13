@@ -26,8 +26,8 @@ use mmtk::{
 
 use crate::{
     heap::mm::MemoryManager,
-    utils::flags::{self, FlagId},
     utils::FormattedSize,
+    utils::flags::{self, FlagId},
 };
 
 mod adaptive;
@@ -57,7 +57,7 @@ pub(crate) enum HeuristicMode {
     Compact,
     /// Trigger at every opportunity.
     Aggressive,
-    /// Never trigger proactively; only MMTk plan fallbacks can require GC.
+    /// Never trigger proactively, only MMTk plan fallbacks can require GC.
     Passive,
 }
 
@@ -148,7 +148,8 @@ impl HeuristicConfig {
     }
 
     pub(crate) fn from_env() -> Self {
-        let mode = HeuristicMode::from_word(flags::gc_heuristic()).unwrap_or(HeuristicMode::Adaptive);
+        let mode =
+            HeuristicMode::from_word(flags::gc_heuristic()).unwrap_or(HeuristicMode::Adaptive);
         let mut config = Self::defaults_for_mode(mode);
 
         if flags::is_set(FlagId::gc_max_heap) {
@@ -502,7 +503,7 @@ impl HeuristicState {
         let rate = allocated as f64 / elapsed.as_secs_f64();
         self.allocation_rate_history.add(rate);
         // The acceleration detector intentionally samples less often than
-        // trigger evaluation; tiny intervals produce noisy rates and poor slopes.
+        // trigger evaluation, tiny intervals produce noisy rates and poor slopes.
         if self.last_acceleration_sample.is_none_or(|last_sample| {
             now.saturating_duration_since(last_sample) >= self.config.acceleration_sample_period
         }) {

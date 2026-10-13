@@ -102,7 +102,10 @@ impl<T: Trace> Array<T> {
             mc.raw_allocate_with_header_word_unpublished(
                 size,
                 align,
-                type_class_header_word::<Array<T>>(crate::runtime::Context::from(mc), Self::HOOKS),
+                type_class_header_word::<Array<T>>(
+                    crate::runtime::MutationContext::from(mc),
+                    Self::HOOKS,
+                ),
                 semantics,
             )
         };

@@ -161,7 +161,7 @@ impl<'gc, T> Gc<'gc, T> {
     /// and then setting object hash status to `HASHED`. If object is moved by GC another word is allocated
     /// at the beginning of the object to store original hashcode.
     ///
-    /// - [`LOG_BYTES_IN_ADDRESS`](mmtk::util::constants::LOG_BYTES_IN_ADDRESS);
+    /// - [`LOG_BYTES_IN_ADDRESS`](mmtk::util::constants::LOG_BYTES_IN_ADDRESS).
     ///
     pub fn ptr_hash(this: Self) -> u64 {
         this.as_gc_object().hashcode()

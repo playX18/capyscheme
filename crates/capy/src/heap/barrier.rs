@@ -6,13 +6,13 @@ use crate::heap::Gc;
 
 /// An (interiorly-)mutable reference inside a GC'd object graph.
 ///
-/// This type can only exist behind a reference; it is typically obtained by calling
+/// This type can only exist behind a reference, it is typically obtained by calling
 /// [`Gc::write`] on a [`Gc`] pointer or by using the [`field!`] projection macro
 /// on a pre-existing `&Write<T>`.
 #[non_exhaustive]
 #[repr(transparent)]
 pub struct Write<T: ?Sized> {
-    // Public so that the `field!` macro can pattern-match on it; the `non_exhaustive` attribute
+    // Public so that the `field!` macro can pattern-match on it, the `non_exhaustive` attribute
     // prevents 3rd-party code from instanciating the struct directly.
     #[doc(hidden)]
     pub __inner: T,
@@ -69,7 +69,7 @@ impl<T: ?Sized> Write<T> {
         unsafe { mem::transmute(v) }
     }
 
-    /// Implementation detail of `write_field!`; same safety requirements as `assume`.
+    /// Implementation detail of `write_field!`, same safety requirements as `assume`.
     #[inline(always)]
     #[doc(hidden)]
     pub unsafe fn __from_ref_and_ptr(v: &T, _: *const T) -> &Self {
@@ -149,7 +149,7 @@ pub trait Unlock {
 ///
 /// # Limitations
 ///
-/// This macro only support structs with named fields; tuples and enums aren't supported.
+/// This macro only support structs with named fields, tuples and enums aren't supported.
 #[doc(inline)]
 pub use crate::__field as field;
 
@@ -162,7 +162,7 @@ macro_rules! __field {
         // For this to be sound, we need to prevent deref coercions from happening, as they may
         // access nested `Gc` pointers, which would violate the write barrier invariant. This is
         // guaranteed as follows:
-        // - the destructuring pattern, unlike a simple field access, cannot call `Deref`;
+        // - the destructuring pattern, unlike a simple field access, cannot call `Deref`.
         // - similarly, the `__from_ref_and_ptr` method takes both a reference (for the lifetime)
         //   and a pointer, causing a compilation failure if the first argument was coerced.
         match $value {
@@ -180,7 +180,7 @@ macro_rules! __field {
         // For this to be sound, we need to prevent deref coercions from happening, as they may
         // access nested `Gc` pointers, which would violate the write barrier invariant. This is
         // guaranteed as follows:
-        // - the destructuring pattern, unlike a simple field access, cannot call `Deref`;
+        // - the destructuring pattern, unlike a simple field access, cannot call `Deref`.
         // - similarly, the `__from_ref_and_ptr` method takes both a reference (for the lifetime)
         //   and a pointer, causing a compilation failure if the first argument was coerced.
         match $value {
@@ -201,7 +201,7 @@ macro_rules! __field {
         // For this to be sound, we need to prevent deref coercions from happening, as they may
         // access nested `Gc` pointers, which would violate the write barrier invariant. This is
         // guaranteed as follows:
-        // - the destructuring pattern, unlike a simple field access, cannot call `Deref`;
+        // - the destructuring pattern, unlike a simple field access, cannot call `Deref`.
         // - similarly, the `__from_ref_and_ptr` method takes both a reference (for the lifetime)
         //   and a pointer, causing a compilation failure if the first argument was coerced.
         match $value {

@@ -51,7 +51,7 @@ impl<'a> BasicParState<'a> {
     }
 
     pub fn default_estimated_thread_count(concurrent: bool) -> u32 {
-        // HotSpot uses ConcGCThreads / ParallelGCThreads; default to 1.
+        // HotSpot uses ConcGCThreads / ParallelGCThreads, default to 1.
         let _ = concurrent;
         1
     }
@@ -216,7 +216,7 @@ impl<'a> ParState<'a, false, false> {
         });
     }
 
-    /// Weak iteration with is-alive filter; clears dead entries.
+    /// Weak iteration with is-alive filter, clears dead entries.
     pub fn weak_oops_do_if_alive<A, F>(&self, mut is_alive: A, mut f: F)
     where
         A: FnMut(Value<'static>) -> bool,

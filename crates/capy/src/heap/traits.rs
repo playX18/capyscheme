@@ -45,7 +45,7 @@ pub unsafe trait Trace {
 
     /// Process weak references inside an object.
     ///
-    /// This function can not only be used to break simple weak-references but to also implement ephemerons,
+    /// This function can break simple weak references and also implement ephemerons,
     /// resurrect objects, and so much more. To resurrect an object get a visitor by calling [`WeakProcessor::visitor`]
     /// and trace the object with it.
     ///
@@ -54,7 +54,7 @@ pub unsafe trait Trace {
     /// All internal weak-refs must be processed by `weak_processor`. If there are any weak references
     /// which are not processed UB might result.
     ///
-    /// Prefer [`Self::trace_weak`] at call sites; the default is a no-op for types without weaks.
+    /// Prefer [`Self::trace_weak`] at call sites, the default is a no-op for types without weaks.
     unsafe fn process_weak_refs(&mut self, _weak_processor: &mut WeakProcessor) {}
 
     /// Weak-reference processing during `VMRefClosure` (alias of [`Self::process_weak_refs`]).

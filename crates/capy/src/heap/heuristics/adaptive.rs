@@ -323,7 +323,7 @@ impl HeuristicState {
         reason: impl std::fmt::Display,
         snapshot: Option<HeapSnapshot>,
     ) {
-        // Remember which adaptive signal fired; successful cycles use this to
+        // Remember which adaptive signal fired, successful cycles use this to
         // adjust the matching sensitivity rather than all flags at once.
         self.last_trigger_type = trigger_type;
         self.most_recent_declined_trigger_count = self.declined_trigger_count;
@@ -334,7 +334,7 @@ impl HeuristicState {
 
     pub(super) fn adjust_adaptive_trigger_parameters(&mut self, free_at_end: f64) {
         // Compare post-GC free memory to recent outcomes.  Very low free memory
-        // means the trigger was too late; very high free memory means it was too early.
+        // means the trigger was too late, very high free memory means it was too early.
         let sd = self.free_at_end_history.standard_deviation();
         let z_score = if sd > 0.0 {
             (free_at_end - self.free_at_end_history.average()) / sd

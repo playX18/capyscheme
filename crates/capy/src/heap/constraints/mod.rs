@@ -19,7 +19,7 @@ use mmtk::vm::ObjectTracer;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum ConstraintVolatility {
-    /// Unlikely to produce; run late as a tie-breaker.
+    /// Unlikely to produce, run late as a tie-breaker.
     SeldomGreyed = 0,
     /// Classic roots: GC start and after mutator resumes.
     GreyedByExecution = 1,

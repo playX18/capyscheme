@@ -8,7 +8,7 @@ use crate::{
         sync::thread::{AllocFastPath, Thread, current_thread, is_current_thread_registed},
         traits::Trace,
     },
-    runtime::State,
+    runtime::{State, Tc},
 };
 use mmtk::{
     AllocationSemantics, BarrierSelector, MutatorContext,
@@ -74,7 +74,7 @@ const DEFAULT_ALLOC_OPTIONS: AllocationOptions = AllocationOptions {
     allow_oom_call: false,
     allow_overcommit: true,
     // Safe `#[scheme]` leaves and compiled alloc sites must not collect inline.
-    // MMTk may schedule GC; the mutator pauses only at compiled yieldpoints or
+    // MMTk may schedule GC, the mutator pauses only at compiled yieldpoints or
     // while `InNative` or in a nested Scheme call.
     at_safepoint: false,
 };
@@ -89,7 +89,7 @@ pub type Root<'a, R> = <R as Rootable<'a>>::Root;
 ///
 /// GC may occur at explicit safepoints while inside `mutate`, such as compiler-emitted
 /// yieldpoints that call [`Thread::yieldpoint`](crate::heap::sync::thread::Thread::yieldpoint).
-/// Safe `#[scheme]` leaves must not call [`Mutator::yieldpoint`] or collect inline; nest
+/// Safe `#[scheme]` leaves must not call [`Mutator::yieldpoint`] or collect inline, nest
 /// via [`crate::runtime::sni`] if Scheme re-entry is required.
 /// Native code outside compiled safepoints should call [`Mutator::yieldpoint`] when
 /// [`take_yieldpoint`](Mutation::take_yieldpoint) indicates a pending GC request.
@@ -217,12 +217,12 @@ where
     #[inline]
     pub fn mutate<F, T>(&self, f: F) -> T
     where
-        F: for<'gc> FnOnce(crate::runtime::Context<'gc>, &'gc Root<'gc, R>) -> T,
+        F: for<'gc> FnOnce(crate::runtime::MutationContext<'gc>, &'gc Root<'gc, R>) -> T,
     {
         unsafe {
             let mc = Mutation::new();
             let mc: Mutation<'static> = std::mem::transmute(mc);
-            let ctx = crate::runtime::Context::from(mc);
+            let ctx = crate::runtime::MutationContext::from(mc);
             let state = self.state.as_ptr().as_mut().expect("state must be valid");
             let res = std::panic::catch_unwind(AssertUnwindSafe(|| f(ctx, &mut state.root)));
             Thread::enter_native();
@@ -424,6 +424,15 @@ impl<'gc> Mutation<'gc> {
         unsafe {
             let state_ptr = self.thread.state_ptr();
             &*(state_ptr as *const State<'gc>)
+        }
+    }
+
+    #[inline(always)]
+    pub fn tc(&self) -> &'gc Tc<'gc> {
+        // The thread context is built with the thread and needs no init gate.
+        unsafe {
+            let tc_ptr = self.thread.tc_ptr();
+            &*(tc_ptr as *const Tc<'gc>)
         }
     }
 
@@ -676,6 +685,7 @@ impl<'gc> Mutation<'gc> {
         alignment: usize,
         header_word: u64,
     ) -> GcObject {
+        let semantics = self.thread.map_semantics(AllocationSemantics::NonMoving);
         unsafe {
             self.flush_tlab();
             let object_start = mmtk::memory_manager::alloc_slow_with_options(
@@ -683,17 +693,12 @@ impl<'gc> Mutation<'gc> {
                 size + size_of::<HeapObjectHeader>(),
                 alignment,
                 OBJECT_REF_OFFSET as usize,
-                AllocationSemantics::NonMoving,
+                semantics,
                 DEFAULT_ALLOC_OPTIONS,
             );
             self.refill_tlab();
 
-            self.finish_allocated_object_with_header(
-                object_start,
-                size,
-                header_word,
-                AllocationSemantics::NonMoving,
-            )
+            self.finish_allocated_object_with_header(object_start, size, header_word, semantics)
         }
     }
 
@@ -787,6 +792,7 @@ impl<'gc> Mutation<'gc> {
         header_word: u64,
         mut semantics: AllocationSemantics,
     ) -> UnpublishedAllocation {
+        semantics = self.thread.map_semantics(semantics);
         unsafe {
             if size + size_of::<HeapObjectHeader>() >= 8 * 1024 {
                 semantics = AllocationSemantics::Los;
@@ -968,6 +974,39 @@ impl<'gc> Mutation<'gc> {
         }
     }
 
+    /// Remember a freshly allocated non-nursery object that was initialized
+    /// with references to objects that may be in the nursery.
+    ///
+    /// MMTk's non-moving space does not mark new objects as unlogged, so in a
+    /// generational plan the write barrier ignores stores into them and a
+    /// nursery collection never looks at them. This marks `src` unlogged and
+    /// then logs it, which puts it in the remembered set like any mature
+    /// object that was written to.
+    ///
+    /// # Safety
+    ///
+    /// `src` must be a live object outside the nursery whose reference
+    /// fields are all initialized.
+    pub unsafe fn remember_new_object(&self, src: GcObject) {
+        match self.thread.barrier() {
+            BarrierSelector::ObjectBarrier => unsafe {
+                let addr = src.to_address();
+                let meta_addr = global_side_metadata_vm_base_address() + (addr >> 6);
+                let shift = (addr >> 3) & 0b111;
+                (*meta_addr.to_ptr::<std::sync::atomic::AtomicU8>())
+                    .fetch_or(1 << shift, std::sync::atomic::Ordering::SeqCst);
+                self.raw_object_reference_write(
+                    src,
+                    ObjectSlot::from_address(Address::ZERO),
+                    GcObject::NULL,
+                );
+            },
+            // The other barriers either need nothing for a new object or
+            // have no generational remembered set.
+            _ => {}
+        }
+    }
+
     /// Allocate raw GC memory without initializing the object header.
     ///
     /// # Safety
@@ -980,6 +1019,7 @@ impl<'gc> Mutation<'gc> {
         alignment: usize,
         mut semantics: AllocationSemantics,
     ) -> GcObject {
+        semantics = self.thread.map_semantics(semantics);
         unsafe {
             if size + size_of::<HeapObjectHeader>() >= 8 * 1024 {
                 semantics = AllocationSemantics::Los;
@@ -1043,6 +1083,7 @@ impl<'gc> Mutation<'gc> {
         alignment: usize,
         mut semantics: AllocationSemantics,
     ) -> GcObject {
+        semantics = self.thread.map_semantics(semantics);
         if semantics == AllocationSemantics::Default
             && size + size_of::<HeapObjectHeader>() >= self.thread.max_non_los_alloc_bytes()
         {
@@ -1107,6 +1148,7 @@ impl<'gc> Mutation<'gc> {
     ///
     /// Same as [`raw_alloc_uninit`](Self::raw_alloc_uninit).
     pub unsafe fn raw_allocate_nonmoving_uninit(&self, size: usize, alignment: usize) -> GcObject {
+        let semantics = self.thread.map_semantics(AllocationSemantics::NonMoving);
         unsafe {
             self.flush_tlab();
             let object_start = mmtk::memory_manager::alloc_slow_with_options(
@@ -1114,12 +1156,12 @@ impl<'gc> Mutation<'gc> {
                 size + size_of::<HeapObjectHeader>(),
                 alignment,
                 OBJECT_REF_OFFSET as usize,
-                AllocationSemantics::NonMoving,
+                semantics,
                 DEFAULT_ALLOC_OPTIONS,
             );
             self.refill_tlab();
 
-            self.finish_allocated_object(object_start, size, AllocationSemantics::NonMoving)
+            self.finish_allocated_object(object_start, size, semantics)
         }
     }
 

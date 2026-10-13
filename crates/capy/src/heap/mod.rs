@@ -1,7 +1,7 @@
-//! Heap — precise garbage collection for Capy.
+//! Heap, precise garbage collection for Capy.
 //!
-//! Safe mutator-facing APIs sit on top of MMTk. Prefer [`crate::runtime::Context`] for
-//! allocation and rooting; this module owns the GC engine, tracing, and storage.
+//! Safe mutator-facing APIs sit on top of MMTk. Prefer [`crate::runtime::MutationContext`] for
+//! allocation and rooting, this module owns the GC engine, tracing, and storage.
 
 use constraints::add_core_constraints;
 use finalizer::Finalizers;
@@ -137,7 +137,7 @@ pub use weak::{Ephemeron, Weak, WeakCallback, WeakCallbackToken, WeakProcessor};
 
 pub use plans::{ALLOWED_GC_PLAN_NAMES, is_allowed_plan, validate_plan};
 
-// Hidden: required by derives, Rootable!, and `impl Into` GC helpers. Prefer Context.
+// Hidden: required by derives, Rootable!, and `impl Into` GC helpers. Prefer MutationContext.
 #[doc(hidden)]
 pub use collection::Visitor;
 pub(crate) use mutator::Mutator;

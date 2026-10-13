@@ -1,4 +1,4 @@
-//! OopStorage — full port of HotSpot `oopStorage.cpp`.
+//! OopStorage, full port of HotSpot `oopStorage.cpp`.
 
 use std::cell::UnsafeCell;
 use std::ptr::{self, NonNull};
@@ -162,7 +162,7 @@ impl OopStorage {
     }
 
     pub fn trigger_cleanup_if_needed() {
-        // HotSpot notifies Service_lock; Capy clients poll `has_cleanup_work_and_reset`.
+        // HotSpot notifies Service_lock. Capy clients poll `has_cleanup_work_and_reset`.
     }
 
     /// Allocate a slot. Returns pointer to an empty Value, or None on OOM.
@@ -421,7 +421,7 @@ impl OopStorage {
             if !block.is_null() {
                 return Some(block);
             } else if self.reduce_deferred_updates() {
-                // Might have added a block; retry.
+                // Might have added a block, retry.
             } else if self.try_add_block(guard) {
                 assert!(!unsafe { self.allocation_list().chead() }.is_null());
             } else if !unsafe { self.allocation_list().chead() }.is_null() {
@@ -614,7 +614,7 @@ impl OopStorage {
         });
     }
 
-    /// Weak iteration: skip empty slots; apply `f` to others.
+    /// Weak iteration: skip empty slots, apply `f` to others.
     pub fn weak_oops_do<F>(&self, mut f: F)
     where
         F: FnMut(*mut Value<'static>),
@@ -658,7 +658,7 @@ impl OopStorage {
         }
     }
 
-    /// Weak scan: clear dead cells; report num_dead.
+    /// Weak scan: clear dead cells, report num_dead.
     pub fn scan_weak_roots<A>(
         &self,
         mut is_alive: A,

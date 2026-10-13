@@ -7,7 +7,7 @@ use crate::heap::GarbageCollector;
 
 /// Register built-in constraints (OopStorage, globals, weak/ephemeron, finalizers).
 pub fn add_core_constraints(set: &mut MarkingConstraintSet) {
-    // Strong OopStorage — also scanned in scan_vm_specific_roots; constraint keeps the
+    // Strong OopStorage, also scanned in scan_vm_specific_roots, constraint keeps the
     // GreyedByExecution slot for wavefront accounting / re-entry after mutator resume.
     set.add(Box::new(SimpleMarkingConstraint::new(
         "Os",
@@ -15,7 +15,7 @@ pub fn add_core_constraints(set: &mut MarkingConstraintSet) {
         ConstraintVolatility::GreyedByExecution,
         |_visitor| {
             // Roots are enqueued via RootsWorkFactory in scan_vm_specific_roots.
-            // This constraint is a no-op body; presence drives scheduling heuristics.
+            // This constraint is a no-op body, presence drives scheduling heuristics.
         },
     )));
 
@@ -26,7 +26,7 @@ pub fn add_core_constraints(set: &mut MarkingConstraintSet) {
         |_visitor| {},
     )));
 
-    // Weak / ephemeron outgrowths — body is a marker; real work is in WeakProcessingState.
+    // Weak / ephemeron outgrowths, body is a marker, real work is in WeakProcessingState.
     set.add(Box::new(
         SimpleMarkingConstraint::new(
             "Wk",

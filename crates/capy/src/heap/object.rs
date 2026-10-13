@@ -1,6 +1,6 @@
 use crate::define_namespace;
 use crate::heap::{collection::Visitor, mm::MemoryManager, traits::Trace, weak::WeakProcessor};
-use crate::runtime::Context;
+use crate::runtime::MutationContext;
 use crate::utils::easy_bitfield::{AtomicBitfieldContainer, BitField, BitFieldTrait};
 use crate::utils::generic_static::Namespace;
 use core::fmt;
@@ -77,7 +77,8 @@ pub mod builtin_class_ids {
     pub const NATIVE_PROCEDURE: u32 = 44;
     pub const NATIVE_CONTINUATION: u32 = 45;
     pub const CODE_BLOCK: u32 = 46;
-    pub const RELOCATABLE_CODE_BLOCK: u32 = 47;
+    /// Instruction stream and constant pool of a code block.
+    pub const CODE_BUFFER: u32 = 47;
     pub const MODULE: u32 = 48;
     pub const ENVIRONMENT: u32 = 49;
     pub const SYNTAX: u32 = 50;
@@ -92,6 +93,8 @@ pub mod builtin_class_ids {
     pub const CONDITION: u32 = 59;
     pub const ANNOTATION: u32 = 60;
     pub const CONTINUATION_MARKS: u32 = 61;
+    /// A captured run of stack frames.
+    pub const CONTINUATION: u32 = 62;
     pub const GENERIC: u32 = 63;
     pub const METHOD: u32 = 64;
     pub const NEXT_METHOD: u32 = 65;
@@ -166,7 +169,7 @@ impl<'gc, T: Trace> AllocationHooksOf<'gc, T> {
         compute_alignment: None,
     };
 
-    pub(crate) fn class_header_word(ctx: Context<'gc>) -> u64 {
+    pub(crate) fn class_header_word(ctx: MutationContext<'gc>) -> u64 {
         type_class_header_word::<T>(ctx, Self::HOOKS)
     }
 }
@@ -294,7 +297,11 @@ impl Drop for TypeClassRegistrationGuard {
     }
 }
 
-fn register_type_class_with_context<'gc>(ctx: Context<'gc>, id: ClassId, hooks: AllocationHooks) {
+fn register_type_class_with_context<'gc>(
+    ctx: MutationContext<'gc>,
+    id: ClassId,
+    hooks: AllocationHooks,
+) {
     if !crate::runtime::class::class_table_initialized()
         || crate::runtime::class::is_type_class_registered(id)
     {
@@ -321,7 +328,7 @@ impl<T> ClassIdOf<T> {
     }
 }
 /*
-pub(crate) fn type_class_header_word<'gc, T>(ctx: Context<'gc>, hooks: AllocationHooks) -> u64 {
+pub(crate) fn type_class_header_word<'gc, T>(ctx: MutationContext<'gc>, hooks: AllocationHooks) -> u64 {
     let _ = PhantomData::<fn() -> T>;
     let key = hooks.registry_key();
     let id = {
@@ -339,7 +346,10 @@ pub(crate) fn type_class_header_word<'gc, T>(ctx: Context<'gc>, hooks: Allocatio
     class_header_word(id)
 }*/
 
-pub(crate) fn type_class_header_word<'gc, T>(ctx: Context<'gc>, hooks: AllocationHooks) -> u64 {
+pub(crate) fn type_class_header_word<'gc, T>(
+    ctx: MutationContext<'gc>,
+    hooks: AllocationHooks,
+) -> u64 {
     /*let _ = PhantomData::<fn() -> T>;
     let key = hooks.registry_key();
     let id = {
@@ -369,7 +379,7 @@ pub(crate) fn type_class_header_word<'gc, T>(ctx: Context<'gc>, hooks: Allocatio
 #[inline(never)]
 #[cold]
 fn type_class_header_word_slow<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     hooks: AllocationHooks,
     addr: &ClassIdOf<impl Sized>,
 ) {
@@ -752,7 +762,7 @@ impl mmtk::vm::ObjectModel<MemoryManager> for ObjectModel {
     const UNIFIED_OBJECT_REFERENCE_ADDRESS: bool = false;
 
     fn dump_object(_object: mmtk::util::ObjectReference) {
-        // MMTk debug hook; no object pretty-printer yet (CAPY-43).
+        // MMTk debug hook, no object pretty-printer yet (CAPY-43).
     }
 
     fn get_type_descriptor(_reference: ObjectReference) -> &'static [i8] {

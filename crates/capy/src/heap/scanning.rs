@@ -62,6 +62,11 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
                     .as_mut()
                     .expect("index in range");
                 state.assume_init_mut().trace(&mut visitor);
+                thread
+                    .tc_ptr()
+                    .as_mut()
+                    .expect("thread context built with thread")
+                    .trace(&mut visitor);
             }
         }
 
@@ -101,6 +106,11 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
                     .state_ptr()
                     .as_mut()
                     .expect("thread state initialized")
+                    .trace(&mut visitor);
+                thread
+                    .tc_ptr()
+                    .as_mut()
+                    .expect("thread context built with thread")
                     .trace(&mut visitor);
 
                 let mutator_state = (*thread.native_data_mut_ptr()).mutator_state;

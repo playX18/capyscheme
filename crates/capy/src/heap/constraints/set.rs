@@ -22,7 +22,7 @@ pub struct MarkingConstraintSet {
     iteration: AtomicUsize,
     /// Set when any constraint greys/retains work in the current pass.
     dirty: AtomicBool,
-    /// Armed when parallel VMRefClosure shards are scheduled; consumed on the
+    /// Armed when parallel VMRefClosure shards are scheduled, consumed on the
     /// post-drain `process_weak_refs` re-entry so we do not reschedule forever.
     parallel_reentry: AtomicBool,
     /// Prevents adding constraints during an active collection.
@@ -153,11 +153,11 @@ impl MarkingConstraintSet {
         tracer_context: &mut C,
     ) -> bool {
         let iteration = self.iteration.fetch_add(1, Ordering::Relaxed);
-        // Skip pure-root iteration here — roots already ran in Prepare / mutator scan.
+        // Skip pure-root iteration here, roots already ran in Prepare / mutator scan.
         let iteration = iteration.max(2);
         let counting = ConstraintVisitor::new_counting();
         let order = self.ordered_for_iteration(iteration, &counting);
-        // Prefer outgrowths for VMRefClosure; include SeldomGreyed on late iterations.
+        // Prefer outgrowths for VMRefClosure, include SeldomGreyed on late iterations.
         let order: Vec<usize> = if iteration == 2 {
             self.outgrowths.clone()
         } else {
@@ -187,7 +187,7 @@ impl MarkingConstraintSet {
         };
 
         let visited = solver::execute_constraints(self, &order, worker, tracer_context, mode);
-        // Iteration 2 always requests another pass (JSC); later passes repeat while dirty.
+        // Iteration 2 always requests another pass (JSC), later passes repeat while dirty.
         // Do not mark_dirty merely because a pass requested re-entry (e.g. parallel drain).
         if iteration == 2 {
             return true;

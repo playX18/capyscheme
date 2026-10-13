@@ -1,4 +1,4 @@
-//! HotSpot `SingleWriterSynchronizer` — RCU-style reader critical sections
+//! HotSpot `SingleWriterSynchronizer`. RCU-style reader critical sections
 //! with a single writer that waits for extant readers to finish.
 
 use std::sync::atomic::{AtomicU32, Ordering};
