@@ -1,5 +1,6 @@
 (define-library (scheme char)
-  (import (core unicode))
+  (import (core primitives)
+    (core unicode))
   (export char-alphabetic?
     char-ci<?
     char-ci>=?
@@ -21,4 +22,11 @@
     string-ci<?
     string-ci>=?
     string-downcase
-    string-upcase))
+    string-upcase)
+  (begin
+    ;; R7RS-small: digit-value of a decimal digit character, #f otherwise.
+    (define digit-value
+      (lambda (c)
+        (if (char-numeric? c)
+          (- (char->integer c) 48)
+          #f)))))

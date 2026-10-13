@@ -8,6 +8,7 @@
            (bytevector-copy! r6rs:bytevector-copy!)
            (let-syntax r6rs:let-syntax)
            (letrec-syntax r6rs:letrec-syntax)))
+  (import (only (capy) %cond-expand-features))
 
   (export
     |#%app|
@@ -427,6 +428,16 @@
     (define output-port-open?
       (lambda (port)
         (and (not (port-closed? port)) (output-port? port))))
+
+    (define input-port-open?
+      (lambda (port)
+        (and (not (port-closed? port)) (input-port? port))))
+
+    ;; The %cond-expand-features list is the cond-expand feature table
+    ;; of the boot module. (features) exposes it as required by
+    ;; R7RS-small (scheme base).
+    (define features
+      (lambda () %cond-expand-features))
 
     (define peek-u8
       (lambda options

@@ -19,8 +19,11 @@
     <
     <=
     =
+    =>
     >
     >=
+    _
+    ...
     abs
     acos
     and
@@ -92,6 +95,7 @@
     string>?
     substring
     symbol?
+    tan
     truncate
     vector
     vector-fill!
@@ -139,6 +143,7 @@
     string>=?
     string?
     symbol->string
+    syntax-rules
     tan
     values
     vector->list
@@ -175,6 +180,7 @@
     define-syntax
     denominator
     do
+    else
     eof-object?
     equal?
     eval
@@ -226,6 +232,6 @@
     imag-part
     inexact?
     integer->char
-    ;interaction-environment
+    interaction-environment
     lcm
     let))
