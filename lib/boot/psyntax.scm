@@ -193,6 +193,10 @@
 
   (define (global-extend type sym val)
     (module-define! (current-module) sym (make-syntax-transformer sym type val)))
+  ;; Generated scaffolding (`regen`, `gen-clause` dispatchers) is sourceless
+  ;; BY POLICY, not by accident: stamping it with a use-site span would
+  ;; mis-attribute it (Chez `d->s` precedent). P1 teaches lookups to report
+  ;; such spans as generated instead of inheriting a neighbor.
   (define no-source #f)
   (define macro-expansion-stack-key '|macro-expansion-stack 5ddbd8ce-0ba4-4715-a609-daf4271c8a61|)
   (define (sourcev-ref s index default)
@@ -1133,7 +1137,13 @@
           (not defmod)
           (not s))
         x)
-      ((syntax? x) (wrap-syntax x (join-wraps w (syntax-wrap x)) defmod))
+      ((syntax? x)
+        (let ((xw (join-wraps w (syntax-wrap x))))
+          ;; A syntax object keeps its own span - unless it has none, in
+          ;; which case the caller's span wins over silence.
+          (if (and s (not (syntax-sourcev x)))
+            (make-syntax (syntax-expression x) xw (or (syntax-module x) defmod) s)
+            (wrap-syntax x xw defmod))))
       ((null? x) x)
       (else (make-syntax x w defmod s))))
   (define (expand-sequence body r w s mod)
@@ -1923,8 +1933,17 @@
 
   (define (expand-macro p e r w s rib mod)
     (define transformer (car p))
+    (define (macro-use-source use)
+      ;; The use-site span, stamped macro-introduced with the use site
+      ;; chained for provenance (Gauche `original`-link style).
+      (if (vector? use)
+        (vector (sourcev-filename use) (sourcev-line use) (sourcev-column use)
+          (sourcev-end-line use) (sourcev-end-column use)
+          (sourcev-start-byte use) (sourcev-end-byte use)
+          'macro (list use))
+        use))
     (define (decorate-source x)
-      (source-wrap x empty-wrap s #f))
+      (source-wrap x empty-wrap (macro-use-source s) #f))
     (define (map* f x)
       (match x
         [() '()]
@@ -1937,12 +1956,15 @@
         ((syntax? x)
           (let ((w (syntax-wrap x)))
             (let ((ms (wrap-marks w)) (ss (wrap-subst w)))
-              (if (and (pair? ms) (eq? (car ms) the-anti-mark))
-                (wrap-syntax x (make-wrap (cdr ms) (if rib (cons rib (cdr ss)) (cdr ss))) mod)
-                (wrap-syntax
-                  x
-                  (make-wrap (cons m ms) (if rib (cons rib (cons 'shift ss)) (cons 'shift ss)))
-                  mod)))))
+              (let ((xw (if (and (pair? ms) (eq? (car ms) the-anti-mark))
+                          (make-wrap (cdr ms) (if rib (cons rib (cdr ss)) (cdr ss)))
+                          (make-wrap (cons m ms) (if rib (cons rib (cons 'shift ss)) (cons 'shift ss))))))
+                ;; Carried code keeps its input span; introduced spine with
+                ;; no span of its own adopts the use-site span instead of
+                ;; staying silent (same rule as `source-wrap`).
+                (if (syntax-sourcev x)
+                  (wrap-syntax x xw mod)
+                  (make-syntax (syntax-expression x) xw (or (syntax-module x) mod) (macro-use-source s)))))))
         ((vector? x)
           (let* ((n (vector-length x)) (v (make-vector n)))
             (let loop ((i 0))
@@ -3171,6 +3193,10 @@
                         (else (match* e p empty-wrap '() #f)))))
 
   (set! identifier? (lambda (x) (nonsymbol-id? x)))
+  ;; Re-stamp hatch for macros that build code from tracked pieces:
+  ;; `opt-source` is a 9-vector sourcev, a source alist, or a syntax
+  ;; object donating its span; without it the identifier's span wins,
+  ;; else the datum's source properties.
   (set! datum->syntax (lambda (id datum . opt-source)
                        (define source (if (null? opt-source) #f (car opt-source)))
                        (define (props->sourcev props)

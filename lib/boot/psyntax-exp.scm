@@ -1645,10 +1645,14 @@
                     '#f)
                 x)
                ((syntax? x)
-                (wrap-syntax
-                  x
-                  (join-wraps w (syntax-wrap x))
-                  defmod))
+                (let ((xw (join-wraps w (syntax-wrap x))))
+                  (if (if s (not (syntax-sourcev x)) '#f)
+                      (make-syntax
+                        (syntax-expression x)
+                        xw
+                        (let ((tmp (syntax-module x))) (or tmp defmod))
+                        s)
+                      (wrap-syntax x xw defmod))))
                ((null? x) x)
                (else (make-syntax x w defmod s)))))
      (expand-sequence
@@ -2311,7 +2315,7 @@
                                                                          #(expand)
                                                                          #((top))
                                                                          #(#((capy)
-                                                                             id724))))
+                                                                             id892))))
                                                                      '(hygiene
                                                                         capy))
                                                                    (make-syntax
@@ -3904,7 +3908,7 @@
                                                                                  #(expand)
                                                                                  #((top))
                                                                                  #(#((capy)
-                                                                                     id724))))
+                                                                                     id892))))
                                                                              '(hygiene
                                                                                 capy))
                                                                            (make-syntax
@@ -3929,7 +3933,7 @@
                                                                                                    #(m)
                                                                                                    #((top))
                                                                                                    #(#((capy)
-                                                                                                       id4104))))
+                                                                                                       id4280))))
                                                                                                '(hygiene
                                                                                                   capy))
                                                                                              (list (list (make-syntax
@@ -3966,7 +3970,7 @@
                                                                                                    #(m)
                                                                                                    #((top))
                                                                                                    #(#((capy)
-                                                                                                       id4104))))
+                                                                                                       id4280))))
                                                                                                '(hygiene
                                                                                                   capy)))))))
                                                                (map (lambda (tmp.2)
@@ -4021,7 +4025,7 @@
                                                                                  #(expand)
                                                                                  #((top))
                                                                                  #(#((capy)
-                                                                                     id724))))
+                                                                                     id892))))
                                                                              '(hygiene
                                                                                 capy))
                                                                            (make-syntax
@@ -4046,7 +4050,7 @@
                                                                                                    #(m)
                                                                                                    #((top))
                                                                                                    #(#((capy)
-                                                                                                       id4104))))
+                                                                                                       id4280))))
                                                                                                '(hygiene
                                                                                                   capy))
                                                                                              (cons (list (make-syntax
@@ -4084,7 +4088,7 @@
                                                                                                    #(m)
                                                                                                    #((top))
                                                                                                    #(#((capy)
-                                                                                                       id4104))))
+                                                                                                       id4280))))
                                                                                                '(hygiene
                                                                                                   capy)))))))
                                                                (map (lambda (tmp.2)
@@ -4134,7 +4138,7 @@
                                                                                  #(expand)
                                                                                  #((top))
                                                                                  #(#((capy)
-                                                                                     id724))))
+                                                                                     id892))))
                                                                              '(hygiene
                                                                                 capy))
                                                                            (make-syntax
@@ -4193,7 +4197,7 @@
                                                                                  #(expand)
                                                                                  #((top))
                                                                                  #(#((capy)
-                                                                                     id724))))
+                                                                                     id892))))
                                                                              '(hygiene
                                                                                 capy))
                                                                            (make-syntax
@@ -4252,7 +4256,7 @@
                                                                                  #(expand)
                                                                                  #((top))
                                                                                  #(#((capy)
-                                                                                     id724))))
+                                                                                     id892))))
                                                                              '(hygiene
                                                                                 capy))
                                                                            (make-syntax
@@ -4662,8 +4666,27 @@
        (lambda (p e r w s rib mod)
          (letrec*
            ((transformer (car p))
+            (macro-use-source
+              (lambda (use)
+                (if (vector? use)
+                    (vector
+                      (sourcev-filename use)
+                      (sourcev-line use)
+                      (sourcev-column use)
+                      (sourcev-end-line use)
+                      (sourcev-end-column use)
+                      (sourcev-start-byte use)
+                      (sourcev-end-byte use)
+                      'macro
+                      (list use))
+                    use)))
             (decorate-source
-              (lambda (x) (source-wrap x empty-wrap s '#f)))
+              (lambda (x)
+                (source-wrap
+                  x
+                  empty-wrap
+                  (macro-use-source s)
+                  '#f)))
             (map* (lambda (f x)
                     (let ((v x))
                       (let ((fk (lambda ()
@@ -4688,21 +4711,26 @@
                       ((syntax? x)
                        (let ((w.1 (syntax-wrap x)))
                          (let ((ms (wrap-marks w.1)) (ss (wrap-subst w.1)))
-                           (if (if (pair? ms) (eq? (car ms) the-anti-mark) '#f)
-                               (wrap-syntax
-                                 x
-                                 (make-wrap
-                                   (cdr ms)
-                                   (if rib (cons rib (cdr ss)) (cdr ss)))
-                                 mod)
-                               (wrap-syntax
-                                 x
-                                 (make-wrap
-                                   (cons m ms)
-                                   (if rib
-                                       (cons rib (cons 'shift ss))
-                                       (cons 'shift ss)))
-                                 mod)))))
+                           (let ((xw (if (if (pair? ms)
+                                             (eq? (car ms) the-anti-mark)
+                                             '#f)
+                                         (make-wrap
+                                           (cdr ms)
+                                           (if rib
+                                               (cons rib (cdr ss))
+                                               (cdr ss)))
+                                         (make-wrap
+                                           (cons m ms)
+                                           (if rib
+                                               (cons rib (cons 'shift ss))
+                                               (cons 'shift ss))))))
+                             (if (syntax-sourcev x)
+                                 (wrap-syntax x xw mod)
+                                 (make-syntax
+                                   (syntax-expression x)
+                                   xw
+                                   (let ((tmp (syntax-module x))) (or tmp mod))
+                                   (macro-use-source s)))))))
                       ((vector? x)
                        (let ((n (vector-length x)))
                          (let ((v (make-vector n)))
