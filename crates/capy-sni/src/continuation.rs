@@ -13,7 +13,7 @@ pub struct Continuation {
 
 // Field accesses below go through `sys::SniContinuation`, which mirrors
 // `struct SniContinuation` in c/capy.h exactly (pinned by const asserts in
-// capy-sni-sys); conts are allocated by sni_cont_alloc and stay live while
+// capy-sni-sys), conts are allocated by sni_cont_alloc and stay live while
 // this `Continuation` (or the C trampoline, after into_raw) owns them.
 
 impl Continuation {
@@ -32,7 +32,7 @@ impl Continuation {
     }
 
     /// Continuation-owned global root slot (`c->result`). GC-safe for the
-    /// lifetime of this `Continuation`; do not free the cont while using it.
+    /// lifetime of this `Continuation`, do not free the cont while using it.
     pub fn result(&self) -> ScmRef {
         if self.ptr.is_null() {
             return ptr::null_mut();
@@ -47,7 +47,7 @@ impl Continuation {
         if self.ptr.is_null() {
             return;
         }
-        // SAFETY: env is live by branding; cont is live (see impl-level note).
+        // SAFETY: env is live by branding, cont is live (see impl-level note).
         unsafe {
             sys::sni_cont_set_result(env.as_ptr(), self.ptr, value.as_raw());
         }
@@ -101,18 +101,18 @@ impl<'env> Env<'env> {
         data: *mut libc::c_void,
         drop_data: sys::SniDropDataFn,
     ) -> Continuation {
-        // SAFETY: standing invariants (see `Env`); data validity is on the caller.
+        // SAFETY: standing invariants (see `Env`), data validity is on the caller.
         let ptr = unsafe { sys::sni_cont_alloc(self.as_ptr(), start, data, drop_data) };
         Continuation { ptr }
     }
 
     pub fn trampoline(&mut self, c: &mut Continuation) -> Ref<'env> {
-        // SAFETY: standing invariants; result is a fresh local ref.
+        // SAFETY: standing invariants, result is a fresh local ref.
         unsafe { Ref::from_raw(sys::sni_trampoline(self.as_ptr(), c.as_ptr())) }
     }
 
     pub fn call_k(&mut self, proc: Ref<'_>, args: &[Ref<'_>], c: &mut Continuation) {
-        // SAFETY: standing invariants; args is a &[Ref] and Ref is
+        // SAFETY: standing invariants, args is a &[Ref] and Ref is
         // repr(transparent) over ScmRef.
         unsafe {
             sys::sni_call_k(
@@ -136,13 +136,13 @@ impl<'env> Env<'env> {
         if finished.is_null() {
             return Ref::null();
         }
-        // SAFETY: finished is a live cont; its result slot is a rooted handle
+        // SAFETY: finished is a live cont, its result slot is a rooted handle
         // (see the impl-level layout note on `Continuation`).
         unsafe { Ref::from_raw((*finished).result) }
     }
 }
 
-/// Colorless magic ops — only valid inside `#[cps]` (macro rewrites these).
+/// Colorless magic ops, only valid inside `#[cps]` (macro rewrites these).
 pub mod cps_ops {
     use crate::Ref;
 
@@ -198,7 +198,7 @@ pub mod __cps {
         if !data.is_null() {
             // SAFETY: paired with Box::into_raw in `run`.
             let mut boxed = unsafe { Box::from_raw(data as *mut Data<'_, R>) };
-            // Best-effort: env is unavailable on free; leak slots rather than
+            // Best-effort: env is unavailable on free, leak slots rather than
             // call delete without env. Cont free normally runs after `run`
             // clears roots via `release_roots`.
             boxed.roots.clear();
@@ -206,7 +206,7 @@ pub mod __cps {
         }
     }
 
-    /// Root `value` in the continuation's slot table; returns an id for [`reload_ref`].
+    /// Root `value` in the continuation's slot table, returns an id for [`reload_ref`].
     pub fn root_ref<'env, R: 'static>(
         env: &mut Env<'env>,
         c: &mut Continuation,
@@ -226,7 +226,7 @@ pub mod __cps {
     /// Reload a previously rooted `Ref` after suspend / GC.
     ///
     /// # Safety
-    /// `id` must come from [`root_ref`] on this continuation; env must be live.
+    /// `id` must come from [`root_ref`] on this continuation, env must be live.
     pub unsafe fn reload_ref<'env, R: 'static>(
         _env: &Env<'env>,
         c: &Continuation,
@@ -264,7 +264,7 @@ pub mod __cps {
             let mut env = unsafe { Env::from_raw(env) };
             let mut cont = Continuation::from_raw(c);
             let data = cont.data_ptr() as *mut Data<'_, R>;
-            // SAFETY: data is the Box::into_raw'd Data installed by `run`;
+            // SAFETY: data is the Box::into_raw'd Data installed by `run`,
             // the cont owns it until `run` detaches it.
             let out = unsafe {
                 if let Some(leg) = (*data).pending.as_mut() {
@@ -290,7 +290,7 @@ pub mod __cps {
         }
     }
 
-    /// Run a CPS graph; `start` is the first leg. Returns the value passed to [`finish`].
+    /// Run a CPS graph, `start` is the first leg. Returns the value passed to [`finish`].
     pub fn run<'env, R: 'static>(env: &mut Env<'env>, mut start: Leg<'env>) -> R {
         let data = Box::into_raw(Box::new(Data::<'env, R> {
             pending: None,
@@ -308,7 +308,7 @@ pub mod __cps {
         let first = start(env, &mut c);
         if first.is_null() {
             release_roots::<R>(env, &c);
-            // SAFETY: the trampoline was dismissed synchronously; run owns data.
+            // SAFETY: the trampoline was dismissed synchronously, run owns data.
             let boxed = unsafe { Box::from_raw(data) };
             c.into_raw();
             return boxed
@@ -333,7 +333,7 @@ pub mod __cps {
             (*c.as_ptr()).data = ptr::null_mut();
             (*c.as_ptr()).drop_data = None;
         }
-        // SAFETY: the trampoline ran to completion; run owns data.
+        // SAFETY: the trampoline ran to completion, run owns data.
         let boxed = unsafe { Box::from_raw(data) };
         boxed
             .result

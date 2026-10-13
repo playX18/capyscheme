@@ -387,7 +387,7 @@ impl Expander {
 
 				quote! {
 					#[allow(non_snake_case)]
-					fn #ident<'gc>(ctx: crate::runtime::Context<'gc>) -> crate::runtime::value::Value<'gc> {
+					fn #ident<'gc>(ctx: crate::runtime::MutationContext<'gc>) -> crate::runtime::value::Value<'gc> {
 						static VALUE: ::std::sync::OnceLock<
 							crate::runtime::global::Global<
 								crate::Rootable!(crate::runtime::value::Value<'_>)

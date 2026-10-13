@@ -247,7 +247,7 @@ fn handle_fn(attrs: Attrs, mut fun: ItemFn) -> TokenStream {
     }
     for m in &attrs.modes {
         if !matches!(m.as_str(), "cps" | "unsafe") {
-            // modes on fn are only cps/unsafe; ignore unknown for forward compat
+            // modes on fn are only cps/unsafe, ignore unknown for forward compat
             // (struct modes are validated elsewhere)
             if matches!(m.as_str(), "pod" | "record" | "class" | "abstract") {
                 return syn::Error::new_spanned(
@@ -261,7 +261,7 @@ fn handle_fn(attrs: Attrs, mut fun: ItemFn) -> TokenStream {
     }
 
     if is_cps {
-        // Rewrite body onto __cps::run; requires `&mut Env` as first arg.
+        // Rewrite body onto __cps::run, requires `&mut Env` as first arg.
         let SplitInputs { has_env, .. } = match split_inputs(&fun.sig.inputs) {
             Ok(v) => v,
             Err(e) => return e,
@@ -777,7 +777,7 @@ fn handle_impl(attrs: Attrs, im: ItemImpl) -> TokenStream {
                     ),
                 };
                 // Pod values are bytevectors, so the method specializes on
-                // <bytevector>; the trampoline's PodRecord::from_scm performs
+                // <bytevector>, the trampoline's PodRecord::from_scm performs
                 // the actual pod type check on the receiver.
                 let cls = env.builtin_class("<bytevector>").unwrap_or_else(|_| {
                     panic!(

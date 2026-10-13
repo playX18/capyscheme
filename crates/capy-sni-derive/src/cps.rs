@@ -1,4 +1,4 @@
-//! `#[cps]` — control-flow rewrite onto SNI continuations.
+//! `#[cps]`, control-flow rewrite onto SNI continuations.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};

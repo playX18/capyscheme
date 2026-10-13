@@ -66,7 +66,7 @@ impl<'env> IntoScm<'env> for Ref<'env> {
 
 impl<'env> TryFromScm<'env> for bool {
     fn try_from_scm(env: &mut Env<'env>, value: Ref<'env>) -> Result<Self, ConversionError> {
-        // SAFETY: standing invariants (see `Env`); value is a rooted ref.
+        // SAFETY: standing invariants (see `Env`), value is a rooted ref.
         if unsafe { capy_sni_sys::sni_is_bool(env.as_ptr(), value.as_raw()) } {
             Ok(unsafe { capy_sni_sys::sni_to_bool(env.as_ptr(), value.as_raw()) })
         } else {
@@ -85,7 +85,7 @@ impl<'env> IntoScm<'env> for bool {
 impl<'env> TryFromScm<'env> for i32 {
     fn try_from_scm(env: &mut Env<'env>, value: Ref<'env>) -> Result<Self, ConversionError> {
         let mut out = 0i32;
-        // SAFETY: standing invariants; out is a valid out-pointer.
+        // SAFETY: standing invariants, out is a valid out-pointer.
         if unsafe { capy_sni_sys::sni_to_i32(env.as_ptr(), value.as_raw(), &mut out) } {
             Ok(out)
         } else {
@@ -103,7 +103,7 @@ impl<'env> IntoScm<'env> for i32 {
 impl<'env> TryFromScm<'env> for i64 {
     fn try_from_scm(env: &mut Env<'env>, value: Ref<'env>) -> Result<Self, ConversionError> {
         let mut out = 0i64;
-        // SAFETY: standing invariants; out is a valid out-pointer.
+        // SAFETY: standing invariants, out is a valid out-pointer.
         if unsafe { capy_sni_sys::sni_to_i64(env.as_ptr(), value.as_raw(), &mut out) } {
             Ok(out)
         } else {
@@ -121,7 +121,7 @@ impl<'env> IntoScm<'env> for i64 {
 impl<'env> TryFromScm<'env> for u32 {
     fn try_from_scm(env: &mut Env<'env>, value: Ref<'env>) -> Result<Self, ConversionError> {
         let mut out = 0u32;
-        // SAFETY: standing invariants; out is a valid out-pointer.
+        // SAFETY: standing invariants, out is a valid out-pointer.
         if unsafe { capy_sni_sys::sni_to_u32(env.as_ptr(), value.as_raw(), &mut out) } {
             Ok(out)
         } else {
@@ -139,7 +139,7 @@ impl<'env> IntoScm<'env> for u32 {
 impl<'env> TryFromScm<'env> for u64 {
     fn try_from_scm(env: &mut Env<'env>, value: Ref<'env>) -> Result<Self, ConversionError> {
         let mut out = 0u64;
-        // SAFETY: standing invariants; out is a valid out-pointer.
+        // SAFETY: standing invariants, out is a valid out-pointer.
         if unsafe { capy_sni_sys::sni_to_u64(env.as_ptr(), value.as_raw(), &mut out) } {
             Ok(out)
         } else {
@@ -157,7 +157,7 @@ impl<'env> IntoScm<'env> for u64 {
 impl<'env> TryFromScm<'env> for f64 {
     fn try_from_scm(env: &mut Env<'env>, value: Ref<'env>) -> Result<Self, ConversionError> {
         let mut out = 0f64;
-        // SAFETY: standing invariants; out is a valid out-pointer.
+        // SAFETY: standing invariants, out is a valid out-pointer.
         if unsafe { capy_sni_sys::sni_to_f64(env.as_ptr(), value.as_raw(), &mut out) } {
             Ok(out)
         } else {
@@ -194,7 +194,7 @@ impl<'env> TryFromScm<'env> for String {
 impl<'env> IntoScm<'env> for String {
     fn into_scm(self, env: &mut Env<'env>) -> Ref<'env> {
         // On interior NUL, string() raises an assertion violation into
-        // Scheme; the null fallback is reached only if that raise returns.
+        // Scheme, the null fallback is reached only if that raise returns.
         env.string(&self).unwrap_or_else(|_| Ref::null())
     }
 }
@@ -210,7 +210,7 @@ impl<'env, T: TryFromScm<'env>> TryFromScm<'env> for Option<T> {
         if value.is_null() {
             return Ok(None);
         }
-        // SAFETY: standing invariants; value is a rooted ref.
+        // SAFETY: standing invariants, value is a rooted ref.
         if unsafe { capy_sni_sys::sni_is_bool(env.as_ptr(), value.as_raw()) }
             && !unsafe { capy_sni_sys::sni_is_true(env.as_ptr(), value.as_raw()) }
         {

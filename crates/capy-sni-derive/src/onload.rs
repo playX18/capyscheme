@@ -1,4 +1,4 @@
-//! `#[onload]` — emit C `SNI_OnLoad` for native extension entry.
+//! `#[onload]`, emit C `SNI_OnLoad` for native extension entry.
 
 use proc_macro2::TokenStream;
 use quote::quote;

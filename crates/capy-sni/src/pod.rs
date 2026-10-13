@@ -72,7 +72,7 @@ pub trait PodRecord: Pod + Zeroable {
         if ptr.is_null() || !(ptr as usize).is_multiple_of(align_of::<Self>()) {
             return None;
         }
-        // SAFETY: same as from_scm; the &'a mut Env borrow additionally
+        // SAFETY: same as from_scm, the &'a mut Env borrow additionally
         // guarantees exclusive access to the view.
         Some(unsafe { &mut *(ptr as *mut Self) })
     }

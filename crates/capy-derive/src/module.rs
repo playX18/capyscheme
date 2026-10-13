@@ -193,7 +193,7 @@ impl Module {
         items.extend(quote_spanned! {
             rust_name.span() =>
 
-            pub fn register<'gc>(ctx: Context<'gc>) -> ModuleRef<'gc> {
+            pub fn register<'gc>(ctx: MutationContext<'gc>) -> ModuleRef<'gc> {
                 let old = current_module(ctx).get(ctx);
                 let module = ctx.define_module(#path, Some(#hint));
                 current_module(ctx).set(ctx, module.into());
@@ -205,7 +205,7 @@ impl Module {
             }
 
             #[allow(unused)]
-            pub fn for_each_global<'gc, F>(ctx: Context<'gc>, mut f: F)
+            pub fn for_each_global<'gc, F>(ctx: MutationContext<'gc>, mut f: F)
             where
                 F: FnMut(Value<'gc>)
             {
@@ -217,7 +217,7 @@ impl Module {
 
             #[doc(hidden)]
             #[allow(unused)]
-            pub unsafe fn init_globals<'gc>(ctx: Context<'gc>, mut indexes: impl Iterator<Item = usize>) {
+            pub unsafe fn init_globals<'gc>(ctx: MutationContext<'gc>, mut indexes: impl Iterator<Item = usize>) {
                 unsafe {
                     #(
                         let index = indexes.next().expect("Not enough global variable indexes provided");
@@ -230,7 +230,7 @@ impl Module {
             #[doc(hidden)]
             #[allow(unused)]
             pub unsafe fn for_each_fn<'gc>(
-                ctx: Context<'gc>,
+                ctx: MutationContext<'gc>,
                 mut f: impl FnMut(*const ())
             ) {
                 unsafe {
@@ -244,7 +244,7 @@ impl Module {
             #[doc(hidden)]
             #[allow(unused)]
             pub unsafe fn for_each_continuation<'gc>(
-                ctx: Context<'gc>,
+                ctx: MutationContext<'gc>,
                 mut f: impl FnMut(*const ())
             ) {
                 unsafe {

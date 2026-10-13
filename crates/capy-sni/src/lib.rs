@@ -18,7 +18,7 @@ pub use conversions::{Arity, ConversionError, FromScmArgs, IntoScm, TryFromScm};
 pub use pod::PodRecord;
 pub use sys::ScmRef;
 
-/// Colorless stubs (`cps::call` / `raise` / `guard`); rewritten inside `#[cps]`.
+/// Colorless stubs (`cps::call` / `raise` / `guard`), rewritten inside `#[cps]`.
 pub use continuation::cps_ops as cps;
 
 #[cfg(feature = "derive")]
@@ -35,7 +35,7 @@ pub struct Scm {
 
 impl Scm {
     pub fn new() -> Self {
-        // SAFETY: ffi constructor; null checked below.
+        // SAFETY: ffi constructor, null checked below.
         let ptr = unsafe { sys::scm_new() };
         assert!(!ptr.is_null(), "scm_new failed");
         Self { ptr }
@@ -91,7 +91,7 @@ impl Scm {
             F: for<'env> FnOnce(&mut Env<'env>) -> R,
         {
             // SAFETY: arg is the `&mut Data` passed to scm_enter below, alive
-            // for the whole call; env is live for the duration of this callback.
+            // for the whole call, env is live for the duration of this callback.
             let data = unsafe { &mut *(arg as *mut Data<F, R>) };
             if let Some(f) = data.f.take() {
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
@@ -156,8 +156,8 @@ impl Scm {
             P: for<'env> FnOnce(&mut Env<'env>, &mut Ref<'env>),
             Fin: for<'env> FnOnce(&mut Env<'env>, bool, Ref<'env>) -> i32,
         {
-            // SAFETY: data is the `&mut Data` passed to scm_call below; env is
-            // live for this callback; args points to one rooted ref slot
+            // SAFETY: data is the `&mut Data` passed to scm_call below, env is
+            // live for this callback, args points to one rooted ref slot
             // provided by scm_call (Ref is repr(transparent) over ScmRef).
             let data = unsafe { &mut *(data as *mut Data<P, Fin>) };
             if let Some(p) = data.prepare.take() {
@@ -181,7 +181,7 @@ impl Scm {
             P: for<'env> FnOnce(&mut Env<'env>, &mut Ref<'env>),
             Fin: for<'env> FnOnce(&mut Env<'env>, bool, Ref<'env>) -> i32,
         {
-            // SAFETY: same as prepare_cb; result is a rooted ref owned by scm_call.
+            // SAFETY: same as prepare_cb, result is a rooted ref owned by scm_call.
             let data = unsafe { &mut *(data as *mut Data<P, Fin>) };
             if let Some(f) = data.finish.take() {
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
@@ -243,7 +243,7 @@ impl Drop for Scm {
 /// Rooted handle to a Scheme value, branded by the [`Env`] lifetime that
 /// produced it.
 ///
-/// `Copy` and covariant over `'env`; not `Send`/`Sync` (raw handle).
+/// `Copy` and covariant over `'env`, not `Send`/`Sync` (raw handle).
 #[repr(transparent)]
 #[derive(Copy, Clone)]
 pub struct Ref<'env>(ScmRef, PhantomData<&'env ()>);
@@ -289,7 +289,7 @@ impl Global {
         self.0
     }
 
-    /// Borrow as an env-branded ref. The global root keeps the object alive;
+    /// Borrow as an env-branded ref. The global root keeps the object alive,
     /// the brand ties its use to `env`'s scope.
     pub fn get<'env>(&self, _env: &Env<'env>) -> Ref<'env> {
         Ref(self.0, PhantomData)
@@ -297,7 +297,7 @@ impl Global {
 
     /// Release the global ref.
     pub fn delete(self, env: &Env<'_>) {
-        // SAFETY: env is live by branding; self.0 is a global ref created by
+        // SAFETY: env is live by branding, self.0 is a global ref created by
         // sni_new_global_ref and released exactly once (self is consumed).
         unsafe { sys::sni_delete_global_ref(env.as_ptr(), self.0) };
     }
@@ -319,7 +319,7 @@ impl Global {
 /// established by `Scm::enter`, the trampolines in this crate, or the caller
 /// of [`Env::from_raw`]:
 ///
-/// - `ptr` is a live `SniEnv*` for the whole branded lifetime `'env`;
+/// - `ptr` is a live `SniEnv*` for the whole branded lifetime `'env`.
 /// - every `Ref<'env>` is a rooted handle (local or global) valid in that scope.
 ///
 /// Pending-exception state lives on the C side and is accessed through the
@@ -358,7 +358,7 @@ impl<'env> Env<'env> {
     }
 
     /// Wrap a sys-call result: null with a pending exception is an error
-    /// (the exception is retrieved and cleared); anything else is Ok.
+    /// (the exception is retrieved and cleared), anything else is Ok.
     fn check_pending(&self, raw: ScmRef) -> Result<Ref<'env>, Ref<'env>> {
         if raw.is_null()
             && let Some(e) = self.exception_clear()
@@ -418,7 +418,7 @@ impl<'env> Env<'env> {
     }
 
     pub fn call_n(&mut self, proc: Ref<'_>, args: &[Ref<'_>]) -> Result<Ref<'env>, Ref<'env>> {
-        // SAFETY: args is a &[Ref]; Ref is repr(transparent) over ScmRef.
+        // SAFETY: args is a &[Ref]. Ref is repr(transparent) over ScmRef.
         let r = unsafe {
             sys::sni_call_n(
                 self.ptr,
@@ -433,7 +433,7 @@ impl<'env> Env<'env> {
     /// Leave the mutator to run a blocking native callback (no GC / no Scheme).
     ///
     /// Values needed across the call must already be in [`Global`] (or cont
-    /// roots); reload with [`Global::get`] after return.
+    /// roots), reload with [`Global::get`] after return.
     pub fn call_in_native<F, R>(&mut self, f: F) -> R
     where
         F: FnOnce() -> R,
@@ -656,7 +656,7 @@ impl<'env> Env<'env> {
             sys::sni_string_to_utf8(self.ptr, obj.as_raw(), ptr::null_mut(), 0, &mut written)
         };
         let mut buf = vec![0u8; written + 1];
-        // SAFETY: buf has written + 1 bytes; the call updates written.
+        // SAFETY: buf has written + 1 bytes, the call updates written.
         let ok = unsafe {
             sys::sni_string_to_utf8(
                 self.ptr,
@@ -682,7 +682,7 @@ impl<'env> Env<'env> {
             sys::sni_value_to_utf8(self.ptr, obj.as_raw(), ptr::null_mut(), 0, &mut written)
         };
         let mut buf = vec![0u8; written + 1];
-        // SAFETY: buf has written + 1 bytes; the call updates written.
+        // SAFETY: buf has written + 1 bytes, the call updates written.
         let ok = unsafe {
             sys::sni_value_to_utf8(
                 self.ptr,
@@ -819,7 +819,7 @@ impl<'env> Env<'env> {
     }
 
     pub fn make_instance(&mut self, class: Ref<'_>, initargs: &[Ref<'_>]) -> Ref<'env> {
-        // SAFETY: initargs is a &[Ref]; Ref is repr(transparent) over ScmRef.
+        // SAFETY: initargs is a &[Ref]. Ref is repr(transparent) over ScmRef.
         unsafe {
             Ref::from_raw(sys::sni_make_instance(
                 self.ptr,
@@ -1020,7 +1020,7 @@ impl<'env> Env<'env> {
     pub fn assertion_violation(&mut self, who: &str, message: &str, irritants: &[Ref<'_>]) {
         let w = CString::new(who).unwrap_or_default();
         let m = CString::new(message).unwrap_or_default();
-        // SAFETY: irritants is a &[Ref]; Ref is repr(transparent) over ScmRef.
+        // SAFETY: irritants is a &[Ref]. Ref is repr(transparent) over ScmRef.
         unsafe {
             sys::sni_assertion_violation(
                 self.ptr,
@@ -1042,7 +1042,7 @@ impl<'env> Env<'env> {
     }
 
     pub fn condition(&mut self, components: &[Ref<'_>]) -> Ref<'env> {
-        // SAFETY: components is a &[Ref]; Ref is repr(transparent) over ScmRef.
+        // SAFETY: components is a &[Ref]. Ref is repr(transparent) over ScmRef.
         unsafe {
             Ref::from_raw(sys::sni_condition(
                 self.ptr,
@@ -1081,7 +1081,7 @@ impl<'env> Env<'env> {
             R: IntoScm<'env>,
         {
             // SAFETY: data is the `&mut Data` passed below, alive for the
-            // whole sni_with_exception_handler call; env and exn are live for
+            // whole sni_with_exception_handler call, env and exn are live for
             // this callback.
             let data = unsafe { &mut *(data as *mut Data<H, B>) };
             let outcome = catch_unwind(AssertUnwindSafe(|| {
@@ -1189,7 +1189,7 @@ where
         let args: &[Ref<'_>] = if argc <= 0 || argv.is_null() {
             &[]
         } else {
-            // SAFETY: argv points to argc rooted refs; Ref is
+            // SAFETY: argv points to argc rooted refs. Ref is
             // repr(transparent) over ScmRef.
             unsafe { std::slice::from_raw_parts(argv as *const Ref<'_>, argc as usize) }
         };

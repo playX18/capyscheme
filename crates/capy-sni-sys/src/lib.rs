@@ -21,12 +21,12 @@ pub type FinishCallFn = Option<
     ) -> c_int,
 >;
 pub type NativeCallback = Option<unsafe extern "C" fn(data: *mut c_void)>;
-pub type SNI_OnLoadFn =
+pub type SniOnLoadFn =
     Option<unsafe extern "C" fn(env: *mut SniEnv, reserved: *mut c_void) -> c_int>;
 
-/// Must mirror `struct SNINativeInterface` in c/capy.h exactly (order and types).
+/// Must mirror `struct SniNativeInterface` in c/capy.h exactly (order and types).
 #[repr(C)]
-pub struct SNINativeInterface {
+pub struct SniNativeInterface {
     pub PushLocalFrame: Option<unsafe extern "C" fn(*mut SniEnv, c_int) -> c_int>,
     pub PopLocalFrame: Option<unsafe extern "C" fn(*mut SniEnv, ScmRef) -> ScmRef>,
     pub EnsureLocalCapacity: Option<unsafe extern "C" fn(*mut SniEnv, c_int) -> c_int>,
@@ -125,7 +125,7 @@ unsafe extern "C" {
     pub fn scm_detach_current_thread(scm: *mut Scm);
     pub fn scm_fork(env: *mut SniEnv, init: ThreadFn, arg: *mut c_void) -> ScmRef;
 
-    /// Flag introspection for the thin CLI (`capy --help-flags`); no VM init.
+    /// Flag introspection for the thin CLI (`capy --help-flags`), no VM init.
     pub fn capy_flags_help() -> *const c_char;
     pub fn capy_flags_cli_aliases() -> *const c_char;
 
@@ -260,7 +260,7 @@ unsafe extern "C" {
     pub fn sni_set_program_arguments(env: *mut SniEnv, args: ScmRef);
     pub fn scm_program_arguments_init(env: *mut SniEnv, argc: size_t, argv: *const *const c_char);
 
-    pub fn sni_get_functions(env: *mut SniEnv) -> *const SNINativeInterface;
+    pub fn sni_get_functions(env: *mut SniEnv) -> *const SniNativeInterface;
 
     pub fn sni_new_native_procedure(env: *mut SniEnv, f: SniNativeFn) -> ScmRef;
     pub fn sni_define(

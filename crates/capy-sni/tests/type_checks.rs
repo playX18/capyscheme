@@ -10,7 +10,7 @@
 //!   CAPY_LOAD_PATH=$PWD/lib LD_LIBRARY_PATH=$PWD/target/debug \
 //!     cargo test -p capy-sni --test type_checks
 //!
-//! Note: a single test on purpose — concurrent `Scm::new()` on several test
+//! Note: a single test on purpose, concurrent `Scm::new()` on several test
 //! threads aborts the runtime ("VM globals not initialized").
 
 use capy_sni::Scm;

@@ -57,7 +57,7 @@ impl Variable {
             ///
             /// Returns true if the variable was initialized successfully, false if it was already initialized.
             #[allow(non_snake_case)]
-            #vis fn #initializer<'gc>(ctx: Context<'gc>) -> bool {
+            #vis fn #initializer<'gc>(ctx: MutationContext<'gc>) -> bool {
                 let module = #resolution;
                 let init: #typ = #init;
                 let var = module.define_rs(
@@ -69,14 +69,14 @@ impl Variable {
             }
 
             #[allow(non_snake_case)]
-            #vis fn #getter<'gc>(ctx: Context<'gc>) -> Value<'gc> {
+            #vis fn #getter<'gc>(ctx: MutationContext<'gc>) -> Value<'gc> {
                 let var = #loc_static.get().unwrap_or_else(|| panic!("Variable '{}' is not initialized", #name)).fetch(*ctx);
                 var.get()
             }
 
             #[allow(non_snake_case)]
             #vis fn #setter<'gc>(
-                ctx: Context<'gc>,
+                ctx: MutationContext<'gc>,
                 value: Value<'gc>,
             ) {
                 let var = #loc_static.get().unwrap_or_else(|| panic!("Variable '{}' is not initialized", #name)).fetch(*ctx);
