@@ -186,13 +186,7 @@
             (port? obj)
             (eof-object? obj)
             (eq? obj (unspecified)))
-          ;(eq? obj (undefined))
-          ;(environment? obj))
           (wr-atom obj col))
-        ;((structure? obj)                                     ; FIXME
-        ; (let ((temp (open-output-string)))
-        ;   ((structure-printer) obj temp #t)
-        ;   (out (get-output-string temp) col)))
         ((bytevector? obj)
           (let* ((bvec-start
                    (cond ((read-r7rs-weirdness?) "#u8")

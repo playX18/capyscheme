@@ -372,10 +372,6 @@
       (write-string (command-usage-without-description cmd) (current-output-port))
       (flush-output-port (current-output-port)))
 
-    ;(define usage-no-desc (command-usage-without-description cmd))
-    ;(write-string (string-append (command-description cmd) "\n\n" usage-no-desc) (current-output-port))
-    ;(flush-output-port (current-output-port)))
-
     (define (command name . rest)
       (let-keywords* rest
         ((category command-default-category)

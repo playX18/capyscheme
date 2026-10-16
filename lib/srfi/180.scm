@@ -24,11 +24,6 @@
         (error 'assume message irritants)
         #t))
 
-(define (pk . args)
-  (write args)
-  (newline)
-  (car (reverse args)))
-
 (define json-number-of-character-limit (make-parameter +inf.0))
 
 (define json-nesting-depth-limit (make-parameter +inf.0))
@@ -121,8 +116,6 @@
         (if out
             out
             (raise (make-json-error "Invalid code point."))))))
-
-  ;(define ash arithmetic-shift)
 
   (define (read-json-string generator)
     (let loop ((char (generator))
@@ -373,32 +366,6 @@
 
 ;; XXX: procedure foldts is not used as-is. It was copied here for
 ;; documentation purpose (public domain, by Oleg Kiselyov).
-(define (foldts fdown fup fhere seed tree)
-  ;; - fhere is applied to the leafs of the tree
-  ;;
-  ;; - fdown is invoked when a non-leaf node is entered before any of
-  ;; the node's children are visited. fdown action has to generate a
-  ;; seed to be passed to the first visited child of the node.
-  ;;
-  ;; - fup is invoked after all the children of a node have been
-  ;; seen. The first argument is the local state at the moment the
-  ;; traversal process enters the branch rooted at the current node. The
-  ;; second argument is the result of visiting all child branches.  The
-  ;; action of fup isto produce a seed that is taken to be the state of
-  ;; the traversal after the process leave the currents the current
-  ;; branch.
-  (cond
-   ((null? tree) seed)
-   ((not (pair? tree))      ; An atom
-    (fhere seed tree))
-   (else
-    (let loop ((kid-seed (fdown seed tree))
-               (kids (cdr tree)))
-      (if (null? kids)
-          (fup seed kid-seed tree)
-          (loop (foldts fdown fup fhere kid-seed (car kids))
-                (cdr kids)))))))
-
 (define (%json-fold proc array-start array-end object-start object-end seed port-or-generator)
 
   ;; json-fold is inspired from the above foldts definition, unlike

@@ -1,6 +1,13 @@
 (library (core)
   (export
     |#%app|
+    |#%plain-app|
+    make-keyword-procedure
+    keyword-apply
+    procedure-keywords
+    procedure-reduce-keyword-arity
+    keyword<?
+    string->keyword
     cond-expand
     %native-extension
     %load-path
@@ -94,7 +101,7 @@
     <poller>
     <port>
     <rational>
-    <relocatable-code-block>
+    <code-buffer>
     <slot-accessor>
     <slot-definition>
     <socket>
@@ -1114,7 +1121,22 @@
     apply-methods
     zero?)
   (import
-    (core primitives)
+    ;; Keyword-aware application, `lambda`, `define` and `apply` replace
+    ;; the primitive ones, which stay available as `|#%plain-app|` etc.
+    (except (core primitives) |#%app| lambda define apply)
+    (rename (core primitives) (|#%app| |#%plain-app|))
+    (rename (core kw)
+      (new-app |#%app|)
+      (new-lambda lambda)
+      (new-define define)
+      (new-apply apply))
+    (only (core kw)
+      make-keyword-procedure
+      keyword-apply
+      procedure-keywords
+      procedure-reduce-keyword-arity
+      keyword<?
+      string->keyword)
     (core parameters)
     (core io)
     (core files)

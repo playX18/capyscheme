@@ -8,7 +8,8 @@
            (bytevector-copy! r6rs:bytevector-copy!)
            (let-syntax r6rs:let-syntax)
            (letrec-syntax r6rs:letrec-syntax)))
-  (import (only (capy) %cond-expand-features))
+  (import (only (capy) %cond-expand-features)
+    (only (srfi 1) find-tail))
 
   (export
     |#%app|
@@ -312,13 +313,6 @@
         (let-optionals options ((proc equal?))
           (find (lambda (e) (proc key (car e))) lst))))
 
-    (define find-tail
-      (lambda (proc lst)
-        (let loop ((lst lst))
-          (cond ((null? lst) #f)
-            ((proc (car lst)) lst)
-            (else (loop (cdr lst)))))))
-
     (define member
       (lambda (x lst . options)
         (let-optionals options ((proc equal?))
@@ -469,7 +463,9 @@
                 ((char=? ch #\linefeed)
                   (get-output-string buf))
                 ((char=? ch #\return)
-                  (and (char=? (peek-char port) #\linefeed) (get-char port))
+                  (and (let ((next (peek-char port)))
+                         (and (not (eof-object? next)) (char=? next #\linefeed)))
+                       (get-char port))
                   (get-output-string buf))
                 (else
                   (write-char ch buf)

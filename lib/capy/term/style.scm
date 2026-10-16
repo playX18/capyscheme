@@ -30,8 +30,9 @@
     available-color-count
     force-color-output!
     color-output-forced?)
-  (import (rnrs)
-    (only (capy) getenv define*)
+  (import (except (rnrs) define)
+    (rename (only (core kw) new-define) (new-define define))
+    (only (capy) getenv)
     (capy term private ansi)
     (capy term command))
 
@@ -70,7 +71,8 @@
       (assertion-violation 'ansi-color "expected integer in u8 range" n))
     (make-ansi-color n))
 
-  (define* (make-content-style #:key (foreground #f) (background #f) (underline-color #f) (attributes '()))
+  (define (make-content-style #:foreground [foreground #f] #:background [background #f]
+            #:underline-color [underline-color #f] #:attributes [attributes '()])
     (%make-content-style foreground background underline-color attributes))
 
   (define (command name body)

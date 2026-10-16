@@ -17,8 +17,9 @@
     line-editor-add-history!
     line-edit-step
     read-line/edit)
-  (import (rnrs)
-    (only (capy) call-with-output-string define*)
+  (import (except (rnrs) define)
+    (rename (only (core kw) new-define) (new-define define))
+    (only (capy) call-with-output-string)
     (capy term command)
     (capy term cursor)
     (capy term style)
@@ -38,17 +39,16 @@
       (immutable completion line-state-completion)
       (immutable result line-state-result)))
 
-  (define* (make-line-state
+  (define (make-line-state
             prompt
             buffer
             cursor
             history
             history-index
             completer
-            #:key
-            (renderer (lambda (buffer cursor) buffer))
-            (continuation? (lambda (buffer cursor) #f))
-            (completion #f))
+            #:renderer [renderer (lambda (buffer cursor) buffer)]
+            #:continuation? [continuation? (lambda (buffer cursor) #f)]
+            #:completion [completion #f])
 
     (%make-line-state prompt
       buffer
@@ -68,12 +68,11 @@
       (mutable renderer line-editor-renderer set-line-editor-renderer!)
       (mutable continuation? line-editor-continuation? set-line-editor-continuation?!)))
 
-  (define* (make-line-editor
-            #:key
-            (history '())
-            (completer #f)
-            (renderer (lambda (buffer cursor) buffer))
-            (continuation? (lambda (buffer cursor) #f)))
+  (define (make-line-editor
+            #:history [history '()]
+            #:completer [completer #f]
+            #:renderer [renderer (lambda (buffer cursor) buffer)]
+            #:continuation? [continuation? (lambda (buffer cursor) #f)])
 
     (%make-line-editor history completer renderer continuation?))
 

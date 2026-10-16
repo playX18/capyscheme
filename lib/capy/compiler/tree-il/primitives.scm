@@ -414,7 +414,6 @@
                          [it (cdr it)])
                     (loop
                       it
-                      ;; (if (eqv? key val) rest-val result)
                       (make-if src
                         (make-primcall src op (list key (make-constant src val)))
                         (make-constant src rest-val)

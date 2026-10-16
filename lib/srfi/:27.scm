@@ -51,7 +51,7 @@
       (define s2 (split-mix-next smix))
       (define s3 (split-mix-next smix))
 
-      (tuple 'type:xoshiro256 s0 s0 s1 s2 s3))
+      (tuple 'type:xoshiro256 s0 s1 s2 s3))
 
     (define (rol64 x k)
       (bitwise-and (bitwise-ior (bitwise-arithmetic-shift-left x k)

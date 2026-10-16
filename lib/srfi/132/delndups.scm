@@ -40,22 +40,6 @@
 ;;;   elements;
 ;;; - Needs no more than 1024 stack frames.
 
-#;;;; Simplest version.
-;;; - Always allocates a fresh list / never shares storage.
-;;; - Needs N stack frames, if answer is length N.
-(define (list-delete-neighbor-dups = lis)
-  (if (pair? lis)
-    (let ((x0 (car lis)))
-      (cons x0 (let recur ((x0 x0) (xs (cdr lis)))
-                (if (pair? xs)
-                  (let ((x1 (car xs))
-                        (x2+ (cdr xs)))
-                    (if (= x0 x1)
-                      (recur x0 x2+) ; Loop, actually.
-                      (cons x1 (recur x1 x2+))))
-                  xs))))
-    lis))
-
 ;;; This version tries to use cons cells from input by sharing longest
 ;;; common tail between input & output. Still needs N stack frames, for ans
 ;;; of length N.

@@ -1291,9 +1291,7 @@
       (call-in-empty-continuation
         (lambda ()
           (set-mark! key val)
-          (printf "mark-set done ~%")
-          (thunk)
-          (printf "thunk done ~%")))))
+          (thunk)))))
 
   (define/who call-with-immediate-continuation-mark
     (case-lambda
