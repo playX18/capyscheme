@@ -1053,7 +1053,7 @@
     <poller>
     <port>
     <rational>
-    <relocatable-code-block>
+    <code-buffer>
     <slot-accessor>
     <slot-definition>
     <socket>
@@ -1382,7 +1382,7 @@
     log:max-level
     log:set-max-level!
     log:max
-    log:set-logger
+    log:set-logger!
     *simple-logger*
 
     load-debug-enable!

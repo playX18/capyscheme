@@ -391,13 +391,6 @@
 ; 0 - no logging, 1 - error, 2 - warning, 3 - info, 4 - debug, 5 - trace
 (define *log-level* 0)
 
-(define (procedure-property proc key)
-  (cond
-    [(procedure-properties proc)
-      (let ([p (assq key (procedure-properties proc))])
-        (and p (cdr p)))]
-    [else #f]))
-
 (define (set-procedure-property! proc key value)
   (let ([props (procedure-properties proc)])
     (if props
@@ -468,23 +461,6 @@
       (if (pred (string-ref str i))
         #t
         (loop (+ i 1) n)))))
-
-(define (r6rs:bytevector-copy! source source-start target target-start count)
-  (if (>= source-start target-start)
-    (let loop ((i 0))
-      (if (< i count)
-        (begin
-          (bytevector-u8-set! target
-            (+ target-start i)
-            (bytevector-u8-ref source (+ source-start i)))
-          (loop (+ i 1)))))
-    (let loop ((i (- count 1)))
-      (if (>= i 0)
-        (begin
-          (bytevector-u8-set! target
-            (+ target-start i)
-            (bytevector-u8-ref source (+ source-start i)))
-          (loop (- i 1)))))))
 
 ;;; Generalized from one argument for R7RS.
 

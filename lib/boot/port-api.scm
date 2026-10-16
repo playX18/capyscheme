@@ -2,8 +2,6 @@
 ;;; current ports, file options and buffer modes, the R6RS open-* and
 ;;; R7RS read-*/write-* procedures, string/bytevector conversion, the
 ;;; R5RS-style simple I/O procedures, and the kept extensions.
-;;; Designed directly from R6RS and R7RS-small; not derived from
-;;; Larceny or Ypsilon code.
 
 ;;; ---------------------------------------------------------------
 ;;; File options and buffer modes (R6RS 8.2.2, 8.2.3).
@@ -85,7 +83,18 @@
   (unspecified))
 
 (define (shutdown-io-system)
+  (%ports/flush-all!)
   (unspecified))
+
+;;; Buffered output must reach its destination when the process ends,
+;;; so exit flushes every open fd-backed output port first.
+(define (exit . rest)
+  (%ports/flush-all!)
+  (%exit (cond ((null? rest) 0)
+           ((eq? (car rest) #t) 0)
+           ((eq? (car rest) #f) 1)
+           ((fixnum? (car rest)) (car rest))
+           (else 0))))
 
 ;;; ---------------------------------------------------------------
 ;;; Standard ports (R6RS 8.2.7, 8.2.10): fresh binary ports.
@@ -224,20 +233,20 @@
 
 (define (u8-ready? . rest)
   (let ([p (if (null? rest) (current-input-port) (car rest))])
-    (if (and (port? p) (%ports/input-port? p) (%ports/binary? p))
+    (if (%ports/binary-input? p)
       (or (eq? (%port-state p) 'eof)
         (> (%ports/buffered-input p) 0)
-        (> (%port-pending-len p) 0)
+        (%port-pending-char p)
         (let ([r (%handler-ready? (%port-handler p))])
           (and r (r))))
       (assertion-violation 'u8-ready? "not a binary input port" p))))
 
 (define (char-ready? . rest)
   (let ([p (if (null? rest) (current-input-port) (car rest))])
-    (if (and (port? p) (%ports/input-port? p) (%ports/textual? p))
+    (if (%ports/textual-input? p)
       (or (eq? (%port-state p) 'eof)
         (> (%ports/buffered-input p) 0)
-        (> (%port-pending-len p) 0)
+        (%port-pending-char p)
         (let ([r (%handler-ready? (%port-handler p))])
           (and r (r))))
       (assertion-violation 'char-ready? "not a textual input port" p))))

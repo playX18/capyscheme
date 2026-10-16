@@ -1,34 +1,47 @@
 ;;; R6RS binary input and output operations (rnrs io ports, 8.2.8 and 8.2.11) and bytevector ports.
 
+(define (%ports/binary-in-guard p who)
+  (unless (%ports/binary-input? p)
+    (assertion-violation who "not an open binary input port" p)))
 
 (define (get-u8 p)
-  (if (and (port? p) (%ports/input-port? p) (%ports/binary? p))
+  (if (%ports/binary-input? p)
     (%ports/get-byte p)
     (assertion-violation 'get-u8 "not an open binary input port" p)))
 
 (define (lookahead-u8 p)
-  (if (and (port? p) (%ports/input-port? p) (%ports/binary? p))
-    (let ([b (%ports/get-byte p)])
-      (if (eof-object? b)
-        b
-        (begin
-          (%ports/push-back-one! p b)
-          b)))
+  (if (%ports/binary-input? p)
+    (%ports/peek-byte p)
     (assertion-violation 'lookahead-u8 "not an open binary input port" p)))
 
 (define (put-u8 p b)
-  (if (and (port? p)
-       (%ports/output-port? p)
-       (%ports/binary? p)
+  (if (and (%ports/binary-output? p)
        (fixnum? b)
        (<= 0 b 255))
     (%ports/put-byte p b)
     (assertion-violation 'put-u8 "not an open binary output port or invalid octet" p b)))
 
+;;; Copies up to count buffered bytes (refilling as needed) into bv at
+;;; start.  Returns the number of bytes copied -- fewer than count only at
+;;; end of file.
+(define (%ports/read-bytes! p bv start count)
+  (when (%ports/input-output? p)
+    (%ports/flush-buffer p))
+  (let loop ([start start] [count count] [total 0])
+    (if (= count 0)
+      total
+      (let ([avail (- (%port-in-lim p) (%port-in-ptr p))])
+        (if (> avail 0)
+          (let ([n (min avail count)])
+            (r6rs:bytevector-copy! (%port-in-buf p) (%port-in-ptr p) bv start n)
+            (%ports/advance! p n)
+            (loop (+ start n) (- count n) (+ total n)))
+          (if (%ports/ensure-input p 1)
+            (loop start count total)
+            total))))))
+
 (define (get-bytevector-n! p bv start count)
-  (if (and (port? p)
-       (%ports/input-port? p)
-       (%ports/binary? p)
+  (if (and (%ports/binary-input? p)
        (bytevector? bv)
        (fixnum? start)
        (fixnum? count)
@@ -37,37 +50,38 @@
        (<= (+ start count) (bytevector-length bv)))
     (if (= count 0)
       0
-      (let loop ([i start] [n (+ start count)])
-        (cond ((= i n)
-               (- i start))
-          (else
-            (let ([b (get-u8 p)])
-              (cond ((eof-object? b)
-                     (if (= i start) (eof-object) (- i start)))
-                (else
-                  (bytevector-u8-set! bv i b)
-                  (loop (+ i 1) n))))))))
+      (let ([n (%ports/read-bytes! p bv start count)])
+        (if (= n 0) (eof-object) n)))
     (assertion-violation 'get-bytevector-n! "illegal arguments" p bv start count)))
 
 (define (get-bytevector-n p count)
-  (if (and (port? p)
-       (%ports/input-port? p)
-       (%ports/binary? p)
+  (if (and (%ports/binary-input? p)
        (fixnum? count)
        (<= 0 count))
-    (let* ([bv (make-bytevector count 0)]
-           [n (get-bytevector-n! p bv 0 count)])
-      (cond ((eof-object? n) (eof-object))
-        ((= n count) bv)
-        (else
-          (let ([bv2 (make-bytevector n 0)])
-            (r6rs:bytevector-copy! bv 0 bv2 0 n)
-            bv2))))
+    (if (= count 0)
+      (make-bytevector 0 0)
+      ;; do not trust count for the allocation: a huge request on a
+      ;; short stream must not allocate that much up front
+      (let ([bv (make-bytevector (min count %ports/file-buffer-size) 0)])
+        (let loop ([bv bv] [have 0])
+          (let ([n (%ports/read-bytes! p bv have (- (bytevector-length bv) have))])
+            (let ([have (+ have n)])
+              (cond ((< have (bytevector-length bv))
+                     ;; end of file
+                     (cond ((= have 0) (eof-object))
+                       (else (bytevector-copy bv 0 have))))
+                ((= have count) bv)
+                (else
+                  (let ([bigger (make-bytevector (min count (* 2 have)) 0)])
+                    (r6rs:bytevector-copy! bv 0 bigger 0 have)
+                    (loop bigger have)))))))))
     (assertion-violation 'get-bytevector-n "illegal arguments" p count)))
 
 (define (get-bytevector-some p)
-  (if (and (port? p) (%ports/input-port? p) (%ports/binary? p))
+  (if (%ports/binary-input? p)
     (let loop ()
+      (when (%ports/input-output? p)
+        (%ports/flush-buffer p))
       (let ([n (%ports/buffered-input p)])
         (cond ((> n 0)
                (let ([bv (make-bytevector n 0)])
@@ -77,7 +91,7 @@
                    bv
                    0
                    n)
-                 (%port-in-ptr-set! p (+ (%port-in-ptr p) n))
+                 (%ports/advance! p n)
                  bv))
           ((eq? (%port-state p) 'eof)
             (eof-object))
@@ -86,36 +100,30 @@
     (assertion-violation 'get-bytevector-some "not an open binary input port" p)))
 
 (define (get-bytevector-all p)
-  (if (and (port? p) (%ports/input-port? p) (%ports/binary? p))
-    (let* ([out (open-output-bytevector)])
-      (let loop ()
-        (let ([b (get-u8 p)])
-          (if (eof-object? b)
-            (let ([bv (get-output-bytevector out)])
-              (close-port out)
-              (if (= 0 (bytevector-length bv)) (eof-object) bv))
-            (begin
-              (%ports/put-byte out b)
-              (loop))))))
+  (if (%ports/binary-input? p)
+    (let loop ([bv (make-bytevector %ports/file-buffer-size 0)] [have 0])
+      (let* ([n (%ports/read-bytes! p bv have (- (bytevector-length bv) have))]
+             [have (+ have n)])
+        (cond ((< have (bytevector-length bv))
+               (if (= have 0)
+                 (eof-object)
+                 (bytevector-copy bv 0 have)))
+          (else
+            (let ([bigger (make-bytevector (* 2 have) 0)])
+              (r6rs:bytevector-copy! bv 0 bigger 0 have)
+              (loop bigger have))))))
     (assertion-violation 'get-bytevector-all "not an open binary input port" p)))
 
 (define (put-bytevector p bv . rest)
   (define (put p bv start count)
-    (if (and (port? p)
-         (%ports/output-port? p)
-         (%ports/binary? p)
+    (if (and (%ports/binary-output? p)
          (bytevector? bv)
          (fixnum? start)
          (fixnum? count)
          (<= 0 start)
          (<= 0 count)
          (<= (+ start count) (bytevector-length bv)))
-      (let loop ([i start] [n (+ start count)])
-        (if (< i n)
-          (begin
-            (%ports/put-byte p (bytevector-u8-ref bv i))
-            (loop (+ i 1) n))
-          (unspecified)))
+      (%ports/put-bytes p bv start count)
       (assertion-violation 'put-bytevector "illegal arguments" p bv start count)))
   (cond ((null? rest)
          (put p bv 0 (bytevector-length bv)))
@@ -129,11 +137,14 @@
 ;;; ---------------------------------------------------------------
 ;;; Bytevector ports.
 ;;;
-;;; The handler data is a vector
-;;;   (vector 'bytevector-input-port | 'bytevector-output-port |
-;;;           'bytevector-input/output-port bv i limit)
+;;; Input: the port's input buffer is the source bytevector itself (no
+;;; copy -- the source must not be modified while the port is in use).
+;;; Output: the port's output buffer is the growing result (see the
+;;; memory field in ports-core.scm), so bytes are written exactly once.
+;;; Input/output bytevector ports keep the generic handler design:
+;;;   (vector 'bytevector-input/output-port bv i limit)
 ;;; where i is the current position and limit is the current size of
-;;; the output.  i may exceed limit after set-port-position!, matching
+;;; the data.  i may exceed limit after set-port-position!, matching
 ;;; the R6RS lseek-like semantics.
 ;;; ---------------------------------------------------------------
 
@@ -178,39 +189,58 @@
     set-position!
     data))
 
+
+(define %ports/memory-handler
+  (%make-handler
+    (lambda (buf start count) 0)
+    (lambda (buf start count) count)
+    #f
+    (lambda () #t)
+    (lambda () 0)
+    (lambda (pos) (unspecified))
+    #f))
+
+;;; Creates a memory input port over bv (no copy).
+(define (%ports/make-memory-input-port bv transcoder)
+  (let ([p (%ports/make-port "*bytevector*" 'input transcoder 'block
+             %ports/memory-handler
+             '(memory in))])
+    (%port-in-buf-set! p bv)
+    (%port-in-lim-set! p (bytevector-length bv))
+    p))
+
+;;; Creates an empty memory output port -- kind is 'out or 'sout.
+(define (%ports/make-memory-output-port transcoder kind)
+  (let ([p (%ports/make-port "*bytevector*" 'output transcoder 'block
+             %ports/memory-handler
+             (list 'memory kind))])
+    (%port-out-buf-set! p (make-bytevector %ports/memory-initial-size 0))
+    p))
+
+(define (%ports/legacy-bytevector-data p)
+  (let ([d (%handler-data (%port-handler p))])
+    (and (vector? d) (> (vector-length d) 0) d)))
+
 (define (bytevector-input-port? p)
   (and (port? p)
-    (let ([d (%handler-data (%port-handler p))])
-      (and (vector? d)
-        (> (vector-length d) 0)
-        (memq (vector-ref d 0) '(bytevector-input-port bytevector-input/output-port))))))
+    (or (eq? (%port-memory p) 'in)
+      (let ([d (%ports/legacy-bytevector-data p)])
+        (and d (memq (vector-ref d 0) '(bytevector-input/output-port)) #t)))))
 
 (define (bytevector-output-port? p)
   (and (port? p)
-    (let ([d (%handler-data (%port-handler p))])
-      (and (vector? d)
-        (> (vector-length d) 0)
-        (memq (vector-ref d 0) '(bytevector-output-port bytevector-input/output-port))))))
+    (or (eq? (%port-memory p) 'out)
+      (eq? (%port-memory p) 'sout)
+      (let ([d (%ports/legacy-bytevector-data p)])
+        (and d (memq (vector-ref d 0) '(bytevector-input/output-port)) #t)))))
 
 (define (open-input-bytevector bv)
   (if (not (bytevector? bv))
     (assertion-violation 'open-input-bytevector "illegal argument" bv))
-  (let ([data (vector 'bytevector-input-port (bytevector-copy bv) 0 (bytevector-length bv))])
-    (%ports/make-port
-      "*bytevector*"
-      'input
-      #f
-      'block
-      (%ports/make-bytevector-handler data))))
+  (%ports/make-memory-input-port bv #f))
 
 (define (open-output-bytevector)
-  (let ([data (vector 'bytevector-output-port (make-bytevector 32 0) 0 0)])
-    (%ports/make-port
-      "*bytevector*"
-      'output
-      #f
-      'block
-      (%ports/make-bytevector-handler data))))
+  (%ports/make-memory-output-port #f 'out))
 
 (define (open-input/output-bytevector bv)
   (if (not (bytevector? bv))
@@ -223,25 +253,33 @@
       'block
       (%ports/make-bytevector-handler data))))
 
+;;; Copies the bytes accumulated by a bytevector output port.
+
 (define (get-output-bytevector p)
   (if (not (bytevector-output-port? p))
     (assertion-violation 'get-output-bytevector "illegal argument" p))
-  (flush-output-port p)
-  (let* ([data (%handler-data (%port-handler p))]
-         [bv (vector-ref data 1)]
-         [limit (vector-ref data 3)]
-         [r (make-bytevector limit 0)])
-    (r6rs:bytevector-copy! bv 0 r 0 limit)
-    r))
+  (cond ((%port-memory p)
+         (bytevector-copy (%port-out-buf p) 0 (%ports/memory-size p)))
+    (else
+      (flush-output-port p)
+      (let* ([data (%handler-data (%port-handler p))]
+             [bv (vector-ref data 1)]
+             [limit (vector-ref data 3)])
+        (bytevector-copy bv 0 limit)))))
 
 (define (reset-output-bytevector p)
   (if (not (bytevector-output-port? p))
     (assertion-violation 'reset-output-bytevector "illegal argument" p))
-  (flush-output-port p)
-  (let ([data (%handler-data (%port-handler p))])
-    (vector-set! data 1 (make-bytevector 32 0))
-    (vector-set! data 2 0)
-    (vector-set! data 3 0)
-    (unspecified)))
+  (cond ((%port-memory p)
+         (%port-out-buf-set! p (make-bytevector %ports/memory-initial-size 0))
+         (%port-out-lim-set! p 0)
+         (%port-hw-set! p 0))
+    (else
+      (flush-output-port p)
+      (let ([data (%handler-data (%port-handler p))])
+        (vector-set! data 1 (make-bytevector 32 0))
+        (vector-set! data 2 0)
+        (vector-set! data 3 0))))
+  (unspecified))
 
 ;;; eof

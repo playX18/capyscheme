@@ -12,15 +12,7 @@
 
 (define (%file-handler fd)
   (define (read! buffer start count)
-    (let ([n (if (= start 0)
-               (osdep/read-file fd buffer count)
-               (let ([tmp (make-bytevector count 0)])
-                 (let ([k (osdep/read-file fd tmp count)])
-                   (if (fixnum? k)
-                     (begin
-                       (r6rs:bytevector-copy! tmp 0 buffer start k)
-                       k)
-                     k))))])
+    (let ([n (osdep/read-file fd buffer count start)])
       (cond ((not (fixnum? n))
              (raise-i/o-read-error 'get-u8 "read failed" #f))
         ((< n 0)
@@ -67,7 +59,8 @@
     (assertion-violation 'open-file-input-port "illegal filename" filename))
   (let* ([fd (%file-ports/open filename 'input '())]
          [p (%ports/make-port filename 'input #f 'block (%file-handler fd)
-               (list 'fd fd))])
+               (list 'fd fd)
+               (list 'buffer-size %ports/file-buffer-size))])
     (if transcoder
       (transcoded-port p transcoder)
       p)))
@@ -95,6 +88,7 @@
                   #f
                   bmode
                   (%file-handler fd)
+                  (list 'buffer-size %ports/file-buffer-size)
                   (if (memq bufmode '(datum flush))
                     (list 'flush (list 'fd fd))
                     (list (list 'fd fd))))])

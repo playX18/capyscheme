@@ -403,29 +403,7 @@
         (make-float (* .5 m) (+ q 1))
         (* (+ m 0.0) (expt 2.0 q))))
 
-    ; (define (float-significand x)
-    ;   (cond ((and (<= .5 x) (< x 1.0))
-    ;          (inexact->exact (* x (expt 2.0 53))))
-    ;         ((< x .5) (float-significand (* 2.0 x)))
-    ;         ((<= 1.0 x) (float-significand (* .5 x)))))
-    ;
-    ; (define (float-exponent x)
-    ;   (define (loop x k)
-    ;     (cond ((and (<= .5 x) (< x 1.0)) (- k 53))
-    ;           ((< x .5) (loop (* 2.0 x) (- k 1)))
-    ;           ((<= 1.0 x) (loop (* .5 x) (+ k 1)))))
-    ;   (loop x 0))
-
     ; slow-ten-to-e is _really_ slow in Larceny.
-    ;
-    ;    (set! ten^-216 (slow-ten-to-e -216))
-    ;    (set! ten^-108 (slow-ten-to-e -108))
-    ;    (set! ten^-54  (slow-ten-to-e -54))
-    ;    (set! ten^-27  (slow-ten-to-e -27))
-    ;    (set! ten^27   (slow-ten-to-e 27))
-    ;    (set! ten^54   (slow-ten-to-e 54))
-    ;    (set! ten^108  (slow-ten-to-e 108))
-    ;    (set! ten^216  (slow-ten-to-e 216))
 
     ; precomputed by slow-ten-to-e
     (set! ten^-216 '(12718228212127407597 -781))
@@ -983,25 +961,6 @@
             (loop i 0))
           (else
             (values #f i)))))
-
-    ; FIXME: these two procedures are no longer used.
-    ; Maybe they should be.
-
-    (define (radix-digit? c r)
-      (if (eq? r 16)
-        (or (decimal-digit? c)
-          (let ((c (char-downcase c)))
-            (and (char<=? #\a c) (char<=? c #\f))))
-        (and (char<=? #\0 c)
-          (char<? c (integer->char (+ (char->integer #\0) r))))))
-
-    (define (radix-digit-value c r)
-      (cond ((not (eq? r 16))
-             (- (char->integer c) (char->integer #\0)))
-        ((char<=? c #\9)
-          (radix-digit-value c 10))
-        (else (+ 10 (- (char->integer (char-downcase c))
-                     (char->integer #\a))))))
 
     ;----------------------------------------------------------------
     ;

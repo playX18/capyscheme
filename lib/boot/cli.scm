@@ -5,6 +5,10 @@
     (core repl)
     (capy args))
 
+  (define (cli-error fmt . args)
+    (apply format (current-error-port) fmt args)
+    (exit 1))
+
   (define (eval-string/value str)
     (call-with-input-string
       str
@@ -60,11 +64,7 @@
     (add-option! parser
       "dump-compile"
       (value-help "KINDS")
-      (help "Per-compilation artifact dumps (comma-separated): ir, gcps, ssa, clif, asm, noopt, or all."))
-    (add-option! parser
-      "dump-sbbv"
-      (value-help "STAGES")
-      (help "SBBV CFG stage dumps (comma-separated): pre, expand, specialize, or post-* stages."))
+      (help "Per-compilation artifact dumps (comma-separated): ir, graph, gcps, ssa, bytecode, noopt, or all."))
     (add-option! parser
       "dump-gcps-contify"
       (value-help "SRC")
@@ -153,7 +153,53 @@
     (add-option! parser
       "barrier-kind"
       (value-help "KIND")
-      (help "Compile-time barrier override: nobarrier, objbarrier, satbbarrier, or fieldbarrier (unset = live plan).")))
+      (help "Compile-time barrier override: nobarrier, objbarrier, satbbarrier, or fieldbarrier (unset = live plan)."))
+
+    (argparser-add-separator! parser "Engine options:")
+    (add-option! parser
+      "engine"
+      (value-help "ENGINE")
+      (help "Execution engine: rust or template (unset = template where supported, Rust elsewhere)."))
+    (add-flag! parser
+      "jit"
+      (defaults-to #f)
+      (help "Tier up hot procedures to the baseline JIT (runs on the template interpreter)."))
+    (add-option! parser
+      "jit-threshold"
+      (defaults-to "4096")
+      (value-help "N")
+      (help "Entries or back-edges before a procedure compiles (minimum 2)."))
+    (add-option! parser
+      "jit-max-code"
+      (defaults-to "max")
+      (value-help "BYTES")
+      (help "Total live compiled code in bytes past which tier-up stops (max = unlimited)."))
+    (add-option! parser
+      "jit-max-code-per-block"
+      (defaults-to "max")
+      (value-help "BYTES")
+      (help "Largest single compiled code block in bytes; larger procedures stay interpreted (max = unlimited)."))
+    (add-option! parser
+      "jit-limit"
+      (defaults-to "max")
+      (value-help "N")
+      (help "Compile only the first N procedures, to bisect a miscompile (max = unlimited)."))
+    (add-flag! parser
+      "jit-log"
+      (defaults-to #f)
+      (help "Report compiles and returns to compiled code."))
+    (add-flag! parser
+      "jit-log-resume"
+      (defaults-to #f)
+      (help "Report every resume into compiled code (very verbose)."))
+    (add-flag! parser
+      "jit-stats"
+      (defaults-to #f)
+      (help "Report compile, resume and slow-path counts at exit."))
+    (add-option! parser
+      "jit-dump-dir"
+      (value-help "DIR")
+      (help "Write each compiled procedure's listing and ELF to DIR.")))
 
   (define (parse-entrypoint str)
     (read (open-input-string str)))
@@ -169,9 +215,6 @@
 
     (define parser (argparser))
 
-    (define (error fmt . args)
-      (apply format (current-error-port) fmt args)
-      (exit 1))
     (define (finish args out)
       (set-program-arguments! (cons arg0 args))
       (if (not (zero? (log:max-level)))
@@ -222,7 +265,7 @@
           (when (arg-results-ref res "entrypoint")
             (set! entrypoint (parse-entrypoint (arg-results-ref res "entrypoint"))))
           (when (and (arg-results-ref res "r7rs") (arg-results-ref res "r6rs"))
-            (error "Cannot specify both --r7rs and --r6rs modes"))
+            (cli-error "Cannot specify both --r7rs and --r6rs modes"))
           (cond
             [(arg-results-ref res "r7rs") (install-r7rs!)]
             [(arg-results-ref res "r6rs") (install-r6rs!)])
@@ -365,10 +408,6 @@
   (define arg0 "capyc")
   (define parser (argparser))
 
-  (define (error fmt . args)
-    (apply format (current-error-port) fmt args)
-    (exit 1))
-
   (define (print-help)
     (format #t "CapyScheme Compiler ~a~%" (implementation-version))
     (format #t "Usage:~%~a~%" (argparser-usage parser))
@@ -428,7 +467,7 @@
         (exit 1))
       (compile-barrier-kind! barrier-kind))
     (if (and r7rs-mode r6rs-mode)
-      (error "Cannot specify both --r7rs and --r6rs modes"))
+      (cli-error "Cannot specify both --r7rs and --r6rs modes"))
     (cond
       [r7rs-mode (install-r7rs!)]
       [r6rs-mode (install-r6rs!)])
@@ -455,7 +494,7 @@
     (when (and out-file
            (or (null? source-files)
              (not (null? (cdr source-files)))))
-      (error "--output can only be used when compiling a single file"))
+      (cli-error "--output can only be used when compiling a single file"))
 
     (with-exception-handler
       (lambda (exn)

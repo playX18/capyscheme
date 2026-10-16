@@ -35,8 +35,8 @@
 (define (unix:close fd)
   (syscall:close fd))
 
-(define (unix:read fd buffer nbytes)
-  (syscall:read fd buffer nbytes))
+(define (unix:read fd buffer nbytes start)
+  (syscall:read fd buffer nbytes start))
 
 (define (unix:write fd buffer nbytes offset)
   (syscall:write fd buffer nbytes offset))
@@ -141,14 +141,17 @@
     (error "osdep/close-file: invalid file descriptor " fd))
   (unix:close fd))
 
-(define (osdep/read-file fd buffer nbytes)
+(define (osdep/isatty? fd)
+  (syscall:isatty fd))
+
+(define (osdep/read-file fd buffer nbytes . rest)
   (if (not (fixnum? fd))
     (error "osdep/read-file: invalid descriptor " fd))
   (if (not (bytevector? buffer))
     (error "osdep/read-file: invalid buffer " buffer))
   (if (not (and (fixnum? nbytes) (>= nbytes 0)))
     (error "osdep/read-file: invalid byte count " nbytes))
-  (unix:read fd buffer nbytes))
+  (unix:read fd buffer nbytes (if (null? rest) 0 (car rest))))
 
 (define (osdep/write-file fd buf k)
 

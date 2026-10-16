@@ -28,33 +28,25 @@
           (fluid-set! f (car args))
           old)))))
 
-(define (perform-dynamic-wind new cont args)
-  (define common-tail
-    (lambda (x y)
-      (let ((nx (length x)) (ny (length y)))
-        (do
-          ((x (if (> nx ny) (list-tail x (- nx ny)) x) (cdr x))
-            (y (if (> ny nx) (list-tail y (- ny nx)) y) (cdr y)))
-          ((eq? x y) x)))))
-  (if (eq? new ($winders))
-    (apply cont args)
-    (begin
-      (let ((tail (common-tail new ($winders))))
-        (let loop ((rec ($winders)))
-          (cond ((not (eq? rec tail)) ($winders (cdr rec)) ((cdar rec)) (loop (cdr rec)))))
-        (let loop ((rec new))
-          (cond ((not (eq? rec tail)) (loop (cdr rec)) ((caar rec)) ($winders rec)))))
-      (apply cont args))))
-
 (define (dynamic-wind in body out)
-  (in)
-  ($winders (cons (cons in out) ($winders)))
-  (call-with-values
-    body
-    (lambda ans
-      ($winders (cdr ($winders)))
-      (out)
-      (apply values ans))))
+  (unless (procedure? in)
+    (assertion-violation 'dynamic-wind "not a procedure" in))
+  (unless (procedure? body)
+    (assertion-violation 'dynamic-wind "not a procedure" body))
+  (unless (procedure? out)
+    (assertion-violation 'dynamic-wind "not a procedure" out))
+  (let ((old-winders ($winders)))
+    (in)
+    ;; A winder is `(in out marks)`; the marks snapshot is what the
+    ;; in/out thunks observe when this winder is crossed
+    ($winders (cons (list in out ($continuation-marks-markss (current-continuation-marks)))
+                    old-winders))
+    (call-with-values
+      body
+      (lambda ans
+        ($winders old-winders)
+        (out)
+        (apply values ans)))))
 
 ;; Native reified continuation: winders + raw marks live in free vars.
 (define (call/cc f)
@@ -62,8 +54,10 @@
 
 (define call-with-current-continuation call/cc)
 
-;; Escape-only contract (same implementation under CPS; capture is already O(1)).
-(define call/1cc call/cc)
+;; One-shot call/cc: the continuation traps if invoked more than once, and
+;; must be invoked before returning past the capture.
+(define (call/1cc f)
+  (%call/1cc f))
 
 (define (continuation? x)
   (%continuation? x))
@@ -81,6 +75,8 @@
     [(null? args)
       (unless (procedure? proc)
         (error 'call-in-continuation "not a procedure" proc))
+      ;; Wind to the target before running proc
+      ($do-wind ($continuation-winders c))
       (%set-continuation-marks! c)
       (receive vals (proc)
         (apply c vals))]
@@ -95,6 +91,16 @@
           (error 'call-in-continuation
             "expected continuation-marks object"
             set))
+        ;; The marks must be the continuation's own marks or a one-frame
+        ;; extension of them
+        (let ([markss ($continuation-marks-markss set)]
+              [c-markss ($continuation-marks-markss (%continuation-next-marks c))])
+          (unless (or (eq? markss c-markss)
+                      (and (pair? markss) (eq? (cdr markss) c-markss)))
+            (error 'call-in-continuation
+              "not an extension of the continuation's marks"
+              set)))
+        ($do-wind ($continuation-winders c))
         ($set-attachments! set)
         (receive vals (proc)
           (apply c vals)))]))

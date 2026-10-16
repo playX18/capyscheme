@@ -861,7 +861,6 @@
     srfi-180 ;; JSON
     srfi-213 ;; Identifier properties
     srfi-214 ;; Flexvectors
-    ; srfi-226 ;; Control features (TODO: BROKEN!)
     srfi-257 ;; Simple extendable pattern matcher with backtracking
     srfi-259)) ;; Tagged procedures with type safety
 
@@ -1180,121 +1179,33 @@
       (if (null? arg) (begin body ...)
         (error "Too many arguments in let-opt" arg)))))
 
-(eval-when (expand load eval)
-  (define (dd x)
-    ;(pretty-print (syntax->datum x))
-    x)
-  (define (parse-lambda-args formals)
-    (let loop ([rest formals] [as '()] [n 0])
-      (syntax-case rest ()
-        [() (values (reverse as) formals #f n 0 '())]
-        [(x . _) (keyword? (syntax->datum #'x))
-          (values (reverse as) formals #f n 0 rest)]
-        [(x . y) (loop #'y (cons #'x as) (+ n 1))]
-        [x (values (reverse as) formals #t n 1 '())])))
-
-  (define (extended-lambda-body form garg kargs body)
-    (define (collect-args xs r)
-      (syntax-case xs ()
-        [() (values (reverse r) '())]
-        [(x . _) (keyword? (syntax->datum #'x))
-          (values (reverse r) xs)]
-        [(x . y) (collect-args #'y (cons #'x r))]))
-
-    (define (parse-kargs c xs os ks r a)
-      (syntax-case xs ()
-        [() (expand-opt os ks r a)]
-        [(#:optional . xs)
-          (and
-            (or (null? os) (syntax-violation 'lambda* "multiple #:optional sections" #'xs))
-            (receive (os xs) (collect-args #'xs '())
-              (parse-kargs c xs os ks r a)))]
-        [(#:key . xs)
-          (and
-            (or (null? ks)
-              (syntax-violation 'lambda* "multiple #:key sections" #'xs))
-            (receive (ks xs) (collect-args #'xs '())
-              (parse-kargs c xs os ks r a)))]
-        [(#:rest . xs)
-          (and
-            (or (not r) (syntax-violation 'lambda* "multiple #:rest sections" #'xs))
-            (receive (rs xs) (collect-args #'xs '())
-              (syntax-case rs ()
-                [(r)
-                  (identifier? #'r)
-                  (parse-kargs c xs os ks #'r a)]
-                [_ (syntax-violation 'lambda* "#:rest keyword in lambda* must be followed by a single identifier" rs)])))]))
-
-    (define (expand-opt os ks r a)
-
-      (cond
-        [(null? os)
-          (if r
-            #`((let ([#,r #,garg]) #,@(expand-key ks garg a)))
-            (expand-key ks garg a))]
-        [else
-
-          (define binds
-            (map (lambda (x)
-                  (syntax-case x ()
-                    [(o) (identifier? #'o) #'o]
-                    [(o init) (identifier? #'o) #'(o init)]
-                    [_ (syntax-violation 'lambda* "invalid optional argument" os)]))
-              os))
-          (define rest (list (or r (car (generate-temporaries '(rest))))))
-          (dd #`((let-optionals* #,garg #,(append binds rest)
-                  #,@(if (and (not r) (null? ks) (not a))
-                      #`((unless (null? #,(car rest))
-                          (error #f "too many arguments for" #,form))
-                         (let () #,@(expand-key ks rest a)))
-                      (expand-key ks (car rest) a)))))]))
-    (define (expand-key ks garg a)
-      (cond
-        [(null? ks)
-          (if a
-            #`((let-keywords* #,garg #,(if (boolean? a) (car (generate-temporaries '(a))) a) #,@body))
-            body)]
-        [else
-          (define args (map (lambda (o)
-                             (syntax-case o ()
-                               [(o) (identifier? #'o) #'o]
-                               [((key o) init)
-                                 (keyword? (syntax->datum #'key))
-                                 #'(o key init)]
-                               [(o init)
-                                 #'(o init)]
-                               [_ (syntax-violation 'lambda* "invalid keyword argument" ks)]))
-                        ks))
-          (dd #`((let-keywords* #,garg
-                  #,(if a (append args a) args)
-                  #,@body)))]))
-    (parse-kargs #f kargs '() '() #f #f)))
-
-(define-syntax lambda*
-  (lambda (x)
-    (syntax-case x ()
-      [(_ formals body ...)
-        (receive (fargs fformals ftypes nreqs nopts kargs)
-          (parse-lambda-args #'formals)
-          (if (null? kargs)
-            #'(lambda formals body ...)
-            (with-syntax ([(restarg) (generate-temporaries '(restarg))]
-                          [(args ...) (datum->syntax #'x fargs)])
-              #`(lambda (#,@fargs . restarg)
-                 #,@(extended-lambda-body #`('#,x) #'restarg kargs #'(body ...))))))])))
-
-(define-syntax define*
-  (lambda (x)
-    (syntax-case x ()
-      [(_ (name . formals) body ...)
-        #'(define name
-           (lambda* formals
-            body
-            ...))])))
 (define (set-record-type-printer! typ printer)
   (unless (record-type? typ)
     (assertion-violation 'set-record-type-printer! "Not an record type"))
   (set-rtd-printer! (record-type-rtd typ) printer))
+
+;; `define-class` accessor options may name a generic an earlier class already
+;; defined (`#:accessor name` on several classes). Reuse a bound generic so the
+;; new class adds a method to it instead of replacing it.
+(define (%reusable-generic var name)
+  (if (and var (variable-bound? var) (generic? (variable-ref var)))
+    (variable-ref var)
+    (make-generic name)))
+
+(define (%ensure-setter-generic! getter name)
+  (unless (generic? (setter getter))
+    (set-setter! getter (make-generic name))))
+
+(define-syntax %define-shared-generic
+  (syntax-rules ()
+    [(_ name)
+      (define name
+        (%reusable-generic (module-local-variable (current-module) 'name) 'name))]))
+
+(define-syntax %ensure-accessor-setter
+  (syntax-rules ()
+    [(_ name)
+      (%ensure-setter-generic! name 'name)]))
 
 (define (class-slot-definition class slot-name)
   (let loop ([slots (class-slots class)])
@@ -1839,7 +1750,7 @@
   (with-syntax ([class-name class-name]
                 [slot-name slot-name]
                 [getter-name getter-name])
-    #'((define-generic getter-name)
+    #'((%define-shared-generic getter-name)
        (define-method (getter-name (obj class-name))
         (slot-ref obj 'slot-name)))))
 
@@ -1847,7 +1758,7 @@
   (with-syntax ([class-name class-name]
                 [slot-name slot-name]
                 [setter-name setter-name])
-    #'((define-generic setter-name)
+    #'((%define-shared-generic setter-name)
        (define-method (setter-name (obj class-name) value)
         (slot-set! obj 'slot-name value)
         value))))
@@ -1856,8 +1767,8 @@
   (with-syntax ([class-name class-name]
                 [slot-name slot-name]
                 [accessor-name accessor-name])
-    #'((define-generic accessor-name)
-       (define-generic (setter accessor-name))
+    #'((%define-shared-generic accessor-name)
+       (%ensure-accessor-setter accessor-name)
        (define-method (accessor-name (obj class-name))
         (slot-ref obj 'slot-name))
        (define-method ((setter accessor-name) (obj class-name) value)
@@ -2117,36 +2028,116 @@
         "unsupported method qualifier"
         form
         qualifier))
+    ;; Conservative: any mention of the next-method names anywhere in the
+    ;; body (even quoted) keeps the full next-method machinery. A body that
+    ;; never mentions them gets #f in the next slot and skips the
+    ;; NextMethodDescriptor allocation on every call
+    (define (mentions-next? datum)
+      (cond
+        [(symbol? datum)
+          (or (eq? datum 'next)
+            (eq? datum 'next-method)
+            (eq? datum 'next-method-invoke))]
+        [(pair? datum)
+          (or (mentions-next? (car datum)) (mentions-next? (cdr datum)))]
+        [(vector? datum)
+          (let loop ([i 0])
+            (and (< i (vector-length datum))
+              (or (mentions-next? (vector-ref datum i)) (loop (+ i 1)))))]
+        [else #f]))
+    ;; A body that is exactly `(slot-ref v 'name)` / `(slot-set! v 'name w) w`
+    ;; over the method's own arguments is a plain slot accessor: dispatch can
+    ;; serve it without entering the body. Returns (values kind name), kind
+    ;; being 'reader, 'writer or #f.
+    (define (slot-access-of vars body rest-var tail-formals)
+      (if (or rest-var (not (null? (syntax->datum tail-formals))))
+        (values #f #f)
+        (syntax-case body (slot-ref slot-set! quote)
+          [((slot-ref v (quote name)))
+            (and (identifier? #'v)
+              (identifier? #'name)
+              (= (length vars) 1)
+              (bound-identifier=? #'v (car vars)))
+            (values 'reader (syntax->datum #'name))]
+          [((slot-set! v (quote name) w) w2)
+            (and (identifier? #'v)
+              (identifier? #'name)
+              (identifier? #'w)
+              (identifier? #'w2)
+              (= (length vars) 2)
+              (bound-identifier=? #'v (car vars))
+              (bound-identifier=? #'w (cadr vars))
+              (bound-identifier=? #'w2 (cadr vars)))
+            (values 'writer (syntax->datum #'name))]
+          [_ (values #f #f)])))
+    ;; Builds a method procedure `(lambda (next var ... . tail) body ...)`.
+    ;; `tail` holds Racket-style keyword formals (`#:key id`, `#:key [id
+    ;; init]`, optionally ending in a rest identifier), which are parsed from
+    ;; the trailing `kw value ...` arguments generics pass through.
+    (define (method-lambda form leading tail body)
+      (define (parse-tail xs specs)
+        (syntax-case xs ()
+          [() (values (reverse specs) #f)]
+          [rst (identifier? #'rst) (values (reverse specs) #'rst)]
+          [(kw [id init] . more)
+            (keyword? (syntax->datum #'kw))
+            (parse-tail #'more (cons #'(id kw init) specs))]
+          [(kw id . more)
+            (and (keyword? (syntax->datum #'kw)) (identifier? #'id))
+            (parse-tail #'more
+              (cons #'(id kw (error 'define-method "required keyword argument not supplied" 'kw))
+                specs))]
+          [_ (syntax-violation 'define-method
+              "expected keyword formals as #:key id or #:key [id init]" form xs)]))
+      (if (null? (syntax->datum tail))
+        #`(lambda (#,@leading) #,@body)
+        (let-values ([(specs rst) (parse-tail tail '())])
+          (with-syntax ([(g) (generate-temporaries '(kws))])
+            #`(lambda (#,@leading . g)
+                (let-keywords* g #,(if rst (append specs rst) specs)
+                  #,@body))))))
     (define (expand-method form generic args body locked?)
       (receive (vars specializers required rest-var tail-formals)
         (parse-specialized-args args)
+        (receive (slot-kind slot-name)
+          (slot-access-of vars body rest-var tail-formals)
         (with-syntax ([generic-id (generic-expression form generic)]
+                      [slot-kind-value (datum->syntax x slot-kind)]
+                      [slot-name-value (datum->syntax x slot-name)]
+                      [no-next-value (not (mentions-next? (syntax->datum body)))]
                       [(var ...) vars]
                       [(specializer ...) specializers]
                       [required-count (datum->syntax form required)]
                       [locked-value locked?]
                       [next-id (datum->syntax x 'next)]
                       [next-method-id (datum->syntax x 'next-method)]
-                      [(tail ...) tail-formals]
                       [(body ...) body])
+         (with-syntax ([method-proc
+                         (method-lambda form #'(next-id var ...) tail-formals
+                           #'((let ([next-method-id (lambda () (next-method-invoke next-id))])
+                               body
+                               ...)))])
           (if rest-var
             (with-syntax ([rest-id rest-var])
               #'(add-method! generic-id
                  (list specializer ...)
                  required-count
-                 (lambda* (next-id var ... . rest-id)
+                 (lambda (next-id var ... . rest-id)
                   (let ([next-method-id (lambda () (next-method-invoke next-id))])
                    body
                    ...))
-                 locked-value))
+                 locked-value
+                 no-next-value
+                 'slot-kind-value
+                 'slot-name-value))
             #'(add-method! generic-id
                (list specializer ...)
                required-count
-               (lambda* (next-id var ... tail ...)
-                (let ([next-method-id (lambda () (next-method-invoke next-id))])
-                 body
-                 ...))
-               locked-value)))))
+               method-proc
+               locked-value
+               no-next-value
+               'slot-kind-value
+               'slot-name-value)))))))
     (syntax-case x ()
       [(_ (generic . args) qualifier body ...)
         (keyword-qualifier? #'qualifier)
@@ -2209,7 +2200,8 @@
 (define <native-procedure> (%builtin-class 'native-procedure))
 (define <native-continuation> (%builtin-class 'native-continuation))
 (define <code-block> (%builtin-class 'code-block))
-(define <relocatable-code-block> (%builtin-class 'relocatable-code-block))
+(define <code-buffer> (%builtin-class 'code-buffer))
+(define <continuation> (%builtin-class 'continuation))
 (define <module> (%builtin-class 'module))
 (define <environment> (%builtin-class 'environment))
 (define <syntax> (%builtin-class 'syntax))
@@ -2245,6 +2237,12 @@
 (define-method (slot-bound-using-class? (class <class>) obj slot)
   (%slot-bound-using-class? class obj slot))
 
+;; Slot inline caches treat a class as plain while only these stock methods
+;; apply to it.
+(%mark-boot-slot-protocol! slot-ref-using-class)
+(%mark-boot-slot-protocol! slot-set-using-class!)
+(%mark-boot-slot-protocol! slot-bound-using-class?)
+
 (define-method (slot-unbound (class <class>) obj slot)
   (assertion-violation 'slot-unbound
     "slot is unbound"
@@ -2269,12 +2267,25 @@
 
 (define-generic make 1)
 
-(define-method (make (class <class>) . initargs)
-  (let ([obj (apply make-instance class initargs)])
-    (initialize
-      (or (and (procedure? obj) (procedure-property obj 'instance)) obj)
-      initargs)
-    obj))
+(define %make-slow
+  (lambda (next class . initargs)
+    (let ([obj (apply make-instance class initargs)])
+      (initialize
+        (or (and (procedure? obj) (procedure-property obj 'instance)) obj)
+        initargs)
+      obj)))
+
+;; The stock method is a native body: while `initialize` keeps only its
+;; default method it allocates straight from the frame (no rest list, no
+;; `apply`, no `initialize` dispatch), else it runs `%make-slow`.
+(add-method! make
+  (list <class>)
+  1
+  (%make-method-body initialize
+    (method-body (car (generic-methods initialize)))
+    %make-slow)
+  #f
+  #t)
 
 (define describe-details
   (let ([flag #f])
