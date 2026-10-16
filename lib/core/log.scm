@@ -12,7 +12,7 @@
     log:max-level
     log:set-max-level!
     log:max
-    log:set-logger
+    log:set-logger!
     *simple-logger*
     log:)
   (import (core primitives))

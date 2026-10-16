@@ -61,9 +61,10 @@
   (import
     (core control)
     (core bytevectors)
-    (core primitives)
+    (except (core primitives) define)
+    (rename (only (core kw) new-define) (new-define define))
     (core match)
-    (capy)
+    (except (capy) define)
     (srfi 1))
   (eval-when (expand load eval)
     (define void %void)
@@ -283,7 +284,7 @@ given TYPES.  READ uses WRAP-FIELDS to return its value."
             (struct-size 0 () types ...))
           (define (write! bv offset fields ...)
             (write-types bv offset (types ...) (fields ...)))
-          (define* (read bv #:optional (offset 0))
+          (define (read bv [offset 0])
             (read-types wrap-fields bv offset (types ...) ()))))))
 
   (define-syntax-rule (c-struct-field-offset type field)

@@ -6,8 +6,9 @@
     foreign-library-function
     foreign-library-handle
     ->foreign-library)
-  (import (capy)
-    (core primitives)
+  (import (except (capy) define)
+    (except (core primitives) define)
+    (rename (only (core kw) new-define) (new-define define))
     (core foreign)
     (core records)
     (core optargs)
@@ -132,6 +133,7 @@
   (define (foreign-library-pointer lib name)
     (let ([handle (foreign-library-handle (->foreign-library lib))])
       (dlsym handle name)))
-  (define* (foreign-library-function lib name #:key (return void) (arguments '()) (variadic? #f) (blocking? #t))
+  (define (foreign-library-function lib name #:return [return void] #:arguments [arguments '()]
+            #:variadic? [variadic? #f] #:blocking? [blocking? #t])
     (let ([ptr (foreign-library-pointer lib name)])
       (pointer->procedure return ptr arguments variadic? blocking?))))
