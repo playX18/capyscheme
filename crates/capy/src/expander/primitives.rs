@@ -7,7 +7,7 @@ use crate::heap::Gc;
 use crate::heap::alloc::Array;
 use crate::heap::cell::Lock;
 use crate::list;
-use crate::runtime::Context;
+use crate::runtime::MutationContext;
 use crate::runtime::modules::{Module, Variable, resolve_module};
 use crate::runtime::prelude::*;
 use crate::runtime::value::Symbol;
@@ -23,7 +23,7 @@ macro_rules! prim_names {
                 )*
             }
 
-            pub fn for_each_prim_name<'gc, F: FnMut(&'static str, Value<'gc>)>(ctx: Context<'gc>, mut f: F) {
+            pub fn for_each_prim_name<'gc, F: FnMut(&'static str, Value<'gc>)>(ctx: MutationContext<'gc>, mut f: F) {
                 $(
                     let name = paste::paste! {
                         [<sym_ $sname: lower>](ctx)
@@ -81,7 +81,7 @@ prim_names!(
     acos = "acos"
     atan = "atan"
 
-    // Fixnum / flonum Tier-1 (checked, unchecked, ovf)
+    // Fixnum / flonum Tier-1 (checked, ovf)
     fx_add = "fx+"
     fx_sub = "fx-"
     fx_mul = "fx*"
@@ -93,17 +93,6 @@ prim_names!(
     fx_gt = "fx>?"
     fx_ge = "fx>=?"
     fx_eq = "fx=?"
-    fx_add_unchecked = "fx+/unchecked"
-    fx_sub_unchecked = "fx-/unchecked"
-    fx_mul_unchecked = "fx*/unchecked"
-    fx_add_ovf_unchecked = "fx+/ovf?/unchecked"
-    fx_sub_ovf_unchecked = "fx-/ovf?/unchecked"
-    fx_mul_ovf_unchecked = "fx*/ovf?/unchecked"
-    fx_lt_unchecked = "fx</unchecked"
-    fx_le_unchecked = "fx<=/unchecked"
-    fx_gt_unchecked = "fx>/unchecked"
-    fx_ge_unchecked = "fx>=/unchecked"
-    fx_eq_unchecked = "fx=/unchecked"
     fxand = "fxand"
     fxior = "fxior"
     fxxor = "fxxor"
@@ -113,12 +102,6 @@ prim_names!(
     fxlogxor = "fxlogxor"
     fx_ashl = "fxarithmetic-shift-left"
     fx_ashr = "fxarithmetic-shift-right"
-    fxand_unchecked = "fxand/unchecked"
-    fxior_unchecked = "fxior/unchecked"
-    fxxor_unchecked = "fxxor/unchecked"
-    fxnot_unchecked = "fxnot/unchecked"
-    fx_ashl_unchecked = "fxarithmetic-shift-left/unchecked"
-    fx_ashr_unchecked = "fxarithmetic-shift-right/unchecked"
     fxzerop = "fxzero?"
     fxpositivep = "fxpositive?"
     fxnegativep = "fxnegative?"
@@ -126,13 +109,6 @@ prim_names!(
     fxevenp = "fxeven?"
     fxmin = "fxmin"
     fxmax = "fxmax"
-    fxzerop_unchecked = "fxzero?/unchecked"
-    fxpositivep_unchecked = "fxpositive?/unchecked"
-    fxnegativep_unchecked = "fxnegative?/unchecked"
-    fxoddp_unchecked = "fxodd?/unchecked"
-    fxevenp_unchecked = "fxeven?/unchecked"
-    fxmin_unchecked = "fxmin/unchecked"
-    fxmax_unchecked = "fxmax/unchecked"
     fl_add = "fl+"
     fl_sub = "fl-"
     fl_mul = "fl*"
@@ -142,15 +118,6 @@ prim_names!(
     fl_gt = "fl>?"
     fl_ge = "fl>=?"
     fl_eq = "fl=?"
-    fl_add_unchecked = "fl+/unchecked"
-    fl_sub_unchecked = "fl-/unchecked"
-    fl_mul_unchecked = "fl*/unchecked"
-    fl_div_unchecked = "fl//unchecked"
-    fl_lt_unchecked = "fl</unchecked"
-    fl_le_unchecked = "fl<=/unchecked"
-    fl_gt_unchecked = "fl>/unchecked"
-    fl_ge_unchecked = "fl>=/unchecked"
-    fl_eq_unchecked = "fl=/unchecked"
     flzerop = "flzero?"
     flpositivep = "flpositive?"
     flnegativep = "flnegative?"
@@ -173,28 +140,6 @@ prim_names!(
     flacos = "flacos"
     flsqrt = "flsqrt"
     flatan = "flatan"
-    flzerop_unchecked = "flzero?/unchecked"
-    flpositivep_unchecked = "flpositive?/unchecked"
-    flnegativep_unchecked = "flnegative?/unchecked"
-    flnanp_unchecked = "flnan?/unchecked"
-    flinfinitep_unchecked = "flinfinite?/unchecked"
-    flfinitep_unchecked = "flfinite?/unchecked"
-    flmin_unchecked = "flmin/unchecked"
-    flmax_unchecked = "flmax/unchecked"
-    flabs_unchecked = "flabs/unchecked"
-    flfloor_unchecked = "flfloor/unchecked"
-    flceiling_unchecked = "flceiling/unchecked"
-    fltruncate_unchecked = "fltruncate/unchecked"
-    flround_unchecked = "flround/unchecked"
-    flsin_unchecked = "flsin/unchecked"
-    flcos_unchecked = "flcos/unchecked"
-    fltan_unchecked = "fltan/unchecked"
-    flexp_unchecked = "flexp/unchecked"
-    fllog_unchecked = "fllog/unchecked"
-    flasin_unchecked = "flasin/unchecked"
-    flacos_unchecked = "flacos/unchecked"
-    flsqrt_unchecked = "flsqrt/unchecked"
-    flatan_unchecked = "flatan/unchecked"
     // booleans
     not = "not"
 
@@ -310,6 +255,9 @@ prim_names!(
     make_variable = "make-variable"
     variable_bound = "variable-bound?"
 
+    slot_ref = "slot-ref"
+    slot_set = "slot-set!"
+
 
     current_module = "current-module"
     define = "define!"
@@ -363,7 +311,7 @@ prim_names!(
 );
 
 pub fn resolve_primitive_refs<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     x: TermRef<'gc>,
     m: Gc<'gc, Module<'gc>>,
 ) -> TermRef<'gc> {
@@ -379,9 +327,6 @@ pub fn resolve_primitive_refs<'gc>(
                 }
 
                 TermKind::Seq(head, tail) => {
-                    /*for exp in seq.iter() {
-                        collect_local_definitions(*exp, local_definitions);
-                    }*/
                     collect_local_definitions(*head, local_definitions);
                     collect_local_definitions(*tail, local_definitions);
                 }
@@ -451,10 +396,10 @@ macro_rules! primitive_expanders {
     ($($name: literal $fname: ident <$gc: lifetime>($ctx : ident, $args: ident, $src: ident) $b: block)*) => {
         $(
             #[allow(unused)]
-            fn $fname<$gc>($ctx: Context<$gc>, $args: &[TermRef<$gc>], $src: Value<$gc>) -> Option<TermRef<$gc>> $b
+            fn $fname<$gc>($ctx: MutationContext<$gc>, $args: &[TermRef<$gc>], $src: Value<$gc>) -> Option<TermRef<$gc>> $b
         )*
 
-        type Expander = for<'gc> fn(Context<'gc>, &[TermRef<'gc>], Value<'gc>) -> Option<TermRef<'gc>>;
+        type Expander = for<'gc> fn(MutationContext<'gc>, &[TermRef<'gc>], Value<'gc>) -> Option<TermRef<'gc>>;
 
 
         struct ExpanderTable {
@@ -470,7 +415,7 @@ macro_rules! primitive_expanders {
                 ExpanderTable { table }
             }
 
-            fn get<'gc>(&self, _ctx: Context<'gc>, name: SymbolRef<'gc>) -> Option<Expander> {
+            fn get<'gc>(&self, _ctx: MutationContext<'gc>, name: SymbolRef<'gc>) -> Option<Expander> {
                 let key = name.as_str();
                 self.table.get(&*key).copied()
             }
@@ -484,9 +429,9 @@ macro_rules! primitive_expanders {
     };
 }
 
-/// Chez-style: `(call/cc (lambda (k) e))` with unused `k` → `e`.
+/// Rewrites `(call/cc (lambda (k) e))` to `e` when `k` is unused.
 fn elide_unused_callcc<'gc>(
-    _ctx: Context<'gc>,
+    _ctx: MutationContext<'gc>,
     args: &[TermRef<'gc>],
     _src: Value<'gc>,
 ) -> Option<TermRef<'gc>> {
@@ -677,12 +622,6 @@ primitive_expanders!(
     }
 
     "memq" ex_memq<'gc>(ctx, args, src) {
-        /*
-            (memq key '(v1 v2 v3)) =>
-            (or (and (eq? key 'v1) '(v1 v2 v3)
-                (and (eq? key 'v2) '(v2 v3)
-                    (and (eq? key 'v3) '(v3))))
-        */
         if args.len() != 2 {
             return None;
         }
@@ -836,56 +775,6 @@ primitive_expanders!(
         Some(prim_call_term(ctx, sym_ash(ctx).into(), args, src))
     }
 
-/*     "logand" ex_logand<'gc>(ctx, args, src) {
-        if args.is_empty() {
-            return Some(constant(ctx, Value::new(-1i32)));
-        } else if args.len() == 1 {
-            return Some(args[0]);
-        } else if args.len() == 2 {
-            return Some(prim_call_term(ctx, sym_logand(ctx).into(), args, src));
-        } else {
-            let first = args[0];
-            let rest = &args[1..];
-            return Some(prim_call_term(ctx, sym_logand(ctx).into(), &[first, ex_logand(ctx, rest, src)?], src));
-        }
-    }
-
-    "logior" ex_logior<'gc>(ctx, args, src) {
-        if args.is_empty() {
-            return Some(constant(ctx, Value::new(0i32)));
-        } else if args.len() == 1 {
-            return Some(args[0]);
-        } else if args.len() == 2 {
-            return Some(prim_call_term(ctx, sym_logior(ctx).into(), args, src));
-        } else {
-            let first = args[0];
-            let rest = &args[1..];
-            return Some(prim_call_term(ctx, sym_logior(ctx).into(), &[first, ex_logior(ctx, rest, src)?], src));
-        }
-    }
-
-    "logxor" ex_logxor<'gc>(ctx, args, src) {
-        if args.is_empty() {
-            return Some(constant(ctx, Value::new(0i32)));
-        } else if args.len() == 1 {
-            return Some(args[0]);
-        } else if args.len() == 2 {
-            return Some(prim_call_term(ctx, sym_logxor(ctx).into(), args, src));
-        } else {
-            let first = args[0];
-            let rest = &args[1..];
-            return Some(prim_call_term(ctx, sym_logxor(ctx).into(), &[first, ex_logxor(ctx, rest, src)?], src));
-        }
-    }
-
-    "lognot" ex_lognot<'gc>(ctx, args, src) {
-        if args.len() != 1 {
-            return None;
-        }
-
-        Some(prim_call_term(ctx, sym_lognot(ctx).into(), args, src))
-    }
-*/
     "logtest" ex_logtest<'gc>(ctx, args, src) {
         if args.len() != 2 {
             return None;
@@ -1419,6 +1308,36 @@ primitive_expanders!(
         Some(prim_call_term(ctx, sym_cdr(ctx).into(), args, src))
     }
 
+    "slot-ref" ex_slot_ref<'gc>(ctx, args, src) {
+        // Only a literal slot name becomes a primcall (and later a
+        // `get_slot`), anything else stays a call to `(capy) slot-ref`.
+        if args.len() != 2 {
+            return None;
+        }
+        let TermKind::Const(name) = args[1].kind else {
+            return None;
+        };
+        if !name.is::<Symbol>() {
+            return None;
+        }
+
+        Some(prim_call_term(ctx, sym_slot_ref(ctx).into(), args, src))
+    }
+
+    "slot-set!" ex_slot_set<'gc>(ctx, args, src) {
+        if args.len() != 3 {
+            return None;
+        }
+        let TermKind::Const(name) = args[1].kind else {
+            return None;
+        };
+        if !name.is::<Symbol>() {
+            return None;
+        }
+
+        Some(prim_call_term(ctx, sym_slot_set(ctx).into(), args, src))
+    }
+
     "caar" ex_caar<'gc>(ctx, args, src) {
         if args.len() != 1 {
             return None;
@@ -1694,29 +1613,6 @@ primitive_expanders!(
     }
 
     "tuple" ex_tuple<'gc>(ctx, args, src) {
-        /*let tmp = fresh_lvar(ctx, Symbol::from_str(ctx, "tup").into());
-        let len = args.len() as i32;
-        let init = prim_call_term(ctx, sym_make_tuple(ctx).into(), &[constant(ctx, Value::new(len)), constant(ctx, Value::new(Value::undefined()))], src);
-        let mut body = Vec::new();
-        for (i, arg) in args.iter().enumerate() {
-            let setv = prim_call_term(ctx, sym_tuple_set(ctx).into(), &[lref(ctx, tmp), constant(ctx, Value::new(i as i32)), *arg], src);
-            body.push(setv);
-        }
-
-        if body.is_empty() {
-            return Some(init);
-        } else {
-            body.push(lref(ctx, tmp));
-
-            return Some(let_term(
-                ctx,
-                LetStyle::Let,
-                Array::from_slice(ctx, &[tmp]),
-                Array::from_slice(ctx, &[init]),
-                seq_from_slice(ctx, body),
-                src,
-            ));
-        }*/
         Some(prim_call_term(ctx, sym_tuple(ctx).into(), args, src))
     }
 
@@ -1844,7 +1740,7 @@ primitive_expanders!(
     }
 );
 
-pub fn expand_primitive_calls<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
+pub fn expand_primitive_calls<'gc>(ctx: MutationContext<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
     let capy_module = list!(ctx, Symbol::from_str(ctx, "capy"));
     t.pre_order(ctx, |ctx, t| match &t.kind {
         TermKind::PrimCall(name, args) => {
@@ -1886,7 +1782,7 @@ pub fn expand_primitive_calls<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRe
 }
 
 pub fn multi_compare<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     src: Value<'gc>,
     predicate: &str,
     args: &[TermRef<'gc>],
@@ -1980,13 +1876,13 @@ pub fn multi_compare<'gc>(
 }
 
 pub fn transitive<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     src: Value<'gc>,
     op: &str,
     args: &[TermRef<'gc>],
     identity: Option<Value<'gc>>,
     one: bool,
-    prefix: Option<fn(Context<'gc>, Value<'gc>, TermRef<'gc>) -> TermRef<'gc>>,
+    prefix: Option<fn(MutationContext<'gc>, Value<'gc>, TermRef<'gc>) -> TermRef<'gc>>,
 ) -> Option<TermRef<'gc>> {
     if args.is_empty() {
         return identity.map(|id| Some(constant(ctx, id))).unwrap_or(None);
@@ -2010,7 +1906,7 @@ pub fn transitive<'gc>(
 }
 
 pub fn associate_args<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     src: Value<'gc>,
     op: &str,
     first_arg: TermRef<'gc>,

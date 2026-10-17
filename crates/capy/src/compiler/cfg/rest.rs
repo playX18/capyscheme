@@ -1,6 +1,6 @@
 use super::graph::loop_blocks;
 use super::*;
-use crate::compiler::cranelift::primitive::Primitive;
+use crate::runtime::prims::def::Primitive;
 use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RestAlias {
@@ -148,8 +148,12 @@ fn has_incompatible_rest_use<'gc>(
     aliases: &HashMap<ValueId, RestAlias>,
     loop_blocks: &HashSet<BlockId>,
 ) -> bool {
+    // The extra arguments sit in the frame above the registers, where the
+    // frame of a non-tail call goes. They can only be read lazily up to the
+    // first such call, anything later needs the list.
+    let after_call = blocks_after_calls(procedure);
     for block in &procedure.blocks {
-        let is_loop_block = loop_blocks.contains(&block.id);
+        let is_loop_block = loop_blocks.contains(&block.id) || after_call.contains(&block.id);
         for instruction in &block.instructions {
             let mentions_rest = instruction_mentions_rest(instruction, rest, aliases);
             if !mentions_rest {
@@ -162,7 +166,7 @@ fn has_incompatible_rest_use<'gc>(
                 Instruction::PrimCall { prim, args, .. } => {
                     rest_rewrite_for_prim(*prim, args, rest, aliases).is_some()
                 }
-                // Moves of rest/aliases are fine; they do not force RestToList.
+                // Moves of rest/aliases are fine, they do not force RestToList.
                 Instruction::Assign { .. } => true,
                 _ => false,
             };
@@ -177,6 +181,30 @@ fn has_incompatible_rest_use<'gc>(
     }
 
     false
+}
+
+/// Blocks reachable from the return point of some non-tail call.
+fn blocks_after_calls<'gc>(procedure: &Procedure<'gc>) -> HashSet<BlockId> {
+    let successors: HashMap<BlockId, Vec<BlockId>> = procedure
+        .blocks
+        .iter()
+        .map(|block| (block.id, block.terminator.successors()))
+        .collect();
+    let mut reached = HashSet::new();
+    let mut stack: Vec<BlockId> = procedure
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            Terminator::Call { ret, .. } => Some(ret.block),
+            _ => None,
+        })
+        .collect();
+    while let Some(block) = stack.pop() {
+        if reached.insert(block) {
+            stack.extend(successors.get(&block).into_iter().flatten().copied());
+        }
+    }
+    reached
 }
 
 fn insert_rest_to_list<'gc>(procedure: &mut Procedure<'gc>, rest: ValueId) {

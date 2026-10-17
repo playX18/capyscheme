@@ -9,7 +9,7 @@ use crate::{
         cell::Lock,
     },
     runtime::{
-        Context,
+        MutationContext,
         value::{Symbol, Value},
     },
 };
@@ -86,7 +86,7 @@ pub struct LVar<'gc> {
 }
 
 impl<'gc> LVar<'gc> {
-    pub fn copy(&self, ctx: Context<'gc>) -> LVarRef<'gc> {
+    pub fn copy(&self, ctx: MutationContext<'gc>) -> LVarRef<'gc> {
         let name = Symbol::from_str_uninterned(ctx, &format!("{}'", self.name), None);
 
         Gc::new(
@@ -147,7 +147,7 @@ pub struct Proc<'gc> {
 }
 
 impl<'gc> Proc<'gc> {
-    pub fn with_body(&self, mc: Context<'gc>, body: TermRef<'gc>) -> ProcRef<'gc> {
+    pub fn with_body(&self, mc: MutationContext<'gc>, body: TermRef<'gc>) -> ProcRef<'gc> {
         Gc::new(
             mc,
             Proc {
@@ -174,7 +174,7 @@ pub struct Let<'gc> {
 }
 
 impl<'gc> Let<'gc> {
-    pub fn with_body(&self, _mc: Context<'gc>, body: TermRef<'gc>) -> Let<'gc> {
+    pub fn with_body(&self, _mc: MutationContext<'gc>, body: TermRef<'gc>) -> Let<'gc> {
         Let {
             style: self.style,
             lhs: self.lhs,
@@ -201,7 +201,7 @@ pub struct Fix<'gc> {
 }
 
 impl<'gc> Fix<'gc> {
-    pub fn with_body(&self, _mc: Context<'gc>, body: TermRef<'gc>) -> Fix<'gc> {
+    pub fn with_body(&self, _mc: MutationContext<'gc>, body: TermRef<'gc>) -> Fix<'gc> {
         Fix {
             lhs: self.lhs,
             rhs: self.rhs,
@@ -210,7 +210,7 @@ impl<'gc> Fix<'gc> {
     }
 }
 
-pub fn constant<'gc>(ctx: Context<'gc>, value: Value<'gc>) -> TermRef<'gc> {
+pub fn constant<'gc>(ctx: MutationContext<'gc>, value: Value<'gc>) -> TermRef<'gc> {
     Gc::new(
         ctx,
         Term {
@@ -220,7 +220,7 @@ pub fn constant<'gc>(ctx: Context<'gc>, value: Value<'gc>) -> TermRef<'gc> {
     )
 }
 
-pub fn lref<'gc>(ctx: Context<'gc>, lvar: LVarRef<'gc>) -> TermRef<'gc> {
+pub fn lref<'gc>(ctx: MutationContext<'gc>, lvar: LVarRef<'gc>) -> TermRef<'gc> {
     lvar.reference();
     Gc::new(
         ctx,
@@ -231,7 +231,11 @@ pub fn lref<'gc>(ctx: Context<'gc>, lvar: LVarRef<'gc>) -> TermRef<'gc> {
     )
 }
 
-pub fn lset<'gc>(ctx: Context<'gc>, lvar: LVarRef<'gc>, value: TermRef<'gc>) -> TermRef<'gc> {
+pub fn lset<'gc>(
+    ctx: MutationContext<'gc>,
+    lvar: LVarRef<'gc>,
+    value: TermRef<'gc>,
+) -> TermRef<'gc> {
     lvar.mutate();
     Gc::new(
         ctx,
@@ -243,7 +247,7 @@ pub fn lset<'gc>(ctx: Context<'gc>, lvar: LVarRef<'gc>, value: TermRef<'gc>) -> 
 }
 
 pub fn module_ref<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     module: Value<'gc>,
     name: Value<'gc>,
     public: bool,
@@ -259,7 +263,7 @@ pub fn module_ref<'gc>(
 }
 
 pub fn module_set<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     module: Value<'gc>,
     name: Value<'gc>,
     public: bool,
@@ -276,7 +280,7 @@ pub fn module_set<'gc>(
 }
 
 pub fn toplevel_ref<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     module: Value<'gc>,
     name: Value<'gc>,
     sourcev: Value<'gc>,
@@ -291,7 +295,7 @@ pub fn toplevel_ref<'gc>(
 }
 
 pub fn toplevel_set<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     module: Value<'gc>,
     name: Value<'gc>,
     exp: TermRef<'gc>,
@@ -307,7 +311,7 @@ pub fn toplevel_set<'gc>(
 }
 
 pub fn define<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     module: Value<'gc>,
     name: Value<'gc>,
     value: TermRef<'gc>,
@@ -323,7 +327,7 @@ pub fn define<'gc>(
 }
 
 pub fn if_term<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     test: TermRef<'gc>,
     then_branch: TermRef<'gc>,
     else_branch: TermRef<'gc>,
@@ -337,7 +341,7 @@ pub fn if_term<'gc>(
     )
 }
 
-pub fn seq<'gc>(ctx: Context<'gc>, head: TermRef<'gc>, tail: TermRef<'gc>) -> TermRef<'gc> {
+pub fn seq<'gc>(ctx: MutationContext<'gc>, head: TermRef<'gc>, tail: TermRef<'gc>) -> TermRef<'gc> {
     Gc::new(
         ctx,
         Term {
@@ -347,7 +351,10 @@ pub fn seq<'gc>(ctx: Context<'gc>, head: TermRef<'gc>, tail: TermRef<'gc>) -> Te
     )
 }
 
-pub fn seq_from_slice<'gc>(ctx: Context<'gc>, terms: impl AsRef<[TermRef<'gc>]>) -> TermRef<'gc> {
+pub fn seq_from_slice<'gc>(
+    ctx: MutationContext<'gc>,
+    terms: impl AsRef<[TermRef<'gc>]>,
+) -> TermRef<'gc> {
     let terms = terms.as_ref();
     if terms.is_empty() {
         constant(ctx, Value::undefined())
@@ -365,7 +372,7 @@ pub fn seq_from_slice<'gc>(ctx: Context<'gc>, terms: impl AsRef<[TermRef<'gc>]>)
 }
 
 pub fn let_term<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     style: LetStyle,
     lhs: ArrayRef<'gc, LVarRef<'gc>>,
     rhs: ArrayRef<'gc, TermRef<'gc>>,
@@ -387,7 +394,7 @@ pub fn let_term<'gc>(
 }
 
 pub fn fix_term<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     lhs: ArrayRef<'gc, LVarRef<'gc>>,
     rhs: ArrayRef<'gc, ProcRef<'gc>>,
     body: TermRef<'gc>,
@@ -402,7 +409,7 @@ pub fn fix_term<'gc>(
 }
 
 pub fn proc_term<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     name: Value<'gc>,
     args: ArrayRef<'gc, LVarRef<'gc>>,
     variadic: Option<LVarRef<'gc>>,
@@ -430,7 +437,7 @@ pub fn proc_term<'gc>(
 }
 
 pub fn call_term<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     proc: TermRef<'gc>,
     args: impl AsRef<[TermRef<'gc>]>,
     sourcev: Value<'gc>,
@@ -446,7 +453,7 @@ pub fn call_term<'gc>(
 }
 
 pub fn prim_call_term<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     proc: Value<'gc>,
     args: impl AsRef<[TermRef<'gc>]>,
     sourcev: Value<'gc>,
@@ -718,7 +725,7 @@ impl<'gc> Term<'gc> {
     }
 
     pub fn fix(
-        mc: Context<'gc>,
+        mc: MutationContext<'gc>,
         lhs: impl IntoIterator<Item = LVarRef<'gc>>,
         rhs: impl IntoIterator<Item = ProcRef<'gc>>,
         body: TermRef<'gc>,
@@ -738,7 +745,7 @@ impl<'gc> Term<'gc> {
     }
 
     pub fn let_(
-        mc: Context<'gc>,
+        mc: MutationContext<'gc>,
         style: LetStyle,
         lhs: impl IntoIterator<Item = LVarRef<'gc>>,
         rhs: impl IntoIterator<Item = TermRef<'gc>>,
@@ -760,7 +767,7 @@ impl<'gc> Term<'gc> {
     }
 
     pub fn seq(
-        mc: Context<'gc>,
+        mc: MutationContext<'gc>,
         head: TermRef<'gc>,
         tail: TermRef<'gc>,
         src: Value<'gc>,
@@ -775,7 +782,7 @@ impl<'gc> Term<'gc> {
     }
 
     pub fn cond(
-        mc: Context<'gc>,
+        mc: MutationContext<'gc>,
         cond: TermRef<'gc>,
         cons: TermRef<'gc>,
         alt: TermRef<'gc>,
@@ -791,7 +798,7 @@ impl<'gc> Term<'gc> {
     }
 
     pub fn prims(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         name: &str,
         args: impl IntoIterator<Item = TermRef<'gc>>,
         src: Value<'gc>,
@@ -809,7 +816,7 @@ impl<'gc> Term<'gc> {
     }
 
     pub fn lset(
-        mc: Context<'gc>,
+        mc: MutationContext<'gc>,
         lvar: LVarRef<'gc>,
         value: TermRef<'gc>,
         src: Value<'gc>,

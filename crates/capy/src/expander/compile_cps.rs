@@ -5,8 +5,8 @@ use std::sync::OnceLock;
 use crate::compiler::cps::{
     convert::{ConvertResult, GraphFunctionProgram},
     graph::{
-        BoundVar, BranchHint, ExprKind, FreeVar, Function, FunctionId, FunctionLinks, Graph,
-        Parent, Subexpr, Subterm, TermId, TermKind as GraphTermKind, TermLink,
+        BoundVar, BranchHint, BranchOp, ExprKind, FreeVar, Function, FunctionId, FunctionLinks,
+        Graph, Parent, Subexpr, Subterm, TermId, TermKind as GraphTermKind, TermLink,
     },
 };
 use crate::expander::core::{
@@ -16,7 +16,7 @@ use crate::heap::alloc::array::Array;
 use crate::heap::object::builtin_class_ids;
 use crate::heap::{Gc, Global, Trace, barrier};
 use crate::list;
-use crate::runtime::Context;
+use crate::runtime::MutationContext;
 use crate::runtime::prelude::*;
 use crate::runtime::value::Value;
 use crate::runtime::value::{Str, Vector};
@@ -40,10 +40,46 @@ impl<'gc> From<Value<'gc>> for Atom<'gc> {
     }
 }
 
+/// Attachment mode: where a term sits
+/// relative to `with-continuation-mark` scopes in its frame. Threaded
+/// through [`convert`], procedure bodies start at [`AttachmentMode::Tail`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttachmentMode {
+    /// Tail position, attachment state unknown.
+    Tail,
+    /// Tail position with our attachment on top: exits through the
+    /// reified frame's underflow restore, which pops for true calls.
+    TailSome,
+    /// Non-tail position, no attachment of ours on top.
+    NonNone,
+    /// Non-tail position with our attachment on top: exits pop first.
+    NonSome,
+}
+
+impl AttachmentMode {
+    fn in_some_scope(self) -> bool {
+        matches!(self, AttachmentMode::TailSome | AttachmentMode::NonSome)
+    }
+}
+
+/// Shape of a continuation variable, recorded at [`GraphCpsBuilder::make_cont`]
+/// so attachment pop-wraps can forward values unchanged.
+#[derive(Clone, Copy, Debug)]
+struct ContShape {
+    /// Fixed parameters.
+    nargs: usize,
+    /// Takes a rest list after the fixed parameters.
+    has_rest: bool,
+    /// A `receive` consumer: multiple values may flow, and the rest list
+    /// may be used, so forwarding cannot drop it.
+    is_consumer: bool,
+}
+
 pub struct GraphCpsBuilder<'gc> {
-    pub ctx: Context<'gc>,
+    pub ctx: MutationContext<'gc>,
     graph: Graph<'gc>,
     vars: HashMap<LVarRef<'gc>, BoundVar>,
+    cont_shapes: HashMap<LVarRef<'gc>, ContShape>,
     varcount: u32,
     scope_id: u32,
     current_topbox_scope: Option<u32>,
@@ -51,11 +87,12 @@ pub struct GraphCpsBuilder<'gc> {
 }
 
 impl<'gc> GraphCpsBuilder<'gc> {
-    pub fn new(ctx: Context<'gc>) -> Self {
+    pub fn new(ctx: MutationContext<'gc>) -> Self {
         Self {
             ctx,
             graph: Graph::new(),
             vars: HashMap::new(),
+            cont_shapes: HashMap::new(),
             varcount: 0,
             scope_id: 0,
             current_topbox_scope: None,
@@ -240,6 +277,39 @@ impl<'gc> GraphCpsBuilder<'gc> {
         self.emit_term(
             owner,
             GraphTermKind::Continue(cont, args),
+            source,
+            literal_binds,
+        )
+    }
+
+    /// `(branch-prim (prim args...) (k-true true-args...) (k-false false-args...))`.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_branch_prim(
+        &mut self,
+        owner: Subterm,
+        prim: crate::runtime::prims::def::Primitive,
+        args: Vec<Atom<'gc>>,
+        consequent: LVarRef<'gc>,
+        true_args: Vec<Atom<'gc>>,
+        alternative: LVarRef<'gc>,
+        false_args: Vec<Atom<'gc>>,
+        hints: [BranchHint; 2],
+        source: Value<'gc>,
+    ) -> TermId {
+        let op = BranchOp {
+            prim,
+            nargs: u8::try_from(args.len()).expect("branch primitive takes few operands"),
+            ntrue: u8::try_from(true_args.len()).expect("continuation takes few arguments"),
+            hints,
+        };
+        let mut literal_binds = Vec::new();
+        let consequent = self.use_lvar(consequent, owner);
+        let alternative = self.use_lvar(alternative, owner);
+        let operands = args.into_iter().chain(true_args).chain(false_args);
+        let vars = self.use_atoms(operands, source, owner, &mut literal_binds);
+        self.emit_term(
+            owner,
+            GraphTermKind::BranchPrim(op, consequent, alternative, vars),
             source,
             literal_binds,
         )
@@ -445,6 +515,14 @@ impl<'gc> GraphCpsBuilder<'gc> {
         noinline: bool,
         meta: Value<'gc>,
     ) -> FunctionId {
+        self.cont_shapes.insert(
+            binding,
+            ContShape {
+                nargs: args.len(),
+                has_rest: variadic.is_some(),
+                is_consumer: false,
+            },
+        );
         let var = self.bind_lvar(binding);
         let args = args
             .iter()
@@ -463,7 +541,6 @@ impl<'gc> GraphCpsBuilder<'gc> {
             is_variadic: variadic.is_some(),
             body,
             is_rec: false,
-            unroll_count: 0,
             is_cold: cold,
             is_noinline: noinline,
             is_reified: false,
@@ -492,7 +569,7 @@ impl<'gc> GraphCpsBuilder<'gc> {
         let variadic = proc.variadic.map(|arg| self.bind_lvar(arg));
         let vars = self.graph.new_bound_vars(args);
         let body = self.new_child_link();
-        convert(self, proc.body, return_cont, body);
+        convert(self, proc.body, return_cont, body, AttachmentMode::Tail);
         self.current_meta = old_meta;
 
         self.new_function(Function {
@@ -505,7 +582,6 @@ impl<'gc> GraphCpsBuilder<'gc> {
             is_variadic: variadic.is_some(),
             body,
             is_rec,
-            unroll_count: 0,
             is_cold: false,
             is_noinline: false,
             is_reified: false,
@@ -525,7 +601,7 @@ pub fn cps_func<'gc>(
 }
 
 pub fn cps_toplevel<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     forms: &[CoreTermRef<'gc>],
 ) -> ConvertResult<GraphFunctionProgram<'gc>> {
     let form = if forms.len() == 1 {
@@ -604,7 +680,7 @@ macro_rules! primitive_transformers {
         $prim: literal => $name : ident ($cps: ident, $owner: ident, $src: ident, $op: ident, $args: ident, $k: ident) $b: block
     )*) => {
         #[allow(dead_code, unused_mut, unused_variables)]
-        fn make_primitive_table<'gc>(ctx: Context<'gc>) -> HashMap<Value<'gc>, PrimitiveTransformer> {
+        fn make_primitive_table<'gc>(ctx: MutationContext<'gc>) -> HashMap<Value<'gc>, PrimitiveTransformer> {
             let mut table: HashMap<Value<'gc>, PrimitiveTransformer> = HashMap::new();
             $(
                 table.insert(
@@ -626,7 +702,7 @@ macro_rules! primitive_transformers {
     };
 }
 
-pub fn get_primitive_table<'gc>(ctx: Context<'gc>) -> &'gc PrimitiveTable<'gc> {
+pub fn get_primitive_table<'gc>(ctx: MutationContext<'gc>) -> &'gc PrimitiveTable<'gc> {
     PRIMTABLE
         .get_or_init(|| {
             let table = make_primitive_table(ctx);
@@ -659,7 +735,7 @@ pub fn assertion_violation<'gc>(
     message: &str,
     irritants: &[Atom<'gc>],
 ) -> TermId {
-    let message = Atom::Constant(Value::new(Str::new(*cps.ctx, message, true)));
+    let message = Atom::Constant(Value::new(Str::new(cps.ctx, message, true)));
     let opc = Atom::Constant(opc);
     let mut args = vec![opc, message];
     args.extend_from_slice(irritants);
@@ -1612,9 +1688,16 @@ fn is_single_valued<'gc>(exp: CoreTermRef<'gc>) -> bool {
     match &exp.kind {
         TermKind::Values(vals) if vals.len() == 1 => true,
         TermKind::ToplevelRef(..) | TermKind::ModuleRef(..) | TermKind::LRef(..) => true,
+        // Every primitive continues exactly once with one value or raises:
+        // `values', `apply', and `call-with-values' are library procedures,
+        // not primitives, and each table expansion ends in a single
+        // continue or a raise.
+        TermKind::PrimCall(..) => true,
         TermKind::Seq(_, tail) => is_single_valued(*tail),
         TermKind::Receive(_, _, _, body) => is_single_valued(*body),
         TermKind::Let(let_) => is_single_valued(let_.body),
+        // Push/pop and the thunk fallback are transparent to values.
+        TermKind::WithContinuationMark(_, _, result) => is_single_valued(*result),
         TermKind::Const(_) => true,
         _ => false,
     }
@@ -1630,6 +1713,25 @@ pub fn convert_arg<'gc, 'a>(
     match exp.kind {
         TermKind::LRef(var) => k(cps, owner, Atom::Local(var)),
         TermKind::Const(value) => cps.bind_literal(owner, value, src, k),
+
+        // A primitive with no expansion binds its result directly, with no
+        // continuation in between. For the test of an `if` this keeps the
+        // comparison next to the branch, so lowering can fuse the two.
+        TermKind::PrimCall(prim, _) if !get_primitive_table(cps.ctx).table.contains_key(&prim) => {
+            let TermKind::PrimCall(_, args) = &exp.kind else {
+                unreachable!("matched a primitive call above");
+            };
+            convert_args(
+                cps,
+                args,
+                owner,
+                Box::new(move |cps, owner, args| {
+                    cps.let_prim(owner, "arg", prim, args, src, |cps, owner, atom| {
+                        k(cps, owner, Atom::Local(atom))
+                    })
+                }),
+            )
+        }
 
         _ if is_single_valued(exp) => {
             let karg = cps.fresh_variable("karg");
@@ -1647,7 +1749,7 @@ pub fn convert_arg<'gc, 'a>(
                 Value::new(false),
             );
             let body = cps.new_child_link();
-            convert(cps, exp, karg, body);
+            convert(cps, exp, karg, body, AttachmentMode::NonNone);
             cps.emit_letk(owner, &[cont], body, src)
         }
 
@@ -1668,7 +1770,7 @@ pub fn convert_arg<'gc, 'a>(
                 Value::new(false),
             );
             let body = cps.new_child_link();
-            convert(cps, exp, karg, body);
+            convert(cps, exp, karg, body, AttachmentMode::NonNone);
             cps.emit_letk(owner, &[cont], body, src)
         }
     }
@@ -1714,9 +1816,10 @@ fn convert_let_bindings<'gc>(
     k: LVarRef<'gc>,
     owner: Subterm,
     source: Value<'gc>,
+    mode: AttachmentMode,
 ) -> TermId {
     if index == usize::MAX {
-        return convert(cps, body, k, owner);
+        return convert(cps, body, k, owner, mode);
     }
 
     let (binding, expr) = bindings[index];
@@ -1724,9 +1827,9 @@ fn convert_let_bindings<'gc>(
     let rest = (!is_single_valued(expr)).then(|| cps.fresh_variable("rest"));
     let cont_body = cps.new_child_link();
     if index == 0 {
-        convert(cps, body, k, cont_body);
+        convert(cps, body, k, cont_body, mode);
     } else {
-        convert_let_bindings(cps, bindings, index - 1, body, k, cont_body, source);
+        convert_let_bindings(cps, bindings, index - 1, body, k, cont_body, source, mode);
     }
     let cont = cps.make_cont(
         let_k,
@@ -1739,8 +1842,486 @@ fn convert_let_bindings<'gc>(
         Value::new(false),
     );
     let expr_body = cps.new_child_link();
-    convert(cps, expr, let_k, expr_body);
+    convert(cps, expr, let_k, expr_body, AttachmentMode::NonNone);
     cps.emit_letk(owner, &[cont], expr_body, source)
+}
+
+/// The primitive an `if` can branch on directly: `test` calls a primitive
+/// that tests and jumps in one step and that has no expansion of its own.
+fn branch_primitive<'gc>(
+    ctx: MutationContext<'gc>,
+    test: CoreTermRef<'gc>,
+) -> Option<crate::runtime::prims::def::Primitive> {
+    let TermKind::PrimCall(name, args) = test.kind else {
+        return None;
+    };
+    if get_primitive_table(ctx).table.contains_key(&name) || args.len() > u8::MAX as usize {
+        return None;
+    }
+    let name = name.try_as::<Symbol>()?.to_string();
+    crate::runtime::prims::def::Primitive::from_name(&name).filter(|prim| prim.is_branch_fusable())
+}
+
+/// `(if (prim args...) consequent alternate)` with a [`branch_primitive`]:
+/// both arms become continuations of no arguments and the test a
+/// `branch-prim` term that jumps to one of them, so no boolean is made.
+fn convert_branch_prim<'gc>(
+    cps: &mut GraphCpsBuilder<'gc>,
+    test: CoreTermRef<'gc>,
+    consequent: CoreTermRef<'gc>,
+    alternate: CoreTermRef<'gc>,
+    k: LVarRef<'gc>,
+    owner: Subterm,
+    mode: AttachmentMode,
+) -> TermId {
+    let prim = branch_primitive(cps.ctx, test).expect("checked by the caller");
+    let src = test.source();
+    let TermKind::PrimCall(_, args) = &test.kind else {
+        unreachable!("branch primitives are primitive calls");
+    };
+
+    let (if_true, true_cont) = branch_arm(cps, "ktrue", consequent, k, mode);
+    let (if_false, false_cont) = branch_arm(cps, "kfalse", alternate, k, mode);
+
+    let body = cps.new_child_link();
+    convert_args(
+        cps,
+        args,
+        body,
+        Box::new(move |cps, owner, args| {
+            cps.emit_branch_prim(
+                owner,
+                prim,
+                args,
+                if_true,
+                vec![],
+                if_false,
+                vec![],
+                [BranchHint::Normal, BranchHint::Normal],
+                src,
+            )
+        }),
+    );
+    cps.emit_letk(owner, &[true_cont, false_cont], body, src)
+}
+
+/// A zero-argument continuation that runs `body` and continues to `k`: one
+/// arm of a conditional, shared by every branch that targets it.
+fn branch_arm<'gc>(
+    cps: &mut GraphCpsBuilder<'gc>,
+    name: &str,
+    body: CoreTermRef<'gc>,
+    k: LVarRef<'gc>,
+    mode: AttachmentMode,
+) -> (LVarRef<'gc>, FunctionId) {
+    let binding = cps.fresh_variable(name);
+    let link = cps.new_child_link();
+    convert(cps, body, k, link, mode);
+    let cont = cps.make_cont(
+        binding,
+        &[],
+        None,
+        link,
+        body.source(),
+        false,
+        false,
+        Value::new(false),
+    );
+    (binding, cont)
+}
+
+/// `(if (if c t e) consequent alternate)`, as `memv`/`memq`/`or`/`and`
+/// produce for `case` and `cond`: branches on `c` jump straight to the
+/// shared arms, so no boolean is made and a primitive test stays fused
+/// into a `branch-prim` (which switch inference then recognises).
+fn convert_nested_if<'gc>(
+    cps: &mut GraphCpsBuilder<'gc>,
+    test: CoreTermRef<'gc>,
+    consequent: CoreTermRef<'gc>,
+    alternate: CoreTermRef<'gc>,
+    k: LVarRef<'gc>,
+    owner: Subterm,
+    mode: AttachmentMode,
+) -> TermId {
+    let src = test.source();
+    let (if_true, true_cont) = branch_arm(cps, "ktrue", consequent, k, mode);
+    let (if_false, false_cont) = branch_arm(cps, "kfalse", alternate, k, mode);
+    let body = cps.new_child_link();
+    convert_condition(cps, test, if_true, if_false, body);
+    cps.emit_letk(owner, &[true_cont, false_cont], body, src)
+}
+
+/// Lowers `test` in condition position: control reaches `if_true` or
+/// `if_false`, both zero-argument continuations, by truthiness of the value.
+fn convert_condition<'gc>(
+    cps: &mut GraphCpsBuilder<'gc>,
+    test: CoreTermRef<'gc>,
+    if_true: LVarRef<'gc>,
+    if_false: LVarRef<'gc>,
+    owner: Subterm,
+) -> TermId {
+    let src = test.source();
+    match &test.kind {
+        TermKind::Const(value) => {
+            let target = if value.as_bool() { if_true } else { if_false };
+            cps.emit_continue(owner, target, [], src)
+        }
+        TermKind::If(cond, then, otherwise) => {
+            // A constant side needs no continuation, it is its target.
+            let mut sides = Vec::new();
+            let mut side = |cps: &mut GraphCpsBuilder<'gc>, term: CoreTermRef<'gc>| match &term.kind
+            {
+                TermKind::Const(value) => {
+                    if value.as_bool() {
+                        if_true
+                    } else {
+                        if_false
+                    }
+                }
+                _ => {
+                    let binding = cps.fresh_variable("kcond");
+                    let link = cps.new_child_link();
+                    convert_condition(cps, term, if_true, if_false, link);
+                    sides.push(cps.make_cont(
+                        binding,
+                        &[],
+                        None,
+                        link,
+                        term.source(),
+                        false,
+                        false,
+                        Value::new(false),
+                    ));
+                    binding
+                }
+            };
+            let then_target = side(cps, *then);
+            let else_target = side(cps, *otherwise);
+            if sides.is_empty() {
+                return convert_condition(cps, *cond, then_target, else_target, owner);
+            }
+            let body = cps.new_child_link();
+            convert_condition(cps, *cond, then_target, else_target, body);
+            cps.emit_letk(owner, &sides, body, src)
+        }
+        _ if branch_primitive(cps.ctx, test).is_some() => {
+            let prim = branch_primitive(cps.ctx, test).expect("checked above");
+            let TermKind::PrimCall(_, args) = &test.kind else {
+                unreachable!("branch primitives are primitive calls");
+            };
+            convert_args(
+                cps,
+                args,
+                owner,
+                Box::new(move |cps, owner, args| {
+                    cps.emit_branch_prim(
+                        owner,
+                        prim,
+                        args,
+                        if_true,
+                        vec![],
+                        if_false,
+                        vec![],
+                        [BranchHint::Normal, BranchHint::Normal],
+                        src,
+                    )
+                }),
+            )
+        }
+        _ => convert_arg(
+            cps,
+            test,
+            owner,
+            Box::new(move |cps, owner, test| {
+                cps.emit_if_continue(
+                    owner,
+                    test,
+                    if_true,
+                    &[],
+                    if_false,
+                    &[],
+                    [BranchHint::Normal, BranchHint::Normal],
+                    src,
+                )
+            }),
+        ),
+    }
+}
+
+/// Run `body` with a fresh continuation that pops the attachment, then
+/// continues K with the same values, popping the attachment on scope exit. The new
+/// continuation takes NARGS fixed values plus a rest list when K does, only
+/// fixed values forward, which is exact when K drops its rest.
+fn with_pop_continuation<'gc>(
+    cps: &mut GraphCpsBuilder<'gc>,
+    owner: Subterm,
+    src: Value<'gc>,
+    k: LVarRef<'gc>,
+    nargs: usize,
+    has_rest: bool,
+    body: impl FnOnce(&mut GraphCpsBuilder<'gc>, LVarRef<'gc>, Subterm) -> TermId,
+) -> TermId {
+    let pop = cps.fresh_variable("kpop");
+    let inner = cps.new_child_link();
+    body(cps, pop, inner);
+    let mut fixed = Vec::with_capacity(nargs);
+    for _ in 0..nargs {
+        fixed.push(cps.fresh_variable("pop_arg"));
+    }
+    let rest = has_rest.then(|| cps.fresh_variable("pop_rest"));
+    let forward: Vec<Atom<'gc>> = fixed.iter().copied().map(Atom::Local).collect();
+    let pop_body = cps.new_child_link();
+    cps.let_prim(
+        pop_body,
+        "pop",
+        Symbol::from_str(cps.ctx, "$attachment-pop!").into(),
+        [],
+        src,
+        |cps, owner, _| cps.emit_continue(owner, k, forward, src),
+    );
+    let cont = cps.make_cont(
+        pop,
+        &fixed,
+        rest,
+        pop_body,
+        src,
+        false,
+        false,
+        Value::new(false),
+    );
+    cps.emit_letk(owner, &[cont], inner, src)
+}
+
+/// Single-valued scope exit: wrap K with a pop when MODE is in a scope.
+/// The producer yields exactly one value, so the one-fixed wrap forwards
+/// it unchanged whatever shape K has.
+fn with_pop_1<'gc>(
+    cps: &mut GraphCpsBuilder<'gc>,
+    owner: Subterm,
+    src: Value<'gc>,
+    k: LVarRef<'gc>,
+    mode: AttachmentMode,
+    body: impl FnOnce(&mut GraphCpsBuilder<'gc>, LVarRef<'gc>, Subterm) -> TermId,
+) -> TermId {
+    if !mode.in_some_scope() {
+        return body(cps, k, owner);
+    }
+    with_pop_continuation(cps, owner, src, k, 1, false, body)
+}
+
+/// Like [`with_pop_1`] for a producer of exactly N values.
+fn with_pop_n<'gc>(
+    cps: &mut GraphCpsBuilder<'gc>,
+    owner: Subterm,
+    src: Value<'gc>,
+    k: LVarRef<'gc>,
+    mode: AttachmentMode,
+    nargs: usize,
+    body: impl FnOnce(&mut GraphCpsBuilder<'gc>, LVarRef<'gc>, Subterm) -> TermId,
+) -> TermId {
+    if !mode.in_some_scope() {
+        return body(cps, k, owner);
+    }
+    with_pop_continuation(cps, owner, src, k, nargs, false, body)
+}
+
+/// Scope-exit call in [`AttachmentMode::NonSome`]: wrap K with a pop,
+/// copying K's shape. The scope entry already ruled out rest-taking
+/// `receive` consumers (those keep the thunk lowering), so dropping the
+/// rest on forward is exact.
+fn with_pop_like<'gc>(
+    cps: &mut GraphCpsBuilder<'gc>,
+    owner: Subterm,
+    src: Value<'gc>,
+    k: LVarRef<'gc>,
+    body: impl FnOnce(&mut GraphCpsBuilder<'gc>, LVarRef<'gc>, Subterm) -> TermId,
+) -> TermId {
+    let shape = cps
+        .cont_shapes
+        .get(&k)
+        .copied()
+        .expect("pop-wrap of a continuation with unknown shape");
+    debug_assert!(
+        !(shape.is_consumer && shape.has_rest),
+        "pop-wrap of a rest-taking receive consumer"
+    );
+    with_pop_continuation(cps, owner, src, k, shape.nargs, shape.has_rest, body)
+}
+
+/// True when K takes a rest list as a `receive` consumer, or its shape is
+/// unknown: pop-wraps cannot forward its values, so the scope keeps the
+/// thunk lowering, whose calls stay arity-transparent.
+fn cont_needs_thunk_fallback<'gc>(cps: &GraphCpsBuilder<'gc>, k: LVarRef<'gc>) -> bool {
+    match cps.cont_shapes.get(&k) {
+        None => true,
+        Some(shape) => shape.is_consumer && shape.has_rest,
+    }
+}
+
+/// Today's `with-continuation-mark` lowering: call the native
+/// `call-with-continuation-mark`, which reifies and tail-calls the body
+/// thunk. Kept for scopes whose continuation pop-wraps cannot forward.
+fn convert_wcm_thunk<'gc>(
+    cps: &mut GraphCpsBuilder<'gc>,
+    key: CoreTermRef<'gc>,
+    mark: CoreTermRef<'gc>,
+    result: CoreTermRef<'gc>,
+    k: LVarRef<'gc>,
+    owner: Subterm,
+    src: Value<'gc>,
+    mode: AttachmentMode,
+) -> TermId {
+    let thunk = Gc::new(
+        cps.ctx,
+        Proc {
+            args: Array::from_slice(cps.ctx, []),
+            name: Value::new(false),
+            source: src,
+            variadic: None,
+            body: result,
+            meta: cps.current_meta,
+        },
+    );
+    let thunk = Gc::new(
+        cps.ctx,
+        crate::expander::core::Term {
+            kind: TermKind::Proc(thunk),
+            source: crate::heap::cell::Lock::new(src),
+        },
+    );
+
+    let mref = Gc::new(
+        cps.ctx,
+        crate::expander::core::Term {
+            kind: TermKind::PrimRef(cps.ctx.intern("call-with-continuation-mark")),
+            source: crate::heap::cell::Lock::new(src),
+        },
+    );
+
+    let call = Gc::new(
+        cps.ctx,
+        crate::expander::core::Term {
+            source: crate::heap::cell::Lock::new(src),
+            kind: TermKind::Call(mref, Array::from_slice(cps.ctx, [key, mark, thunk])),
+        },
+    );
+
+    convert(cps, call, k, owner, mode)
+}
+
+/// Lower `with-continuation-mark` per MODE.
+/// Key and value evaluate first, then the consume/update/push-or-set
+/// sequence, then the body in the scope's mode.
+fn convert_wcm<'gc>(
+    cps: &mut GraphCpsBuilder<'gc>,
+    key: CoreTermRef<'gc>,
+    mark: CoreTermRef<'gc>,
+    result: CoreTermRef<'gc>,
+    k: LVarRef<'gc>,
+    mode: AttachmentMode,
+    owner: Subterm,
+    src: Value<'gc>,
+) -> TermId {
+    if mode == AttachmentMode::NonNone && cont_needs_thunk_fallback(cps, k) {
+        return convert_wcm_thunk(cps, key, mark, result, k, owner, src, mode);
+    }
+    convert_arg(
+        cps,
+        key,
+        owner,
+        Box::new(move |cps, owner, key| {
+            convert_arg(
+                cps,
+                mark,
+                owner,
+                Box::new(move |cps, owner, mark| {
+                    let update_mark = Symbol::from_str(cps.ctx, "$update-mark").into();
+                    let null = Atom::Constant(Value::null());
+                    match mode {
+                        AttachmentMode::NonNone => cps.let_prim(
+                            owner,
+                            "table",
+                            update_mark,
+                            [null, key, mark],
+                            src,
+                            |cps, owner, table| {
+                                cps.let_prim(
+                                    owner,
+                                    "push",
+                                    Symbol::from_str(cps.ctx, "$attachment-push!").into(),
+                                    [Atom::Local(table)],
+                                    src,
+                                    |cps, owner, _| {
+                                        convert(cps, result, k, owner, AttachmentMode::NonSome)
+                                    },
+                                )
+                            },
+                        ),
+                        AttachmentMode::Tail => cps.let_prim(
+                            owner,
+                            "marks",
+                            Symbol::from_str(cps.ctx, "$attachment-consume-reify!").into(),
+                            [null],
+                            src,
+                            |cps, owner, marks| {
+                                cps.let_prim(
+                                    owner,
+                                    "table",
+                                    update_mark,
+                                    [Atom::Local(marks), key, mark],
+                                    src,
+                                    |cps, owner, table| {
+                                        cps.let_prim(
+                                            owner,
+                                            "push",
+                                            Symbol::from_str(cps.ctx, "$attachment-push!").into(),
+                                            [Atom::Local(table)],
+                                            src,
+                                            |cps, owner, _| {
+                                                convert(
+                                                    cps,
+                                                    result,
+                                                    k,
+                                                    owner,
+                                                    AttachmentMode::TailSome,
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        ),
+                        AttachmentMode::NonSome | AttachmentMode::TailSome => cps.let_prim(
+                            owner,
+                            "marks",
+                            Symbol::from_str(cps.ctx, "$attachment-consume!").into(),
+                            [],
+                            src,
+                            |cps, owner, marks| {
+                                cps.let_prim(
+                                    owner,
+                                    "table",
+                                    update_mark,
+                                    [Atom::Local(marks), key, mark],
+                                    src,
+                                    |cps, owner, table| {
+                                        cps.let_prim(
+                                            owner,
+                                            "set",
+                                            Symbol::from_str(cps.ctx, "$attachment-set!").into(),
+                                            [Atom::Local(table)],
+                                            src,
+                                            |cps, owner, _| convert(cps, result, k, owner, mode),
+                                        )
+                                    },
+                                )
+                            },
+                        ),
+                    }
+                }),
+            )
+        }),
+    )
 }
 
 pub fn convert<'gc>(
@@ -1748,16 +2329,32 @@ pub fn convert<'gc>(
     exp: CoreTermRef<'gc>,
     k: LVarRef<'gc>,
     owner: Subterm,
+    mode: AttachmentMode,
 ) -> TermId {
     let src = exp.source();
 
     match &exp.kind {
-        TermKind::Values(vals) => convert_args(
-            cps,
-            vals,
-            owner,
-            Box::new(move |cps, owner, args| cps.emit_continue(owner, k, args, Value::new(false))),
-        ),
+        TermKind::Values(vals) => {
+            let arity = vals.len();
+            with_pop_n(cps, owner, src, k, mode, arity, |cps, k, owner| {
+                convert_args(
+                    cps,
+                    vals,
+                    owner,
+                    Box::new(move |cps, owner, args| {
+                        cps.emit_continue(owner, k, args, Value::new(false))
+                    }),
+                )
+            })
+        }
+
+        TermKind::If(test, consequent, alternate) if branch_primitive(cps.ctx, *test).is_some() => {
+            convert_branch_prim(cps, *test, *consequent, *alternate, k, owner, mode)
+        }
+
+        TermKind::If(test, consequent, alternate) if matches!(test.kind, TermKind::If(..)) => {
+            convert_nested_if(cps, *test, *consequent, *alternate, k, owner, mode)
+        }
 
         TermKind::If(test, consequent, alternate) => convert_arg(
             cps,
@@ -1765,9 +2362,9 @@ pub fn convert<'gc>(
             owner,
             Box::new(move |cps, owner, test| {
                 let consequent_link = cps.new_child_link();
-                convert(cps, *consequent, k, consequent_link);
+                convert(cps, *consequent, k, consequent_link, mode);
                 let alternate_link = cps.new_child_link();
-                convert(cps, *alternate, k, alternate_link);
+                convert(cps, *alternate, k, alternate_link, mode);
                 cps.emit_if(
                     owner,
                     test,
@@ -1780,13 +2377,17 @@ pub fn convert<'gc>(
         ),
 
         TermKind::LSet(..) => unreachable!(),
-        TermKind::LRef(var) => cps.emit_continue(owner, k, [Atom::Local(*var)], src),
-
-        TermKind::Const(c) => cps.bind_literal(owner, *c, src, |cps, owner, atom| {
-            cps.emit_continue(owner, k, [atom], src)
+        TermKind::LRef(var) => with_pop_1(cps, owner, src, k, mode, |cps, k, owner| {
+            cps.emit_continue(owner, k, [Atom::Local(*var)], src)
         }),
 
-        TermKind::PrimRef(name) => {
+        TermKind::Const(c) => with_pop_1(cps, owner, src, k, mode, |cps, k, owner| {
+            cps.bind_literal(owner, *c, src, |cps, owner, atom| {
+                cps.emit_continue(owner, k, [atom], src)
+            })
+        }),
+
+        TermKind::PrimRef(name) => with_pop_1(cps, owner, src, k, mode, |cps, k, owner| {
             let module = list!(cps.ctx, cps.ctx.intern("capy"));
             module_box(
                 cps,
@@ -1809,9 +2410,9 @@ pub fn convert<'gc>(
                 true,
                 src,
             )
-        }
+        }),
 
-        TermKind::ToplevelRef(_, name) => {
+        TermKind::ToplevelRef(_, name) => with_pop_1(cps, owner, src, k, mode, |cps, k, owner| {
             toplevel_box(cps, owner, src, *name, true, |cps, owner, var| {
                 cps.let_prim(
                     owner,
@@ -1824,142 +2425,177 @@ pub fn convert<'gc>(
                     },
                 )
             })
-        }
+        }),
 
-        TermKind::ModuleRef(module, name, public) => module_box(
-            cps,
-            owner,
-            |cps, owner, var| {
-                cps.let_prim(
-                    owner,
-                    "val",
-                    Symbol::from_str(cps.ctx, "variable-ref").into(),
-                    [var],
-                    src,
-                    |cps, owner, val| {
-                        cps.emit_continue(owner, k, [Atom::Local(val)], Value::new(false))
-                    },
-                )
-            },
-            *module,
-            *name,
-            *public,
-            false,
-            src,
-        ),
-
-        TermKind::ToplevelSet(_, name, exp) => convert_arg(
-            cps,
-            *exp,
-            owner,
-            Box::new(move |cps, owner, atom| {
-                toplevel_box(cps, owner, src, *name, false, |cps, owner, var| {
-                    cps.let_prim(
-                        owner,
-                        "_val",
-                        Symbol::from_str(cps.ctx, "variable-set!").into(),
-                        [var, atom],
-                        src,
-                        |cps, owner, val| cps.emit_continue(owner, k, [Atom::Local(val)], src),
-                    )
-                })
-            }),
-        ),
-
-        TermKind::ModuleSet(module, name, public, exp) => convert_arg(
-            cps,
-            *exp,
-            owner,
-            Box::new(move |cps, owner, exp| {
+        TermKind::ModuleRef(module, name, public) => {
+            with_pop_1(cps, owner, src, k, mode, |cps, k, owner| {
                 module_box(
                     cps,
                     owner,
                     |cps, owner, var| {
                         cps.let_prim(
                             owner,
-                            "_val",
-                            Symbol::from_str(cps.ctx, "variable-set!").into(),
-                            [var, exp],
+                            "val",
+                            Symbol::from_str(cps.ctx, "variable-ref").into(),
+                            [var],
                             src,
-                            |cps, owner, val| cps.emit_continue(owner, k, [Atom::Local(val)], src),
+                            |cps, owner, val| {
+                                cps.emit_continue(owner, k, [Atom::Local(val)], Value::new(false))
+                            },
                         )
                     },
                     *module,
                     *name,
                     *public,
-                    true,
+                    false,
                     src,
                 )
-            }),
-        ),
+            })
+        }
 
-        TermKind::Proc(proc) => {
+        TermKind::ToplevelSet(_, name, exp) => {
+            with_pop_1(cps, owner, src, k, mode, |cps, k, owner| {
+                convert_arg(
+                    cps,
+                    *exp,
+                    owner,
+                    Box::new(move |cps, owner, atom| {
+                        toplevel_box(cps, owner, src, *name, false, |cps, owner, var| {
+                            cps.let_prim(
+                                owner,
+                                "_val",
+                                Symbol::from_str(cps.ctx, "variable-set!").into(),
+                                [var, atom],
+                                src,
+                                |cps, owner, val| {
+                                    cps.emit_continue(owner, k, [Atom::Local(val)], src)
+                                },
+                            )
+                        })
+                    }),
+                )
+            })
+        }
+
+        TermKind::ModuleSet(module, name, public, exp) => {
+            with_pop_1(cps, owner, src, k, mode, |cps, k, owner| {
+                convert_arg(
+                    cps,
+                    *exp,
+                    owner,
+                    Box::new(move |cps, owner, exp| {
+                        module_box(
+                            cps,
+                            owner,
+                            |cps, owner, var| {
+                                cps.let_prim(
+                                    owner,
+                                    "_val",
+                                    Symbol::from_str(cps.ctx, "variable-set!").into(),
+                                    [var, exp],
+                                    src,
+                                    |cps, owner, val| {
+                                        cps.emit_continue(owner, k, [Atom::Local(val)], src)
+                                    },
+                                )
+                            },
+                            *module,
+                            *name,
+                            *public,
+                            true,
+                            src,
+                        )
+                    }),
+                )
+            })
+        }
+
+        TermKind::Proc(proc) => with_pop_1(cps, owner, src, k, mode, |cps, k, owner| {
             if cps.current_topbox_scope.is_some() {
                 let tmp = cps.fresh_variable("proc");
                 let func = cps.make_proc_func(proc, tmp, true);
                 let body = cps.new_child_link();
                 cps.emit_continue(body, k, [Atom::Local(tmp)], src);
-                return cps.emit_fix(owner, &[func], body, src);
+                cps.emit_fix(owner, &[func], body, src)
+            } else {
+                let prev = cps.current_topbox_scope;
+                cps.enter_scope();
+                let id = cps.current_topbox_scope.expect("invariant holds");
+                capture_toplevel_scope(cps, owner, src, id, |cps, owner| {
+                    let form = convert(cps, exp, k, owner, mode);
+                    cps.current_topbox_scope = prev;
+                    form
+                })
             }
+        }),
 
-            let prev = cps.current_topbox_scope;
-            cps.enter_scope();
-            let id = cps.current_topbox_scope.expect("invariant holds");
-            capture_toplevel_scope(cps, owner, src, id, |cps, owner| {
-                let form = convert(cps, exp, k, owner);
-                cps.current_topbox_scope = prev;
-                form
+        TermKind::Define(_module, name, exp) => {
+            with_pop_1(cps, owner, src, k, mode, |cps, k, owner| {
+                convert_arg(
+                    cps,
+                    *exp,
+                    owner,
+                    Box::new(move |cps, owner, atom| {
+                        cps.let_prim(
+                            owner,
+                            "_rv",
+                            Symbol::from_str(cps.ctx, "define").into(),
+                            [Atom::Constant(*name), atom],
+                            src,
+                            |cps, owner, rv| cps.emit_continue(owner, k, [Atom::Local(rv)], src),
+                        )
+                    }),
+                )
             })
         }
 
-        TermKind::Define(_module, name, exp) => convert_arg(
-            cps,
-            *exp,
-            owner,
-            Box::new(move |cps, owner, atom| {
-                cps.let_prim(
+        TermKind::Call(proc, args) => {
+            let call_with = |cps: &mut GraphCpsBuilder<'gc>, k: LVarRef<'gc>, owner: Subterm| {
+                convert_arg(
+                    cps,
+                    *proc,
                     owner,
-                    "_rv",
-                    Symbol::from_str(cps.ctx, "define").into(),
-                    [Atom::Constant(*name), atom],
-                    src,
-                    |cps, owner, rv| cps.emit_continue(owner, k, [Atom::Local(rv)], src),
+                    Box::new(move |cps, owner, proc| {
+                        convert_args(
+                            cps,
+                            args,
+                            owner,
+                            Box::new(move |cps, owner, args| {
+                                cps.emit_app(owner, proc, k, args, src)
+                            }),
+                        )
+                    }),
                 )
-            }),
-        ),
+            };
+            // A call in tail scope stays a tail call: the reified frame's
+            // underflow restore pops for it.
+            if mode == AttachmentMode::NonSome {
+                with_pop_like(cps, owner, src, k, call_with)
+            } else {
+                call_with(cps, k, owner)
+            }
+        }
 
-        TermKind::Call(proc, args) => convert_arg(
-            cps,
-            *proc,
-            owner,
-            Box::new(move |cps, owner, proc| {
+        TermKind::PrimCall(prim, args) => {
+            let prim = *prim;
+            with_pop_1(cps, owner, src, k, mode, |cps, k, owner| {
                 convert_args(
                     cps,
                     args,
                     owner,
-                    Box::new(move |cps, owner, args| cps.emit_app(owner, proc, k, args, src)),
+                    Box::new(move |cps, owner, args| {
+                        if let Some(term) =
+                            get_primitive_table(cps.ctx).try_expand(cps, owner, src, prim, &args, k)
+                        {
+                            term
+                        } else {
+                            cps.let_prim(owner, "atom", prim, args, src, |cps, owner, atom| {
+                                cps.emit_continue(owner, k, [Atom::Local(atom)], src)
+                            })
+                        }
+                    }),
                 )
-            }),
-        ),
-
-        TermKind::PrimCall(prim, args) => {
-            let prim = *prim;
-            convert_args(
-                cps,
-                args,
-                owner,
-                Box::new(move |cps, owner, args| {
-                    if let Some(term) =
-                        get_primitive_table(cps.ctx).try_expand(cps, owner, src, prim, &args, k)
-                    {
-                        term
-                    } else {
-                        cps.let_prim(owner, "atom", prim, args, src, |cps, owner, atom| {
-                            cps.emit_continue(owner, k, [Atom::Local(atom)], src)
-                        })
-                    }
-                }),
-            )
+            })
         }
 
         TermKind::Let(let_) => {
@@ -1974,29 +2610,55 @@ pub fn convert<'gc>(
                 .zip(let_.rhs.iter().copied())
                 .collect::<Vec<_>>();
             if bindings.is_empty() {
-                convert(cps, let_.body, k, owner)
+                convert(cps, let_.body, k, owner, mode)
             } else {
-                convert_let_bindings(cps, &bindings, bindings.len() - 1, let_.body, k, owner, src)
+                convert_let_bindings(
+                    cps,
+                    &bindings,
+                    bindings.len() - 1,
+                    let_.body,
+                    k,
+                    owner,
+                    src,
+                    mode,
+                )
             }
         }
 
         TermKind::Seq(head, tail) => {
             let ktail = cps.fresh_variable("ktail");
-            let vals = cps.fresh_variable("vals");
             let cont_body = cps.new_child_link();
-            convert(cps, *tail, k, cont_body);
-            let cont = cps.make_cont(
-                ktail,
-                &[],
-                Some(vals),
-                cont_body,
-                Value::new(false),
-                false,
-                false,
-                Value::new(false),
-            );
+            convert(cps, *tail, k, cont_body, mode);
+            // A head that produces exactly one value binds it directly, only
+            // a head of unknown arity needs the rest list, which the tail
+            // ignores either way.
+            let cont = if is_single_valued(*head) {
+                let arg = cps.fresh_variable("arg");
+                cps.make_cont(
+                    ktail,
+                    &[arg],
+                    None,
+                    cont_body,
+                    Value::new(false),
+                    false,
+                    false,
+                    Value::new(false),
+                )
+            } else {
+                let vals = cps.fresh_variable("vals");
+                cps.make_cont(
+                    ktail,
+                    &[],
+                    Some(vals),
+                    cont_body,
+                    Value::new(false),
+                    false,
+                    false,
+                    Value::new(false),
+                )
+            };
             let body = cps.new_child_link();
-            convert(cps, *head, ktail, body);
+            convert(cps, *head, ktail, body, AttachmentMode::NonNone);
             cps.emit_letk(owner, &[cont], body, Value::new(false))
         }
 
@@ -2014,7 +2676,7 @@ pub fn convert<'gc>(
                     .collect::<Vec<_>>();
 
                 let body = cps.new_child_link();
-                convert(cps, fix.body, k, body);
+                convert(cps, fix.body, k, body, mode);
                 return cps.emit_fix(owner, &funcs, body, src);
             }
 
@@ -2022,7 +2684,7 @@ pub fn convert<'gc>(
             cps.enter_scope();
             let id = cps.current_topbox_scope.expect("invariant holds");
             capture_toplevel_scope(cps, owner, src, id, |cps, owner| {
-                let form = convert(cps, exp, k, owner);
+                let form = convert(cps, exp, k, owner, mode);
                 cps.current_topbox_scope = prev;
                 form
             })
@@ -2031,7 +2693,7 @@ pub fn convert<'gc>(
         TermKind::Receive(vars, variadic, producer, consumer) => {
             let consumer_k_var = cps.fresh_variable("consumer");
             let body = cps.new_child_link();
-            convert(cps, *consumer, k, body);
+            convert(cps, *consumer, k, body, mode);
             let consumer_k = cps.make_cont(
                 consumer_k_var,
                 vars,
@@ -2042,177 +2704,22 @@ pub fn convert<'gc>(
                 false,
                 cps.current_meta,
             );
+            if let Some(shape) = cps.cont_shapes.get_mut(&consumer_k_var) {
+                shape.is_consumer = true;
+            }
             let letk_body = cps.new_child_link();
-            convert(cps, *producer, consumer_k_var, letk_body);
+            convert(
+                cps,
+                *producer,
+                consumer_k_var,
+                letk_body,
+                AttachmentMode::NonNone,
+            );
             cps.emit_letk(owner, &[consumer_k], letk_body, src)
         }
 
         TermKind::WithContinuationMark(key, mark, result) => {
-            let thunk = Gc::new(
-                *cps.ctx,
-                Proc {
-                    args: Array::from_slice(*cps.ctx, []),
-                    name: Value::new(false),
-                    source: src,
-                    variadic: None,
-                    body: *result,
-                    meta: cps.current_meta,
-                },
-            );
-            let thunk = Gc::new(
-                *cps.ctx,
-                crate::expander::core::Term {
-                    kind: TermKind::Proc(thunk),
-                    source: crate::heap::cell::Lock::new(src),
-                },
-            );
-
-            let mref = Gc::new(
-                *cps.ctx,
-                crate::expander::core::Term {
-                    kind: TermKind::PrimRef(cps.ctx.intern("call-with-continuation-mark")),
-                    source: crate::heap::cell::Lock::new(src),
-                },
-            );
-
-            let call = Gc::new(
-                *cps.ctx,
-                crate::expander::core::Term {
-                    source: crate::heap::cell::Lock::new(src),
-                    kind: TermKind::Call(mref, Array::from_slice(*cps.ctx, [*key, *mark, thunk])),
-                },
-            );
-
-            convert(cps, call, k, owner)
+            convert_wcm(cps, *key, *mark, *result, k, mode, owner, src)
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::expander::core;
-    use crate::runtime::Scheme;
-
-    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn with_ctx(f: impl for<'gc> FnOnce(Context<'gc>)) {
-        let _guard = TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let scm = Scheme::new_uninit();
-        scm.enter(f);
-    }
-
-    fn peel_letvals<'gc>(cps: &GraphCpsBuilder<'gc>, mut term: TermId) -> TermId {
-        while let GraphTermKind::LetVal(_, body) = cps.graph[term].kind {
-            term = cps.graph.read_term_link(body).expect("letval body");
-        }
-        term
-    }
-
-    #[test]
-    fn assertion_violation_lowers_directly_to_raise_term() {
-        with_ctx(|ctx| {
-            let mut cps = GraphCpsBuilder::new(ctx);
-            let owner = cps.graph.new_term_link(None);
-            let who = Symbol::from_str(ctx, "car").into();
-            let irritant = Atom::Constant(Value::new(1));
-
-            let term = assertion_violation(
-                &mut cps,
-                owner,
-                Value::new(false),
-                who,
-                "not a pair",
-                &[irritant],
-            );
-
-            let term = peel_letvals(&cps, term);
-            let GraphTermKind::Raise(kind, args) = cps.graph[term].kind else {
-                panic!("assertion_violation should lower directly to graph raise term");
-            };
-
-            assert_eq!(kind, RaiseKind::AssertionViolation);
-            assert_eq!(cps.graph.free_vars_slice(&args).len(), 3);
-        });
-    }
-
-    #[test]
-    fn assertion_violation_primitive_does_not_return() {
-        with_ctx(|ctx| {
-            let mut cps = GraphCpsBuilder::new(ctx);
-            let owner = cps.graph.new_term_link(None);
-            let k = cps.fresh_variable("k");
-            let prim = Symbol::from_str(ctx, "assertion-violation").into();
-            let args = [
-                Atom::Constant(Value::new(false)),
-                Atom::Constant(Value::new(Str::new(ctx, "bad", true))),
-            ];
-
-            let term = get_primitive_table(ctx)
-                .try_expand(&mut cps, owner, Value::new(false), prim, &args, k)
-                .expect("assertion-violation should be a CPS primitive");
-            let term = peel_letvals(&cps, term);
-            let GraphTermKind::Raise(kind, raised_args) = cps.graph[term].kind else {
-                panic!("assertion-violation primitive should not return");
-            };
-
-            assert_eq!(kind, RaiseKind::AssertionViolation);
-            assert_eq!(cps.graph.free_vars_slice(&raised_args).len(), args.len());
-        });
-    }
-
-    #[test]
-    fn wrong_number_of_arguments_lowers_to_specific_raise_term() {
-        with_ctx(|ctx| {
-            let mut cps = GraphCpsBuilder::new(ctx);
-            let owner = cps.graph.new_term_link(None);
-
-            let term = primitive_wrong_number_of_arguments(
-                &mut cps,
-                owner,
-                Value::new(false),
-                RaiseKind::WrongNumberOfArgumentsCar,
-                5,
-            );
-
-            let GraphTermKind::LetVal(_, body) = cps.graph[term].kind else {
-                panic!("constant raise arg should be literal-bound");
-            };
-            let body = cps.graph.read_term_link(body).expect("literal body");
-            let GraphTermKind::Raise(kind, args) = cps.graph[body].kind else {
-                panic!("wrong_number_of_arguments should lower to graph raise term");
-            };
-            assert_eq!(kind, RaiseKind::WrongNumberOfArgumentsCar);
-            assert_eq!(cps.graph.free_vars_slice(&args).len(), 1);
-        });
-    }
-
-    #[test]
-    fn constants_lower_to_literal_expression() {
-        with_ctx(|ctx| {
-            let mut cps = GraphCpsBuilder::new(ctx);
-            let owner = cps.graph.new_term_link(None);
-            let k = cps.fresh_variable("k");
-            let value = Value::new(42);
-            let term = convert(&mut cps, core::constant(ctx, value), k, owner);
-
-            let GraphTermKind::LetVal((_, expr), body) = cps.graph[term].kind else {
-                panic!("constant should lower to a graph let-bound literal expression");
-            };
-            let expr = cps.graph.read_expr_link(expr).expect("literal expression");
-            let ExprKind::Literal(literal) = cps.graph[expr].kind else {
-                panic!("constant expression should be literal");
-            };
-            assert_eq!(literal, value);
-
-            let body = cps.graph.read_term_link(body).expect("literal body");
-            let GraphTermKind::Continue(cont, args) = cps.graph[body].kind else {
-                panic!("literal body should continue with the bound value");
-            };
-            assert_eq!(cps.graph.free_binder(cont), cps.vars[&k]);
-            assert_eq!(cps.graph.free_vars_slice(&args).len(), 1);
-        });
     }
 }

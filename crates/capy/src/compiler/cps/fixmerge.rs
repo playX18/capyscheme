@@ -3,7 +3,7 @@
 //! Environment sharing is per-site, so lambdas and reified continuations bound
 //! at the same point must be one group. The TreeIL fixing-letrec passes emit a
 //! separate single-member `Fix`/`Letk` node per lambda (e.g. `Fix(f, Fix(g,
-//! Fix(h, body)))`); this pass merges such chains into one `Fix` group, which
+//! Fix(h, body)))`), this pass merges such chains into one `Fix` group, which
 //! is semantics-preserving: the same names stay bound over the same body.
 //!
 //! Non-reified continuations (contified local blocks) never allocate and stay
@@ -28,7 +28,7 @@ pub fn merge_nested_groups<'gc>(graph: &mut Graph<'gc>, root: Subterm) {
         let mut merged = 0usize;
         let mut visited2 = HashSet::new();
         dump_groups(graph, root, &mut visited2, &mut groups, &mut merged);
-        eprintln!("fixmerge: {groups} groups after merge, {merged} merged");
+        log::debug!("fixmerge: {groups} groups after merge, {merged} merged");
     }
 }
 
@@ -57,7 +57,7 @@ fn dump_groups<'gc>(
                 *merged += 1;
             }
             *groups += 1;
-            eprintln!(
+            log::trace!(
                 "fixmerge: group with {} live members{}",
                 live.len(),
                 if live.len() > 1 { ": merged group" } else { "" }
@@ -92,13 +92,16 @@ fn walk_term<'gc>(graph: &mut Graph<'gc>, link: Subterm, visited: &mut HashSet<T
             walk_term(graph, consequent, visited);
             walk_term(graph, alternative, visited);
         }
-        TermKind::Continue(..) | TermKind::App(..) | TermKind::Raise(..) => {}
+        TermKind::Continue(..)
+        | TermKind::App(..)
+        | TermKind::Raise(..)
+        | TermKind::BranchPrim(..) => {}
     }
 }
 
 /// Merge the maximal chain of adjacent `Fix`/`Letk` terms starting at `term`
 /// into one `Fix` group: functions and reified continuations become group
-/// members; non-reified continuations stay bound over the final body by a
+/// members, non-reified continuations stay bound over the final body by a
 /// trailing `Letk`. Then recurse into every member body and the final body.
 fn merge_chain<'gc>(
     graph: &mut Graph<'gc>,
@@ -177,7 +180,7 @@ fn merge_chain<'gc>(
 }
 
 /// Partition one group's member links: live functions and reified
-/// continuations join the merged group; live non-reified continuations are
+/// continuations join the merged group, live non-reified continuations are
 /// kept for the trailing `Letk`. Dead links stay with the group (consumers
 /// filter live members). Member bodies are collected for the recursive walk.
 fn absorb_members<'gc>(

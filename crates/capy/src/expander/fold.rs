@@ -2,23 +2,23 @@ use crate::heap::{Gc, alloc::Array};
 
 use crate::{
     expander::core::{Fix, Proc, Term, TermKind, TermRef},
-    runtime::Context,
+    runtime::MutationContext,
 };
 
 pub fn pre_post_order<'gc, PRE, POST>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     mut pre: PRE,
     mut post: POST,
     term: TermRef<'gc>,
 ) -> TermRef<'gc>
 where
-    PRE: FnMut(Context<'gc>, TermRef<'gc>) -> TermRef<'gc>,
-    POST: FnMut(Context<'gc>, TermRef<'gc>) -> TermRef<'gc>,
+    PRE: FnMut(MutationContext<'gc>, TermRef<'gc>) -> TermRef<'gc>,
+    POST: FnMut(MutationContext<'gc>, TermRef<'gc>) -> TermRef<'gc>,
 {
     fn rec<'gc>(
-        ctx: Context<'gc>,
-        pre: &mut impl FnMut(Context<'gc>, TermRef<'gc>) -> TermRef<'gc>,
-        post: &mut impl FnMut(Context<'gc>, TermRef<'gc>) -> TermRef<'gc>,
+        ctx: MutationContext<'gc>,
+        pre: &mut impl FnMut(MutationContext<'gc>, TermRef<'gc>) -> TermRef<'gc>,
+        post: &mut impl FnMut(MutationContext<'gc>, TermRef<'gc>) -> TermRef<'gc>,
         term: TermRef<'gc>,
     ) -> TermRef<'gc> {
         let x = pre(ctx, term);
@@ -161,28 +161,6 @@ where
             }
 
             TermKind::Seq(head, tail) => {
-                /*let mut nseq = Vec::with_capacity(seq.len());
-                let mut changed = false;
-                for stmt in seq.iter() {
-                    let nstmt = rec(ctx, pre, post, *stmt);
-                    if !Gc::ptr_eq(nstmt, *stmt) {
-                        changed = true;
-                    }
-                    nseq.push(nstmt);
-                }
-                if !changed {
-                    post(ctx, x)
-                } else {
-                    let seqterm = Gc::new(
-                        ctx,
-                        Term {
-                            source: x.source.get().into(),
-                            kind: TermKind::Seq(Array::from_slice(ctx, &nseq)),
-                        },
-                    );
-                    post(ctx, seqterm)
-                }*/
-
                 let nhead = rec(ctx, pre, post, head);
                 let ntail = rec(ctx, pre, post, tail);
 
@@ -363,16 +341,16 @@ where
     rec(ctx, &mut pre, &mut post, term)
 }
 
-pub fn post_order<'gc, F>(ctx: Context<'gc>, f: F, term: TermRef<'gc>) -> TermRef<'gc>
+pub fn post_order<'gc, F>(ctx: MutationContext<'gc>, f: F, term: TermRef<'gc>) -> TermRef<'gc>
 where
-    F: FnMut(Context<'gc>, TermRef<'gc>) -> TermRef<'gc>,
+    F: FnMut(MutationContext<'gc>, TermRef<'gc>) -> TermRef<'gc>,
 {
     pre_post_order(ctx, |_, t| t, f, term)
 }
 
-pub fn pre_order<'gc, F>(ctx: Context<'gc>, f: F, term: TermRef<'gc>) -> TermRef<'gc>
+pub fn pre_order<'gc, F>(ctx: MutationContext<'gc>, f: F, term: TermRef<'gc>) -> TermRef<'gc>
 where
-    F: Fn(Context<'gc>, TermRef<'gc>) -> TermRef<'gc>,
+    F: Fn(MutationContext<'gc>, TermRef<'gc>) -> TermRef<'gc>,
 {
     pre_post_order(ctx, f, |_, t| t, term)
 }
@@ -413,7 +391,6 @@ pub fn fold_tree<'gc, ACC>(
                 args.iter().fold(acc, |a, arg| foldts(*arg, down, up, a))
             }
             TermKind::Seq(head, tail) => {
-                //seq.iter().fold(acc, |a, stmt| foldts(*stmt, down, up, a))
                 let acc = foldts(head, down, up, acc);
                 foldts(tail, down, up, acc)
             }
@@ -445,16 +422,16 @@ pub fn fold_tree<'gc, ACC>(
 }
 
 impl<'gc> Term<'gc> {
-    pub fn post_order<F>(self: TermRef<'gc>, ctx: Context<'gc>, f: F) -> TermRef<'gc>
+    pub fn post_order<F>(self: TermRef<'gc>, ctx: MutationContext<'gc>, f: F) -> TermRef<'gc>
     where
-        F: FnMut(Context<'gc>, TermRef<'gc>) -> TermRef<'gc>,
+        F: FnMut(MutationContext<'gc>, TermRef<'gc>) -> TermRef<'gc>,
     {
         post_order(ctx, f, self)
     }
 
-    pub fn pre_order<F>(self: TermRef<'gc>, ctx: Context<'gc>, f: F) -> TermRef<'gc>
+    pub fn pre_order<F>(self: TermRef<'gc>, ctx: MutationContext<'gc>, f: F) -> TermRef<'gc>
     where
-        F: Fn(Context<'gc>, TermRef<'gc>) -> TermRef<'gc>,
+        F: Fn(MutationContext<'gc>, TermRef<'gc>) -> TermRef<'gc>,
     {
         pre_order(ctx, f, self)
     }

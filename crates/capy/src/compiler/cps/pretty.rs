@@ -1,6 +1,8 @@
-use crate::{
-    compiler::cranelift::primitive::Primitive,
-    runtime::value::{Str, Symbol, Value},
+//! Rendering graph CPS as text, for dumps and test expectations.
+
+use crate::runtime::{
+    prims::def::Primitive,
+    value::{Str, Symbol, Value},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -8,8 +10,8 @@ use std::{
 };
 
 use super::graph::{
-    BoundVar, ContVar, ExprId, ExprKind, FreeVar, FreeVars, FunctionId, FunctionLinks, Graph,
-    Subterm, TermId, TermKind,
+    BoundVar, ContVar, ExprId, ExprKind, FreeVar, FreeVars, FunctionId, Graph, Subterm, TermId,
+    TermKind,
 };
 
 pub fn render_graph<'gc>(graph: &Graph<'gc>, root: TermId) -> String {
@@ -38,7 +40,7 @@ fn collect_functions<'gc>(
             }
         }
         TermKind::Fix(functions, body) | TermKind::Letk(functions, body) => {
-            for function in live_functions(graph, &functions) {
+            for function in graph.live_functions(&functions) {
                 if seen.insert(function) {
                     order.push(function);
                     if let Some(body) = graph.read_term_link(graph[function].body) {
@@ -219,7 +221,7 @@ impl<'a, 'gc> FunctionRenderer<'a, 'gc> {
             }
             TermKind::Fix(functions, body) => {
                 if self.is_toplevel {
-                    for function in live_functions(self.graph, &functions) {
+                    for function in self.graph.live_functions(&functions) {
                         let binder = self.graph[function].var;
                         lines.push(format!(
                             "{} = Fix f{}",
@@ -231,7 +233,7 @@ impl<'a, 'gc> FunctionRenderer<'a, 'gc> {
                 self.convert_term_link(body, lines)
             }
             TermKind::Letk(continuations, body) => {
-                let continuations = live_functions(self.graph, &continuations);
+                let continuations = self.graph.live_functions(&continuations);
                 let (reified, local): (Vec<_>, Vec<_>) = continuations
                     .into_iter()
                     .partition(|continuation| self.graph[*continuation].is_reified);
@@ -281,6 +283,28 @@ impl<'a, 'gc> FunctionRenderer<'a, 'gc> {
                 let args = self.free_vars(&args).join(", ");
                 format!("Successors: Raise {kind:?}({args})")
             }
+            TermKind::BranchPrim(op, consequent, alternative, vars) => {
+                let (args, true_args, false_args) = self.graph.branch_operands(op, &vars);
+                let (args, true_args, false_args) =
+                    (args.to_vec(), true_args.to_vec(), false_args.to_vec());
+                let mut names = |vars: Vec<FreeVar>| {
+                    vars.into_iter()
+                        .map(|var| self.free_var(var))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                let args = names(args);
+                let true_args = names(true_args);
+                let false_args = names(false_args);
+                let consequent = self.free_var(consequent);
+                let alternative = self.free_var(alternative);
+                format!(
+                    "Successors: BranchPrim {}({args}) Then: {consequent}({true_args}), Else: {alternative}({false_args}) [{:?}, {:?}]",
+                    op.prim.name(),
+                    op.hints[0],
+                    op.hints[1]
+                )
+            }
             TermKind::If(test, consequent, alternative, hints) => {
                 let test = self.free_var(test);
                 format!(
@@ -302,21 +326,13 @@ impl<'a, 'gc> FunctionRenderer<'a, 'gc> {
     }
 
     fn branch_target(&mut self, link: Subterm) -> String {
-        if let Some((continuation, args)) = self.direct_continue(link) {
+        if let Some((continuation, args)) = self.graph.direct_continue(link) {
             return self.continuation_target(continuation, args);
         }
 
         let block = self.alloc_block();
         self.convert_block(block, Vec::new(), None, link);
         format!("BB{block}()")
-    }
-
-    fn direct_continue(&self, link: Subterm) -> Option<(ContVar, FreeVars)> {
-        let term = self.graph.read_term_link(link)?;
-        let TermKind::Continue(continuation, args) = self.graph[term].kind else {
-            return None;
-        };
-        Some((continuation, args))
     }
 
     fn continuation_target(&mut self, continuation: ContVar, args: FreeVars) -> String {
@@ -379,15 +395,6 @@ fn successor_blocks(successors: &str) -> Vec<usize> {
         .collect()
 }
 
-fn live_functions<'gc>(graph: &Graph<'gc>, functions: &FunctionLinks) -> Vec<FunctionId> {
-    graph
-        .function_links_slice(functions)
-        .iter()
-        .copied()
-        .filter_map(|link| graph.read_function_link(link))
-        .collect()
-}
-
 fn primitive_name<'gc>(value: Value<'gc>) -> String {
     let name = value.downcast::<Symbol>().to_string();
     Primitive::from_name(&name)
@@ -395,7 +402,7 @@ fn primitive_name<'gc>(value: Value<'gc>) -> String {
         .unwrap_or(name)
 }
 
-fn render_value<'gc>(value: Value<'gc>) -> String {
+pub fn render_value<'gc>(value: Value<'gc>) -> String {
     if value == Value::new(false) {
         "#f".to_string()
     } else if value == Value::new(true) {

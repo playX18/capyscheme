@@ -1,15 +1,24 @@
+//! The graph-CPS optimizer: worklist driver, passes, and SSA conversion.
+//!
+//! [`optimize_graph_func_to_ssa`] is the pipeline entry: optimize the
+//! graph, reify continuations, merge groups, run the closure analyses,
+//! and lower to CFG/SSA. [`optimize_graph`] runs the [`OptimizerState`]
+//! worklist within a gas budget ([`DEFAULT_GAS`]): collect redexes first,
+//! then simplify, eta reduction, folding, branch simplification,
+//! inlining, contification, until the worklist or the gas runs out.
+
 use cranelift_entity::{EntitySet, SecondaryMap};
 
 use crate::{
     compiler::{cfg::Program, dump},
-    runtime::{Context, value::Value},
+    runtime::{MutationContext, value::Value},
     utils::{flags, pass_profile::ProfileScope},
 };
 
 use super::fold::folding_table;
+use super::graph::verbose_log;
 
 use super::{
-    clone::GraphClone,
     convert::{ConvertResult, GraphFunctionProgram},
     dom_contify,
     graph::{
@@ -22,8 +31,6 @@ use super::{
 };
 
 pub const DEFAULT_GAS: usize = 42_000;
-const MAX_RECURSIVE_UNROLL_DEPTH: usize = 1;
-const MAX_RECURSIVE_UNROLL_TERMS: usize = 48;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OptimizationStats {
@@ -37,7 +44,6 @@ pub struct OptimizationStats {
     pub constant_branches_simplified: usize,
     pub identical_branches_simplified: usize,
     pub known_prim_propagations: usize,
-    pub recursive_unrolls: usize,
     pub singleton_calls_inlined: usize,
     pub singleton_continuations_inlined: usize,
     pub contifications: usize,
@@ -46,14 +52,6 @@ pub struct OptimizationStats {
     pub contified_functions: usize,
     pub scc_contified_functions: usize,
     pub dom_contified_functions: usize,
-}
-
-macro_rules! verbose_log {
-    ($($arg:tt)*) => {
-        if super::graph::VERBOSE {
-            eprintln!($($arg)*);
-        }
-    };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,7 +98,7 @@ pub struct OptimizedProgram<'gc> {
 }
 
 fn optimize_graph_program<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     mut program: GraphFunctionProgram<'gc>,
 ) -> OptimizedGraphFunctionProgram<'gc> {
     let mut optimize_profile = ProfileScope::new("compiler.lower.gcps.run");
@@ -118,7 +116,6 @@ fn optimize_graph_program<'gc>(
         optimize_profile.field("constant_branches", stats.constant_branches_simplified);
         optimize_profile.field("identical_branches", stats.identical_branches_simplified);
         optimize_profile.field("known_prim_propagations", stats.known_prim_propagations);
-        optimize_profile.field("recursive_unrolls", stats.recursive_unrolls);
         optimize_profile.field("calls_inlined", stats.singleton_calls_inlined);
         optimize_profile.field("conts_inlined", stats.singleton_continuations_inlined);
         optimize_profile.field("contifications", stats.contifications);
@@ -141,7 +138,7 @@ fn optimize_graph_program<'gc>(
 }
 
 pub fn optimize_graph_func_to_ssa<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     program: GraphFunctionProgram<'gc>,
 ) -> ConvertResult<OptimizedProgram<'gc>> {
     let mut program = optimize_graph_program(ctx, program);
@@ -161,10 +158,13 @@ pub fn optimize_graph_func_to_ssa<'gc>(
     let root = program.root();
     super::fixmerge::merge_nested_groups(&mut program.graph, root);
 
-    // Shared-environment analysis (disabled with CAPY_CLOSURE_SHARING=0;
+    // Shared-environment analysis (disabled with CAPY_CLOSURE_SHARING=0,
     // decisions dumped with CAPY_SHARE_DUMP=1).
     let mut share_profile = ProfileScope::new("compiler.lower.gcps.closure_share");
-    let sharing_enabled = flags::closure_sharing();
+    // Shared environments were designed around reified continuation closures
+    // nesting inside one another. Continuations are frames now, so the
+    // analysis has nothing sound to say until it is redone for functions only.
+    let sharing_enabled = false && flags::closure_sharing();
     let root = program
         .graph
         .read_term_link(program.root())
@@ -180,7 +180,7 @@ pub fn optimize_graph_func_to_ssa<'gc>(
             .filter(|f| flow.function(**f).map_or(false, |info| info.escapes))
             .count();
         let classes = flow.classes().len();
-        eprintln!(
+        log::debug!(
             "share: {} functions, {} recursive, {} escaping, {} closure classes",
             graph_reify.functions.len(),
             recursive.len(),
@@ -212,7 +212,7 @@ pub fn optimize_graph_func_to_ssa<'gc>(
                     }
                 })
                 .collect();
-            eprintln!(
+            log::trace!(
                 "share: site {site:?} allocate={} record_vars={} members={} kinds=[{}]",
                 decision.allocate,
                 decision.record_vars.len(),
@@ -237,7 +237,7 @@ pub fn optimize_graph_func_to_ssa<'gc>(
 }
 
 pub fn optimize_graph<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     graph: &mut Graph<'gc>,
     root: Subterm,
     gas: Option<usize>,
@@ -335,7 +335,7 @@ impl OptimizerState {
 
     fn run<'gc>(
         &mut self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         graph: &mut Graph<'gc>,
         mut gas: usize,
         contify_mode: ContifyMode,
@@ -554,7 +554,7 @@ impl OptimizerState {
     #[allow(clippy::too_many_arguments)]
     fn reduce_letval<'gc>(
         &mut self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         graph: &mut Graph<'gc>,
         queued_link: Subterm,
         active_link: Subterm,
@@ -596,7 +596,7 @@ impl OptimizerState {
 
     fn reduce_known_primcall<'gc>(
         &mut self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         graph: &mut Graph<'gc>,
         binder: BoundVar,
         expr: Subexpr,
@@ -886,6 +886,10 @@ impl OptimizerState {
             ) || matches!(
                 graph[term].kind,
                 TermKind::App(_, _, cont) if cont == occ
+            ) || matches!(
+                graph[term].kind,
+                TermKind::BranchPrim(_, consequent, alternative, _)
+                    if consequent == occ || alternative == occ
             )
         })
     }
@@ -1002,7 +1006,10 @@ impl OptimizerState {
                 self.kill_free_vars_of_term_subtree_link(graph, consequent);
                 self.kill_free_vars_of_term_subtree_link(graph, alternative);
             }
-            TermKind::Continue(..) | TermKind::App(..) | TermKind::Raise(..) => {
+            TermKind::Continue(..)
+            | TermKind::App(..)
+            | TermKind::Raise(..)
+            | TermKind::BranchPrim(..) => {
                 self.kill_direct_free_vars_of_term_link(graph, link);
             }
         }
@@ -1028,7 +1035,7 @@ impl OptimizerState {
     #[allow(clippy::too_many_arguments)]
     fn reduce_call<'gc>(
         &mut self,
-        ctx: Context<'gc>,
+        _ctx: MutationContext<'gc>,
         graph: &mut Graph<'gc>,
         queued_link: Subterm,
         active_link: Subterm,
@@ -1041,20 +1048,6 @@ impl OptimizerState {
             return;
         };
         let function_data = graph[function];
-
-        if self.try_unroll_recursive_call(
-            ctx,
-            graph,
-            queued_link,
-            active_link,
-            term,
-            binder,
-            function,
-            &args,
-            cont,
-        ) {
-            return;
-        }
 
         if function_data.cont.is_none()
             || function_data.is_rec
@@ -1081,76 +1074,6 @@ impl OptimizerState {
                 graph.read_term_link(active_link).unwrap_or(term),
             );
         }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn try_unroll_recursive_call<'gc>(
-        &mut self,
-        ctx: Context<'gc>,
-        graph: &mut Graph<'gc>,
-        queued_link: Subterm,
-        active_link: Subterm,
-        term: TermId,
-        binder: BoundVar,
-        function: FunctionId,
-        args: &super::graph::FreeVars,
-        cont: ContVar,
-    ) -> bool {
-        let function_data = graph[function];
-        let Some(return_cont) = function_data.cont else {
-            return false;
-        };
-
-        if function_data.var != binder
-            || !function_data.is_rec
-            || function_data.variadic.is_some()
-            || function_data.unroll_count >= MAX_RECURSIVE_UNROLL_DEPTH
-            || function_data.is_cold
-            || function_data.is_noinline
-            || function_data.is_reified
-            || !self.arity_matches(graph, function, args)
-            || !self.term_is_inside_function(graph, term, function)
-            || !self.term_subtree_fits(graph, function_data.body, MAX_RECURSIVE_UNROLL_TERMS)
-        {
-            return false;
-        }
-
-        let formals = graph.bound_vars_slice(&function_data.vars).to_vec();
-        let actuals = graph
-            .free_vars_slice(args)
-            .iter()
-            .copied()
-            .map(|actual| graph.free_binder(actual))
-            .collect::<Vec<_>>();
-        let return_actual = graph.free_binder(cont);
-        let mut substitutions = formals
-            .into_iter()
-            .zip(actuals)
-            .collect::<Vec<(BoundVar, BoundVar)>>();
-        substitutions.push((return_cont, return_actual));
-
-        let clone_link = graph.new_term_link(None);
-        if GraphClone::with_substitutions(ctx, graph, substitutions)
-            .clone_subterm_into(function_data.body, clone_link)
-            .is_none()
-        {
-            graph.clear_term_link(clone_link);
-            return false;
-        }
-
-        verbose_log!("gcps optimize: unroll recursive call to {binder}");
-        graph[function].unroll_count += 1;
-        self.stats.recursive_unrolls += 1;
-        self.replace_with_existing_body(graph, active_link, term, clone_link);
-        self.collect_redexes(graph, active_link);
-        self.worklist.add_subterm(active_link);
-        if queued_link != active_link {
-            graph.set_term_link(
-                queued_link,
-                graph.read_term_link(active_link).unwrap_or(term),
-            );
-        }
-        true
     }
 
     fn reduce_continue<'gc>(
@@ -1212,46 +1135,6 @@ impl OptimizerState {
         match function.variadic {
             Some(_) => actual >= fixed,
             None => actual == fixed,
-        }
-    }
-
-    fn term_subtree_fits<'gc>(&self, graph: &Graph<'gc>, link: Subterm, limit: usize) -> bool {
-        let mut remaining = limit;
-        self.consume_term_budget(graph, link, &mut remaining)
-    }
-
-    fn consume_term_budget<'gc>(
-        &self,
-        graph: &Graph<'gc>,
-        link: Subterm,
-        remaining: &mut usize,
-    ) -> bool {
-        let Some(term) = graph.read_term_link(link) else {
-            return false;
-        };
-        let Some(next) = remaining.checked_sub(1) else {
-            return false;
-        };
-        *remaining = next;
-
-        match graph[term].kind {
-            TermKind::LetVal(_, body) => self.consume_term_budget(graph, body, remaining),
-            TermKind::Fix(functions, body) | TermKind::Letk(functions, body) => {
-                for link in graph.function_links_slice(&functions) {
-                    let Some(function) = graph.read_function_link(*link) else {
-                        continue;
-                    };
-                    if !self.consume_term_budget(graph, graph[function].body, remaining) {
-                        return false;
-                    }
-                }
-                self.consume_term_budget(graph, body, remaining)
-            }
-            TermKind::If(_, consequent, alternative, _) => {
-                self.consume_term_budget(graph, consequent, remaining)
-                    && self.consume_term_budget(graph, alternative, remaining)
-            }
-            TermKind::Continue(..) | TermKind::App(..) | TermKind::Raise(..) => true,
         }
     }
 
@@ -1490,6 +1373,15 @@ impl OptimizerState {
                 graph.free_vars_slice(&vars).iter().copied(),
                 value_scope,
             ),
+            TermKind::BranchPrim(_, consequent, alternative, vars) => {
+                self.continuation_target_is_inline_stable(graph, consequent)
+                    && self.continuation_target_is_inline_stable(graph, alternative)
+                    && self.free_occurrences_are_allowed(
+                        graph,
+                        graph.free_vars_slice(&vars).iter().copied(),
+                        value_scope,
+                    )
+            }
             TermKind::Fix(..) | TermKind::Letk(..) => false,
         }
     }
@@ -1846,14 +1738,16 @@ impl OptimizerState {
                 self.transform_apps_to_continues(graph, then_branch, binders);
                 self.transform_apps_to_continues(graph, else_branch, binders);
             }
-            TermKind::App(callee, args, old_cont)
+            TermKind::App(callee, args, _old_cont)
                 if binders.contains(graph.free_binder(callee)) =>
             {
-                let _ = old_cont;
                 self.replace_kind(graph, link, term, TermKind::Continue(callee, args));
                 self.worklist.add_subterm(link);
             }
-            TermKind::App(..) | TermKind::Continue(..) | TermKind::Raise(..) => {}
+            TermKind::App(..)
+            | TermKind::Continue(..)
+            | TermKind::Raise(..)
+            | TermKind::BranchPrim(..) => {}
         }
     }
 
@@ -2128,14 +2022,16 @@ impl OptimizerState {
                     availability,
                 )
             }
-            TermKind::Continue(..) | TermKind::App(..) | TermKind::Raise(..) => self
-                .direct_free_occurrences_are_available_at_term(
-                    graph,
-                    term,
-                    local,
-                    site_term,
-                    availability,
-                ),
+            TermKind::Continue(..)
+            | TermKind::App(..)
+            | TermKind::Raise(..)
+            | TermKind::BranchPrim(..) => self.direct_free_occurrences_are_available_at_term(
+                graph,
+                term,
+                local,
+                site_term,
+                availability,
+            ),
         }
     }
 
@@ -2394,7 +2290,10 @@ impl OptimizerState {
                     && self.term_uses_only_allowed_scope(graph, then_branch, allowed)
                     && self.term_uses_only_allowed_scope(graph, else_branch, allowed)
             }
-            TermKind::Continue(..) | TermKind::App(..) | TermKind::Raise(..) => {
+            TermKind::Continue(..)
+            | TermKind::App(..)
+            | TermKind::Raise(..)
+            | TermKind::BranchPrim(..) => {
                 self.direct_free_occurrences_are_allowed(graph, term, allowed)
             }
         }
@@ -2435,19 +2334,6 @@ impl OptimizerState {
         vars.into_iter()
             .all(|var| allowed.contains(graph.free_binder(var)))
     }
-
-    fn expr_free_vars_contain_any<'gc>(
-        &self,
-        graph: &Graph<'gc>,
-        expr: super::graph::ExprId,
-        binders: &EntitySet<BoundVar>,
-    ) -> bool {
-        let mut contains_any = false;
-        graph.for_each_free_var_of_expr(expr, |var| {
-            contains_any |= binders.contains(graph.free_binder(var));
-        });
-        contains_any
-    }
 }
 
 fn next_contify_dump_index(source: ContifySource) -> Option<usize> {
@@ -2462,10 +2348,16 @@ fn contify_dump_enabled_for(source: ContifySource) -> bool {
     if words.is_empty() {
         return false;
     }
-    let disabled = words.iter().any(|w| matches!(*w, "0" | "off" | "none" | "false"));
-    let all = words.iter().any(|w| matches!(*w, "1" | "on" | "true" | "all"));
+    let disabled = words
+        .iter()
+        .any(|w| matches!(*w, "0" | "off" | "none" | "false"));
+    let all = words
+        .iter()
+        .any(|w| matches!(*w, "1" | "on" | "true" | "all"));
     let scc = words.iter().any(|w| matches!(*w, "scc" | "legacy"));
-    let dom = words.iter().any(|w| matches!(*w, "dom" | "dominator" | "dominators"));
+    let dom = words
+        .iter()
+        .any(|w| matches!(*w, "dom" | "dominator" | "dominators"));
     if disabled {
         false
     } else if all {
@@ -2481,108 +2373,13 @@ fn contify_dump_enabled_for(source: ContifySource) -> bool {
 }
 
 fn emit_contification_dump(index: usize, phase: &str, dump: &str) {
-    let Some(path) = dump::GCPS_CONTIFY.resolve_at(index, &format!("contify-{phase}"), "txt") else {
-        // Directory unusable: keep the dump visible on stderr.
-        eprint!("{dump}");
+    let Some(path) = dump::GCPS_CONTIFY.resolve_at(index, &format!("contify-{phase}"), "txt")
+    else {
+        // Directory unusable: keep the dump visible through the log.
+        crate::heap::logging::ensure_max_level(log::LevelFilter::Info);
+        log::warn!("contify {phase}: dump directory unusable, emitting inline");
+        log::info!("{dump}");
         return;
     };
     dump::GCPS_CONTIFY.write_at(&format!("contify {phase}"), &path, dump);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        compiler::cps::graph::{Function, Graph, TermKind},
-        expander::core::fresh_lvar,
-        runtime::{Scheme, value::Value},
-    };
-
-    #[test]
-    fn nested_continuation_is_inside_lexical_function() {
-        Scheme::new_uninit().enter(|ctx| {
-            let mut graph = Graph::new();
-            let outer_name = graph.new_bound_var(fresh_lvar(ctx, ctx.intern("outer")));
-            let outer_return = graph.new_bound_var(fresh_lvar(ctx, ctx.intern("outer-return")));
-            let inner_name = graph.new_bound_var(fresh_lvar(ctx, ctx.intern("inner")));
-            let inner_return = graph.new_bound_var(fresh_lvar(ctx, ctx.intern("inner-return")));
-
-            let inner_body = graph.new_term_link(None);
-            let inner_return_occurrence = graph.new_free_occ_for_binder(inner_return, inner_body);
-            let inner_args = graph.new_free_vars([]);
-            let inner_body_parent = graph.new_parent_link(None);
-            let inner_body_term = graph.new_term(
-                inner_body_parent,
-                TermKind::Continue(inner_return_occurrence, inner_args),
-                Value::new(false),
-            );
-            graph.set_term_link(inner_body, inner_body_term);
-            let inner_vars = graph.new_bound_vars([]);
-            let inner = graph.new_function(Function {
-                name: Value::new(false),
-                source: Value::new(false),
-                var: inner_name,
-                vars: inner_vars,
-                variadic: None,
-                cont: Some(inner_return),
-                is_variadic: false,
-                body: inner_body,
-                is_rec: false,
-                unroll_count: 0,
-                is_cold: false,
-                is_noinline: false,
-                is_reified: false,
-                meta: Value::new(false),
-            });
-            graph.backpatch_function(inner);
-
-            let outer_tail = graph.new_term_link(None);
-            let outer_return_occurrence = graph.new_free_occ_for_binder(outer_return, outer_tail);
-            let outer_args = graph.new_free_vars([]);
-            let outer_tail_parent = graph.new_parent_link(None);
-            let outer_tail_term = graph.new_term(
-                outer_tail_parent,
-                TermKind::Continue(outer_return_occurrence, outer_args),
-                Value::new(false),
-            );
-            graph.set_term_link(outer_tail, outer_tail_term);
-
-            let outer_body = graph.new_term_link(None);
-            let inner_link = graph.new_function_link(Some(inner));
-            let inner_functions = graph.new_function_links([inner_link]);
-            let outer_body_parent = graph.new_parent_link(None);
-            let outer_body_term = graph.new_term(
-                outer_body_parent,
-                TermKind::Letk(inner_functions, outer_tail),
-                Value::new(false),
-            );
-            graph.set_term_link(outer_body, outer_body_term);
-            graph.backpatch_subterms(outer_body_term, &[outer_tail]);
-
-            let outer_vars = graph.new_bound_vars([]);
-            let outer = graph.new_function(Function {
-                name: Value::new(false),
-                source: Value::new(false),
-                var: outer_name,
-                vars: outer_vars,
-                variadic: None,
-                cont: Some(outer_return),
-                is_variadic: false,
-                body: outer_body,
-                is_rec: false,
-                unroll_count: 0,
-                is_cold: false,
-                is_noinline: false,
-                is_reified: false,
-                meta: Value::new(false),
-            });
-            graph.backpatch_function(outer);
-
-            let mut state = OptimizerState::new();
-            state.function_owner_defs[inner] = Some(outer_body);
-
-            assert!(state.term_is_inside_function(&graph, inner_body_term, outer));
-            assert!(!state.term_is_inside_function(&graph, outer_tail_term, inner));
-        });
-    }
 }

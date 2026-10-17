@@ -6,11 +6,11 @@ use std::collections::HashMap;
 use crate::{
     expander::term::LVarRef,
     heap::{Gc, Trace},
-    runtime::{Context, modules::Module, value::Value},
+    runtime::{MutationContext, modules::Module, value::Value},
 };
 
 pub struct Cenv<'gc> {
-    pub ctx: Context<'gc>,
+    pub ctx: MutationContext<'gc>,
     pub expression_name: Value<'gc>,
     pub frames: Option<Box<Frame<'gc>>>,
     pub denotations: &'gc Denotations<'gc>,
@@ -18,7 +18,7 @@ pub struct Cenv<'gc> {
 }
 
 impl<'gc> Cenv<'gc> {
-    pub fn toplevel(ctx: Context<'gc>) -> Self {
+    pub fn toplevel(ctx: MutationContext<'gc>) -> Self {
         Cenv {
             ctx,
             current_module: ctx.globals().root_module(),
@@ -29,7 +29,7 @@ impl<'gc> Cenv<'gc> {
     }
 
     pub fn new(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         expression_name: Value<'gc>,
         module: Gc<'gc, Module<'gc>>,
         denotations: &'gc Denotations<'gc>,

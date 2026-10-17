@@ -1,3 +1,6 @@
+//! Dominator-based contification candidates for the optimizer worklist.
+
+use super::graph::verbose_log;
 use std::collections::HashMap;
 
 use cranelift_entity::{EntitySet, SecondaryMap};
@@ -8,14 +11,6 @@ use super::{
     optimize::{ContifyCandidate, ContifySource, OptimizerState},
     scc_contify,
 };
-
-macro_rules! verbose_log {
-    ($($arg:tt)*) => {
-        if super::graph::VERBOSE {
-            eprintln!($($arg)*);
-        }
-    };
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum DomLoc {
@@ -140,6 +135,11 @@ fn collect_calls<'gc>(
         TermKind::Raise(_, vars) => {
             mark_free_vars_escape(graph, facts, graph.free_vars_slice(&vars).iter().copied());
         }
+        TermKind::BranchPrim(_, consequent, alternative, vars) => {
+            mark_if_live_binder_escapes(graph, facts, consequent);
+            mark_if_live_binder_escapes(graph, facts, alternative);
+            mark_free_vars_escape(graph, facts, graph.free_vars_slice(&vars).iter().copied());
+        }
         TermKind::App(callee, args, cont) => {
             mark_free_vars_escape(graph, facts, graph.free_vars_slice(&args).iter().copied());
             mark_if_live_binder_escapes(graph, facts, cont);
@@ -208,7 +208,7 @@ fn analyze_dominators<'gc>(
     reachable: &EntitySet<FunctionId>,
 ) -> Vec<(Destination, Vec<FunctionId>)> {
     // ICFP'01 Figure 6: build G over Root, continuations, and functions.
-    // Non-tail calls enter a callee from the return continuation node; tail
+    // Non-tail calls enter a callee from the return continuation node, tail
     // calls enter it from the caller function node.  ADom then chooses the
     // highest non-root dominator as the contification destination.
     let mut dom_graph = petgraph::Graph::<DomLoc, ()>::new();

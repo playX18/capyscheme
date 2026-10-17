@@ -29,8 +29,6 @@ pub fn compile_dump_stem() -> Option<String> {
 pub(crate) enum DumpFamily {
     /// Per-compilation artifacts keyed to the destination file.
     CompileArtifacts,
-    /// SBBV CFG stage dumps.
-    Sbbv,
     /// GCPS contification dumps.
     GcpsContify,
     /// Compiler-failure evidence (always written).
@@ -44,9 +42,6 @@ impl DumpFamily {
             DumpFamily::CompileArtifacts => {
                 pick(flags::compile_dump_dir()).or_else(|| pick(flags::dump_dir()))
             }
-            DumpFamily::Sbbv => pick(flags::sbbv_dump_dir())
-                .or_else(|| pick(flags::compile_dump_dir()))
-                .or_else(|| pick(flags::dump_dir())),
             DumpFamily::GcpsContify => pick(flags::gcps_dump_dir())
                 .or_else(|| pick(flags::compile_dump_dir()))
                 .or_else(|| pick(flags::dump_dir())),
@@ -64,7 +59,6 @@ impl DumpFamily {
     fn limit(self) -> usize {
         match self {
             DumpFamily::CompileArtifacts => flags::compile_dump_limit(),
-            DumpFamily::Sbbv => flags::sbbv_dump_limit(),
             DumpFamily::GcpsContify => flags::gcps_dump_limit(),
             DumpFamily::VerifyFail => usize::MAX,
         }
@@ -73,7 +67,6 @@ impl DumpFamily {
     fn tag(self) -> &'static str {
         match self {
             DumpFamily::CompileArtifacts => "compile",
-            DumpFamily::Sbbv => "sbbv",
             DumpFamily::GcpsContify => "gcps",
             DumpFamily::VerifyFail => "verify-fail",
         }
@@ -88,8 +81,6 @@ pub struct DumpSink {
 
 /// Per-compilation artifact dumps (`CAPY_COMPILE_DUMP*`).
 pub const COMPILE_ARTIFACTS: DumpSink = DumpSink::new(DumpFamily::CompileArtifacts);
-/// SBBV CFG stage dumps (`CAPY_SBBV_DUMP*`).
-pub const SBBV: DumpSink = DumpSink::new(DumpFamily::Sbbv);
 /// GCPS contification dumps (`CAPY_GCPS_DUMP*`).
 pub const GCPS_CONTIFY: DumpSink = DumpSink::new(DumpFamily::GcpsContify);
 /// Compiler-failure evidence (`CAPY_DUMP_DIR` or `/tmp/capy-verify-fail`).
@@ -109,7 +100,7 @@ impl DumpSink {
             .family
             .configured_directory()
             .unwrap_or_else(|| self.family.default_directory());
-        if let Err(err) = std::fs::create_dir_all(&dir) {
+        if let Err(_err) = std::fs::create_dir_all(&dir) {
             return None;
         }
         Some(dir)
@@ -153,19 +144,19 @@ impl DumpSink {
         self.log_path(kind, path);
     }
 
-    /// `;; TRACE (capy)@<family>: {kind} -> {path}` on stderr.
+    /// `{family}: {kind} -> {path}` via the logger.
     pub fn log_path(&self, kind: &str, path: &Path) {
-        eprintln!(
-            ";; TRACE  (capy)@{}: {kind} -> {}",
-            self.family.tag(),
-            path.display()
-        );
+        // Dumps can also be enabled programmatically (Scheme log level,
+        // dump selections), so the gate is known only when this fires.
+        crate::heap::logging::ensure_max_level(log::LevelFilter::Info);
+        log::info!("{}: {kind} -> {}", self.family.tag(), path.display());
     }
 
-    /// `;; WARN (capy)@<family>: failed to write {kind} dump to {path}`.
+    /// `{family}: failed to write {kind} dump to {path}` via the logger.
     pub fn warn_write(&self, kind: &str, path: &Path, err: &std::io::Error) {
-        eprintln!(
-            ";; WARN  (capy)@{}: failed to write {kind} dump to {}: {err}",
+        crate::heap::logging::ensure_max_level(log::LevelFilter::Info);
+        log::warn!(
+            "{}: failed to write {kind} dump to {}: {err}",
             self.family.tag(),
             path.display()
         );
@@ -184,11 +175,6 @@ pub fn resolve_artifact_dump_path(destination: &Path, suffix: &str) -> PathBuf {
             dir.join(format!("{stem}{suffix}"))
         })
         .unwrap_or_else(|| PathBuf::from(format!("{}{suffix}", destination.display())))
-}
-
-/// SBBV stage dump path: `{dir}/{slot:04}-{stem}-{label}.ssa.txt`.
-pub fn resolve_sbbv_dump_path(label: &str) -> Option<PathBuf> {
-    SBBV.resolve(label, "ssa.txt")
 }
 
 /// Compiler-failure evidence path: `{dir}/{name}.{ext}` (never slot-limited).
@@ -213,8 +199,7 @@ pub fn compile_dump_options() -> DumpArtifactsOptions {
                 options.dump_ir = true;
                 options.dump_graph = true;
                 options.dump_ssa = true;
-                options.dump_cranelift = true;
-                options.dump_disassembly = true;
+                options.dump_bytecode = true;
                 options.include_unoptimized = true;
             }
             "noopt" => options.include_unoptimized = true,
@@ -233,24 +218,6 @@ pub fn merge_compile_dump_options(mut base: DumpArtifactsOptions) -> DumpArtifac
     base.dump_ir |= from_env.dump_ir;
     base.dump_graph |= from_env.dump_graph;
     base.dump_ssa |= from_env.dump_ssa;
-    base.dump_cranelift |= from_env.dump_cranelift;
-    base.dump_disassembly |= from_env.dump_disassembly;
+    base.dump_bytecode |= from_env.dump_bytecode;
     base
-}
-
-pub fn sbbv_dump_requested() -> bool {
-    !flags::sbbv_dump().is_empty()
-}
-
-pub fn sbbv_dump_stage_enabled(stage: &str) -> bool {
-    flags::sbbv_dump()
-        .iter()
-        .any(|word| sbbv_stage_matches(word, stage))
-}
-
-fn sbbv_stage_matches(word: &str, stage: &str) -> bool {
-    match word {
-        "1" | "all" => true,
-        w => stage == w || stage.starts_with(w) || stage.ends_with(w),
-    }
 }

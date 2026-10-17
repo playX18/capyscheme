@@ -79,54 +79,6 @@ fn dfs_collect(
     }
 }
 
-/// Edges that close a cycle in the CFG (DFS back-edges to a gray ancestor).
-///
-/// Used by SBBV to recognize loop headers and recurrent versions. Dominator-based
-/// back-edge discovery is equivalent on reducible CFGs but the classic iterative
-/// dominator algorithm is O(V²) per iteration and became the specialize hot path
-/// on large mutable-uvar CFGs (thousands of blocks from contified Assign helpers).
-pub(super) fn backedges<'gc>(procedure: &Procedure<'gc>) -> HashSet<(BlockId, BlockId)> {
-    let successors = procedure
-        .blocks
-        .iter()
-        .map(|block| (block.id, block.terminator.successors()))
-        .collect::<HashMap<_, _>>();
-
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum Color {
-        White,
-        Gray,
-        Black,
-    }
-
-    let mut color: HashMap<BlockId, Color> = HashMap::new();
-    let mut back = HashSet::new();
-    let mut stack = vec![(procedure.entry, 0usize)];
-    color.insert(procedure.entry, Color::Gray);
-
-    while let Some((block, idx)) = stack.pop() {
-        let succs = successors.get(&block).map(Vec::as_slice).unwrap_or(&[]);
-        if idx < succs.len() {
-            stack.push((block, idx + 1));
-            let succ = succs[idx];
-            match color.get(&succ).copied().unwrap_or(Color::White) {
-                Color::Gray => {
-                    back.insert((block, succ));
-                }
-                Color::White => {
-                    color.insert(succ, Color::Gray);
-                    stack.push((succ, 0));
-                }
-                Color::Black => {}
-            }
-        } else {
-            color.insert(block, Color::Black);
-        }
-    }
-
-    back
-}
-
 fn block_successors<'gc>(procedure: &Procedure<'gc>, block: &Block<'gc>) -> Vec<BlockId> {
     let mut successors = block.terminator.successors();
     if let Terminator::TailCall {

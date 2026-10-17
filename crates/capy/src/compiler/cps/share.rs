@@ -3,7 +3,7 @@
 //! A closure-creation site (a merged `Fix`/`Letk` group) either allocates one
 //! fresh `EnvRecord` holding the free variables its members share, or reuses
 //! the enclosing site's record (nested reuse). Reified continuation closures
-//! participate like ordinary closures; non-reified continuations are contified
+//! participate like ordinary closures, non-reified continuations are contified
 //! and never allocate.
 
 use std::collections::{HashMap, HashSet};
@@ -29,7 +29,7 @@ pub struct MemberShare {
 #[derive(Clone, Debug)]
 pub struct SiteShare {
     /// True: allocate a fresh record. False: reuse the enclosing function's
-    /// record (no `MakeEnv`); each member's env pointer is the enclosing env.
+    /// record (no `MakeEnv`), each member's env pointer is the enclosing env.
     pub allocate: bool,
     /// Record contents in slot order. Empty for reuse sites (the record
     /// belongs to the enclosing site).
@@ -80,14 +80,6 @@ fn is_profitable(members: usize, record_vars: usize) -> bool {
 
 fn min_overlap() -> usize {
     flags::share_min_overlap()
-}
-
-fn chain_cost() -> usize {
-    flags::share_chain_cost()
-}
-
-fn order_required() -> bool {
-    flags::share_order()
 }
 
 /// Compute shared-env decisions for every closure-creation site.
@@ -152,7 +144,7 @@ impl NestedSites {
         let mut unions: HashMap<FunctionId, BinderSet> = HashMap::new();
         // Each function's body subtree is walked once with its own visited
         // set: a site directly nested in the body (Fix/Letk terms at body
-        // level) is collected for the enclosing function only; member bodies
+        // level) is collected for the enclosing function only, member bodies
         // are collected when their own function is processed (a shared
         // visited set would let the enclosing walk steal them).
         for function in reify
@@ -217,9 +209,9 @@ fn walk_body_sites<'gc>(
         }
         TermKind::Fix(functions, body) | TermKind::Letk(functions, body) => {
             // The site itself (its members' free sets) belongs to the
-            // enclosing function's list; member bodies are collected when
+            // enclosing function's list, member bodies are collected when
             // their own function is processed.
-            let members = live_functions(graph, &functions);
+            let members = graph.live_functions(&functions);
             if !members.is_empty() {
                 collected.push(
                     members
@@ -235,7 +227,10 @@ fn walk_body_sites<'gc>(
             walk_body_sites(graph, reify, consequent, visited, collected);
             walk_body_sites(graph, reify, alternative, visited, collected);
         }
-        TermKind::Continue(..) | TermKind::App(..) | TermKind::Raise(..) => {}
+        TermKind::Continue(..)
+        | TermKind::App(..)
+        | TermKind::Raise(..)
+        | TermKind::BranchPrim(..) => {}
     }
 }
 
@@ -280,7 +275,7 @@ impl<'a, 'gc> Collector<'a, 'gc> {
         match kind {
             TermKind::LetVal(_, body) => walk_link(self, body),
             TermKind::Fix(functions, body) => {
-                let live = live_functions(self.graph, &functions);
+                let live = self.graph.live_functions(&functions);
                 let decision = self.decide_site(term, &live, env);
                 for function in live.iter().copied() {
                     let body = self.graph[function].body;
@@ -297,7 +292,7 @@ impl<'a, 'gc> Collector<'a, 'gc> {
                 walk_link(self, body);
             }
             TermKind::Letk(functions, body) => {
-                let live = live_functions(self.graph, &functions);
+                let live = self.graph.live_functions(&functions);
                 let (reified, local): (Vec<_>, Vec<_>) = live
                     .into_iter()
                     .partition(|function| self.graph[*function].is_reified);
@@ -315,7 +310,7 @@ impl<'a, 'gc> Collector<'a, 'gc> {
                     }
                 }
                 // Non-reified continuations are inlined into the enclosing
-                // procedure; the enclosing record (this term's env) stays
+                // procedure, the enclosing record (this term's env) stays
                 // accessible to their nested sites.
                 for function in local.iter().copied() {
                     if let Some(child) = self.graph.read_term_link(self.graph[function].body) {
@@ -328,7 +323,10 @@ impl<'a, 'gc> Collector<'a, 'gc> {
                 walk_link(self, consequent);
                 walk_link(self, alternative);
             }
-            TermKind::Continue(..) | TermKind::App(..) | TermKind::Raise(..) => {}
+            TermKind::Continue(..)
+            | TermKind::App(..)
+            | TermKind::Raise(..)
+            | TermKind::BranchPrim(..) => {}
         }
     }
 
@@ -353,7 +351,6 @@ impl<'a, 'gc> Collector<'a, 'gc> {
             .map(|m| free_func_of(self.graph, self.reify, m).clone())
             .collect();
 
-        // ---- 1. Reuse of the enclosing record (cross-site chain). ----
         if let Some(enclosing) = env {
             let slots: Vec<(BoundVar, usize)> = self.record(enclosing).to_vec();
             let reused_vars: Vec<BoundVar> = slots.iter().map(|(v, _)| *v).collect();
@@ -369,7 +366,7 @@ impl<'a, 'gc> Collector<'a, 'gc> {
                 .map(|(i, _)| i)
                 .collect();
             if !participating.is_empty()
-                && (!order_required()
+                && (!flags::share_order()
                     || self.order_ok(&participating, members, &frees, &reused_vars))
             {
                 for i in participating.iter().copied() {
@@ -389,7 +386,6 @@ impl<'a, 'gc> Collector<'a, 'gc> {
             }
         }
 
-        // ---- 2. Allocate a fresh record. ----
         // Single member: the cross-site chain rule. The record holds the
         // member's free variables that its nested sites reuse.
         if members.len() == 1 {
@@ -400,7 +396,7 @@ impl<'a, 'gc> Collector<'a, 'gc> {
                 return None;
             }
             let benefit = self.chain_benefit(member, &record);
-            if benefit > chain_cost() {
+            if benefit > flags::share_chain_cost() {
                 return Some(self.allocate_record(term, members, &frees, &record, &[0], member));
             }
             return None;
@@ -456,7 +452,7 @@ impl<'a, 'gc> Collector<'a, 'gc> {
             let i = participating[0];
             let member = members[i];
             let chain = self.chain_record(member, &frees[i]);
-            if !chain.is_empty() && self.chain_benefit(member, &chain) > chain_cost() {
+            if !chain.is_empty() && self.chain_benefit(member, &chain) > flags::share_chain_cost() {
                 return Some(self.allocate_record(
                     term,
                     members,
@@ -579,7 +575,7 @@ impl<'a, 'gc> Collector<'a, 'gc> {
             return true;
         }
         let record = self.chain_record(member, free);
-        !record.is_empty() && self.chain_benefit(member, &record) > chain_cost()
+        !record.is_empty() && self.chain_benefit(member, &record) > flags::share_chain_cost()
     }
     /// Effective overlap threshold at a reuse site: 1 for non-escaping owners
     /// (known call sites), else `min_overlap()`.
@@ -610,7 +606,7 @@ impl<'a, 'gc> Collector<'a, 'gc> {
     }
 
     /// Benefit of `member` materializing a record `record`: per closure site
-    /// directly nested in its body, `max(|site_vars ∩ record| - 1, 0)` — each
+    /// directly nested in its body, `max(|site_vars ∩ record| - 1, 0)`, each
     /// nested closure sharing `t` record vars replaces `t` inline slots with
     /// one pointer.
     fn chain_benefit(&self, member: FunctionId, record: &BinderSet) -> usize {
@@ -635,16 +631,4 @@ fn overlap_count(a: &BinderSet, b: &BinderSet) -> usize {
 /// Number of variables of `a` present in the slice `b`.
 fn overlap_count_list(a: &BinderSet, b: &[BoundVar]) -> usize {
     a.iter().filter(|v| b.contains(v)).count()
-}
-
-fn live_functions<'gc>(
-    graph: &Graph<'gc>,
-    functions: &super::graph::FunctionLinks,
-) -> Vec<FunctionId> {
-    graph
-        .function_links_slice(functions)
-        .iter()
-        .copied()
-        .filter_map(|link| graph.read_function_link(link))
-        .collect()
 }

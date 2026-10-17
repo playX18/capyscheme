@@ -2,19 +2,11 @@
 
 use std::collections::{BTreeSet, VecDeque};
 
-use super::graph::{BoundVar, FreeVar, Graph, Parent, Subterm, TermId};
-
-macro_rules! verbose_log {
-    ($($arg:tt)*) => {
-        if super::graph::VERBOSE {
-            eprintln!($($arg)*);
-        }
-    };
-}
+use super::graph::{BoundVar, FreeVar, Graph, Parent, Subterm, TermId, verbose_log};
 
 /// FIFO worklist queue.
 ///
-/// New items are added to the right; pending items are taken from the left.
+/// New items are added to the right, pending items are taken from the left.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorklistQueue<T> {
     items: VecDeque<T>,

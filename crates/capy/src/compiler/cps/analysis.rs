@@ -8,7 +8,7 @@
 //! the record is dead before the private slots are touched.
 //!
 //! The call web, closure classes, and escape info come from the flow-analysis
-//! phase; see `flow.rs`.
+//! phase, see `flow.rs`.
 
 use std::collections::HashMap;
 
@@ -38,7 +38,11 @@ impl FunctionStages {
             return true;
         }
         let last_reused = reused.iter().map(|v| self.last(*v)).max().unwrap_or(0);
-        let first_own = own.iter().map(|v| self.first(*v)).min().unwrap_or(usize::MAX);
+        let first_own = own
+            .iter()
+            .map(|v| self.first(*v))
+            .min()
+            .unwrap_or(usize::MAX);
         last_reused < first_own
     }
 }
@@ -64,10 +68,7 @@ impl StageAnalysis {
 }
 
 /// Compute the first/last-use stages of a function's body.
-pub fn function_stages<'gc>(
-    graph: &Graph<'gc>,
-    function: FunctionId,
-) -> FunctionStages {
+pub fn function_stages<'gc>(graph: &Graph<'gc>, function: FunctionId) -> FunctionStages {
     let mut collector = StageCollector {
         graph,
         counter: 0,
@@ -88,7 +89,7 @@ pub fn recursive_functions<'gc>(
     reify: &super::reify::GraphReifyInfo,
 ) -> std::collections::HashSet<FunctionId> {
     // Root-resolved binder -> function map (the optimizer merges binders via
-    // the union-find; raw `data.var` may be stale).
+    // the union-find, raw `data.var` may be stale).
     let mut functions_by_binder: HashMap<BoundVar, FunctionId> = HashMap::new();
     for function in reify.functions.iter().copied() {
         let binder = graph.function_binder_rooted(graph[function].var);
@@ -177,7 +178,7 @@ impl<'a, 'gc> CallCollector<'a, 'gc> {
                 self.walk(consequent);
                 self.walk(alternative);
             }
-            TermKind::Continue(..) => {}
+            TermKind::Continue(..) | TermKind::BranchPrim(..) => {}
             TermKind::App(func, _, _) => {
                 let binder = self.graph.free_binder_rooted(func);
                 if let Some(target) = self.functions_by_binder.get(&binder) {
@@ -227,7 +228,7 @@ impl<'a, 'gc> StageCollector<'a, 'gc> {
                 self.walk(consequent);
                 self.walk(alternative);
             }
-            TermKind::Continue(_, args) => {
+            TermKind::Continue(_, args) | TermKind::BranchPrim(_, _, _, args) => {
                 for var in self.graph.free_vars_slice(&args).iter().copied() {
                     self.record(self.graph.free_binder(var), position);
                 }

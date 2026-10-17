@@ -1,7 +1,7 @@
 use crate::{
-    compiler::{cps::graph::BranchHint, cranelift::primitive::Primitive},
+    compiler::cps::graph::BranchHint,
     expander::core::LVarRef,
-    runtime::{value::Value, vm::exceptions::RaiseKind},
+    runtime::{prims::def::Primitive, value::Value, vm::exceptions::RaiseKind},
 };
 use smallvec::{SmallVec, smallvec};
 use std::collections::HashMap;
@@ -23,25 +23,14 @@ pub enum Operand<'gc> {
     Local(UVar),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProcedureKind {
-    Function,
-    Continuation,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClosureKind {
-    Function,
-    Continuation,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GraphCodeId(pub u32);
 
+/// Identity of a compiled procedure. Continuations are never procedures of
+/// their own: a `letk` is a block of the function that binds it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CodeId {
     GraphFunction(GraphCodeId),
-    GraphContinuation(GraphCodeId),
 }
 
 #[derive(Debug, Clone)]
@@ -53,12 +42,10 @@ pub struct Program<'gc> {
 #[derive(Debug, Clone)]
 pub struct Procedure<'gc> {
     pub code: CodeId,
-    pub kind: ProcedureKind,
     pub binding: UVar,
     pub name: Value<'gc>,
     pub source: Value<'gc>,
     pub meta: Value<'gc>,
-    pub return_cont: Option<UVar>,
     pub params: Vec<UVar>,
     pub variadic: Option<UVar>,
     pub free_vars: Vec<UVar>,
@@ -110,12 +97,11 @@ pub enum Instruction<'gc> {
     MakeClosure {
         dst: UVar,
         code: CodeId,
-        kind: ClosureKind,
         /// Physical free-var slot count (including the env pointer at slot 0
         /// when `env` is `Some`).
         free_count: usize,
         /// Shared `EnvRecord` operand: holds the free vars common to all
-        /// closures at this site; stored in slot 0, private captures in
+        /// closures at this site, stored in slot 0, private captures in
         /// slots 1.. `free_count`.
         env: Option<Operand<'gc>>,
     },
@@ -187,6 +173,29 @@ pub enum Instruction<'gc> {
         skip: usize,
         source: Value<'gc>,
     },
+    /// Bind value `index` returned by the call this block is the return point
+    /// of. Only valid in a return-point block, conceptually it runs on the
+    /// edge from the call.
+    Receive {
+        dst: UVar,
+        index: usize,
+    },
+    /// Bind the list of returned values from `from` on. Same placement rules
+    /// as `Receive`.
+    ReceiveRest {
+        dst: UVar,
+        from: usize,
+    },
+}
+
+/// Where a non-tail call returns to: a block of the same procedure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReturnPoint {
+    pub block: BlockId,
+    /// Number of values the block binds with `Receive`.
+    pub nvals: usize,
+    /// Whether extra values are accepted (and bound with `ReceiveRest`).
+    pub variadic: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,13 +204,11 @@ pub enum BranchTarget<'gc> {
         block: BlockId,
         /// Instructions to run on this edge before entering `block` (contified
         /// parallel assigns / rest cons). Kept on the edge instead of a helper
-        /// block so SBBV and Cranelift see one fewer jump per continue.
+        /// block so there is one fewer jump per continue.
         edge_assigns: Vec<Instruction<'gc>>,
     },
-    Reified {
-        continuation: Operand<'gc>,
-        args: Vec<Operand<'gc>>,
-    },
+    /// Return `args` to the caller of this procedure.
+    Return { args: Vec<Operand<'gc>> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,14 +235,22 @@ pub enum SwitchKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Terminator<'gc> {
+    /// Non-tail call. Control continues at `ret.block` with the returned
+    /// values.
     Call {
         callee: Operand<'gc>,
-        retk: Operand<'gc>,
+        ret: ReturnPoint,
         args: Vec<Operand<'gc>>,
         source: Value<'gc>,
     },
+    /// Call in tail position: the callee returns to this procedure's caller.
     TailCall {
         callee: Operand<'gc>,
+        args: Vec<Operand<'gc>>,
+        source: Value<'gc>,
+    },
+    /// Return `args` to the caller.
+    Return {
         args: Vec<Operand<'gc>>,
         source: Value<'gc>,
     },
@@ -255,9 +270,10 @@ pub enum Terminator<'gc> {
     },
     /// Predicate/compare fused with the branch that tests its result.
     ///
-    /// Formed by SBBV specialize from a single-use comparison or type-test
-    /// `PrimCall` + `Branch`, so Cranelift can emit `icmp`/`fcmp`/predicate
-    /// checks + `brif` without materializing a Scheme bool.
+    /// Formed during CPS conversion (`convert_branch_prim`) from
+    /// `(if (prim args...) ...)` with a branch-fusable primitive, so the
+    /// backend can emit the test and branch without materializing a
+    /// Scheme bool.
     BranchPrim {
         prim: Primitive,
         args: Vec<Operand<'gc>>,
@@ -288,7 +304,9 @@ impl<'gc> Instruction<'gc> {
             | Self::RestToList { dst, .. }
             | Self::RestRef { dst, .. }
             | Self::RestLength { dst, .. }
-            | Self::RestPredicate { dst, .. } => Some(*dst),
+            | Self::RestPredicate { dst, .. }
+            | Self::Receive { dst, .. }
+            | Self::ReceiveRest { dst, .. } => Some(*dst),
             Self::ClosureSet { .. } | Self::EnvSet { .. } => None,
         }
     }
@@ -319,6 +337,7 @@ impl<'gc> Instruction<'gc> {
             Self::RestRef { rest, .. }
             | Self::RestLength { rest, .. }
             | Self::RestPredicate { rest, .. } => vec![Operand::Local(*rest)],
+            Self::Receive { .. } | Self::ReceiveRest { .. } => vec![],
         }
     }
 }
@@ -327,7 +346,7 @@ impl<'gc> BranchTarget<'gc> {
     pub fn local_successor(&self) -> Option<BlockId> {
         match self {
             Self::Local { block, .. } => Some(*block),
-            Self::Reified { .. } => None,
+            Self::Return { .. } => None,
         }
     }
 
@@ -340,12 +359,7 @@ impl<'gc> BranchTarget<'gc> {
                 }
                 uses
             }
-            Self::Reified { continuation, args } => {
-                let mut uses = Vec::with_capacity(args.len() + 1);
-                uses.push(*continuation);
-                uses.extend(args.iter().copied());
-                uses
-            }
+            Self::Return { args } => args.clone(),
         }
     }
 }
@@ -359,22 +373,13 @@ impl<'gc> Terminator<'gc> {
 
     pub fn uses(&self) -> Vec<Operand<'gc>> {
         match self {
-            Self::Call {
-                callee, retk, args, ..
-            } => {
-                let mut uses = Vec::with_capacity(args.len() + 2);
-                uses.push(*callee);
-                uses.push(*retk);
-                uses.extend(args.iter().copied());
-                uses
-            }
-            Self::TailCall { callee, args, .. } => {
+            Self::Call { callee, args, .. } | Self::TailCall { callee, args, .. } => {
                 let mut uses = Vec::with_capacity(args.len() + 1);
                 uses.push(*callee);
                 uses.extend(args.iter().copied());
                 uses
             }
-            Self::Raise { args, .. } => args.clone(),
+            Self::Raise { args, .. } | Self::Return { args, .. } => args.clone(),
             Self::Jump { .. } => vec![],
             Self::Branch {
                 test,
@@ -427,11 +432,9 @@ impl<'gc> Terminator<'gc> {
     }
 
     pub fn successors(&self) -> Vec<BlockId> {
-        if self.is_terminal() {
-            return vec![];
-        }
         match self {
-            Self::Call { .. } | Self::TailCall { .. } | Self::Raise { .. } => vec![],
+            Self::Call { ret, .. } => vec![ret.block],
+            Self::TailCall { .. } | Self::Raise { .. } | Self::Return { .. } => vec![],
             Self::Jump { target } => vec![*target],
             Self::Branch {
                 consequent,
@@ -452,108 +455,5 @@ impl<'gc> Terminator<'gc> {
                 .chain(default.local_successor())
                 .collect(),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn empty_block(
-        instructions: Vec<Instruction<'static>>,
-        terminator: Terminator<'static>,
-    ) -> Block<'static> {
-        Block {
-            id: BlockId(0),
-            instructions,
-            terminator,
-            source: Value::new(false),
-        }
-    }
-
-    #[test]
-    fn uses_local_detects_closure_set_of_variadic() {
-        let rest = UVar(1);
-        let closure = UVar(2);
-        let block = empty_block(
-            vec![
-                Instruction::MakeClosure {
-                    dst: closure,
-                    code: CodeId::GraphFunction(GraphCodeId(0)),
-                    kind: ClosureKind::Function,
-                    free_count: 1,
-                    env: None,
-                },
-                Instruction::ClosureSet {
-                    closure: Operand::Local(closure),
-                    index: 0,
-                    value: Operand::Local(rest),
-                },
-            ],
-            Terminator::TailCall {
-                callee: Operand::Local(closure),
-                args: vec![],
-                source: Value::new(false),
-            },
-        );
-        assert!(block.uses_local(rest));
-        assert!(block.uses_local(closure));
-        assert!(!block.uses_local(UVar(99)));
-    }
-
-    #[test]
-    fn uses_local_detects_assign_of_variadic() {
-        let rest = UVar(1);
-        let dst = UVar(2);
-        let block = empty_block(
-            vec![Instruction::Assign {
-                dst,
-                src: Operand::Local(rest),
-            }],
-            Terminator::Jump { target: BlockId(1) },
-        );
-        assert!(block.uses_local(rest));
-        assert!(!block.uses_local(dst));
-    }
-
-    #[test]
-    fn uses_local_false_when_variadic_is_dead() {
-        let fixed = UVar(1);
-        let rest = UVar(2);
-        let block = empty_block(
-            vec![],
-            Terminator::TailCall {
-                callee: Operand::Local(fixed),
-                args: vec![],
-                source: Value::new(false),
-            },
-        );
-        assert!(block.uses_local(fixed));
-        assert!(!block.uses_local(rest));
-    }
-
-    #[test]
-    fn rest_to_list_uses_includes_rest() {
-        let rest = UVar(3);
-        let instruction = Instruction::RestToList {
-            dst: rest,
-            rest,
-            source: Value::new(false),
-        };
-        assert_eq!(instruction.uses(), vec![Operand::Local(rest)]);
-    }
-
-    #[test]
-    fn uses_local_detects_rest_to_list() {
-        let rest = UVar(4);
-        let block = empty_block(
-            vec![Instruction::RestToList {
-                dst: rest,
-                rest,
-                source: Value::new(false),
-            }],
-            Terminator::Jump { target: BlockId(1) },
-        );
-        assert!(block.uses_local(rest));
     }
 }

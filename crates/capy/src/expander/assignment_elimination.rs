@@ -11,10 +11,10 @@ use crate::{
         },
         primitives::{sym_make_variable, sym_variable_ref, sym_variable_set},
     },
-    runtime::Context,
+    runtime::MutationContext,
 };
 
-fn box_ref<'gc>(ctx: Context<'gc>, var: LVarRef<'gc>) -> TermRef<'gc> {
+fn box_ref<'gc>(ctx: MutationContext<'gc>, var: LVarRef<'gc>) -> TermRef<'gc> {
     prim_call_term(
         ctx,
         sym_variable_ref(ctx).into(),
@@ -23,7 +23,7 @@ fn box_ref<'gc>(ctx: Context<'gc>, var: LVarRef<'gc>) -> TermRef<'gc> {
     )
 }
 
-fn box_set<'gc>(ctx: Context<'gc>, var: LVarRef<'gc>, value: TermRef<'gc>) -> TermRef<'gc> {
+fn box_set<'gc>(ctx: MutationContext<'gc>, var: LVarRef<'gc>, value: TermRef<'gc>) -> TermRef<'gc> {
     prim_call_term(
         ctx,
         sym_variable_set(ctx).into(),
@@ -32,7 +32,7 @@ fn box_set<'gc>(ctx: Context<'gc>, var: LVarRef<'gc>, value: TermRef<'gc>) -> Te
     )
 }
 
-fn pbox<'gc>(ctx: Context<'gc>, var: LVarRef<'gc>) -> TermRef<'gc> {
+fn pbox<'gc>(ctx: MutationContext<'gc>, var: LVarRef<'gc>) -> TermRef<'gc> {
     prim_call_term(
         ctx,
         sym_make_variable(ctx).into(),
@@ -44,7 +44,7 @@ fn pbox<'gc>(ctx: Context<'gc>, var: LVarRef<'gc>) -> TermRef<'gc> {
 /// Convert all lexical assignments into boxed variable operations.
 ///
 /// Also converts `let*` into nested `let`s for simplicity.
-pub fn eliminate_assignments<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
+pub fn eliminate_assignments<'gc>(ctx: MutationContext<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
     // rescan reference counts of local-variables in term. Previous rewrites
     // could've changed them.
     term.count_refs();
@@ -54,7 +54,7 @@ pub fn eliminate_assignments<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> Term
 /// Recursively walk down the term, substituting lvars according to the substitutions map
 /// or wrapping them in boxes as needed.
 fn rec<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     term: TermRef<'gc>,
     substitutions: &mut HashMap<LVarRef<'gc>, LVarRef<'gc>>,
 ) -> TermRef<'gc> {
@@ -315,7 +315,7 @@ fn rec<'gc>(
 /// Wrap all mutable `lhs` variables in boxes and return corresponding new variable
 /// substitutions.
 fn wrap_mutable<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     lhs: impl IntoIterator<Item = LVarRef<'gc>>,
     body: TermRef<'gc>,
     substitutions: &mut HashMap<LVarRef<'gc>, LVarRef<'gc>>,

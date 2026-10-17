@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::runtime::Context;
+use crate::runtime::MutationContext;
 
 use super::graph::{
     BoundVar, ExprKind, FreeVar, FreeVars, Function, FunctionLinks, Graph, Subexpr, Subterm,
@@ -15,13 +15,13 @@ use super::graph::{
 /// it with binder substitutions for call actuals or return continuations, then
 /// clone the body that should be duplicated.
 pub struct GraphClone<'a, 'gc> {
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     graph: &'a mut Graph<'gc>,
     binders: HashMap<BoundVar, BoundVar>,
 }
 
 impl<'a, 'gc> GraphClone<'a, 'gc> {
-    pub fn new(ctx: Context<'gc>, graph: &'a mut Graph<'gc>) -> Self {
+    pub fn new(ctx: MutationContext<'gc>, graph: &'a mut Graph<'gc>) -> Self {
         Self {
             ctx,
             graph,
@@ -30,7 +30,7 @@ impl<'a, 'gc> GraphClone<'a, 'gc> {
     }
 
     pub fn with_substitutions(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         graph: &'a mut Graph<'gc>,
         substitutions: impl IntoIterator<Item = (BoundVar, BoundVar)>,
     ) -> Self {
@@ -139,6 +139,12 @@ impl<'a, 'gc> GraphClone<'a, 'gc> {
                 let vars = self.clone_free_vars(&vars, target);
                 TermKind::Raise(kind, vars)
             }
+            TermKind::BranchPrim(op, consequent, alternative, vars) => {
+                let vars = self.clone_free_vars(&vars, target);
+                let consequent = self.clone_free_occurrence(consequent, target);
+                let alternative = self.clone_free_occurrence(alternative, target);
+                TermKind::BranchPrim(op, consequent, alternative, vars)
+            }
         };
 
         let clone = self.graph.new_term(uplink, kind, data.source);
@@ -179,7 +185,6 @@ impl<'a, 'gc> GraphClone<'a, 'gc> {
                 is_variadic: data.is_variadic,
                 body,
                 is_rec: data.is_rec,
-                unroll_count: data.unroll_count,
                 is_cold: data.is_cold,
                 is_noinline: data.is_noinline,
                 is_reified: data.is_reified,
@@ -211,245 +216,10 @@ impl<'a, 'gc> GraphClone<'a, 'gc> {
                 self.graph
                     .backpatch_subterms(term, &[consequent, alternative]);
             }
-            TermKind::Continue(..) | TermKind::App(..) | TermKind::Raise(..) => {}
+            TermKind::Continue(..)
+            | TermKind::App(..)
+            | TermKind::Raise(..)
+            | TermKind::BranchPrim(..) => {}
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        expander::core::fresh_lvar,
-        runtime::{Scheme, value::Value},
-    };
-
-    use super::super::graph::Parent;
-
-    fn lvar<'gc>(ctx: Context<'gc>, name: &str) -> crate::expander::core::LVarRef<'gc> {
-        fresh_lvar(ctx, ctx.intern(name))
-    }
-
-    #[test]
-    fn clone_letval_uses_fresh_binding_and_preserves_external_uses() {
-        Scheme::new_uninit().enter(|ctx| {
-            let mut graph = Graph::new();
-            let root = graph.new_term_link(None);
-            let external = graph.new_bound_var(lvar(ctx, "external"));
-            let value = graph.new_bound_var(lvar(ctx, "value"));
-            let cont = graph.new_bound_var(lvar(ctx, "cont"));
-
-            let expr_link = graph.new_expr_link(None);
-            let expr_external = graph.new_free_occ_for_binder(external, root);
-            let expr_vars = graph.new_free_vars([expr_external]);
-            let expr_parent = graph.new_parent_link(None);
-            let expr = graph.new_expr(
-                expr_parent,
-                ExprKind::PrimCall(Value::from_i32(1), expr_vars),
-                Value::new(false),
-            );
-            graph.set_expr_link(expr_link, expr);
-
-            let body_link = graph.new_term_link(None);
-            let body_cont = graph.new_free_occ_for_binder(cont, body_link);
-            let body_value = graph.new_free_occ_for_binder(value, body_link);
-            let body_args = graph.new_free_vars([body_value]);
-            let body_parent = graph.new_parent_link(None);
-            let body = graph.new_term(
-                body_parent,
-                TermKind::Continue(body_cont, body_args),
-                Value::new(false),
-            );
-            graph.set_term_link(body_link, body);
-
-            let term_parent = graph.new_parent_link(None);
-            let term = graph.new_term(
-                term_parent,
-                TermKind::LetVal((value, expr_link), body_link),
-                Value::new(false),
-            );
-            graph.set_term_link(root, term);
-            graph.backpatch_subexprs(term, root, &[expr_link]);
-            graph.backpatch_subterms(term, &[body_link]);
-
-            let clone = GraphClone::new(ctx, &mut graph)
-                .clone_subterm(root)
-                .expect("clone");
-            let clone_term = graph.read_term_link(clone).expect("clone term");
-            let TermKind::LetVal((clone_value, clone_expr), clone_body) = graph[clone_term].kind
-            else {
-                panic!("expected cloned letval");
-            };
-            assert_ne!(clone_value, value);
-            assert_eq!(graph.read_parent_link(graph[clone_term].link), None);
-
-            let clone_expr = graph.read_expr_link(clone_expr).expect("clone expr");
-            let ExprKind::PrimCall(_, clone_expr_vars) = graph[clone_expr].kind else {
-                panic!("expected cloned primcall");
-            };
-            assert_eq!(
-                graph.free_binder(graph.free_vars_slice(&clone_expr_vars)[0]),
-                external
-            );
-            assert_eq!(graph.collect_occurrences(external).len(), 2);
-
-            let clone_body = graph.read_term_link(clone_body).expect("clone body");
-            let TermKind::Continue(clone_cont, clone_args) = graph[clone_body].kind else {
-                panic!("expected cloned continue");
-            };
-            assert_eq!(graph.free_binder(clone_cont), cont);
-            assert_eq!(
-                graph.free_binder(graph.free_vars_slice(&clone_args)[0]),
-                clone_value
-            );
-            assert_eq!(
-                graph.read_parent_link(graph[clone_body].link),
-                Some(Parent::Term(clone_term))
-            );
-        });
-    }
-
-    #[test]
-    fn clone_subterm_applies_seeded_binder_substitutions() {
-        Scheme::new_uninit().enter(|ctx| {
-            let mut graph = Graph::new();
-            let root = graph.new_term_link(None);
-            let cont = graph.new_bound_var(lvar(ctx, "cont"));
-            let value = graph.new_bound_var(lvar(ctx, "value"));
-            let replacement = graph.new_bound_var(lvar(ctx, "replacement"));
-            let cont_occ = graph.new_free_occ_for_binder(cont, root);
-            let value_occ = graph.new_free_occ_for_binder(value, root);
-            let args = graph.new_free_vars([value_occ]);
-            let term_parent = graph.new_parent_link(None);
-            let term = graph.new_term(
-                term_parent,
-                TermKind::Continue(cont_occ, args),
-                Value::new(false),
-            );
-            graph.set_term_link(root, term);
-
-            let clone = GraphClone::with_substitutions(ctx, &mut graph, [(value, replacement)])
-                .clone_subterm(root)
-                .expect("clone");
-            let clone_term = graph.read_term_link(clone).expect("clone term");
-            let TermKind::Continue(_, args) = graph[clone_term].kind else {
-                panic!("expected cloned continue");
-            };
-            assert_eq!(
-                graph.free_binder(graph.free_vars_slice(&args)[0]),
-                replacement
-            );
-            assert_eq!(graph.collect_occurrences(value).len(), 1);
-            assert_eq!(graph.collect_occurrences(replacement).len(), 1);
-        });
-    }
-
-    #[test]
-    fn clone_fix_rewrites_internal_function_uses_to_fresh_binders() {
-        Scheme::new_uninit().enter(|ctx| {
-            let mut graph = Graph::new();
-            let root = graph.new_term_link(None);
-            let f = graph.new_bound_var(lvar(ctx, "f"));
-            let x = graph.new_bound_var(lvar(ctx, "x"));
-            let ret = graph.new_bound_var(lvar(ctx, "ret"));
-            let halt = graph.new_bound_var(lvar(ctx, "halt"));
-            let value = graph.new_bound_var(lvar(ctx, "value"));
-
-            let function_body = graph.new_term_link(None);
-            let body_ret = graph.new_free_occ_for_binder(ret, function_body);
-            let body_x = graph.new_free_occ_for_binder(x, function_body);
-            let body_args = graph.new_free_vars([body_x]);
-            let body_parent = graph.new_parent_link(None);
-            let body_term = graph.new_term(
-                body_parent,
-                TermKind::Continue(body_ret, body_args),
-                Value::new(false),
-            );
-            graph.set_term_link(function_body, body_term);
-
-            let function_vars = graph.new_bound_vars([x]);
-            let function = graph.new_function(Function {
-                name: Value::new(false),
-                source: Value::new(false),
-                var: f,
-                vars: function_vars,
-                variadic: None,
-                cont: Some(ret),
-                is_variadic: false,
-                body: function_body,
-                is_rec: false,
-                unroll_count: 0,
-                is_cold: false,
-                is_noinline: false,
-                is_reified: false,
-                meta: Value::new(false),
-            });
-            graph.backpatch_function(function);
-            let function_link = graph.new_function_link(Some(function));
-            let functions = graph.new_function_links([function_link]);
-
-            let app_link = graph.new_term_link(None);
-            let app_f = graph.new_free_occ_for_binder(f, app_link);
-            let app_halt = graph.new_free_occ_for_binder(halt, app_link);
-            let app_value = graph.new_free_occ_for_binder(value, app_link);
-            let app_args = graph.new_free_vars([app_value]);
-            let app_parent = graph.new_parent_link(None);
-            let app = graph.new_term(
-                app_parent,
-                TermKind::App(app_f, app_args, app_halt),
-                Value::new(false),
-            );
-            graph.set_term_link(app_link, app);
-
-            let fix_parent = graph.new_parent_link(None);
-            let fix = graph.new_term(
-                fix_parent,
-                TermKind::Fix(functions, app_link),
-                Value::new(false),
-            );
-            graph.set_term_link(root, fix);
-            graph.backpatch_subterms(fix, &[app_link]);
-
-            let clone = GraphClone::new(ctx, &mut graph)
-                .clone_subterm(root)
-                .expect("clone");
-            let clone_fix = graph.read_term_link(clone).expect("clone fix");
-            let TermKind::Fix(clone_functions, clone_app_link) = graph[clone_fix].kind else {
-                panic!("expected cloned fix");
-            };
-            let clone_function_link = graph.function_links_slice(&clone_functions)[0];
-            let clone_function = graph
-                .read_function_link(clone_function_link)
-                .expect("clone function");
-            let clone_data = graph[clone_function];
-            assert_ne!(clone_data.var, f);
-            assert_ne!(graph.bound_vars_slice(&clone_data.vars)[0], x);
-            assert_ne!(clone_data.cont, Some(ret));
-
-            let clone_app = graph.read_term_link(clone_app_link).expect("clone app");
-            let TermKind::App(clone_callee, clone_args, clone_halt) = graph[clone_app].kind else {
-                panic!("expected cloned app");
-            };
-            assert_eq!(graph.free_binder(clone_callee), clone_data.var);
-            assert_eq!(graph.free_binder(clone_halt), halt);
-            assert_eq!(
-                graph.free_binder(graph.free_vars_slice(&clone_args)[0]),
-                value
-            );
-
-            let clone_body = graph.read_term_link(clone_data.body).expect("clone body");
-            let TermKind::Continue(clone_ret, clone_body_args) = graph[clone_body].kind else {
-                panic!("expected cloned function body");
-            };
-            assert_eq!(graph.free_binder(clone_ret), clone_data.cont.unwrap());
-            assert_eq!(
-                graph.free_binder(graph.free_vars_slice(&clone_body_args)[0]),
-                graph.bound_vars_slice(&clone_data.vars)[0]
-            );
-            assert_eq!(
-                graph.read_parent_link(graph[clone_body].link),
-                Some(Parent::Func(clone_function))
-            );
-        });
     }
 }

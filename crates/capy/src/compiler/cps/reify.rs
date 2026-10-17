@@ -1,3 +1,6 @@
+//! Reifying continuations: [`reify_graph`] turns them into closures and
+//! records what each function needs ([`GraphReifyInfo`]).
+
 use cranelift_entity::{EntitySet, SecondaryMap};
 
 use super::graph::{BoundVar, FunctionId, Graph, Subterm, TermKind};
@@ -31,12 +34,11 @@ pub struct GraphReifyInfo {
     pub free_vars: GraphFreeVars,
 }
 
-/// Collect graph CPS closures, free variables, and heap-allocated continuations.
+/// Collect graph CPS closures and their free variables.
 ///
 /// Function free variables are recorded for every live function except that the
-/// entry function is forced to have no free variables. Continuations are marked
-/// reified when they are used as values, captured by a function closure, or
-/// transitively captured by another reified continuation.
+/// entry function is forced to have no free variables. No continuation is
+/// reified: `cfg::lower` turns each one into a block of its function.
 pub fn reify_graph<'gc>(graph: &mut Graph<'gc>, entrypoint: FunctionId) -> GraphReifyInfo {
     let mut collector = ReifyCollector::new();
     collector.record_function(graph, entrypoint);
@@ -182,6 +184,12 @@ impl ReifyCollector {
                 vars
             }
             TermKind::Raise(_, args) => self.free_vars_from_occurrences(graph, &args),
+            TermKind::BranchPrim(_, consequent, alternative, vars) => {
+                let mut vars_set = self.singleton_free_var(graph, consequent);
+                vars_set.extend(self.singleton_free_var(graph, alternative).iter());
+                vars_set.extend(self.free_vars_from_occurrences(graph, &vars).iter());
+                vars_set
+            }
         }
     }
 
@@ -222,37 +230,12 @@ impl ReifyCollector {
         out
     }
 
+    /// Continuations are second-class: none of them is ever a closure. A
+    /// continuation is a block of the function that binds it, and the
+    /// continuation of a non-tail call is a return point in that function.
     fn propagate_reified_continuations<'gc>(&mut self, graph: &mut Graph<'gc>) {
         for continuation in self.continuations.iter().copied() {
             graph[continuation].is_reified = false;
-        }
-
-        let mut stack = Vec::new();
-        for binder in self.free_vars.continuation_values.iter() {
-            if let Some(continuation) = self.free_vars.continuations_by_binder[binder] {
-                stack.push(continuation);
-            }
-        }
-
-        for function in self.functions.iter().copied() {
-            for binder in self.free_vars.function(function).iter() {
-                if let Some(continuation) = self.free_vars.continuations_by_binder[binder] {
-                    stack.push(continuation);
-                }
-            }
-        }
-
-        while let Some(continuation) = stack.pop() {
-            if graph[continuation].is_reified {
-                continue;
-            }
-
-            graph[continuation].is_reified = true;
-            for binder in self.free_vars.continuation(continuation).iter() {
-                if let Some(next) = self.free_vars.continuations_by_binder[binder] {
-                    stack.push(next);
-                }
-            }
         }
     }
 }

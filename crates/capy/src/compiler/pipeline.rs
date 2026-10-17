@@ -11,7 +11,7 @@ use crate::expander::{
 };
 use crate::heap::Gc;
 use crate::runtime::stats::{CompilationBreakdownPhase, CompilationBreakdownScope};
-use crate::runtime::{Context, modules::Module, value::Value};
+use crate::runtime::{MutationContext, modules::Module, value::Value};
 use crate::utils::pass_profile::ProfileScope;
 
 #[derive(Clone)]
@@ -29,8 +29,7 @@ pub(crate) struct DumpArtifactsOptions {
     pub(crate) dump_ir: bool,
     pub(crate) dump_graph: bool,
     pub(crate) dump_ssa: bool,
-    pub(crate) dump_cranelift: bool,
-    pub(crate) dump_disassembly: bool,
+    pub(crate) dump_bytecode: bool,
 }
 
 impl DumpArtifactsOptions {
@@ -50,8 +49,7 @@ impl DumpArtifactsOptions {
             "ir" => self.dump_ir = true,
             "graph" | "gcps" => self.dump_graph = true,
             "ssa" => self.dump_ssa = true,
-            "cranelift" | "clif" => self.dump_cranelift = true,
-            "disassembly" | "asm" => self.dump_disassembly = true,
+            "bytecode" | "bc" | "disassembly" | "asm" => self.dump_bytecode = true,
             _ => return false,
         }
         true
@@ -63,7 +61,7 @@ impl DumpArtifactsOptions {
 }
 
 pub fn lower_to_cps<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     il: TermRef<'gc>,
     module: Option<Gc<'gc, Module<'gc>>>,
     expand_primitive_calls: bool,
@@ -73,7 +71,7 @@ pub fn lower_to_cps<'gc>(
 }
 
 pub(crate) fn lower_expanded_to_cps<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     mut il: TermRef<'gc>,
     module: Option<Gc<'gc, Module<'gc>>>,
     expand_primitive_calls: bool,
@@ -99,7 +97,7 @@ pub(crate) fn lower_expanded_to_cps<'gc>(
 
     // When the Scheme pipeline has preprocessed the IR (preprocessed=true),
     // these passes have already run self-hosted in lib/boot/compiler.scm
-    // (fix-letrec, expand-well-known-procs, eliminate-assignments); the Rust
+    // (fix-letrec, expand-well-known-procs, eliminate-assignments), the Rust
     // copies only run on raw macroexpander output from the cold-cache
     // bootstrap path.
     let optimized_il = if !preprocessed {
@@ -161,7 +159,7 @@ pub(crate) fn lower_expanded_to_cps<'gc>(
 }
 
 pub(crate) fn dump_lowered_program_artifacts<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     destination: impl AsRef<Path>,
     lowered: &LoweredProgram<'gc>,
     options: DumpArtifactsOptions,

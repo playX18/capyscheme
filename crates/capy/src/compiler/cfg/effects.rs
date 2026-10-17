@@ -1,7 +1,7 @@
 //! Global CFG effect analysis.
 
 use super::{BlockId, Instruction, Procedure, Terminator, ValueId};
-use crate::compiler::cranelift::primitive::Primitive;
+use crate::runtime::prims::def::Primitive;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -42,6 +42,10 @@ impl MemoryRanges {
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
+
+    pub const fn without(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -72,7 +76,7 @@ impl EffectFlags {
     }
 }
 
-/// Semantic effects: the low-level memory ranges above describe aliasing;
+/// Semantic effects: the low-level memory ranges above describe aliasing,
 /// these bits describe semantic dependencies and observable causes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
@@ -235,7 +239,7 @@ impl Effects {
 
     /// True when evaluating the operation has no observable cause and can be
     /// discarded when its result is unused.  Dependencies alone do not force
-    /// execution; this is the distinction needed by dead-value elimination.
+    /// execution, this is the distinction needed by dead-value elimination.
     pub const fn effect_free(self) -> bool {
         self.causes.is_empty()
             && !self.flags.contains(
@@ -248,6 +252,34 @@ impl Effects {
                     .union(EffectFlags::FENCE),
             )
             && self.writes.is_empty()
+    }
+
+    /// True when the operation only allocates a fresh object: the allocation
+    /// cause alone, no reads, and writes confined to the fresh heap object.
+    /// Like [`effect_free`](Self::effect_free), such an operation can be
+    /// discarded when its result is unused: with no reference to the fresh
+    /// object, no program can observe it.
+    pub const fn allocation_only(self) -> bool {
+        self.causes.contains(SemanticEffects::ALLOCATION)
+            && self.causes.without(SemanticEffects::ALLOCATION).is_empty()
+            && !self.flags.contains(
+                EffectFlags::TERMINAL
+                    .union(EffectFlags::EXITS_SIDEWAYS)
+                    .union(EffectFlags::MAY_CALL)
+                    .union(EffectFlags::MAY_RAISE)
+                    .union(EffectFlags::WRITES_LOCAL_STATE)
+                    .union(EffectFlags::WRITES_PINNED)
+                    .union(EffectFlags::FENCE),
+            )
+            && self.reads.is_empty()
+            && (self.writes.is_empty()
+                || (self
+                    .writes
+                    .contains(MemoryRanges::region(MemoryRegion::Heap))
+                    && self
+                        .writes
+                        .without(MemoryRanges::region(MemoryRegion::Heap))
+                        .is_empty()))
     }
 
     pub const fn must_execute(self) -> bool {
@@ -322,8 +354,8 @@ pub fn analyze_procedure(procedure: &Procedure<'_>) -> ProcedureEffects {
 }
 
 /// Removes definitions whose values are unused and whose instructions have no
-/// observable effects.
-pub fn eliminate_dead_effect_free_instructions(mut procedure: Procedure<'_>) -> Procedure<'_> {
+/// observable effects, including pure allocations of fresh objects.
+pub fn eliminate_dead_instructions(mut procedure: Procedure<'_>) -> Procedure<'_> {
     loop {
         let mut uses = HashMap::<ValueId, usize>::new();
         for block in &procedure.blocks {
@@ -344,10 +376,11 @@ pub fn eliminate_dead_effect_free_instructions(mut procedure: Procedure<'_>) -> 
         let mut changed = false;
         for block in &mut procedure.blocks {
             block.instructions.retain(|instruction| {
+                let effects = instruction_effects(instruction);
                 let removable = instruction
                     .def()
                     .is_some_and(|value| uses.get(&value).copied().unwrap_or(0) == 0)
-                    && instruction_effects(instruction).effect_free();
+                    && (effects.effect_free() || effects.allocation_only());
                 changed |= removable;
                 !removable
             });
@@ -364,7 +397,9 @@ pub fn instruction_effects(instruction: &Instruction<'_>) -> Effects {
         Instruction::MakeClosure { .. }
         | Instruction::MakeEnv { .. }
         | Instruction::RestToList { .. } => Effects::allocate(),
-        Instruction::EnvRef { .. } | Instruction::ClosureRef { .. } | Instruction::CacheRef { .. } => {
+        Instruction::EnvRef { .. }
+        | Instruction::ClosureRef { .. }
+        | Instruction::CacheRef { .. } => {
             Effects::read(MemoryRegion::Heap, SemanticEffects::UNKNOWN)
         }
         Instruction::EnvSet { .. }
@@ -372,19 +407,29 @@ pub fn instruction_effects(instruction: &Instruction<'_>) -> Effects {
         | Instruction::CacheSet { .. } => {
             Effects::write(MemoryRegion::Heap, SemanticEffects::UNKNOWN)
         }
+        // `(current-module m)` installs `m`, only the nullary form reads.
+        Instruction::PrimCall {
+            prim: Primitive::CurrentModule,
+            args,
+            ..
+        } if !args.is_empty() => Effects::write(MemoryRegion::Modules, SemanticEffects::TOPLEVEL),
         Instruction::PrimCall { prim, .. } => primitive_effects(*prim),
         Instruction::RestRef { .. }
         | Instruction::RestLength { .. }
         | Instruction::RestPredicate { .. } => {
             Effects::read(MemoryRegion::Heap, SemanticEffects::UNKNOWN).checked()
         }
+        Instruction::Receive { .. } => Effects::pure(),
+        Instruction::ReceiveRest { .. } => Effects::allocate(),
     }
 }
 
 pub fn terminator_effects(terminator: &Terminator<'_>) -> Effects {
     match terminator {
         Terminator::Raise { .. } => Effects::raise(),
-        Terminator::Call { .. } | Terminator::TailCall { .. } => Effects::for_call(),
+        Terminator::Call { .. } | Terminator::TailCall { .. } | Terminator::Return { .. } => {
+            Effects::for_call()
+        }
         Terminator::Jump { .. }
         | Terminator::Branch { .. }
         | Terminator::BranchPrim { .. }
@@ -420,63 +465,7 @@ pub fn primitive_effects(primitive: Primitive) -> Effects {
         | Primitive::IsExact
         | Primitive::IsFixnum
         | Primitive::IsFlonum
-        | Primitive::Not
-        | Primitive::FxEqUUnchecked
-        | Primitive::FxAddUnchecked
-        | Primitive::FxSubUnchecked
-        | Primitive::FxMulUnchecked
-        | Primitive::FxLtUnchecked
-        | Primitive::FxLeUnchecked
-        | Primitive::FxGtUnchecked
-        | Primitive::FxGeUnchecked
-        | Primitive::FxAndUnchecked
-        | Primitive::FxIorUnchecked
-        | Primitive::FxXorUnchecked
-        | Primitive::FxNotUnchecked
-        | Primitive::FxAshlUnchecked
-        | Primitive::FxAshrUnchecked
-        | Primitive::FxZeroUnchecked
-        | Primitive::FxPositiveUnchecked
-        | Primitive::FxNegativeUnchecked
-        | Primitive::FxOddUnchecked
-        | Primitive::FxEvenUnchecked
-        | Primitive::FxMinUnchecked
-        | Primitive::FxMaxUnchecked
-        | Primitive::FxQuotient
-        | Primitive::FxRemainder
-        | Primitive::FxModulo
-        | Primitive::FlAddUnchecked
-        | Primitive::FlSubUnchecked
-        | Primitive::FlMulUnchecked
-        | Primitive::FlDivUnchecked
-        | Primitive::FlLtUnchecked
-        | Primitive::FlLeUnchecked
-        | Primitive::FlGtUnchecked
-        | Primitive::FlGeUnchecked
-        | Primitive::FlEqUnchecked
-        | Primitive::FlZeroUnchecked
-        | Primitive::FlPositiveUnchecked
-        | Primitive::FlNegativeUnchecked
-        | Primitive::FlNanUnchecked
-        | Primitive::FlInfiniteUnchecked
-        | Primitive::FlFiniteUnchecked
-        | Primitive::FlMinUnchecked
-        | Primitive::FlMaxUnchecked
-        | Primitive::FlAbsUnchecked
-        | Primitive::FlFloorUnchecked
-        | Primitive::FlCeilingUnchecked
-        | Primitive::FlTruncateUnchecked
-        | Primitive::FlRoundUnchecked
-        | Primitive::FlSinUnchecked
-        | Primitive::FlCosUnchecked
-        | Primitive::FlTanUnchecked
-        | Primitive::FlExpUnchecked
-        | Primitive::FlLogUnchecked
-        | Primitive::FlAsinUnchecked
-        | Primitive::FlAcosUnchecked
-        | Primitive::FlSqrtUnchecked
-        | Primitive::FlAtanUnchecked
-        | Primitive::CharToIntUnchecked => Effects::pure(),
+        | Primitive::Not => Effects::pure(),
         // Checked fixnum/flonum ops: may raise on wrong type.
         Primitive::FxAdd
         | Primitive::FxSub
@@ -536,25 +525,14 @@ pub fn primitive_effects(primitive: Primitive) -> Effects {
             flags: EffectFlags::CONTROL_DEPENDENT.union(EffectFlags::MAY_RAISE),
             ..Effects::pure()
         },
-        Primitive::FxAddOvfUnchecked
-        | Primitive::FxSubOvfUnchecked
-        | Primitive::FxMulOvfUnchecked => Effects {
-            causes: SemanticEffects::POSSIBLE_BAILOUT,
-            flags: EffectFlags::CONTROL_DEPENDENT,
-            ..Effects::pure()
-        },
         Primitive::Car => Effects::read(MemoryRegion::Heap, SemanticEffects::CAR).checked(),
         Primitive::Cdr => Effects::read(MemoryRegion::Heap, SemanticEffects::CDR).checked(),
-        Primitive::CarUnchecked => Effects::read(MemoryRegion::Heap, SemanticEffects::CAR),
-        Primitive::CdrUnchecked => Effects::read(MemoryRegion::Heap, SemanticEffects::CDR),
         Primitive::SetCar => {
             Effects::write(MemoryRegion::Heap, SemanticEffects::CAR).checked_write()
         }
-        Primitive::SetCarUnchecked => Effects::write(MemoryRegion::Heap, SemanticEffects::CAR),
         Primitive::SetCdr => {
             Effects::write(MemoryRegion::Heap, SemanticEffects::CDR).checked_write()
         }
-        Primitive::SetCdrUnchecked => Effects::write(MemoryRegion::Heap, SemanticEffects::CDR),
         Primitive::VectorRef => {
             Effects::read(MemoryRegion::Heap, SemanticEffects::VECTOR).checked()
         }
@@ -564,16 +542,8 @@ pub fn primitive_effects(primitive: Primitive) -> Effects {
         Primitive::BytevectorU8Ref => {
             Effects::read(MemoryRegion::Heap, SemanticEffects::BYTEVECTOR).checked()
         }
-        Primitive::VectorRefUnchecked => Effects::read(MemoryRegion::Heap, SemanticEffects::VECTOR),
-        Primitive::StringRefUnchecked => Effects::read(MemoryRegion::Heap, SemanticEffects::STRING),
-        Primitive::BytevectorU8RefUnchecked => {
-            Effects::read(MemoryRegion::Heap, SemanticEffects::BYTEVECTOR)
-        }
         Primitive::VectorSet => {
             Effects::write(MemoryRegion::Heap, SemanticEffects::VECTOR).checked_write()
-        }
-        Primitive::VectorSetUnchecked => {
-            Effects::write(MemoryRegion::Heap, SemanticEffects::VECTOR)
         }
         Primitive::VariableRef => {
             Effects::read(MemoryRegion::Variables, SemanticEffects::VARIABLE).checked()
@@ -583,12 +553,16 @@ pub fn primitive_effects(primitive: Primitive) -> Effects {
         }
         Primitive::CacheRef => Effects::read(MemoryRegion::Runtime, SemanticEffects::UNKNOWN),
         Primitive::CacheSet => Effects::write(MemoryRegion::Runtime, SemanticEffects::UNKNOWN),
-        Primitive::Cons
-        | Primitive::List
-        | Primitive::Vector
-        | Primitive::Tuple
-        | Primitive::MakeTuple
-        | Primitive::MakeVector => Effects::allocate(),
+        // Slot access reads or writes memory and may run Scheme through
+        // its slow path (`slot-unbound`, `slot-missing`, MOP methods), so
+        // it is never dead even when its result is unused.
+        Primitive::SlotRef | Primitive::SlotSet => Effects::for_call(),
+        Primitive::Cons | Primitive::List | Primitive::Vector | Primitive::Tuple => {
+            Effects::allocate()
+        }
+        // The sized constructors raise on bad sizes, so unlike the
+        // fixed-shape constructors above they are never dead.
+        Primitive::MakeTuple | Primitive::MakeVector => Effects::allocate().checked(),
         Primitive::Unspec | Primitive::IsUnspecified => Effects::pure(),
         Primitive::VariableBound => {
             Effects::read(MemoryRegion::Variables, SemanticEffects::VARIABLE).checked()

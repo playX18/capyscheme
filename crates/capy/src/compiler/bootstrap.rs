@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::compiler::LoweredProgram;
 use crate::heap::Gc;
-use crate::runtime::{Context, modules::Module, value::Value};
+use crate::runtime::{MutationContext, modules::Module, value::Value};
 
 #[cfg(feature = "bootstrap")]
 use crate::{
@@ -14,7 +14,7 @@ use crate::{
 
 #[cfg(not(feature = "bootstrap"))]
 pub fn compile_file<'gc>(
-    _: Context<'gc>,
+    _: MutationContext<'gc>,
     file: impl AsRef<Path>,
     _: Option<Gc<'gc, Module<'gc>>>,
     _: bool,
@@ -27,7 +27,7 @@ pub fn compile_file<'gc>(
 
 #[cfg(feature = "bootstrap")]
 pub fn compile_file<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     file: impl AsRef<Path>,
     env: Option<Gc<'gc, Module<'gc>>>,
     dump_graph: bool,

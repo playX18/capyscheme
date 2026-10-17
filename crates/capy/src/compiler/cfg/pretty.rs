@@ -1,74 +1,46 @@
 use crate::{
     compiler::cfg::{
-        Block, BlockId, BranchTarget, ClosureKind, CodeId, Instruction, Operand, Procedure,
-        ProcedureKind, Program, RestPredicate, SwitchKind, Terminator, UVar, bbv::BlockAnnotation,
+        Block, BranchTarget, CodeId, Instruction, Operand, Procedure, Program, RestPredicate,
+        SwitchKind, Terminator, UVar,
     },
     expander::core::LVarRef,
-    runtime::value::{Symbol, Value},
 };
 use std::{collections::HashMap, fmt::Write};
 
-pub fn render_program<'gc>(program: &Program<'gc>) -> String {
-    render_program_with_annotations(program, None)
-}
+use crate::compiler::cps::pretty::render_value;
 
-pub fn render_program_with_annotations<'gc>(
-    program: &Program<'gc>,
-    annotations: Option<&HashMap<BlockId, BlockAnnotation>>,
-) -> String {
+pub fn render_program<'gc>(program: &Program<'gc>) -> String {
     let mut out = String::new();
     for procedure in &program.procedures {
-        render_procedure(&mut out, procedure, annotations);
+        render_procedure(&mut out, procedure);
         writeln!(out).unwrap();
     }
     out
 }
 
-fn render_procedure<'gc>(
-    out: &mut String,
-    procedure: &Procedure<'gc>,
-    annotations: Option<&HashMap<BlockId, BlockAnnotation>>,
-) {
+fn render_procedure<'gc>(out: &mut String, procedure: &Procedure<'gc>) {
     let name = render_procedure_name(procedure);
     let params = render_uvars(&procedure.params);
-    let retk = render_optional_uvar(procedure.return_cont);
     writeln!(
         out,
-        "{} {} {}({}) -> {} {{",
-        render_procedure_kind(procedure.kind),
+        "fn {} {}({}) {{",
         render_code_id(&procedure.code),
         name.trim(),
         params,
-        retk
     )
     .expect("infallible allocation callback");
 
     let mut blocks = procedure.blocks.clone();
     blocks.sort_by_key(|block| block.id.0);
     for block in &blocks {
-        render_block(out, block, annotations);
+        render_block(out, block);
         writeln!(out).unwrap();
     }
     writeln!(out, "}}").unwrap();
 }
 
-fn render_block<'gc>(
-    out: &mut String,
-    block: &Block<'gc>,
-    annotations: Option<&HashMap<BlockId, BlockAnnotation>>,
-) {
-    let mut header = format!("block{}:", block.id.0);
-    if let Some(annotations) = annotations
-        && let Some(annotation) = annotations.get(&block.id)
-    {
-        write!(
-            header,
-            " ; orig=block{} {}",
-            annotation.orig.0, annotation.ctx
-        )
-        .expect("infallible allocation callback");
-    }
-    writeln!(out, "{header}").unwrap();
+fn render_block<'gc>(out: &mut String, block: &Block<'gc>) {
+    writeln!(out, "block{}:", block.id.0).unwrap();
 
     for instruction in &block.instructions {
         writeln!(out, "    {}", render_instruction(instruction))
@@ -90,7 +62,6 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
         Instruction::MakeClosure {
             dst,
             code,
-            kind,
             free_count,
             env,
         } => {
@@ -99,10 +70,9 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
                 None => String::new(),
             };
             format!(
-                "{} = make_closure {} {} {}{}",
+                "{} = make_closure {} {}{}",
                 render_uvar(*dst),
                 render_code_id(code),
-                render_closure_kind(*kind),
                 free_count,
                 env_part
             )
@@ -110,21 +80,13 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
         Instruction::MakeEnv { dst, size } => {
             format!("{} = make_env {}", render_uvar(*dst), size)
         }
-        Instruction::EnvRef {
-            dst,
-            env,
-            index,
-        } => format!(
+        Instruction::EnvRef { dst, env, index } => format!(
             "{} = env_ref {}[{}]",
             render_uvar(*dst),
             render_operand(*env),
             index
         ),
-        Instruction::EnvSet {
-            env,
-            index,
-            value,
-        } => format!(
+        Instruction::EnvSet { env, index, value } => format!(
             "env_set {}[{}], {}",
             render_operand(*env),
             index,
@@ -203,19 +165,28 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
             render_uvar(*rest),
             skip
         ),
+        Instruction::Receive { dst, index } => {
+            format!("{} = receive {}", render_uvar(*dst), index)
+        }
+        Instruction::ReceiveRest { dst, from } => {
+            format!("{} = receive_rest {}", render_uvar(*dst), from)
+        }
     }
 }
 
 fn render_terminator<'gc>(terminator: &Terminator<'gc>) -> String {
     match terminator {
         Terminator::Call {
-            callee, retk, args, ..
+            callee, ret, args, ..
         } => format!(
-            "call {}({}) -> {}",
+            "call {}({}) -> block{} ({}{} values)",
             render_operand(*callee),
             render_call_args_list(args),
-            render_operand(*retk)
+            ret.block.0,
+            ret.nvals,
+            if ret.variadic { "+" } else { "" }
         ),
+        Terminator::Return { args, .. } => format!("return ({})", render_call_args_list(args)),
         Terminator::TailCall { callee, args, .. } => format!(
             "tail_call {}({})",
             render_operand(*callee),
@@ -295,11 +266,7 @@ fn render_branch_target<'gc>(target: &BranchTarget<'gc>) -> String {
                 format!("block{}[+{}]", block.0, edge_assigns.len())
             }
         }
-        BranchTarget::Reified { continuation, args } => format!(
-            "return {}({})",
-            render_operand(*continuation),
-            render_call_args_list(args)
-        ),
+        BranchTarget::Return { args } => format!("return ({})", render_call_args_list(args)),
     }
 }
 
@@ -358,28 +325,9 @@ fn render_uvars(vars: &[UVar]) -> String {
         .join(", ")
 }
 
-fn render_optional_uvar(var: Option<UVar>) -> String {
-    var.map(render_uvar).unwrap_or_else(|| "#f".to_string())
-}
-
 fn render_code_id(code: &CodeId) -> String {
     match code {
         CodeId::GraphFunction(function) => format!("gf{}", function.0),
-        CodeId::GraphContinuation(continuation) => format!("gk{}", continuation.0),
-    }
-}
-
-fn render_procedure_kind(kind: ProcedureKind) -> &'static str {
-    match kind {
-        ProcedureKind::Function => "function",
-        ProcedureKind::Continuation => "continuation",
-    }
-}
-
-fn render_closure_kind(kind: ClosureKind) -> &'static str {
-    match kind {
-        ClosureKind::Function => "function",
-        ClosureKind::Continuation => "continuation",
     }
 }
 
@@ -396,18 +344,4 @@ fn render_source_name<'gc>(binding: UVar, sources: &HashMap<UVar, LVarRef<'gc>>)
 
 fn render_lvar<'gc>(var: LVarRef<'gc>) -> String {
     render_value(var.name)
-}
-
-fn render_value<'gc>(value: Value<'gc>) -> String {
-    if value == Value::new(false) {
-        "#f".to_string()
-    } else if value == Value::new(true) {
-        "#t".to_string()
-    } else if value.is::<Symbol>() {
-        value.downcast::<Symbol>().to_string()
-    } else if let Some(number) = value.number() {
-        number.to_string()
-    } else {
-        format!("{value:?}")
-    }
 }

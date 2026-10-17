@@ -7,7 +7,7 @@ use crate::{
     expander::core::{
         LVarRef, Proc, ProcRef, Term, TermKind, TermRef, call_term, lref, prim_call_term,
     },
-    runtime::Context,
+    runtime::MutationContext,
     static_symbols,
 };
 
@@ -16,7 +16,7 @@ use crate::{
 const ENABLE_WELL_KNOWN_EXPANSION: bool = false;
 
 /// Make lexically bound procedures well-known.
-pub fn expand_well_known_procs<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
+pub fn expand_well_known_procs<'gc>(ctx: MutationContext<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
     if !ENABLE_WELL_KNOWN_EXPANSION {
         return term;
     }
@@ -36,7 +36,10 @@ struct ProcInfo<'gc> {
     proc: Gc<'gc, Proc<'gc>>,
 }
 
-fn analyze_procs<'gc>(_ctx: Context<'gc>, t: TermRef<'gc>) -> HashMap<LVarRef<'gc>, ProcRef<'gc>> {
+fn analyze_procs<'gc>(
+    _ctx: MutationContext<'gc>,
+    t: TermRef<'gc>,
+) -> HashMap<LVarRef<'gc>, ProcRef<'gc>> {
     let proc_infos = RefCell::new(HashMap::<LVarRef<'gc>, ProcInfo<'gc>>::new());
 
     t.for_each(|term| match term.kind {
@@ -102,7 +105,7 @@ fn analyze_procs<'gc>(_ctx: Context<'gc>, t: TermRef<'gc>) -> HashMap<LVarRef<'g
 static_symbols!(SYM_APPLY = "apply");
 
 fn expand_proc_ref<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     lexical: TermRef<'gc>,
     to_expand: &HashMap<LVarRef<'gc>, ProcRef<'gc>>,
 ) -> Option<TermRef<'gc>> {
@@ -147,7 +150,10 @@ fn expand_proc_ref<'gc>(
     }
 }
 
-fn collapse_proc_wrapper<'gc>(ctx: Context<'gc>, proc: ProcRef<'gc>) -> Option<TermRef<'gc>> {
+fn collapse_proc_wrapper<'gc>(
+    ctx: MutationContext<'gc>,
+    proc: ProcRef<'gc>,
+) -> Option<TermRef<'gc>> {
     if let TermKind::Call(rator, rands) = proc.body.kind
         && let TermKind::LRef(var) = rator.kind
     {

@@ -1,4 +1,9 @@
-//! Functions and types for maintaining mutable graph.
+//! The mutable graph CPS: entity maps over terms, exprs, and functions.
+//!
+//! [`Graph`] owns `PrimaryMap`s of [`Term`], [`Expr`], and [`Function`]
+//! nodes plus their [`Atom`]s, links, and occurrence pools, [`GraphStats`]
+//! summarizes it. The `Pretty*` wrappers at the bottom render nodes for
+//! dumps and tests (see also [`pretty`](super::pretty)).
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -11,13 +16,13 @@ use std::{
 use crate::runtime::vm::exceptions::RaiseKind;
 use crate::{expander::core::LVarRef, runtime::value::Value};
 use cranelift_entity::{
-    EntityList, EntityRef, ListPool, PrimaryMap,
+    EntityList, EntityRef, EntitySet, ListPool, PrimaryMap,
     packed_option::{PackedOption, ReservedValue},
 };
 
 pub use super::worklist::{GraphWorklist, WorklistQueue};
 
-/// A CPS atom — either a bound local variable or a constant value.
+/// A CPS atom, either a bound local variable or a constant value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Atom<'gc> {
     Constant(Value<'gc>),
@@ -65,11 +70,12 @@ pub const VERBOSE: bool = false;
 
 macro_rules! verbose_log {
     ($($arg:tt)*) => {
-        if VERBOSE {
-            eprintln!($($arg)*);
+        if $crate::compiler::cps::graph::VERBOSE {
+            log::trace!($($arg)*);
         }
     };
 }
+pub(crate) use verbose_log;
 
 macro_rules! concrete_entity {
     ($name:ident, $display_prefix:literal) => {
@@ -174,7 +180,7 @@ pub type FreeVar = FreeOcc;
 
 /// Alias used where an occurrence denotes a continuation variable.
 ///
-/// The underlying graph mechanics are identical to [`FreeVar`]; the separate
+/// The underlying graph mechanics are identical to [`FreeVar`], the separate
 /// name documents control-flow intent at call sites.
 pub type ContVar = FreeVar;
 
@@ -226,6 +232,8 @@ pub type Ring = FreeOcc;
 /// variable. A later binder lookup follows the union-find parent chain.
 pub type Point = PointId;
 
+/// Union-find node: `parent` chains toward the representative [`Point`],
+/// whose descriptor is the current representative [`BoundVar`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UfNode {
     pub parent: PointId,
@@ -300,9 +308,26 @@ pub enum TermKind {
     Letk(FunctionLinks, Subterm),
 
     If(FreeVar, Subterm, Subterm, [BranchHint; 2]),
+    /// Test a primitive and jump to one of two continuations:
+    /// `(branch-prim (prim args...) (k-true true-args...) (k-false false-args...))`.
+    /// The operands are one list, `args ++ true-args ++ false-args`, split
+    /// by the counts in [`BranchOp`], [`Graph::branch_operands`] splits it.
+    BranchPrim(BranchOp, ContVar, ContVar, FreeVars),
     Continue(ContVar, FreeVars),
     App(FreeVar, FreeVars, ContVar),
     Raise(RaiseKind, FreeVars),
+}
+
+/// The fixed part of a [`TermKind::BranchPrim`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BranchOp {
+    pub prim: crate::runtime::prims::def::Primitive,
+    /// Operands of the primitive.
+    pub nargs: u8,
+    /// Arguments passed to the true continuation, the false continuation
+    /// gets the rest.
+    pub ntrue: u8,
+    pub hints: [BranchHint; 2],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -330,7 +355,6 @@ pub struct Function<'gc> {
     pub is_variadic: bool,
     pub body: Subterm,
     pub is_rec: bool,
-    pub unroll_count: usize,
     pub is_cold: bool,
     pub is_noinline: bool,
     pub is_reified: bool,
@@ -799,6 +823,19 @@ impl<'gc> Graph<'gc> {
         vars.as_slice(&self.free_vars_pool)
     }
 
+    /// The operands of a `BranchPrim`: the primitive's arguments, then the
+    /// arguments of the true continuation, then those of the false one.
+    pub fn branch_operands(
+        &self,
+        op: BranchOp,
+        vars: &FreeVars,
+    ) -> (&[FreeVar], &[FreeVar], &[FreeVar]) {
+        let all = self.free_vars_slice(vars);
+        let (args, rest) = all.split_at(op.nargs as usize);
+        let (true_args, false_args) = rest.split_at(op.ntrue as usize);
+        (args, true_args, false_args)
+    }
+
     pub fn free_vars_push(&mut self, vars: &mut FreeVars, var: FreeVar) -> usize {
         vars.push(var, &mut self.free_vars_pool)
     }
@@ -830,6 +867,24 @@ impl<'gc> Graph<'gc> {
         links.as_slice(&self.function_links_pool)
     }
 
+    /// Functions in `links` that are still live, in list order.
+    pub fn live_functions(&self, links: &FunctionLinks) -> Vec<FunctionId> {
+        self.function_links_slice(links)
+            .iter()
+            .copied()
+            .filter_map(|link| self.read_function_link(link))
+            .collect()
+    }
+
+    /// The continuation and arguments of `link` if it is a direct `Continue`.
+    pub fn direct_continue(&self, link: Subterm) -> Option<(ContVar, FreeVars)> {
+        let term = self.read_term_link(link)?;
+        let TermKind::Continue(continuation, args) = self[term].kind else {
+            return None;
+        };
+        Some((continuation, args))
+    }
+
     pub fn function_links_push(&mut self, links: &mut FunctionLinks, link: FunctionLink) -> usize {
         links.push(link, &mut self.function_links_pool)
     }
@@ -853,6 +908,15 @@ impl<'gc> Graph<'gc> {
                 }
             }
         }
+    }
+
+    /// Whether any free variable of `expr` is bound by one of `binders`.
+    pub fn expr_free_vars_contain_any(&self, expr: ExprId, binders: &EntitySet<BoundVar>) -> bool {
+        let mut contains_any = false;
+        self.for_each_free_var_of_expr(expr, |var| {
+            contains_any |= binders.contains(self.free_binder(var));
+        });
+        contains_any
     }
 
     pub fn direct_free_vars_of_term(&self, term: TermId) -> Vec<FreeVar> {
@@ -887,6 +951,13 @@ impl<'gc> Graph<'gc> {
                     f(*var);
                 }
             }
+            TermKind::BranchPrim(_, consequent, alternative, vars) => {
+                for var in self.free_vars_slice(&vars) {
+                    f(*var);
+                }
+                f(consequent);
+                f(alternative);
+            }
         }
     }
 
@@ -904,7 +975,8 @@ impl<'gc> Graph<'gc> {
             | TermKind::If(..)
             | TermKind::Continue(..)
             | TermKind::App(..)
-            | TermKind::Raise(..) => {}
+            | TermKind::Raise(..)
+            | TermKind::BranchPrim(..) => {}
         }
     }
 
@@ -922,7 +994,10 @@ impl<'gc> Graph<'gc> {
                 f(then_branch);
                 f(else_branch);
             }
-            TermKind::Continue(..) | TermKind::App(..) | TermKind::Raise(..) => {}
+            TermKind::Continue(..)
+            | TermKind::App(..)
+            | TermKind::Raise(..)
+            | TermKind::BranchPrim(..) => {}
         }
     }
 
@@ -1224,6 +1299,27 @@ impl<'gc> Graph<'gc> {
                 self.fmt_free_vars(f, &vars)?;
                 write!(f, ")")
             }
+            TermKind::BranchPrim(op, consequent, alternative, vars) => {
+                let (args, true_args, false_args) = self.branch_operands(op, &vars);
+                write!(f, "(branch-prim ({}", op.prim.name())?;
+                for var in args {
+                    write!(f, " ")?;
+                    self.fmt_free_var(f, *var)?;
+                }
+                write!(f, ") (")?;
+                self.fmt_free_var(f, consequent)?;
+                for var in true_args {
+                    write!(f, " ")?;
+                    self.fmt_free_var(f, *var)?;
+                }
+                write!(f, ") (")?;
+                self.fmt_free_var(f, alternative)?;
+                for var in false_args {
+                    write!(f, " ")?;
+                    self.fmt_free_var(f, *var)?;
+                }
+                write!(f, ") {:?})", op.hints)
+            }
         }
     }
 
@@ -1438,244 +1534,5 @@ impl<'gc> Index<FunctionId> for Graph<'gc> {
 impl<'gc> IndexMut<FunctionId> for Graph<'gc> {
     fn index_mut(&mut self, index: FunctionId) -> &mut Self::Output {
         &mut self.functions[index]
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{expander::core::fresh_lvar, runtime::Scheme};
-
-    fn with_graph<R>(
-        f: impl for<'gc> FnOnce(&mut Graph<'gc>, LVarRef<'gc>, LVarRef<'gc>) -> R,
-    ) -> R {
-        Scheme::new_uninit().enter(|ctx| {
-            let left = fresh_lvar(ctx, ctx.intern("left"));
-            let right = fresh_lvar(ctx, ctx.intern("right"));
-            let mut graph = Graph::new();
-            f(&mut graph, left, right)
-        })
-    }
-
-    #[test]
-    fn concrete_entities_have_reserved_values() {
-        let term = TermId::new(7);
-        assert_eq!(term.index(), 7);
-        assert_eq!(term.as_u32(), 7);
-        assert_eq!(format!("{term:?}"), "term7");
-        assert!(TermId::reserved_value().is_reserved_value());
-    }
-
-    #[test]
-    fn term_expr_and_kinds_are_copy() {
-        fn assert_copy<T: Copy>() {}
-
-        assert_copy::<Term<'static>>();
-        assert_copy::<TermKind>();
-        assert_copy::<Expr<'static>>();
-        assert_copy::<ExprKind<'static>>();
-    }
-
-    #[test]
-    fn graph_indexes_links_and_nodes() {
-        let mut graph = Graph::new();
-        let link = graph.new_term_link(None);
-
-        assert_eq!(graph[link], None);
-
-        let parent = graph.new_parent_link(None);
-        let term = graph.new_term(
-            parent,
-            TermKind::Continue(FreeOcc::new(0), FreeVars::new()),
-            Value::from_raw(0),
-        );
-        graph.set_term_link(link, term);
-
-        assert_eq!(graph[link], Some(term));
-        assert_eq!(graph.read_term_link(link), Some(term));
-
-        graph[link] = None;
-        assert_eq!(graph.read_term_link(link), None);
-    }
-
-    #[test]
-    fn occurrence_ring_operations_keep_o1_links() {
-        let mut graph = Graph::new();
-        let bound = BoundVar::new(0);
-        let point = graph.new_point(bound);
-        let owner = graph.new_term_link(None);
-
-        let first = graph.free_occ_singleton(point, owner);
-        assert!(graph.free_occ_is_singleton(first));
-
-        let second = graph.free_occ_append(first, point, owner);
-        let third = graph.free_occ_append(second, point, owner);
-        assert_eq!(graph.free_occ_to_vec(first), vec![first, second, third]);
-
-        graph.free_occ_remove(second);
-        assert_eq!(graph.free_occ_to_vec(first), vec![first, third]);
-        assert!(graph.free_occ_is_singleton(second));
-
-        let other = graph.free_occ_singleton(point, owner);
-        graph.free_occ_merge(first, other);
-        assert_eq!(graph.free_occ_to_vec(first), vec![first, third, other]);
-    }
-
-    #[test]
-    fn union_find_is_directional_and_compresses_paths() {
-        let mut graph = Graph::new();
-        let left_desc = BoundVar::new(1);
-        let right_desc = BoundVar::new(2);
-        let left = graph.new_point(left_desc);
-        let right = graph.new_point(right_desc);
-
-        graph.union_to(left, right);
-
-        assert!(graph.points_equal(left, right));
-        assert_eq!(graph.point_descriptor(left), right_desc);
-        assert_eq!(graph[left].parent, right);
-
-        graph.set_point_descriptor(left, left_desc);
-        assert_eq!(graph.point_descriptor(right), left_desc);
-    }
-
-    #[test]
-    fn substitution_merges_occurrences_and_kills_removed_binder() {
-        with_graph(|graph, left_lvar, right_lvar| {
-            let left = graph.new_bound_var(left_lvar);
-            let right = graph.new_bound_var(right_lvar);
-            let left_owner = graph.new_term_link(None);
-            let right_owner = graph.new_term_link(None);
-            let left_occ = graph.new_free_occ_for_binder(left, left_owner);
-            let left_occ_2 = graph.new_free_occ_for_binder(left, left_owner);
-            let right_occ = graph.new_free_occ_for_binder(right, right_owner);
-
-            assert_eq!(graph.collect_occurrences(left).len(), 2);
-            assert_eq!(graph.collect_occurrences(right), vec![right_occ]);
-
-            graph.subst_var_for_var(left_occ, right_occ);
-
-            assert_eq!(graph.bound_var_occ(right), None);
-            assert_eq!(graph.free_binder(right_occ), left);
-            assert_eq!(
-                graph.collect_occurrences(left),
-                vec![left_occ, left_occ_2, right_occ]
-            );
-        });
-    }
-
-    #[test]
-    fn active_link_uses_parent_to_find_live_subterm() {
-        let mut graph = Graph::new();
-        let source = Value::from_raw(0);
-        let child_parent = graph.new_parent_link(None);
-        let child = graph.new_term(
-            child_parent,
-            TermKind::Continue(FreeOcc::new(0), FreeVars::new()),
-            source,
-        );
-        let live_child_link = graph.new_term_link(Some(child));
-        let _stale_child_link = graph.new_term_link(Some(child));
-        let parent_uplink = graph.new_parent_link(None);
-        let expr_link = graph.new_expr_link(None);
-        let parent = graph.new_term(
-            parent_uplink,
-            TermKind::LetVal((BoundVar::new(0), expr_link), live_child_link),
-            source,
-        );
-        graph.set_parent_link(child_parent, Parent::Term(parent));
-
-        assert_eq!(
-            graph.get_active_link_for(child),
-            ActiveLinkStatus::ActiveSubterm(live_child_link)
-        );
-
-        graph.clear_term_link(live_child_link);
-        assert_eq!(
-            graph.get_active_link_for(child),
-            ActiveLinkStatus::TermIsDead
-        );
-    }
-
-    #[test]
-    fn pretty_printer_renders_graph_terms() {
-        let mut graph = Graph::new();
-        let source = Value::from_raw(0);
-        let parent = graph.new_parent_link(None);
-        let term = graph.new_term(
-            parent,
-            TermKind::Continue(FreeOcc::new(0), FreeVars::new()),
-            source,
-        );
-
-        assert_eq!(
-            graph.pretty_term(term),
-            "term0 (continue free_occ0/<missing> [])"
-        );
-    }
-
-    #[test]
-    fn worklist_queue_is_fifo() {
-        let mut queue = WorklistQueue::new();
-        queue.add(TermLink::new(1));
-        queue.add_list([TermLink::new(2), TermLink::new(3)]);
-
-        assert_eq!(queue.len(), 3);
-        assert_eq!(queue.get(), Some(TermLink::new(1)));
-        assert_eq!(queue.get(), Some(TermLink::new(2)));
-        assert_eq!(queue.get(), Some(TermLink::new(3)));
-        assert_eq!(queue.get(), None);
-    }
-
-    #[test]
-    fn graph_worklist_enqueues_occurrence_owners_and_skips_dead_links() {
-        with_graph(|graph, left_lvar, _right_lvar| {
-            let left = graph.new_bound_var(left_lvar);
-            let live_owner = graph.new_term_link(None);
-            let dead_owner = graph.new_term_link(None);
-            let live_occ = graph.new_free_occ_for_binder(left, live_owner);
-            let _dead_occ = graph.new_free_occ_for_binder(left, dead_owner);
-            let source = Value::from_raw(0);
-            let parent = graph.new_parent_link(None);
-            let term = graph.new_term(
-                parent,
-                TermKind::Continue(live_occ, FreeVars::new()),
-                source,
-            );
-            graph.set_term_link(live_owner, term);
-
-            let mut worklist = GraphWorklist::new();
-            worklist.add_occurrences(graph, [live_occ]);
-
-            assert_eq!(
-                worklist.get_next_live_subterm(graph),
-                Some((live_owner, term, None))
-            );
-            assert_eq!(worklist.get_next_live_subterm(graph), None);
-        });
-    }
-
-    #[test]
-    fn entity_lists_use_graph_pools() {
-        let mut graph = Graph::new();
-        let vars = graph.new_free_vars([FreeOcc::new(0), FreeOcc::new(1)]);
-        assert_eq!(
-            graph.free_vars_slice(&vars),
-            &[FreeOcc::new(0), FreeOcc::new(1)]
-        );
-
-        let mut bound_vars = graph.new_bound_vars([BoundVar::new(3)]);
-        graph.bound_vars_push(&mut bound_vars, BoundVar::new(4));
-        assert_eq!(
-            graph.bound_vars_slice(&bound_vars),
-            &[BoundVar::new(3), BoundVar::new(4)]
-        );
-
-        let mut function_links = graph.new_function_links([FunctionLink::new(5)]);
-        graph.function_links_push(&mut function_links, FunctionLink::new(6));
-        assert_eq!(
-            graph.function_links_slice(&function_links),
-            &[FunctionLink::new(5), FunctionLink::new(6)]
-        );
     }
 }

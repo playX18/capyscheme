@@ -9,18 +9,18 @@ use crate::{
         primitives::sym_current_module,
         rectify_letrec::is_define_module_term,
     },
-    runtime::{Context, modules::resolve_module},
+    runtime::{MutationContext, modules::resolve_module},
 };
 
 struct ModuleBindingAnalysis<'gc> {
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     module_definitions: Vec<(Value<'gc>, ArrayRef<'gc, TermRef<'gc>>)>,
     module_lexicals: Vec<(Value<'gc>, LVarRef<'gc>)>,
     bindings: Vec<(Value<'gc>, Value<'gc>)>,
 }
 
 impl<'gc> ModuleBindingAnalysis<'gc> {
-    pub fn new(ctx: Context<'gc>) -> Self {
+    pub fn new(ctx: MutationContext<'gc>) -> Self {
         Self {
             ctx,
             module_definitions: Vec::new(),
@@ -189,7 +189,7 @@ impl<'gc> ModuleBindingAnalysis<'gc> {
     fn compute(
         &mut self,
         exp: TermRef<'gc>,
-    ) -> impl Fn(Context<'gc>, Value<'gc>, Value<'gc>) -> Resolved<'gc> {
+    ) -> impl Fn(MutationContext<'gc>, Value<'gc>, Value<'gc>) -> Resolved<'gc> {
         self.visit(exp);
 
         let mut declarative: Vec<Value> = Vec::new();
@@ -231,7 +231,7 @@ impl<'gc> ModuleBindingAnalysis<'gc> {
                 (module, resolver)
             })
             .collect::<Vec<_>>();
-        move |ctx: Context<'gc>, module: Value<'gc>, name: Value<'gc>| {
+        move |ctx: MutationContext<'gc>, module: Value<'gc>, name: Value<'gc>| {
             resolvers
                 .iter()
                 .find_map(|(modu, resolver)| {
@@ -262,7 +262,7 @@ enum Resolved<'gc> {
 
 impl<'gc> Resolver<'gc> {
     fn new(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         module: Option<Gc<'gc, Module<'gc>>>,
         local_definitions: Vec<Value<'gc>>,
     ) -> Self {
@@ -287,7 +287,7 @@ impl<'gc> Resolver<'gc> {
         }
     }
 
-    fn resolve(&self, ctx: Context<'gc>, name: Value<'gc>) -> Resolved<'gc> {
+    fn resolve(&self, ctx: MutationContext<'gc>, name: Value<'gc>) -> Resolved<'gc> {
         if let Some(module) = self.the_module
             && module.local_variable(ctx, name).is_some()
         {
@@ -318,13 +318,17 @@ struct ImportedResolver<'gc> {
 }
 
 impl<'gc> ImportedResolver<'gc> {
-    fn resolve(&self, ctx: Context<'gc>, name: Value<'gc>) -> Option<(Value<'gc>, Value<'gc>)> {
+    fn resolve(
+        &self,
+        ctx: MutationContext<'gc>,
+        name: Value<'gc>,
+    ) -> Option<(Value<'gc>, Value<'gc>)> {
         let var: Value<'gc> = self.iface.variable(ctx, name)?.into();
         let name = self.by_var.get(&var)?;
         Some((self.iface.name.get(), *name))
     }
 
-    fn new(ctx: Context<'gc>, iface: Gc<'gc, Module<'gc>>) -> Self {
+    fn new(ctx: MutationContext<'gc>, iface: Gc<'gc, Module<'gc>>) -> Self {
         let mut by_var = HashMap::new();
         let public_iface = resolve_module(ctx, iface.name.get(), false, false);
         if let Some(public_iface) = public_iface {
@@ -339,7 +343,7 @@ impl<'gc> ImportedResolver<'gc> {
 
 /// Scan `exp` for module-level definitions and rewrite references to them
 /// that reach across module boundaries.
-pub fn annotate_free_vars<'gc>(ctx: Context<'gc>, exp: TermRef<'gc>) -> TermRef<'gc> {
+pub fn annotate_free_vars<'gc>(ctx: MutationContext<'gc>, exp: TermRef<'gc>) -> TermRef<'gc> {
     let mut computer = ModuleBindingAnalysis::new(ctx);
     let resolve = computer.compute(exp);
 

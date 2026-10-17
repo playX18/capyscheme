@@ -8,7 +8,7 @@ use crate::frontend::error::LexicalError;
 use crate::frontend::reader::TreeSitter;
 use crate::heap::{Gc, Global};
 use crate::{
-    runtime::{Context, modules::Module, value::*},
+    runtime::{MutationContext, modules::Module, value::*},
     static_symbols,
 };
 use std::sync::OnceLock;
@@ -26,7 +26,7 @@ pub mod recursive_bindings;
 pub mod term;
 pub mod well_known_procs;
 
-pub fn datum_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
+pub fn datum_sourcev<'gc>(ctx: MutationContext<'gc>, obj: Value<'gc>) -> Value<'gc> {
     let Some(props) = get_source_property(ctx, obj) else {
         return Value::new(false);
     };
@@ -40,11 +40,11 @@ pub fn datum_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
     }
 }
 
-pub fn syntax_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
+pub fn syntax_sourcev<'gc>(ctx: MutationContext<'gc>, obj: Value<'gc>) -> Value<'gc> {
     datum_sourcev(ctx, obj)
 }
 
-pub fn syntax_annotation<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
+pub fn syntax_annotation<'gc>(ctx: MutationContext<'gc>, obj: Value<'gc>) -> Value<'gc> {
     datum_sourcev(ctx, obj)
 }
 
@@ -52,23 +52,23 @@ type RootedSourceProperties = crate::Rootable!(Gc<'_, WeakTable<'_>>);
 
 static SOURCE_PROPERTIES: OnceLock<Global<RootedSourceProperties>> = OnceLock::new();
 
-pub fn source_properties<'gc>(ctx: Context<'gc>) -> Gc<'gc, WeakTable<'gc>> {
+pub fn source_properties<'gc>(ctx: MutationContext<'gc>) -> Gc<'gc, WeakTable<'gc>> {
     *SOURCE_PROPERTIES
         .get_or_init(|| Global::new(WeakTable::new(ctx, 128, 0.75)))
         .fetch(ctx)
 }
 
-pub fn has_source_properties<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> bool {
+pub fn has_source_properties<'gc>(ctx: MutationContext<'gc>, obj: Value<'gc>) -> bool {
     source_properties(ctx).contains_key(ctx, obj)
 }
 
-pub fn set_source_property<'gc>(ctx: Context<'gc>, obj: Value<'gc>, alist: Value<'gc>) {
+pub fn set_source_property<'gc>(ctx: MutationContext<'gc>, obj: Value<'gc>, alist: Value<'gc>) {
     let props = source_properties(ctx);
     props.put(ctx, obj, alist);
 }
 
 pub fn add_source<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     obj: Value<'gc>,
     filename: Value<'gc>,
     line: i32,
@@ -91,7 +91,7 @@ pub fn add_source<'gc>(
     set_source_property(ctx, obj, alist.into());
 }
 
-pub fn get_source_property<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Option<Value<'gc>> {
+pub fn get_source_property<'gc>(ctx: MutationContext<'gc>, obj: Value<'gc>) -> Option<Value<'gc>> {
     source_properties(ctx).get(ctx, obj)
 }
 
@@ -114,7 +114,7 @@ fn source_prop<'gc>(props: Value<'gc>, key: Value<'gc>) -> Value<'gc> {
         .unwrap_or(Value::new(false))
 }
 
-fn source_props_to_vector<'gc>(ctx: Context<'gc>, props: Value<'gc>) -> Value<'gc> {
+fn source_props_to_vector<'gc>(ctx: MutationContext<'gc>, props: Value<'gc>) -> Value<'gc> {
     Vector::from_slice(
         ctx,
         &[
@@ -133,7 +133,7 @@ fn source_props_to_vector<'gc>(ctx: Context<'gc>, props: Value<'gc>) -> Value<'g
 }
 
 pub fn source_property<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     obj: Value<'gc>,
     key: Value<'gc>,
 ) -> Option<Value<'gc>> {
@@ -142,7 +142,7 @@ pub fn source_property<'gc>(
 
 #[cfg(feature = "bootstrap")]
 pub fn read_from_string<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     source: impl AsRef<str>,
     filename: impl AsRef<str>,
 ) -> Result<Value<'gc>, LexicalError<'gc>> {

@@ -1,5 +1,5 @@
 use super::*;
-use crate::compiler::cranelift::primitive::Primitive;
+use crate::runtime::prims::def::Primitive;
 
 /// Lower primcalls for cache access into direct cache instructions.
 pub(super) fn lower_cache_operations<'gc>(mut procedure: Procedure<'gc>) -> Procedure<'gc> {

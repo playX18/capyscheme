@@ -1,9 +1,9 @@
 //! 0-CFA flow analysis over the graph CPS: the abstract value of every bound
 //! variable is the set of closure `FunctionId`s that may flow to it.
 //!
-//! A `Fix` member's variable holds its own closure; at `App(f, args, cont)`
+//! A `Fix` member's variable holds its own closure, at `App(f, args, cont)`
 //! every function in `flow(f)` may be applied and its parameters receive the
-//! argument flows; at `Continue(c, args)` the continuation's parameters
+//! argument flows, at `Continue(c, args)` the continuation's parameters
 //! receive the argument flows.
 //!
 //! Outputs: per-function call sites (the `App` terms where its closure may be
@@ -13,7 +13,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use super::graph::{BoundVar, ExprKind, FunctionId, Graph, Subterm, TermId, TermKind};
+use super::graph::{BoundVar, ExprKind, FreeVar, FunctionId, Graph, Subterm, TermId, TermKind};
 use super::reify::GraphReifyInfo;
 
 /// Per-function flow results.
@@ -117,7 +117,9 @@ impl FlowAnalysis {
                 by_function: &mut by_function,
                 escaped: &mut escaped,
             };
-            for_term(graph, root, &mut visited, &mut |term| use_visitor.visit(term));
+            for_term(graph, root, &mut visited, &mut |term| {
+                use_visitor.visit(term)
+            });
         }
 
         // Closure classes: union functions whose closures may reach the same
@@ -133,7 +135,9 @@ impl FlowAnalysis {
                 flow: &self.flow,
                 union: &mut union,
             };
-            for_term(graph, root, &mut visited, &mut |term| class_visitor.visit(term));
+            for_term(graph, root, &mut visited, &mut |term| {
+                class_visitor.visit(term)
+            });
         }
 
         let mut class_of: HashMap<FunctionId, usize> = HashMap::new();
@@ -160,7 +164,7 @@ impl FlowAnalysis {
         self.classes = classes;
     }
 
-    /// Propagate one term's App/Continue constraints; returns whether the
+    /// Propagate one term's App/Continue constraints, returns whether the
     /// flow sets changed.
     fn propagate_term<'gc>(
         &mut self,
@@ -205,34 +209,67 @@ impl FlowAnalysis {
                 }
             }
             TermKind::Continue(cont, args) => {
-                let cont_binder = graph.free_binder_rooted(cont);
-                let args_binders: Vec<BoundVar> = graph
-                    .free_vars_slice(&args)
-                    .iter()
-                    .copied()
-                    .map(|v| graph.free_binder_rooted(v))
-                    .collect();
-                if let Some(continuation) = callable_by_binder.get(&cont_binder) {
-                    if let Some(ps) = params.get(continuation) {
-                        for (param, arg) in ps.iter().zip(args_binders.iter()) {
-                            let arg_flows: Vec<FunctionId> = self
-                                .flow
-                                .get(arg)
-                                .map(|s| s.iter().copied().collect())
-                                .unwrap_or_default();
-                            if !arg_flows.is_empty() {
-                                let entry = self.flow.entry(*param).or_default();
-                                let before = entry.len();
-                                for f in arg_flows {
-                                    entry.insert(f);
-                                }
-                                changed |= entry.len() != before;
-                            }
+                let args = graph.free_vars_slice(&args);
+                changed |=
+                    self.flow_into_continuation(graph, cont, args, params, callable_by_binder);
+            }
+            TermKind::BranchPrim(op, consequent, alternative, vars) => {
+                let (_, true_args, false_args) = graph.branch_operands(op, &vars);
+                changed |= self.flow_into_continuation(
+                    graph,
+                    consequent,
+                    true_args,
+                    params,
+                    callable_by_binder,
+                );
+                changed |= self.flow_into_continuation(
+                    graph,
+                    alternative,
+                    false_args,
+                    params,
+                    callable_by_binder,
+                );
+            }
+            _ => {}
+        }
+        changed
+    }
+
+    /// Let the functions flowing into `args` flow into the parameters of the
+    /// continuation `cont` they are passed to.
+    fn flow_into_continuation<'gc>(
+        &mut self,
+        graph: &Graph<'gc>,
+        cont: FreeVar,
+        args: &[FreeVar],
+        params: &HashMap<FunctionId, Vec<BoundVar>>,
+        callable_by_binder: &HashMap<BoundVar, FunctionId>,
+    ) -> bool {
+        let mut changed = false;
+        let cont_binder = graph.free_binder_rooted(cont);
+        let args_binders: Vec<BoundVar> = args
+            .iter()
+            .copied()
+            .map(|v| graph.free_binder_rooted(v))
+            .collect();
+        if let Some(continuation) = callable_by_binder.get(&cont_binder) {
+            if let Some(ps) = params.get(continuation) {
+                for (param, arg) in ps.iter().zip(args_binders.iter()) {
+                    let arg_flows: Vec<FunctionId> = self
+                        .flow
+                        .get(arg)
+                        .map(|s| s.iter().copied().collect())
+                        .unwrap_or_default();
+                    if !arg_flows.is_empty() {
+                        let entry = self.flow.entry(*param).or_default();
+                        let before = entry.len();
+                        for f in arg_flows {
+                            entry.insert(f);
                         }
+                        changed |= entry.len() != before;
                     }
                 }
             }
-            _ => {}
         }
         changed
     }
@@ -265,7 +302,10 @@ fn for_term<'gc>(
             walk_link(graph, consequent, visited, f);
             walk_link(graph, alternative, visited, f);
         }
-        TermKind::Continue(..) | TermKind::App(..) | TermKind::Raise(..) => {}
+        TermKind::Continue(..)
+        | TermKind::App(..)
+        | TermKind::Raise(..)
+        | TermKind::BranchPrim(..) => {}
     }
 }
 
@@ -303,29 +343,31 @@ impl<'a, 'gc> UseVisitor<'a, 'gc> {
             TermKind::If(test, _, _, _) => {
                 self.escape_var(graph.free_binder_rooted(test));
             }
-            TermKind::Continue(_, args) => {
-                // Continuation arguments stay within known control flow.
-                let _ = args;
-            }
+            // Continuation arguments stay within known control flow.
+            TermKind::Continue(..) => {}
             TermKind::App(func, args, _) => {
                 let op_binder = graph.free_binder_rooted(func);
                 self.record_call(&op_binder, term);
-                let known_callee = self
-                    .flow
-                    .get(&op_binder)
-                    .map_or(false, |s| !s.is_empty());
+                let known_callee = self.flow.get(&op_binder).map_or(false, |s| !s.is_empty());
                 if !known_callee {
                     // Arguments passed to an unknown callee: escapes.
                     self.escape_vars(&args);
                 } else {
-                    // Arguments flow into known callee parameters; they are
+                    // Arguments flow into known callee parameters, they are
                     // only ever applied there or passed further (tracked by
-                    // the flow sets, not marked escaping).
-                    let _ = &args;
+                    // the flow sets instead of being marked escaping).
                 }
             }
             TermKind::Raise(_, args) => {
                 self.escape_vars(&args);
+            }
+            TermKind::BranchPrim(op, _, _, vars) => {
+                // The primitive's operands escape as a primitive call's do,
+                // the arguments of the arms stay within known control flow.
+                let (args, _, _) = graph.branch_operands(op, &vars);
+                for var in args.iter().copied() {
+                    self.escape_var(graph.free_binder_rooted(var));
+                }
             }
             TermKind::Fix(..) | TermKind::Letk(..) => {}
         }

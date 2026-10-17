@@ -1,62 +1,30 @@
-//! Native code compilation pipeline: CPS → CFG → Cranelift → machine code.
+//! Compilation pipeline: expander IR → graph CPS → CFG/SSA → bytecode → FASL.
+//!
+//! [`lower_to_cps`] (in the private `pipeline` module) is the frontend
+//! driver. It runs the expander-level passes, primitive resolution,
+//! free-variable annotation, letrec rectification, recursive-binding
+//! rewriting, well-known-procedure expansion, assignment elimination
+//! (skipped when the self-hosted Scheme pipeline already ran them),
+//! lowers to graph CPS, optimizes and converts to SSA
+//! ([`cps::optimize::optimize_graph_func_to_ssa`]), and returns a
+//! [`LoweredProgram`]. The private `object` module is the backend driver:
+//! SSA to bytecode ([`bytecode::compile_program`]), then the FASL image.
+//!
+//! - [`tree`]: the IR node types, re-exported for the expander.
+//! - [`cps`]: graph CPS: the mutable graph, the worklist optimizer, and
+//!   the analyses to run closure lowering.
+//! - [`cfg`]: SSA-form CFG plus the finishing passes (rest args, dead
+//!   code, switch inference, cache ops).
+//! - [`bytecode`]: the backend: CFG procedures to assembled code blocks.
+//! - [`prims::def`](crate::runtime::prims::def): the `prim-call` operations.
 
-#[macro_export]
-macro_rules! call_signature {
-    ($callconv: ident ($($arg: ident),*) -> $ret: ident) => {
-        {
-            let mut sig = ir::Signature::new(CallConv::$callconv);
-            {
-                $(
-                    sig.params.push(ir::AbiParam::new(ir::types::$arg));
-                )*
-                sig.returns.push(ir::AbiParam::new(ir::types::$ret));
-            }
-            sig
-        }
-    };
-
-    ($callconv: ident ($($arg: ident),*) -> ($($ret:ident),*)) => {
-        {
-            let mut sig = ir::Signature::new(CallConv::$callconv);
-            {
-                $(
-                    sig.params.push(ir::AbiParam::new(ir::types::$arg));
-                )*
-                $(
-                    sig.returns.push(ir::AbiParam::new(ir::types::$ret));
-                )*
-            }
-
-            sig
-        }
-    };
-
-    ($callconv: ident ($($arg: ident),*)) => {
-        {
-            let mut sig = ir::Signature::new(CallConv::$callconv);
-            {
-                $(
-                    sig.params.push(ir::AbiParam::new(ir::types::$arg));
-                )*
-            }
-
-            sig
-        }
-    }
-}
-
-mod artifact;
 mod bootstrap;
+pub mod bytecode;
 pub mod cfg;
-pub mod codegen;
 pub mod cps;
-pub mod cranelift;
-pub mod debuginfo;
-pub mod direct;
 mod dump;
 mod object;
 mod pipeline;
-mod symbols;
 pub mod tree;
 
 pub use bootstrap::compile_file;

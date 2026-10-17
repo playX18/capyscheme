@@ -5,7 +5,7 @@ use crate::{
     expander::core::{
         LVarRef, LetStyle, ProcRef, Term, TermKind, TermRef, constant, seq_from_slice,
     },
-    runtime::{Context, value::Value},
+    runtime::{MutationContext, value::Value},
 };
 
 fn compute_ids<'gc>(t: &Term<'gc>) -> Map<LVarRef<'gc>, u32> {
@@ -184,40 +184,7 @@ fn compute_complex<'gc>(
     )
 }
 
-#[allow(dead_code, unused_variables)]
-struct ReorderBindings<'gc> {
-    ctx: Context<'gc>,
-    sym_id: Map<LVarRef<'gc>, u32>,
-    fv_cache: Map<*const Term<'gc>, Rc<HashSet<u32>>>,
-    remaining_ids: HashSet<u32>,
-    sunk_lambdas: Vec<(LVarRef<'gc>, TermRef<'gc>)>,
-    sunk_exprs: Vec<(LVarRef<'gc>, TermRef<'gc>)>,
-}
-
-impl<'gc> ReorderBindings<'gc> {
-    #[allow(unused)]
-    fn visit(&mut self, lhs: LVarRef<'gc>, rhs: TermRef<'gc>) -> bool {
-        false
-    }
-}
-
-/// Reorders bindings to minimize false dependencies for letrec*.
-///
-/// This function sinks (moves later) bindings that do not reference
-/// subsequent bindings. Lambdas are sunk further than other expressions.
-#[allow(dead_code, unused_variables)]
-fn reorder_bindings<'gc>(
-    ctx: Context<'gc>,
-    lhs: &[LVarRef<'gc>],
-    rhs: &[TermRef<'gc>],
-    sym_id: &Map<LVarRef<'gc>, u32>,
-    fv_cache: &mut Map<*const Term<'gc>, Rc<HashSet<u32>>>,
-) -> Vec<(LVarRef<'gc>, TermRef<'gc>)> {
-    // Identity order until sinking analysis is implemented (CAPY-42).
-    lhs.iter().copied().zip(rhs.iter().copied()).collect()
-}
-
-pub fn rewrite_recursive_bindings<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
+pub fn rewrite_recursive_bindings<'gc>(ctx: MutationContext<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
     // remove `let*` bindings. This makes fixing letrec substantially easier.
     let t = remove_letstar(ctx, t);
     let sym_id = compute_ids(&t);
@@ -236,10 +203,6 @@ pub fn rewrite_recursive_bindings<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> Te
                 let in_order = matches!(l.style, LetStyle::LetRecStar);
 
                 if in_order {
-                    //let (lhs, rhs) = reorder_bindings(ctx, &l.lhs, &l.rhs, &sym_id, &mut fv_cache)
-                    //    .into_iter()
-                    //    .unzip::<_, _, Vec<_>, Vec<_>>();
-
                     let mut fix_state = FixTermState {
                         sym_id: &sym_id,
                         referenced: &referenced,
@@ -311,7 +274,7 @@ struct FixTermState<'a, 'gc, 'fv> {
 }
 
 fn fix_term<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     src: Value<'gc>,
     in_order: bool,
     lhs: &[LVarRef<'gc>],
@@ -372,16 +335,6 @@ fn compute_sccs<'gc>(
         node_ids.push(node);
     }
 
-    /*for &v in node_ids.iter() {
-        for &w in node_ids.iter() {
-            if w != v
-                && compute_free_variables(fv_cache, sym_id, &graph[v].rhs)
-                    .contains(&sym_id[&graph[w].lhs])
-            {
-                graph.add_edge(v, w, ());
-            }
-        }
-    }*/
 
     for &node in node_ids.iter() {
         let init = &graph[node].rhs;
@@ -399,22 +352,6 @@ fn compute_sccs<'gc>(
     }
 
     if in_order {
-        /*let mut w = &node_ids[..];
-
-        while !w.is_empty() {
-            if w.len() != 1 {
-                let xj = w[1];
-                let xi = w[0];
-
-                if !graph[xi].rhs.is_transparent() || complex.contains(&sym_id[&graph[xi].lhs]) {
-                    graph.add_edge(xj, xi, ());
-                }
-                w = &w[1..];
-            } else {
-                break;
-            }
-        }*/
-
         let mut prev: Option<petgraph::prelude::NodeIndex> = None;
         for &id in node_ids.iter() {
             if let Some(p) = prev {
@@ -442,7 +379,7 @@ fn compute_sccs<'gc>(
 }
 
 fn fix_scc<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     src: Value<'gc>,
     binds: &[(LVarRef<'gc>, TermRef<'gc>)],
     body: TermRef<'gc>,
@@ -691,7 +628,7 @@ impl<'a, 'gc> ComputeFreeVariables<'gc, 'a> {
 }
 
 /// Convert let* to nested let
-fn remove_letstar<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
+fn remove_letstar<'gc>(ctx: MutationContext<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
     t.post_order(ctx, |ctx, x| match &x.kind {
         TermKind::Let(l) if l.style == LetStyle::LetStar => {
             let mut body = l.body;

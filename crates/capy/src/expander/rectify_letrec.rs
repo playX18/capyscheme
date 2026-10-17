@@ -6,7 +6,7 @@ use crate::{
         LVarRef, Let, LetStyle, Term, TermKind, TermRef, constant, fresh_lvar, lref, prim_call_term,
     },
     runtime::{
-        Context,
+        MutationContext,
         modules::{Variable, resolve_module},
         value::{Str, Value},
         vm::syntax::SyntaxTransformer,
@@ -25,7 +25,7 @@ struct ToplevelUsage<'gc> {
 }
 
 fn collect_declarative_definitions<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     t: TermRef<'gc>,
 ) -> HashMap<(ValueEqual<'gc>, Value<'gc>), Option<TermRef<'gc>>> {
     let dt = RefCell::new(ToplevelUsage {
@@ -78,15 +78,6 @@ fn collect_declarative_definitions<'gc>(
             && is_declarative_module(module.0)
         {
             declarative.insert((*module, *name), *exp);
-        } else {
-            /*println!(
-                ";; Non-declarative toplevel: {}@{}, dynamic={}, assigned={}, declarative={}",
-                module.0,
-                name,
-                dt.dynamic.contains(&name),
-                dt.assigned.contains_key(&(*module, *name)),
-                dt.defined.contains_key(&(*module, *name))
-            );*/
         }
     });
 
@@ -94,7 +85,7 @@ fn collect_declarative_definitions<'gc>(
 }
 
 fn collect_private_definitions<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     declarative: &HashMap<(ValueEqual<'gc>, Value<'gc>), Option<TermRef<'gc>>>,
 ) -> HashSet<(ValueEqual<'gc>, Value<'gc>)> {
     let mut exports = HashMap::new();
@@ -145,7 +136,7 @@ fn collect_private_definitions<'gc>(
     private
 }
 
-pub fn rectify_letrec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
+pub fn rectify_letrec<'gc>(ctx: MutationContext<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
     let declarative = collect_declarative_definitions(ctx, t);
     let private = if true {
         collect_private_definitions(ctx, &declarative)
@@ -159,16 +150,15 @@ pub fn rectify_letrec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
 }
 
 struct LetrecRectifier<'gc> {
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
 
     mod_vars: HashMap<ValueEqual<'gc>, LVarRef<'gc>>,
-    reified_vars:
-        HashMap<(ValueEqual<'gc>, Value<'gc>), (Option<LVarRef<'gc>>, LVarRef<'gc>)>,
+    reified_vars: HashMap<(ValueEqual<'gc>, Value<'gc>), (Option<LVarRef<'gc>>, LVarRef<'gc>)>,
 }
 
 impl<'gc> LetrecRectifier<'gc> {
     pub fn new(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         declarative: HashMap<(ValueEqual<'gc>, Value<'gc>), Option<TermRef<'gc>>>,
         private: HashSet<(ValueEqual<'gc>, Value<'gc>)>,
     ) -> Self {
@@ -268,11 +258,7 @@ impl<'gc> LetrecRectifier<'gc> {
         let src = expr.source.get();
         match expr.kind {
             TermKind::Define(module, name, exp) => {
-                match self
-                    .reified_vars
-                    .get(&(module.into(), name))
-                    .copied()
-                {
+                match self.reified_vars.get(&(module.into(), name)).copied() {
                     None => self.visit_expr(expr),
                     Some((None, value)) => {
                         let val = self.visit_expr(exp);
@@ -329,18 +315,6 @@ impl<'gc> LetrecRectifier<'gc> {
             }
 
             TermKind::Seq(head, tail) => {
-                /*let tail = self.visit_top_level(*seq.last().unwrap());
-                let mut head = Vec::new();
-
-                for stmt in &seq[0..seq.len() - 1] {
-                    let stmt = self.visit_top_level(*stmt);
-                    if let TermKind::Let(l) = stmt.kind
-                        && l.style == LetStyle::LetRecStar
-                    {
-                        let acc = self.add_statement(src, l.body, tail);
-                    }
-                }*/
-
                 let head = self.visit_top_level(head);
                 let tail = self.visit_top_level(tail);
                 if let TermKind::Let(l) = head.kind
@@ -364,16 +338,9 @@ impl<'gc> LetrecRectifier<'gc> {
     fn visit_expr(&mut self, expr: TermRef<'gc>) -> TermRef<'gc> {
         expr.post_order(self.ctx, |ctx, expr| match &expr.kind {
             TermKind::ToplevelRef(module, name) => {
-                match self
-                    .reified_vars
-                    .get(&(ValueEqual(*module), *name))
-                {
+                match self.reified_vars.get(&(ValueEqual(*module), *name)) {
                     None => expr,
                     Some((_, value)) => {
-                        /*println!(
-                            ";; Rewrite toplevel-ref {}@{} -> {}",
-                            module, name, value.name
-                        );*/
                         lref(ctx, *value)
                     }
                 }
@@ -412,7 +379,7 @@ static_symbols!(SYM_DEFINE_MODULE = "define-module*");
 
 // check if `t` is a `((@ (capy) define-module*) mod)` call.
 pub fn is_define_module_term<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     t: TermRef<'gc>,
 ) -> Option<(Value<'gc>, ArrayRef<'gc, TermRef<'gc>>)> {
     if let TermKind::Call(rator, args) = t.kind

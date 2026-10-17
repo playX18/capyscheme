@@ -1,3 +1,6 @@
+//! SCC-based contification candidates for the optimizer worklist.
+
+use super::graph::verbose_log;
 use cranelift_entity::{EntitySet, SecondaryMap};
 
 use super::{
@@ -23,14 +26,6 @@ impl<K> SingleValueSet<K> {
             (Self::Bottom, other) | (other, Self::Bottom) => other,
         }
     }
-}
-
-macro_rules! verbose_log {
-    ($($arg:tt)*) => {
-        if super::graph::VERBOSE {
-            eprintln!($($arg)*);
-        }
-    };
 }
 
 #[derive(Clone, Copy)]
@@ -192,7 +187,10 @@ fn collect_tailcalls<'gc>(
         TermKind::App(callee, _, cont) if graph.free_binder(cont) == return_cont => {
             out.insert(graph.free_binder(callee));
         }
-        TermKind::App(..) | TermKind::Continue(..) | TermKind::Raise(..) => {}
+        TermKind::App(..)
+        | TermKind::Continue(..)
+        | TermKind::Raise(..)
+        | TermKind::BranchPrim(..) => {}
     }
 }
 
@@ -206,7 +204,7 @@ fn common_return_cont<'gc>(
         TermKind::LetVal((_, expr), body) => {
             if graph
                 .read_expr_link(expr)
-                .is_some_and(|expr| expr_free_vars_contain_any(graph, expr, binders))
+                .is_some_and(|expr| graph.expr_free_vars_contain_any(expr, binders))
             {
                 return SingleValueSet::Top;
             }
@@ -262,7 +260,7 @@ fn common_return_cont<'gc>(
                 SingleValueSet::Bottom
             }
         }
-        TermKind::Raise(_, args) => {
+        TermKind::Raise(_, args) | TermKind::BranchPrim(_, _, _, args) => {
             if free_vars_contain_any(graph, graph.free_vars_slice(&args).iter().copied(), binders) {
                 SingleValueSet::Top
             } else {
@@ -329,7 +327,10 @@ fn find_push_site<'gc>(
         TermKind::App(callee, ..) if binders.contains(graph.free_binder(callee)) => {
             PushSearch::here(link)
         }
-        TermKind::App(..) | TermKind::Continue(..) | TermKind::Raise(..) => PushSearch::none(),
+        TermKind::App(..)
+        | TermKind::Continue(..)
+        | TermKind::Raise(..)
+        | TermKind::BranchPrim(..) => PushSearch::none(),
     }
 }
 
@@ -363,16 +364,4 @@ fn free_vars_contain_any<'gc>(
 ) -> bool {
     vars.into_iter()
         .any(|var| binders.contains(graph.free_binder(var)))
-}
-
-fn expr_free_vars_contain_any<'gc>(
-    graph: &Graph<'gc>,
-    expr: super::graph::ExprId,
-    binders: &EntitySet<BoundVar>,
-) -> bool {
-    let mut contains_any = false;
-    graph.for_each_free_var_of_expr(expr, |var| {
-        contains_any |= binders.contains(graph.free_binder(var));
-    });
-    contains_any
 }
