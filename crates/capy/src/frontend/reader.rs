@@ -9,8 +9,8 @@ use crate::{
     frontend::{Directives, num::parse_number},
     global, list,
     runtime::{
-        Context,
-        value::{ByteVector, ClassTagged, IntoValue, Str, Symbol, Value, Vector},
+        MutationContext,
+        value::{ByteVector, ClassTagged, IntoValue, Keyword, Str, Symbol, Value, Vector},
         vm::syntax::Syntax,
     },
 };
@@ -33,17 +33,21 @@ unsafe impl<'gc> ClassTagged for Annotation<'gc> {
 }
 
 pub struct TreeSitter<'a, 'gc> {
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     text: &'a str,
     tree: tree_sitter::Tree,
     source_file: Value<'gc>,
-    #[allow(dead_code)]
     wrap_stx: bool,
     directives: Directives,
 }
 
 impl<'a, 'gc> TreeSitter<'a, 'gc> {
-    pub fn new(ctx: Context<'gc>, text: &'a str, source_file: Value<'gc>, wrap_stx: bool) -> Self {
+    pub fn new(
+        ctx: MutationContext<'gc>,
+        text: &'a str,
+        source_file: Value<'gc>,
+        wrap_stx: bool,
+    ) -> Self {
         let mut parser = tree_sitter::Parser::new();
         parser
             .set_language(&tree_sitter::Language::new(tree_sitter_scheme::LANGUAGE))
@@ -67,7 +71,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
         self.directives
     }
 
-    pub fn ctx(&self) -> Context<'gc> {
+    pub fn ctx(&self) -> MutationContext<'gc> {
         self.ctx
     }
 
@@ -83,8 +87,24 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
         self.source_file
     }
 
+    /// Record `node`'s span for `expression` in the datum properties
+    /// table. Skipped values carry spans only as wrapped syntax objects
+    /// (see [`wrap`]): immediates and numbers lack table identity (every
+    /// `1` would share one span), and interned values alias across reads
+    /// (a span filed under `foo` would leak into every same-named read).
+    ///
+    /// Lines are 1-based, columns 0-based: the established convention
+    /// (`lib/boot/reader.scm` counts lines from 1, and
+    /// `render-source-line` documents a 1-based line). Tree-sitter rows
+    /// are 0-based, hence the `+ 1`.
     pub fn annotate(&self, expression: Value<'gc>, node: &Node) {
         if expression.is_immediate() || expression.is_number() {
+            return;
+        }
+        if expression.is::<Symbol>() && expression.downcast::<Symbol>().is_interned() {
+            return;
+        }
+        if expression.is::<Keyword>() {
             return;
         }
         let start_point = node.start_position();
@@ -94,9 +114,9 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
             self.ctx,
             expression,
             self.source_file,
-            start_point.row as i32,
+            start_point.row as i32 + 1,
             start_point.column as i32,
-            end_point.row as i32,
+            end_point.row as i32 + 1,
             end_point.column as i32,
         );
     }
@@ -241,7 +261,6 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                         CompoundType::Vector => {
                             let vec = Value::list_to_vector(head, self.ctx);
 
-                            self.annotate(vec.into(), &child);
                             return Ok(self.wrap(node, vec.into()));
                         }
 
@@ -264,13 +283,10 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                                 bv.as_slice_mut_unchecked().copy_from_slice(&vec);
                             }
 
-                            self.annotate(bv.into(), &child);
-
                             return Ok(self.wrap(node, bv.into()));
                         }
 
                         CompoundType::List => {
-                            self.annotate(head, &child);
                             return Ok(self.wrap(node, head));
                         }
                     },
@@ -279,7 +295,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                         let end = child.end_position();
                         return Err(LexicalError::UnclosedList {
                             start_at: src.0,
-                            end_at: (end.row as u32, end.column as u32),
+                            end_at: (end.row as u32 + 1, end.column as u32),
                         });
                     }
 
@@ -301,8 +317,6 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                             if prev.is_pair() {
                                 prev.set_cdr(self.ctx, tail);
                             }
-
-                            self.annotate(head, &next);
 
                             return Ok(self.wrap(node, head));
                         } else {
@@ -337,13 +351,14 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
     fn parse_lexeme(&self, node: &Node) -> Result<Value<'gc>, LexicalError<'gc>> {
         let text = self.text_of(node);
 
+        // 1-based lines per the reader convention (see [`annotate`]).
         let src = (
             (
-                node.start_position().row as u32,
+                node.start_position().row as u32 + 1,
                 node.start_position().column as u32,
             ),
             (
-                node.end_position().row as u32,
+                node.end_position().row as u32 + 1,
                 node.end_position().column as u32,
             ),
         );
@@ -470,7 +485,10 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                     }
                 }
 
-                let string = Str::new(self.ctx, &result, false);
+                // Source string literals are immutable (R6RS): all readers of
+                // program text go through here, runtime `read` builds its
+                // strings from mutable primitives instead.
+                let string = Str::new(self.ctx, &result, true);
                 Ok(self.wrap(node, string.into()))
             }
 
@@ -483,7 +501,9 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                     .to_vm_number(self.ctx)
                     .into_value(self.ctx);
 
-                Ok(n)
+                // Numbers are immediates without table identity, the syntax
+                // wrap is their only span channel (see [`wrap`]).
+                Ok(self.wrap(node, n))
             }
 
             "boolean" => {
@@ -507,8 +527,6 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
                 let expr = self.parse_lexeme(&child)?;
 
-                self.annotate(expr, node);
-
                 let quote: Value<'gc> = Symbol::from_str(self.ctx, "quote").into();
                 Ok(self.wrap(node, list!(self.ctx, quote, expr)))
             }
@@ -521,8 +539,6 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                     .expect("syntax node should have a child expression");
 
                 let expr = self.parse_lexeme(&child)?;
-
-                self.annotate(expr, node);
 
                 let syntax: Value<'gc> = Symbol::from_str(self.ctx, "syntax").into();
                 Ok(self.wrap(node, list!(self.ctx, syntax, expr)))
@@ -537,8 +553,6 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
                 let expr = self.parse_lexeme(&child)?;
 
-                self.annotate(expr, node);
-
                 let quasisyntax: Value<'gc> = Symbol::from_str(self.ctx, "quasisyntax").into();
                 Ok(self.wrap(node, list!(self.ctx, quasisyntax, expr)))
             }
@@ -552,8 +566,6 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
                 let expr = self.parse_lexeme(&child)?;
 
-                self.annotate(expr, node);
-
                 let unsyntax: Value<'gc> = Symbol::from_str(self.ctx, "unsyntax").into();
                 Ok(self.wrap(node, list!(self.ctx, unsyntax, expr)))
             }
@@ -566,8 +578,6 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                     .expect("unsyntax_splicing node should have a child expression");
 
                 let expr = self.parse_lexeme(&child)?;
-
-                self.annotate(expr, node);
 
                 let unsyntax_splicing: Value<'gc> =
                     Symbol::from_str(self.ctx, "unsyntax-splicing").into();
@@ -583,8 +593,6 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
                 let expr = self.parse_lexeme(&child)?;
 
-                self.annotate(expr, node);
-
                 let quasiquote: Value<'gc> = Symbol::from_str(self.ctx, "quasiquote").into();
                 Ok(self.wrap(node, list!(self.ctx, quasiquote, expr)))
             }
@@ -598,8 +606,6 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
                 let expr = self.parse_lexeme(&child)?;
 
-                self.annotate(expr, node);
-
                 let unquote: Value<'gc> = Symbol::from_str(self.ctx, "unquote").into();
                 Ok(self.wrap(node, list!(self.ctx, unquote, expr)))
             }
@@ -612,8 +618,6 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                     .expect("unquote_splicing node should have a child expression");
 
                 let expr = self.parse_lexeme(&child)?;
-
-                self.annotate(expr, node);
 
                 let unquote_splicing: Value<'gc> =
                     Symbol::from_str(self.ctx, "unquote-splicing").into();
@@ -708,13 +712,21 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                 "Unhandled node kind: {}: {} at {} in {}",
                 node.kind(),
                 self.text_of(node),
-                node.start_position().row,
+                node.start_position().row + 1,
                 self.source_file
             ),
         }
     }
 
+    /// Attach `node`'s span to `val` through both channels: datum
+    /// properties for fresh heap values, plus a syntax object when
+    /// wrapping. This is the reader's single span choke point: every
+    /// parsed value flows through here, so atoms and compounds alike keep
+    /// the span of the node they were parsed from, except immediates,
+    /// numbers, and interned values, which have no safe table identity
+    /// (see [`annotate`]) and travel by syntax wrap only.
     pub fn wrap(&self, node: &Node, val: Value<'gc>) -> Value<'gc> {
+        self.annotate(val, node);
         if !self.wrap_stx || val.is::<Syntax>() {
             return val;
         }
@@ -722,9 +734,10 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
             empty_wrap<'gc>: Value<'gc> = (ctx) list!(ctx, Value::null());
         );
         let filename = self.source_file;
-        let line = node.start_position().row as i32;
+        // 1-based lines per the reader convention (see [`annotate`]).
+        let line = node.start_position().row as i32 + 1;
         let column = node.start_position().column as i32;
-        let end_line = node.end_position().row as i32;
+        let end_line = node.end_position().row as i32 + 1;
         let end_column = node.end_position().column as i32;
         let v = Vector::from_slice(
             self.ctx,

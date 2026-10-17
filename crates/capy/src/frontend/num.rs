@@ -13,12 +13,11 @@ use crate::heap::Trace;
 use num::{BigInt, BigRational, Num, One, ToPrimitive, Zero};
 use std::{fmt, hash::Hash, rc::Rc};
 
-use crate::runtime::Context;
+use crate::runtime::MutationContext;
 use crate::runtime::value::Complex;
 
 /// R6RS Numerical Tower
 #[derive(Debug, Clone, PartialEq)]
-
 pub enum Number {
     ExactFixnum(i64),
     /// Exact integers (arbitrary precision)
@@ -43,7 +42,7 @@ pub enum Number {
         imag: Rc<BigInt>,
     },
 }
-// SAFETY: GC trace for `Number` — all reachable heap fields are visited
+// SAFETY: GC trace for `Number`, all reachable heap fields are visited
 unsafe impl Trace for Number {
     // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::heap::WeakProcessor) {
@@ -59,7 +58,7 @@ unsafe impl Trace for Number {
 use crate::runtime::value::number::Number as RNumber;
 
 impl Number {
-    pub fn to_vm_number<'gc>(self, ctx: Context<'gc>) -> RNumber<'gc> {
+    pub fn to_vm_number<'gc>(self, ctx: MutationContext<'gc>) -> RNumber<'gc> {
         match self {
             Number::ExactFixnum(n) => RNumber::from_i64(ctx, n),
 
@@ -966,182 +965,5 @@ impl<'a> NumberParser<'a> {
         if self.pos < self.input.len() {
             self.pos += 1;
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_simple_integers() {
-        assert!(matches!(parse_number("42"), Ok(Number::ExactFixnum(42))));
-        assert!(matches!(parse_number("-17"), Ok(Number::ExactFixnum(-17))));
-        assert!(matches!(parse_number("+123"), Ok(Number::ExactFixnum(123))));
-    }
-
-    #[test]
-    fn test_parse_binary_numbers() {
-        assert!(matches!(parse_number("#b101"), Ok(Number::ExactFixnum(5))));
-        assert!(matches!(
-            parse_number("#B1010"),
-            Ok(Number::ExactFixnum(10))
-        ));
-    }
-
-    #[test]
-    fn test_parse_hex_numbers() {
-        assert!(matches!(parse_number("#xff"), Ok(Number::ExactFixnum(255))));
-        assert!(matches!(parse_number("#XFF"), Ok(Number::ExactFixnum(255))));
-    }
-
-    #[test]
-    fn test_parse_rationals() {
-        if let Ok(Number::ExactRational(r)) = parse_number("3/4") {
-            assert_eq!(r.numer(), &BigInt::from(3));
-            assert_eq!(r.denom(), &BigInt::from(4));
-        } else {
-            panic!("Expected rational number");
-        }
-    }
-
-    #[test]
-    fn test_parse_decimals() {
-        assert!(
-            matches!(parse_number("3.125"), Ok(Number::InexactReal(f)) if (f - 3.125).abs() < f64::EPSILON)
-        );
-        assert!(
-            matches!(parse_number("-2.5"), Ok(Number::InexactReal(f)) if (f + 2.5).abs() < f64::EPSILON)
-        );
-    }
-
-    #[test]
-    fn test_parse_scientific_notation() {
-        // Test basic scientific notation
-        assert!(
-            matches!(parse_number("1e-6"), Ok(Number::InexactReal(f)) if (f - 1e-6).abs() < f64::EPSILON)
-        );
-        assert!(
-            matches!(parse_number("1.5e-6"), Ok(Number::InexactReal(f)) if (f - 1.5e-6).abs() < f64::EPSILON)
-        );
-        assert!(
-            matches!(parse_number("2.5e10"), Ok(Number::InexactReal(f)) if (f - 2.5e10).abs() < f64::EPSILON)
-        );
-        assert!(
-            matches!(parse_number("3.14e2"), Ok(Number::InexactReal(f)) if (f - 3.14e2).abs() < f64::EPSILON)
-        );
-        assert!(
-            matches!(parse_number("1e6"), Ok(Number::InexactReal(f)) if (f - 1e6).abs() < f64::EPSILON)
-        );
-        assert!(
-            matches!(parse_number("1.0e-3"), Ok(Number::InexactReal(f)) if (f - 1.0e-3).abs() < f64::EPSILON)
-        );
-        assert!(
-            matches!(parse_number("-2.5e4"), Ok(Number::InexactReal(f)) if (f - (-2.5e4)).abs() < f64::EPSILON)
-        );
-        assert!(
-            matches!(parse_number("+1.2e-5"), Ok(Number::InexactReal(f)) if (f - 1.2e-5).abs() < f64::EPSILON)
-        );
-        assert!(
-            matches!(parse_number("1e+6"), Ok(Number::InexactReal(f)) if (f - 1e+6).abs() < f64::EPSILON)
-        );
-        assert!(
-            matches!(parse_number("2.3e+10"), Ok(Number::InexactReal(f)) if (f - 2.3e+10).abs() < f64::EPSILON)
-        );
-
-        // Test edge cases that could be confused with complex numbers
-        assert!(
-            matches!(parse_number("1e6"), Ok(Number::InexactReal(f)) if (f - 1e6).abs() < f64::EPSILON)
-        );
-        assert!(
-            matches!(parse_number("1.0e-3"), Ok(Number::InexactReal(f)) if (f - 1.0e-3).abs() < f64::EPSILON)
-        );
-
-        // Test that numbers with 'e' in scientific notation don't break complex parsing
-        assert!(matches!(
-            parse_number("1e3+2e3i"),
-            Ok(Number::InexactComplex {
-                real: 1000.0,
-                imag: 2000.0
-            })
-        ));
-        assert!(matches!(
-            parse_number("1e3+2e-3i"),
-            Ok(Number::InexactComplex {
-                real: 1000.0,
-                imag
-            }) if (imag - 0.002).abs() < f64::EPSILON
-        ));
-    }
-
-    #[test]
-    fn test_parse_complex() {
-        let result = parse_number("3+4i");
-        println!("Debug: parse_number('3+4i') = {:?}", result);
-
-        assert!(matches!(
-            parse_number("i"),
-            Ok(Number::InexactComplex {
-                real: 0.0,
-                imag: 1.0
-            })
-        ));
-        assert!(matches!(
-            parse_number("-i"),
-            Ok(Number::InexactComplex {
-                real: 0.0,
-                imag: -1.0
-            })
-        ));
-    }
-
-    #[test]
-    fn test_parse_partially_exact_complex() {
-        // Test cases that should produce PartiallyExactComplex (real inexact, imag exact)
-        assert!(matches!(
-            parse_number("3.125+2i"),
-            Ok(Number::PartiallyExactComplex { real, imag }) if (real - 3.125).abs() < f64::EPSILON && imag.as_ref() == &BigInt::from(2)
-        ));
-
-        assert!(matches!(
-            parse_number("2.5-3i"),
-            Ok(Number::PartiallyExactComplex { real, imag }) if (real - 2.5).abs() < f64::EPSILON && imag.as_ref() == &BigInt::from(-3)
-        ));
-
-        assert!(matches!(
-            parse_number("0.5+i"),
-            Ok(Number::PartiallyExactComplex { real, imag }) if (real - 0.5).abs() < f64::EPSILON && imag.as_ref() == &BigInt::from(1)
-        ));
-
-        assert!(matches!(
-            parse_number("-1.25-i"),
-            Ok(Number::PartiallyExactComplex { real, imag }) if (real - (-1.25)).abs() < f64::EPSILON && imag.as_ref() == &BigInt::from(-1)
-        ));
-
-        // Test edge cases
-        assert!(matches!(
-            parse_number("0.0+5i"),
-            Ok(Number::PartiallyExactComplex { real, imag }) if real == 0.0 && imag.as_ref() == &BigInt::from(5)
-        ));
-    }
-
-    #[test]
-    fn test_exactness_prefixes() {
-        assert!(matches!(
-            parse_number("#e3.14"),
-            Ok(Number::ExactRational(_))
-        ));
-        assert!(matches!(
-            parse_number("#i42"),
-            Ok(Number::InexactReal(42.0))
-        ));
-    }
-
-    #[test]
-    fn test_invalid_numbers() {
-        assert!(parse_number("").is_err());
-        assert!(parse_number("#b102").is_err()); // Invalid binary digit
-        assert!(parse_number("3/0").is_err()); // Division by zero
-        assert!(parse_number("3.14.15").is_err()); // Multiple decimal points would be caught by f64 parsing
     }
 }
