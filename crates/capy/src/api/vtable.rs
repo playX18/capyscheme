@@ -1,4 +1,4 @@
-//! Function table (`SNINativeInterface`) hung off [`SniEnv`].
+//! Function table (`SniNativeInterface`) hung off [`SniEnv`].
 
 use super::cps::{SniContinuation, sni_call_k, sni_guard_k, sni_raise_k, sni_trampoline};
 use super::env::{ScmRef, SniEnv};
@@ -6,11 +6,11 @@ use super::native::SniNativeFn;
 use super::raise::{SniExceptionHandler, SniThunk};
 use super::{call, exceptions, load, native, oop, raise, refs, values};
 
-/// Flat vtable. Prefer the flat `sni_*` symbols from Rust/bindgen;
+/// Flat vtable. Prefer the flat `sni_*` symbols from Rust/bindgen.
 /// C code may use `(*env)->Call(env, …)` style via this table.
 #[repr(C)]
 #[allow(non_snake_case)]
-pub struct SNINativeInterface {
+pub struct SniNativeInterface {
     pub PushLocalFrame: unsafe extern "C" fn(*mut SniEnv<'static>, i32) -> libc::c_int,
     pub PopLocalFrame: unsafe extern "C" fn(*mut SniEnv<'static>, ScmRef) -> ScmRef,
     pub EnsureLocalCapacity: unsafe extern "C" fn(*mut SniEnv<'static>, i32) -> libc::c_int,
@@ -91,7 +91,7 @@ pub struct SNINativeInterface {
     ) -> *mut SniContinuation,
 }
 
-pub static SNI_NATIVE_INTERFACE: &SNINativeInterface = &SNINativeInterface {
+pub static SNI_NATIVE_INTERFACE: &SniNativeInterface = &SniNativeInterface {
     PushLocalFrame: refs::sni_push_local_frame,
     PopLocalFrame: refs::sni_pop_local_frame,
     EnsureLocalCapacity: refs::sni_ensure_local_capacity,
@@ -133,7 +133,7 @@ pub static SNI_NATIVE_INTERFACE: &SNINativeInterface = &SNINativeInterface {
 
 /// Return the function table pointer for `env` (may be null if env is null).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sni_get_functions(env: *mut SniEnv<'static>) -> *const SNINativeInterface {
+pub unsafe extern "C" fn sni_get_functions(env: *mut SniEnv<'static>) -> *const SniNativeInterface {
     if env.is_null() {
         return std::ptr::null();
     }

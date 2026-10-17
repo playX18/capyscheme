@@ -2,7 +2,7 @@
 //!
 //! `SniContinuation.result` is a **continuation-owned** strong root in
 //! `sni_globals` OopStorage (allocated in [`sni_cont_alloc`], released in
-//! [`sni_cont_free`]). Callers must not replace the `result` pointer; store
+//! [`sni_cont_free`]). Callers must not replace the `result` pointer, store
 //! values with [`sni_cont_set_result`] / [`sni_call_k`] / [`sni_raise_k`].
 //! [`sni_trampoline`] returns a **new local ref** of the final value.
 
@@ -48,7 +48,7 @@ unsafe fn release_result_slot(slot: ScmRef) {
     if slot.is_null() {
         return;
     }
-    // SAFETY: slot owned by the continuation; allocated from sni_globals.
+    // SAFETY: slot owned by the continuation, allocated from sni_globals.
     unsafe {
         *slot = Value::empty();
         sni_globals().release(slot);
@@ -76,7 +76,7 @@ pub(crate) unsafe fn cont_store_value<'gc>(c: *mut SniContinuation, value: Value
 /// Copy the Scheme object from `src` into the continuation's owned result root.
 ///
 /// # Safety
-/// `c` live; `src` null or a live ScmRef.
+/// `c` live, `src` null or a live ScmRef.
 pub(crate) unsafe fn cont_store_ref(c: *mut SniContinuation, src: ScmRef) {
     let v = unsafe { ref_value(src) };
     unsafe { cont_store_value(c, v) };
@@ -158,7 +158,7 @@ pub unsafe extern "C" fn sni_trampoline(
     }
 }
 
-/// Call `proc`; store outcome in `c`'s owned result root. Does not advance `c->next`.
+/// Call `proc`, store outcome in `c`'s owned result root. Does not advance `c->next`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sni_call_k(
     env: *mut SniEnv<'static>,
@@ -175,7 +175,7 @@ pub unsafe extern "C" fn sni_call_k(
     unsafe { cont_store_ref(c, r) };
 }
 
-/// Raise `obj` into Scheme; store outcome in `c`'s owned result root.
+/// Raise `obj` into Scheme, store outcome in `c`'s owned result root.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sni_raise_k(
     env: *mut SniEnv<'static>,
@@ -189,7 +189,7 @@ pub unsafe extern "C" fn sni_raise_k(
     unsafe { cont_store_ref(c, r) };
 }
 
-struct GuardCtx {
+struct GuardCallbackData {
     handler: *mut SniContinuation,
     body: *mut SniContinuation,
 }
@@ -199,22 +199,22 @@ unsafe extern "C" fn guard_handler_cb(
     exn: ScmRef,
     data: *mut libc::c_void,
 ) -> ScmRef {
-    let ctx = unsafe { &*(data as *const GuardCtx) };
-    if ctx.handler.is_null() {
+    let guard = unsafe { &*(data as *const GuardCallbackData) };
+    if guard.handler.is_null() {
         return SCM_REF_NULL;
     }
     unsafe {
-        cont_store_ref(ctx.handler, exn);
-        sni_trampoline(env, ctx.handler)
+        cont_store_ref(guard.handler, exn);
+        sni_trampoline(env, guard.handler)
     }
 }
 
 unsafe extern "C" fn guard_body_cb(env: *mut SniEnv<'static>, data: *mut libc::c_void) -> ScmRef {
-    let ctx = unsafe { &*(data as *const GuardCtx) };
-    if ctx.body.is_null() {
+    let guard = unsafe { &*(data as *const GuardCallbackData) };
+    if guard.body.is_null() {
         return SCM_REF_NULL;
     }
-    unsafe { sni_trampoline(env, ctx.body) }
+    unsafe { sni_trampoline(env, guard.body) }
 }
 
 /// Run `body` under `handler` via `with-exception-handler`.
@@ -228,14 +228,14 @@ pub unsafe extern "C" fn sni_guard_k(
     if env.is_null() || body.is_null() {
         return ptr::null_mut();
     }
-    let mut ctx = GuardCtx { handler, body };
+    let mut guard = GuardCallbackData { handler, body };
     let result = unsafe {
         sni_with_exception_handler(
             env,
             Some(guard_handler_cb),
-            &mut ctx as *mut _ as *mut libc::c_void,
+            &mut guard as *mut _ as *mut libc::c_void,
             Some(guard_body_cb),
-            &mut ctx as *mut _ as *mut libc::c_void,
+            &mut guard as *mut _ as *mut libc::c_void,
         )
     };
     unsafe {

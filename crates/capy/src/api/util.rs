@@ -46,12 +46,18 @@ pub(crate) fn values_from_refs<'gc>(argv: *const ScmRef, n: usize) -> Vec<Value<
     out
 }
 
-pub(crate) fn make_pointer_value<'gc>(ctx: Context<'gc>, ptr: *mut std::ffi::c_void) -> Value<'gc> {
+pub(crate) fn make_pointer_value<'gc>(
+    ctx: MutationContext<'gc>,
+    ptr: *mut std::ffi::c_void,
+) -> Value<'gc> {
     let p = Pointer::new(ptr);
     Gc::new_with_header_word(ctx, p, pointer_header_word()).into()
 }
 
-pub(crate) fn ensure_module<'gc>(ctx: Context<'gc>, module: &str) -> Option<Gc<'gc, Module<'gc>>> {
+pub(crate) fn ensure_module<'gc>(
+    ctx: MutationContext<'gc>,
+    module: &str,
+) -> Option<Gc<'gc, Module<'gc>>> {
     let name = convert_module_name(ctx, module);
     let m = resolve_module(ctx, name, false, true)?;
     m.beautify_user_module(ctx);

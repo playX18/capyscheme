@@ -8,7 +8,7 @@ use std::{
 use libc::c_char;
 
 use crate::runtime::{
-    Context, Scheme,
+    MutationContext, Scheme,
     sni::{sni_globals, sni_locals},
     value::Value,
 };
@@ -97,14 +97,14 @@ impl Drop for LocalFrameState {
 /// Per-enter SNI environment.
 pub struct SniEnv<'gc> {
     /// Must be first for C `(*env)->Call` / `env->functions` layout.
-    pub(crate) functions: *const crate::api::vtable::SNINativeInterface,
-    pub(crate) ctx: Context<'gc>,
+    pub(crate) functions: *const crate::api::vtable::SniNativeInterface,
+    pub(crate) ctx: MutationContext<'gc>,
     pub(crate) frames: Vec<LocalFrameState>,
     _phantom: PhantomData<&'gc ()>,
 }
 
 impl<'gc> SniEnv<'gc> {
-    pub(crate) fn new(ctx: Context<'gc>) -> Box<Self> {
+    pub(crate) fn new(ctx: MutationContext<'gc>) -> Box<Self> {
         Box::new(Self {
             functions: crate::api::vtable::SNI_NATIVE_INTERFACE,
             ctx,
@@ -114,7 +114,7 @@ impl<'gc> SniEnv<'gc> {
     }
 
     pub(crate) fn as_ptr(&self) -> *mut SniEnv<'static> {
-        // SAFETY: SniEnv is only used within scm_enter; lifetime erased for C.
+        // SAFETY: SniEnv is only used within scm_enter, lifetime erased for C.
         unsafe { std::mem::transmute::<*const SniEnv<'gc>, *mut SniEnv<'static>>(self as *const _) }
     }
 

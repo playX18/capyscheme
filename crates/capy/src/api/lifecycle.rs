@@ -4,7 +4,7 @@ use std::{marker::PhantomData, sync::Arc};
 
 use libc::c_void;
 
-use crate::runtime::{Context, Scheme, value::Value, vm::threading::ThreadObject};
+use crate::runtime::{MutationContext, Scheme, value::Value, vm::threading::ThreadObject};
 
 use super::env::{SCM_REF_NULL, Scm, ScmPtr, ScmRef, SniEnv, env_mut};
 
@@ -15,7 +15,7 @@ pub extern "C" fn scm_new() -> *mut Scm {
     Box::into_raw(Box::new(Scm { scheme: scm }))
 }
 
-/// Unimplemented heap-image resume; returns a null handle.
+/// Unimplemented heap-image resume, returns a null handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_from_image(_image_data: *const u8, _image_size: usize) -> *mut Scm {
     std::ptr::null_mut()
@@ -42,7 +42,7 @@ pub type ScmEnterFn =
 /// Enter the mutator and invoke `enter` with a fresh [`SniEnv`] (initial local frame).
 ///
 /// # Safety
-/// `scm` must be live; `enter` must not retain `env` after return.
+/// `scm` must be live, `enter` must not retain `env` after return.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn scm_enter(
     scm: ScmPtr,
@@ -82,7 +82,7 @@ pub type ThreadFn = unsafe extern "C" fn(scm: ScmPtr, arg: *mut c_void) -> *mut 
 /// Returns a local ref to the thread object, or null on failure.
 ///
 /// # Safety
-/// `env` must be live; `init` must be a valid function pointer.
+/// `env` must be live, `init` must be a valid function pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn scm_fork(
     env: *mut SniEnv<'static>,
@@ -94,7 +94,7 @@ pub unsafe extern "C" fn scm_fork(
     }
     // SAFETY: live env.
     let e = unsafe { env_mut(env) };
-    let thread_object = ThreadObject::new(*e.ctx, None);
+    let thread_object = ThreadObject::new(e.ctx, None);
     let dynamic_state = e.ctx.dynamic_state().bits();
     let thread_object_bits = thread_object.as_ptr() as u64;
     let thread_spawned = Arc::new(std::sync::Barrier::new(2));
@@ -113,7 +113,7 @@ pub unsafe extern "C" fn scm_fork(
     e.make_local(thread_object.into())
 }
 
-/// Get the underlying Context pointer (advanced / internal).
+/// Get the underlying MutationContext pointer (advanced / internal).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sni_get_context(env: *mut SniEnv<'static>) -> *const c_void {
     if env.is_null() {
@@ -123,6 +123,5 @@ pub unsafe extern "C" fn sni_get_context(env: *mut SniEnv<'static>) -> *const c_
     e.ctx.as_ptr() as *const c_void
 }
 
-// Silence unused import in case Context helpers shift.
-const _: PhantomData<Context<'static>> = PhantomData;
+const _: PhantomData<MutationContext<'static>> = PhantomData;
 const _: PhantomData<Value<'static>> = PhantomData;

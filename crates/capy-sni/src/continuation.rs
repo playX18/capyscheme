@@ -310,7 +310,13 @@ pub mod __cps {
             release_roots::<R>(env, &c);
             // SAFETY: the trampoline was dismissed synchronously, run owns data.
             let boxed = unsafe { Box::from_raw(data) };
-            c.into_raw();
+            // Detach data so dropping `c` frees the cont and its result root
+            // without freeing `data` a second time.
+            unsafe {
+                (*c.as_ptr()).data = ptr::null_mut();
+                (*c.as_ptr()).drop_data = None;
+            }
+            drop(c);
             return boxed
                 .result
                 .expect("#[cps] trampoline dismissed without result");
@@ -349,6 +355,19 @@ pub mod __cps {
         }
         c.finish();
         c.as_ptr()
+    }
+
+    /// Finish with the value of a tail `cps::call` / `cps::raise`: convert
+    /// the continuation-owned result root to `R` before the cont is freed.
+    pub fn finish_result<'env, R: crate::TryFromScm<'env> + 'static>(
+        env: &mut Env<'env>,
+        c: &mut Continuation,
+    ) -> *mut sys::SniContinuation {
+        // SAFETY: the result root is live while `c` is.
+        let result = unsafe { Ref::from_raw(c.result()) };
+        let value = R::try_from_scm(env, result)
+            .unwrap_or_else(|err| panic!("#[cps] tail result: {err}"));
+        finish::<R>(c, value)
     }
 
     pub fn suspend_call<'env, R: 'static>(

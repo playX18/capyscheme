@@ -26,10 +26,10 @@ pub unsafe extern "C" fn sni_load_file(scm: ScmPtr, name: *const c_char) -> libc
 }
 
 /// Evaluate a UTF-8 Scheme expression string via `(eval (read) (interaction-environment))`
-/// when available; otherwise returns -1.
+/// when available, otherwise returns -1.
 ///
 /// Current implementation loads via a temporary thunk using the reader if public
-/// `eval` is bound; on failure sets no pending exception at top-level.
+/// `eval` is bound, on failure sets no pending exception at top-level.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sni_eval_string(
     env: *mut SniEnv<'static>,
@@ -42,7 +42,7 @@ pub unsafe extern "C" fn sni_eval_string(
         return SCM_REF_NULL;
     };
     let e = unsafe { env_mut(env) };
-    // Prefer calling public `eval` / `read` if present; fallback: return the string itself.
+    // Prefer calling public `eval` / `read` if present, fallback: return the string itself.
     if let Some(eval) = e
         .ctx
         .public_ref("guile", "eval")

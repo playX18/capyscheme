@@ -105,8 +105,6 @@ pub fn scm_match(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 mod fun;
 mod module;
 mod scm_match;
-mod structure;
-mod thunks;
 mod var;
 
 pub(crate) struct Input {

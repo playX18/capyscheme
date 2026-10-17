@@ -157,7 +157,7 @@ fn check_unsupported(block: &syn::Block) -> Result<(), TokenStream> {
                         return;
                     }
                 }
-                Expr::Closure(_) if !self.in_guard && closure_has_suspend_raw(e) => {
+                Expr::Closure(_) if !self.in_guard && expr_has_suspend(e) => {
                     self.err = Some(quote! {
                         compile_error!(
                             "#[cps] does not support closures that suspend (except cps::guard)"
@@ -179,25 +179,6 @@ fn check_unsupported(block: &syn::Block) -> Result<(), TokenStream> {
         Some(e) => Err(e),
         None => Ok(()),
     }
-}
-
-fn closure_has_suspend_raw(e: &Expr) -> bool {
-    struct Has(bool);
-    impl<'ast> Visit<'ast> for Has {
-        fn visit_expr(&mut self, e: &'ast Expr) {
-            if self.0 {
-                return;
-            }
-            if suspend_kind(e).is_some() {
-                self.0 = true;
-                return;
-            }
-            syn::visit::visit_expr(self, e);
-        }
-    }
-    let mut h = Has(false);
-    h.visit_expr(e);
-    h.0
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -418,7 +399,7 @@ fn try_split_stmt(
                 } else {
                     match tail {
                         Tail::Finish => quote! {
-                            return ::capy_sni::__cps::finish::<#ret_ty>(c, c.result());
+                            return ::capy_sni::__cps::finish_result::<#ret_ty>(env, c);
                         },
                         Tail::Cont(after) => quote! {
                             let _ = c.result();
@@ -763,7 +744,7 @@ fn expand_guard(
     let bind_ts = if let Some(pat) = bind {
         quote! { let #pat = __guard_result; }
     } else {
-        quote! { let __guard_result = __guard_result; }
+        quote! {}
     };
 
     let (root_ts, reload_ts) = root_reload_ts(live_refs, outer_ret_ty);
@@ -814,7 +795,7 @@ fn transform_tail_expr(expr: &Expr, ret_ty: &TokenStream) -> Result<TokenStream,
             expr,
             None,
             quote! {
-                return ::capy_sni::__cps::finish::<#ret_ty>(c, c.result());
+                return ::capy_sni::__cps::finish_result::<#ret_ty>(env, c);
             },
             ret_ty,
             &[],
@@ -850,7 +831,7 @@ fn transform_return(r: &ExprReturn, ret_ty: &TokenStream) -> Result<TokenStream,
                     e,
                     None,
                     quote! {
-                        return ::capy_sni::__cps::finish::<#ret_ty>(c, c.result());
+                        return ::capy_sni::__cps::finish_result::<#ret_ty>(env, c);
                     },
                     ret_ty,
                     &[],
@@ -1162,11 +1143,10 @@ fn transform_match(
                 if let Some(kind) = suspend_kind(other) {
                     let then = match &branch_tail {
                         Tail::Finish => quote! {
-                            return ::capy_sni::__cps::finish::<#ret_ty>(c, c.result());
+                            return ::capy_sni::__cps::finish_result::<#ret_ty>(env, c);
                         },
                         Tail::Cont(after) => quote! {
-                            let __m = c.result();
-                            let _ = __m;
+                            let _ = c.result();
                             #after
                         },
                     };

@@ -48,7 +48,7 @@ unsafe extern "C" fn handler_trampoline(
     argc: i32,
     argv: *const ScmRef,
 ) -> ScmRef {
-    // argv[0] = exception; userdata is not available this way.
+    // argv[0] = exception, userdata is not available this way.
     // We store HandlerData pointer in a thread-local set by with_exception_handler.
     HANDLER.with(|cell| {
         let Some(hd) = *cell.borrow() else {
@@ -89,12 +89,13 @@ pub unsafe extern "C" fn sni_with_exception_handler(
     body: Option<SniThunk>,
     body_data: *mut libc::c_void,
 ) -> ScmRef {
-    if env.is_null() || handler.is_none() || body.is_none() {
+    let (Some(handler), Some(body)) = (handler, body) else {
+        return SCM_REF_NULL;
+    };
+    if env.is_null() {
         return SCM_REF_NULL;
     }
     let e = unsafe { env_mut(env) };
-    let handler = handler.unwrap();
-    let body = body.unwrap();
 
     HANDLER.with(|cell| {
         *cell.borrow_mut() = Some(HandlerData {

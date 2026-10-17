@@ -21,7 +21,7 @@ pub unsafe extern "C" fn sni_push_local_frame(
 }
 
 /// Pop the top local frame. If `result` is non-null, promote it into the
-/// previous frame as a new local ref and return that; otherwise return null.
+/// previous frame as a new local ref and return that, otherwise return null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sni_pop_local_frame(env: *mut SniEnv<'static>, result: ScmRef) -> ScmRef {
     if env.is_null() {
@@ -29,7 +29,7 @@ pub unsafe extern "C" fn sni_pop_local_frame(env: *mut SniEnv<'static>, result: 
     }
     let e = unsafe { env_mut(env) };
     if e.frames.len() <= 1 {
-        // Keep the root frame; just clear promoted value path.
+        // Keep the root frame, just clear promoted value path.
         if result.is_null() {
             return SCM_REF_NULL;
         }
@@ -85,11 +85,11 @@ pub unsafe extern "C" fn sni_delete_local_ref(env: *mut SniEnv<'static>, obj: Sc
 
 /// Create a global ref for `obj`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sni_new_global_ref(env: *mut SniEnv<'static>, obj: ScmRef) -> ScmRef {
+pub unsafe extern "C" fn sni_new_global_ref(_env: *mut SniEnv<'static>, obj: ScmRef) -> ScmRef {
     if obj.is_null() {
         return SCM_REF_NULL;
     }
-    let _ = env; // globals are process-wide; env kept for signature uniformity.
+    // globals are process-wide, env kept for signature uniformity.
     let v = unsafe { ref_value::<'_>(obj) };
     global_new(v)
 }

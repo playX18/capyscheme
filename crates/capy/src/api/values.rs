@@ -384,7 +384,7 @@ pub unsafe extern "C" fn sni_bytevector_set(
         return;
     };
     if index < b.len() {
-        // SAFETY: mutable bytevector contents; index bounds-checked.
+        // SAFETY: mutable bytevector contents, index bounds-checked.
         unsafe {
             b.as_slice_mut_unchecked()[index] = byte;
         }
@@ -447,7 +447,9 @@ pub unsafe extern "C" fn sni_string_set(
     };
     let ch = char::from_u32(ch).unwrap_or('\u{FFFD}');
     if index < string.len() {
-        Str::set(string, e.ctx, index, ch);
+        if !Str::set(string, e.ctx, index, ch) {
+            set_type_error(e, "sni_string_set", "mutable string", v);
+        }
     } else {
         set_bounds_error(e, "sni_string_set", index, string.len());
     }

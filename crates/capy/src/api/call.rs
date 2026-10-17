@@ -13,7 +13,7 @@ use crate::runtime::{
 use super::env::{SCM_REF_NULL, ScmPtr, ScmRef, SniEnv, env_mut, ref_value, safe_cstr};
 use super::exceptions::set_type_error;
 
-/// Look up a public binding; returns a new local ref or `default_value`.
+/// Look up a public binding, returns a new local ref or `default_value`.
 ///
 /// # Safety
 /// `module_name` / `name` must be valid C strings when non-null.
@@ -47,7 +47,7 @@ pub unsafe extern "C" fn sni_public_ref(
     }
 }
 
-/// Look up a private binding; returns a new local ref or `default_value`.
+/// Look up a private binding, returns a new local ref or `default_value`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sni_private_ref(
     env: *mut SniEnv<'static>,
@@ -114,7 +114,7 @@ pub unsafe extern "C" fn sni_call_n(
     }
 }
 
-/// Convenience: call with 0–3 args without an argv array.
+/// Convenience: call with 0 to 3 args without an argv array.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sni_call(
     env: *mut SniEnv<'static>,
@@ -153,7 +153,7 @@ pub type FinishCallFn = unsafe extern "C" fn(
 ) -> libc::c_int;
 
 /// # Safety
-/// Module/func names must be valid C strings; callbacks must be valid.
+/// Module/func names must be valid C strings, callbacks must be valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn scm_call(
     scm: ScmPtr,

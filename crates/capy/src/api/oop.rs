@@ -158,7 +158,7 @@ pub unsafe extern "C" fn sni_is_record(_env: *mut SniEnv<'static>, obj: ScmRef) 
     if obj.is_null() {
         return false;
     }
-    // Need a context for is_record — use a dummy via trying tuple tag.
+    // Need a context for is_record, use a dummy via trying tuple tag.
     let v = unsafe { ref_value::<'_>(obj) };
     v.is::<Tuple>()
         && v.downcast::<Tuple>().len() > 0
@@ -226,11 +226,7 @@ pub unsafe extern "C" fn sni_make_abstract_class(
         ls = ls.cdr();
     }
     if super_ids.is_empty() {
-        // Default to <object> if available.
-        if let Some(obj) = e.ctx.public_ref("capy", "%builtin-class") {
-            // Prefer calling register with OBJECT builtin id.
-            let _ = obj;
-        }
+        // Default to <object>.
         use crate::heap::object::ClassId;
         super_ids.push(ClassId::new(builtin_class_ids::OBJECT).expect("object class id"));
     }
@@ -352,7 +348,7 @@ pub unsafe extern "C" fn sni_builtin_class(
     let Some(name) = (unsafe { safe_cstr(name) }) else {
         return SCM_REF_NULL;
     };
-    // Accept both "object" and "<object>"; %builtin-class matches unbracketed names.
+    // Accept both "object" and "<object>", %builtin-class matches unbracketed names.
     let name = name
         .strip_prefix('<')
         .and_then(|n| n.strip_suffix('>'))

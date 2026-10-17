@@ -1,4 +1,4 @@
-//! C SNI (Scheme Native Interface) — embedding API.
+//! C SNI (Scheme Native Interface), embedding API.
 //!
 //! Public values are opaque [`ScmRef`] handles rooted in OopStorage. Raw
 //! nanoboxed [`Value`]s are not part of the C ABI.

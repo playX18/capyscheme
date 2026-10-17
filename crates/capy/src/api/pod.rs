@@ -1,4 +1,4 @@
-//! POD record APIs — movable bytevector backing.
+//! POD record APIs, movable bytevector backing.
 
 use libc::c_char;
 use std::sync::Mutex;
