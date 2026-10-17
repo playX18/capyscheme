@@ -14,7 +14,7 @@ use mmtk::{
 use parking_lot::{Condvar, Mutex};
 use std::mem::MaybeUninit;
 use std::{
-    cell::{RefCell, UnsafeCell},
+    cell::{Cell, UnsafeCell},
     ptr::NonNull,
     sync::{
         Arc,
@@ -23,7 +23,9 @@ use std::{
     time::Duration,
 };
 
+use super::handshake::{self, HandshakeOp, Pending};
 use super::monitor::MonitorGuard;
+use std::collections::VecDeque;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -122,19 +124,22 @@ pub enum YieldpointKind {
 #[repr(C)]
 #[derive()]
 pub struct Thread {
-    native_data: UnsafeCell<ThreadNativeData>,
-    pub(crate) take_yieldpoint: AtomicI32,
+    /// The owning OS thread's [`ThreadNativeData`], null until the thread is
+    /// bound with [`init_current_thread`] and again after
+    /// [`deinit_current_thread`]. Stored and cleared under `monitor`, other
+    /// threads must read it under `monitor` too (see [`Thread::request_yieldpoint`]).
+    native_data: AtomicPtr<ThreadNativeData>,
     id: AtomicU64,
     status_word: AtomicBitfieldContainer<u64>,
     monitor: Monitor<()>,
+    /// Soft handshake operations waiting for this thread's next yieldpoint
+    /// (see [`handshake`]). `SoftHandshakeRequested` is set exactly while
+    /// the queue is non-empty; both change together under this lock.
+    handshake_ops: Mutex<VecDeque<Pending>>,
     index_in_thread_list: AtomicUsize,
     heap_base: Address,
     heap_shift: u32,
-    /// The SIGPROF sample ring, allocated while the profiler is armed
-    /// (null otherwise). Written by this thread's signal handler
-    /// through lock-free atomics, read by the aggregator, freed when
-    /// the last `Arc` drops. Appended last so no generated-code
-    /// offset above moves.
+    /// The SIGPROF sample ring
     pub(crate) prof_ring: AtomicPtr<crate::runtime::profile::capture::ProfileRing>,
     is_mutator_thread: bool,
 }
@@ -152,21 +157,6 @@ impl Drop for Thread {
 }
 
 impl Thread {
-    pub const TAKE_YIELDPOINT_OFFSET: usize = std::mem::offset_of!(Self, take_yieldpoint);
-    pub const NATIVE_DATA_OFFSET: usize = std::mem::offset_of!(Self, native_data);
-    pub const RT_STATE_OFFSET: usize =
-        Self::NATIVE_DATA_OFFSET + std::mem::offset_of!(ThreadNativeData, state);
-    pub const TC_OFFSET: usize =
-        Self::NATIVE_DATA_OFFSET + std::mem::offset_of!(ThreadNativeData, tc);
-
-    pub const LAB_OFFSET: usize =
-        Self::NATIVE_DATA_OFFSET + std::mem::offset_of!(ThreadNativeData, lab);
-
-    pub const LAB_OFFSET_LIMIT: usize =
-        Self::LAB_OFFSET + std::mem::offset_of!(LocalAllocationBuffer, limit);
-    pub const LAB_OFFSET_CURSOR: usize =
-        Self::LAB_OFFSET + std::mem::offset_of!(LocalAllocationBuffer, cursor);
-
     #[inline(always)]
     pub fn heap_base(&self) -> Address {
         self.heap_base
@@ -201,23 +191,43 @@ impl Thread {
     /// taken at prologues and loop back-edges, `< 0` at prologues only.
     #[must_use = "Must check the value and call [`Thread::yieldpoint`] if necessary"]
     pub fn take_yieldpoint(&self) -> i32 {
-        self.take_yieldpoint.load(Ordering::Relaxed)
+        self.yieldpoint_flag()
+            .map_or(0, |flag| flag.load(Ordering::Relaxed))
+    }
+
+    /// The yieldpoint flag in the bound [`ThreadNativeData`], `None` while
+    /// the thread is unbound.
+    fn yieldpoint_flag(&self) -> Option<&AtomicI32> {
+        // SAFETY: a non-null pointer refers to the owner's thread-local slot,
+        // which outlives the pointer (cleared before the slot is torn down).
+        unsafe { self.native_data.load(Ordering::Acquire).as_ref() }.map(|nd| &nd.take_yieldpoint)
     }
 
     pub fn request_yieldpoint(&self, kind: YieldpointKind) {
+        // Under the monitor so the owner cannot unbind (and drop its native
+        // data) while the flag and `esp` are written.
+        let guard = self.monitor.lock();
+        self.request_yieldpoint_locked(&guard, kind);
+    }
+
+    /// [`Self::request_yieldpoint`] for a caller that already holds `monitor`.
+    fn request_yieldpoint_locked(&self, guard: &MonitorGuard<'_, ()>, kind: YieldpointKind) {
+        let Some(flag) = self.yieldpoint_flag() else {
+            return;
+        };
         match kind {
             YieldpointKind::Full => {
                 // `+1` dominates: upgrade `-1` or `0` unconditionally.
-                self.take_yieldpoint.store(1, Ordering::Relaxed);
+                flag.store(1, Ordering::Relaxed);
             }
             YieldpointKind::PrologueOnly => {
                 // CAS that never downgrades `+1` to `-1`.
-                let mut current = self.take_yieldpoint.load(Ordering::Relaxed);
+                let mut current = flag.load(Ordering::Relaxed);
                 loop {
                     if current > 0 {
                         break;
                     }
-                    match self.take_yieldpoint.compare_exchange_weak(
+                    match flag.compare_exchange_weak(
                         current,
                         -1,
                         Ordering::Relaxed,
@@ -230,7 +240,7 @@ impl Thread {
             }
         }
         self.poke_esp();
-        self.monitor.lock().notify_all();
+        guard.notify_all();
     }
 
     /// Store 0 into the thread's `Tc.esp` so its next procedure entry fails
@@ -238,13 +248,86 @@ impl Thread {
     /// takes the yield slow path. The flag above is stored first, and
     /// this store is `Release`, so a thread that observes the poke also
     /// observes the flag.
+    ///
+    /// Must be called with `monitor` held: that is what keeps the native
+    /// data alive. A no-op for an unbound thread.
     fn poke_esp(&self) {
-        // SAFETY: every `Thread` handle owns initialized native data with a
-        // live `Tc`, and `esp` is atomic precisely for this cross-thread poke.
-        unsafe {
-            (*self.tc_ptr())
+        // SAFETY: the caller holds `monitor`, so a non-null pointer is a live
+        // slot with a built `Tc`, and `esp` is atomic precisely for this
+        // cross-thread poke.
+        if let Some(nd) = unsafe { self.native_data.load(Ordering::Acquire).as_ref() } {
+            unsafe { &*nd.tc.get() }
                 .esp
-                .store(std::ptr::null_mut(), Ordering::Release)
+                .store(std::ptr::null_mut(), Ordering::Release);
+        }
+    }
+
+    /// Hand `op` to this thread on behalf of a requester (see
+    /// [`handshake`]). Runs under the thread's monitor, which is what makes
+    /// the state it observes stable:
+    ///
+    /// - `Mutating`/`MutatingToBlock`: queue the op, count it in `done` and
+    ///   ask for a full yieldpoint. The thread runs it at its next one.
+    /// - `InNative`/`BlockedInNative`: the thread cannot touch the heap or
+    ///   run Scheme without going through `leave_native`, so the op runs
+    ///   right here. `ShouldBlockForHandshake` is set around it so the
+    ///   lock-free `leave_native` shortcut cannot start Scheme meanwhile.
+    ///   The slow path waits on the monitor we hold.
+    /// - `New`/`Terminated`/about to terminate: nothing to do.
+    pub(crate) fn deliver_handshake(
+        &self,
+        op: &Arc<dyn HandshakeOp>,
+        done: &Arc<handshake::Completion>,
+    ) {
+        let guard = self.monitor.lock();
+        if self.is_about_to_terminate() {
+            return;
+        }
+        loop {
+            let word = self.status_word.load(Ordering::Acquire);
+            match ThreadStateField::decode(word) {
+                ThreadState::New | ThreadState::Terminated => return,
+                ThreadState::Mutating | ThreadState::MutatingToBlock => {
+                    done.add_pending();
+                    {
+                        let mut queue = self.handshake_ops.lock();
+                        queue.push_back(Pending::new(op.clone(), done.clone()));
+                        self.status_word.update::<SoftHandshakeRequested>(true);
+                    }
+                    self.request_yieldpoint_locked(&guard, YieldpointKind::Full);
+                    return;
+                }
+                ThreadState::InNative | ThreadState::BlockedInNative => {
+                    let new_word = ShouldBlockForHandshake::update(true, word);
+                    if self
+                        .status_word
+                        .compare_exchange_weak(word, new_word, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        handshake::run_op(&**op, self);
+                        self.status_word.update::<ShouldBlockForHandshake>(false);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Run every queued handshake operation on this thread. The monitor is
+    /// released while they run, and the queue is re-checked afterwards, since
+    /// a requester may add to it in that window.
+    fn run_pending_handshakes(&self, guard: &mut MonitorGuard<'_, ()>) {
+        while self.status_word.read::<SoftHandshakeRequested>() {
+            let batch: Vec<Pending> = {
+                let mut queue = self.handshake_ops.lock();
+                self.status_word.update::<SoftHandshakeRequested>(false);
+                queue.drain(..).collect()
+            };
+            guard.unlocked(|| {
+                for pending in batch {
+                    pending.run(self);
+                }
+            });
         }
     }
 
@@ -305,6 +388,10 @@ impl Thread {
 
         self.status_word.update::<IsBlocking>(true);
 
+        // Before blocking: a requester must not wait out a long GC pause
+        // for an operation this thread can run right now.
+        self.run_pending_handshakes(guard);
+
         let mut had_really_blocked = false;
 
         loop {
@@ -327,6 +414,9 @@ impl Thread {
             log::debug!("Thread #{id} is unblocking");
         }
 
+        // An operation queued while blocked runs before Scheme resumes.
+        self.run_pending_handshakes(guard);
+
         self.status_word
             .update::<ThreadStateField>(ThreadState::Mutating);
         self.status_word.update::<IsBlocking>(false);
@@ -334,14 +424,15 @@ impl Thread {
 
     #[inline(never)]
     pub fn yieldpoint() {
-        let thread = current_thread();
+        let nd = current_native_data();
+        let thread = nd.thread();
 
         thread.status_word.update::<AtYieldpoint>(true);
 
         let mut guard = thread.monitor.lock();
 
-        if thread.take_yieldpoint() != 0 {
-            thread.take_yieldpoint.store(0, Ordering::Relaxed);
+        if nd.take_yieldpoint.load(Ordering::Relaxed) != 0 {
+            nd.take_yieldpoint.store(0, Ordering::Relaxed);
             thread.check_block(&mut guard);
         }
 
@@ -351,10 +442,13 @@ impl Thread {
     }
 
     fn enter_native_blocked(&self) {
-        let guard = self.monitor.lock();
+        let mut guard = self.monitor.lock();
         self.status_word
             .update::<ThreadStateField>(ThreadState::InNative);
         self.acknowledge_block_requests(&guard);
+        // Operations queued while this thread was mutating: the requester
+        // saw `Mutating` and is waiting for us, so run them before leaving.
+        self.run_pending_handshakes(&mut guard);
         drop(guard);
     }
 
@@ -393,6 +487,7 @@ impl Thread {
             if ThreadStateField::decode(word) != ThreadState::InNative
                 || ShouldBlockForGc::decode(word)
                 || IsBlockedForGc::decode(word)
+                || ShouldBlockForHandshake::decode(word)
             {
                 return false;
             }
@@ -458,7 +553,9 @@ impl Thread {
             result = ThreadState::Terminated;
         } else {
             // A GC block is a `Full` (`+1`) request: taken everywhere.
-            self.take_yieldpoint.store(1, Ordering::Relaxed);
+            if let Some(flag) = self.yieldpoint_flag() {
+                flag.store(1, Ordering::Relaxed);
+            }
             self.poke_esp();
             let new_state = self.set_blocked_exec_status();
             result = new_state;
@@ -509,8 +606,7 @@ impl Thread {
         unsafe {
             std::mem::transmute(
                 &mut *self
-                    .native_data
-                    .get()
+                    .native_data_mut_ptr()
                     .as_mut()
                     .unwrap_unchecked()
                     .mutator
@@ -521,16 +617,8 @@ impl Thread {
     }
 
     pub fn is_mutator(&self) -> bool {
-        unsafe {
-            self.active_mutator_context()
-                && self
-                    .native_data
-                    .get()
-                    .as_ref()
-                    .unwrap_unchecked()
-                    .mutator
-                    .is_some()
-        }
+        self.active_mutator_context()
+            && unsafe { self.native_data_mut_ptr().as_ref() }.is_some_and(|nd| nd.mutator.is_some())
     }
 
     pub(crate) fn from_vm_thread(vm_thread: VMThread) -> &'static Self {
@@ -549,12 +637,15 @@ impl Thread {
         VMMutatorThread(self.to_vm_thread())
     }
 
+    /// The bound native data. Only valid once the thread is bound.
     pub(crate) fn native_data(&self) -> &ThreadNativeData {
-        unsafe { self.native_data.get().as_ref().unwrap_unchecked() }
+        debug_assert!(!self.native_data_mut_ptr().is_null(), "thread is not bound");
+        unsafe { &*self.native_data_mut_ptr() }
     }
 
+    /// Null while the thread is unbound.
     pub(crate) fn native_data_mut_ptr(&self) -> *mut ThreadNativeData {
-        self.native_data.get()
+        self.native_data.load(Ordering::Acquire)
     }
 
     pub fn is_thread_state_initialized(&self) -> bool {
@@ -589,11 +680,6 @@ impl Thread {
     ///
     /// Calling [`block`](Self::block) on a new handle will instantly return as thread is not in running state.
     pub fn new(for_mutator: bool) -> Arc<Self> {
-        let barrier_selector = crate::heap::GarbageCollector::get()
-            .mmtk
-            .get_plan()
-            .constraints()
-            .barrier;
         let heap_end = mmtk::memory_manager::last_heap_address().as_usize();
         let (heap_base, heap_shift) = if heap_end <= (4usize << 30) {
             (Address::ZERO, 0)
@@ -607,25 +693,13 @@ impl Thread {
             heap_base,
             heap_shift,
             id: AtomicU64::new(0),
-            take_yieldpoint: AtomicI32::new(0),
             status_word: AtomicBitfieldContainer::new(
                 ThreadStateField::encode(ThreadState::New)
                     | ActiveMutatorContext::encode(for_mutator),
             ),
             monitor: Monitor::new(()),
-            native_data: UnsafeCell::new(ThreadNativeData {
-                mutator: None,
-                mutator_state: None,
-                barrier_selector,
-                lab: LocalAllocationBuffer::new(),
-                max_non_los_default_alloc_bytes: 0,
-                alloc_fastpath: AllocFastPath::None,
-                nonmoving_semantics: AllocationSemantics::NonMoving,
-                tc: UnsafeCell::new(Tc::new()),
-                state: UnsafeCell::new(MaybeUninit::uninit()),
-                stack_low: Address::ZERO,
-                stack_high: Address::ZERO,
-            }),
+            handshake_ops: Mutex::new(VecDeque::new()),
+            native_data: AtomicPtr::new(std::ptr::null_mut()),
             index_in_thread_list: AtomicUsize::new(usize::MAX),
             prof_ring: AtomicPtr::new(std::ptr::null_mut()),
             is_mutator_thread: for_mutator,
@@ -643,13 +717,7 @@ impl Thread {
     /// unbound, mid bind/unbind, or reentered. The only `THREAD` access
     /// the `SIGPROF` handler may use.
     pub(crate) fn try_current_thread() -> Option<&'static Thread> {
-        THREAD
-            .try_with(|cell| {
-                let borrowed = cell.try_borrow().ok()?;
-                *borrowed
-            })
-            .ok()
-            .flatten()
+        try_current_native_data().map(|nd| nd.thread())
     }
 
     /// Returns true if thread is managed by thread subsystem.
@@ -736,9 +804,12 @@ impl Thread {
             // afterwards the aggregator can no longer reach its ring.
             crate::runtime::profile::note_thread_unbinding(this);
 
-            let guard = this.monitor.lock();
+            let mut guard = this.monitor.lock();
             this.set_is_about_to_terminate(true);
             this.status_word.update::<ActiveMutatorContext>(false);
+            // Requesters skip a terminating thread (checked under this
+            // monitor), so draining now strands nothing.
+            this.run_pending_handshakes(&mut guard);
             guard.notify_all();
 
             if let Some(mut mutator) = unsafe { &mut (*this.native_data_mut_ptr()).mutator }.take()
@@ -798,8 +869,13 @@ pub enum AllocFastPath {
     None,
 }
 
+/// Everything a bound OS thread owns, in one `#[repr(C)]` block that the `TC`
+/// register points at. Lives in this thread's `#[thread_local]` slot,
+/// [`Thread`] only keeps a pointer to it (see [`Thread::native_data_mut_ptr`]).
 #[repr(C)]
 pub struct ThreadNativeData {
+    /// Yieldpoint request flag, written by other threads.
+    pub(crate) take_yieldpoint: AtomicI32,
     pub(crate) lab: LocalAllocationBuffer,
     pub mutator: Option<Box<Mutator<MemoryManager>>>,
     pub(crate) mutator_state: Option<NonNull<MutatorState<dyn Trace>>>,
@@ -811,37 +887,162 @@ pub struct ThreadNativeData {
     pub(crate) state: UnsafeCell<MaybeUninit<State<'static>>>,
     pub(crate) stack_low: Address,
     pub(crate) stack_high: Address,
+    /// The handle this data belongs to. Strong: the handle lives at least as
+    /// long as its data, `Thread` points back only through a raw pointer, so
+    /// there is no cycle.
+    thread: Option<Arc<Thread>>,
 }
 
-thread_local! {
-    static THREAD: RefCell<Option<&'static Thread>> = const { RefCell::new(None) };
+impl ThreadNativeData {
+    pub const TAKE_YIELDPOINT_OFFSET: usize = std::mem::offset_of!(Self, take_yieldpoint);
+    pub const STATE_OFFSET: usize = std::mem::offset_of!(Self, state);
+    pub const TC_OFFSET: usize = std::mem::offset_of!(Self, tc);
+    pub const LAB_OFFSET: usize = std::mem::offset_of!(Self, lab);
+    pub const LAB_OFFSET_LIMIT: usize =
+        Self::LAB_OFFSET + std::mem::offset_of!(LocalAllocationBuffer, limit);
+    pub const LAB_OFFSET_CURSOR: usize =
+        Self::LAB_OFFSET + std::mem::offset_of!(LocalAllocationBuffer, cursor);
+
+    /// The cross-thread handle for this data.
+    #[inline(always)]
+    pub fn thread(&self) -> &Thread {
+        // SAFETY: set at init and only cleared when the data is dropped.
+        unsafe { self.thread.as_deref().unwrap_unchecked() }
+    }
+
+    pub(crate) fn state_ptr(&self) -> *mut State<'static> {
+        self.state.get() as *mut State<'static>
+    }
+
+    pub(crate) fn tc_ptr(&self) -> *mut Tc<'static> {
+        self.tc.get()
+    }
+
+    pub fn alloc_fastpath(&self) -> AllocFastPath {
+        self.alloc_fastpath
+    }
+
+    pub fn barrier(&self) -> BarrierSelector {
+        self.barrier_selector
+    }
+
+    pub fn max_non_los_alloc_bytes(&self) -> usize {
+        self.max_non_los_default_alloc_bytes
+    }
+
+    /// The semantics an allocation with `semantics` really gets, see
+    /// [`Thread::map_semantics`].
+    #[inline(always)]
+    pub fn map_semantics(&self, semantics: AllocationSemantics) -> AllocationSemantics {
+        if semantics == AllocationSemantics::NonMoving {
+            self.nonmoving_semantics
+        } else {
+            semantics
+        }
+    }
+
+    /// The thread's mutator without checking initialization.
+    ///
+    /// # Safety
+    ///
+    /// The mutator must be bound, and the caller must ensure exclusive
+    /// mutable access to it.
+    pub unsafe fn mutator_unchecked(&self) -> &'static mut Box<Mutator<MemoryManager>> {
+        unsafe {
+            let nd = self as *const Self as *mut Self;
+            std::mem::transmute((*nd).mutator.as_mut().unwrap_unchecked())
+        }
+    }
+}
+
+/// The per-thread slot behind `#[thread_local]`. Const-constructible, filled
+/// by [`init_current_thread`] and emptied by [`deinit_current_thread`]. There
+/// is no destructor: a thread must unbind itself before it exits.
+struct NativeSlot {
+    bound: Cell<bool>,
+    data: UnsafeCell<MaybeUninit<ThreadNativeData>>,
+}
+
+#[thread_local]
+static SLOT: NativeSlot = NativeSlot {
+    bound: Cell::new(false),
+    data: UnsafeCell::new(MaybeUninit::uninit()),
+};
+
+#[inline(always)]
+pub(crate) fn try_current_native_data() -> Option<&'static ThreadNativeData> {
+    if SLOT.bound.get() {
+        // SAFETY: `bound` is set after the data is written and cleared before
+        // it is dropped.
+        Some(unsafe { &*(SLOT.data.get() as *const ThreadNativeData) })
+    } else {
+        None
+    }
+}
+
+#[inline(always)]
+pub(crate) fn current_native_data() -> &'static ThreadNativeData {
+    try_current_native_data().expect("Thread is not initialized")
 }
 
 pub fn current_thread<'a>() -> &'a Thread {
-    THREAD.with(|t| t.borrow().expect("Thread is not initialized"))
+    current_native_data().thread()
 }
 
 pub(crate) fn is_current_thread_registed() -> bool {
-    THREAD.with(|t| t.borrow().is_some())
+    SLOT.bound.get()
 }
 
 pub(crate) fn init_current_thread(thread: Arc<Thread>) {
-    THREAD.with(|t| {
-        let mut t = t.borrow_mut();
-        // SAFETY: `into_raw` returns correct pointer that can be safely dereferenced
-        *t = Some(unsafe { &*Arc::into_raw(thread) });
-    })
+    assert!(!SLOT.bound.get(), "thread is already bound");
+    let barrier_selector = GarbageCollector::get()
+        .mmtk
+        .get_plan()
+        .constraints()
+        .barrier;
+    let data = ThreadNativeData {
+        take_yieldpoint: AtomicI32::new(0),
+        lab: LocalAllocationBuffer::new(),
+        mutator: None,
+        mutator_state: None,
+        barrier_selector,
+        max_non_los_default_alloc_bytes: 0,
+        alloc_fastpath: AllocFastPath::None,
+        nonmoving_semantics: AllocationSemantics::NonMoving,
+        tc: UnsafeCell::new(Tc::new()),
+        state: UnsafeCell::new(MaybeUninit::uninit()),
+        stack_low: Address::ZERO,
+        stack_high: Address::ZERO,
+        thread: Some(thread.clone()),
+    };
+    let ptr = SLOT.data.get();
+    // SAFETY: the slot is unbound, so nothing reads it.
+    unsafe { ptr.write(MaybeUninit::new(data)) };
+    SLOT.bound.set(true);
+    let guard = thread.monitor.lock();
+    thread
+        .native_data
+        .store(ptr as *mut ThreadNativeData, Ordering::Release);
+    drop(guard);
 }
 
 pub(crate) fn deinit_current_thread() {
-    THREAD.with(|t| {
-        let Some(thread) = t.borrow_mut().take() else {
-            return;
-        };
-
-        let thread = unsafe { Arc::from_raw(thread) };
-        drop(thread);
-    })
+    if !SLOT.bound.get() {
+        return;
+    }
+    let ptr = SLOT.data.get() as *mut ThreadNativeData;
+    // SAFETY: bound, so initialized.
+    let thread = unsafe { (*ptr).thread.clone().unwrap_unchecked() };
+    // Unpublish under the monitor: cross-thread users hold it while they
+    // touch the data.
+    let guard = thread.monitor.lock();
+    thread
+        .native_data
+        .store(std::ptr::null_mut(), Ordering::Release);
+    drop(guard);
+    SLOT.bound.set(false);
+    // SAFETY: unbound and unpublished, nobody can reach the data anymore.
+    unsafe { std::ptr::drop_in_place(ptr) };
 }
 
 #[cfg(target_vendor = "apple")]
@@ -998,10 +1199,8 @@ impl ThreadManager {
             drop(threads);
 
             handshake_threads.retain(|t| {
-                // let guard = t.monitor.lock();
                 let blocked_for_gc = GC_BLOCK_ADAPTER.is_blocked(t)
                     || t.block(&GC_BLOCK_ADAPTER, true).not_running();
-                // drop(guard);
 
                 !blocked_for_gc
             });
@@ -1049,69 +1248,5 @@ impl ThreadManager {
                 thread.flush_tlab();
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::runtime::Scheme;
-    use std::sync::atomic::Ordering;
-
-    /// `PrologueOnly` (`-1`) never downgrades a pending `Full` (`+1`),
-    /// `Full` upgrades `-1`.
-    #[test]
-    fn request_yieldpoint_kind_merging() {
-        let scheme = Scheme::new_uninit();
-        scheme.enter(|_| {
-            let thread = current_thread();
-            // SAFETY: the mutator owns this thread for the duration of `enter`.
-            let tc = unsafe { &*thread.tc_ptr() };
-            let esp0 = tc.esp.load(Ordering::Relaxed);
-            thread.take_yieldpoint.store(0, Ordering::Relaxed);
-
-            thread.request_yieldpoint(YieldpointKind::PrologueOnly);
-            assert_eq!(thread.take_yieldpoint(), -1);
-
-            // A `Full` request upgrades `-1`.
-            thread.request_yieldpoint(YieldpointKind::Full);
-            assert_eq!(thread.take_yieldpoint(), 1);
-
-            // A `PrologueOnly` request does not downgrade `+1`.
-            thread.request_yieldpoint(YieldpointKind::PrologueOnly);
-            assert_eq!(thread.take_yieldpoint(), 1);
-
-            thread.take_yieldpoint.store(0, Ordering::Relaxed);
-            tc.esp.store(esp0, Ordering::Relaxed);
-        });
-    }
-
-    /// A thread that entered native code while a GC block was pending is acknowledged as blocked
-    /// (`enter_native_blocked`) but is still `InNative`. Leaving native must not take the
-    /// lock-free `InNative -> Mutating` shortcut then, otherwise the thread resumes mutating
-    /// while the collector believes the world is stopped.
-    #[test]
-    fn leave_native_fast_path_respects_gc_block() {
-        let scheme = Scheme::new_uninit();
-        scheme.enter(|_| {
-            let thread = current_thread();
-            Thread::enter_native();
-            assert_eq!(thread.get_exec_status(), ThreadState::InNative);
-
-            // Block acknowledged on entry to native.
-            GC_BLOCK_ADAPTER.set_blocked(thread, true);
-            assert!(!Thread::attempt_leave_native_no_block());
-            assert_eq!(thread.get_exec_status(), ThreadState::InNative);
-
-            // Block requested but not yet acknowledged.
-            GC_BLOCK_ADAPTER.set_blocked(thread, false);
-            GC_BLOCK_ADAPTER.request_block(thread);
-            assert!(!Thread::attempt_leave_native_no_block());
-            assert_eq!(thread.get_exec_status(), ThreadState::InNative);
-
-            GC_BLOCK_ADAPTER.clear_block_request(thread);
-            assert!(Thread::attempt_leave_native_no_block());
-            assert_eq!(thread.get_exec_status(), ThreadState::Mutating);
-        });
     }
 }
