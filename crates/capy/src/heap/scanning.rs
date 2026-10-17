@@ -93,6 +93,7 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
         mut factory: impl mmtk::vm::RootsWorkFactory<<MemoryManager as mmtk::vm::VMBinding>::VMSlot>,
     ) {
         crate::heap::oop_storage::OopStorageSet::get().scan_strong(&mut factory);
+        crate::runtime::codegen::reclaim::scan_roots(&mut factory);
 
         let threads = crate::heap::GarbageCollector::get().threads.threads();
         for thread in threads.iter() {

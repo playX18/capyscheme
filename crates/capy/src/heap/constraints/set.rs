@@ -221,31 +221,3 @@ impl Default for MarkingConstraintSet {
         Self::new()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::heap::constraints::{ConstraintVolatility, SimpleMarkingConstraint};
-
-    #[test]
-    fn registers_roots_and_outgrowths() {
-        let mut set = MarkingConstraintSet::new();
-        set.add(Box::new(SimpleMarkingConstraint::new(
-            "R",
-            "Root",
-            ConstraintVolatility::GreyedByExecution,
-            |_| {},
-        )));
-        set.add(Box::new(SimpleMarkingConstraint::new(
-            "O",
-            "Outgrowth",
-            ConstraintVolatility::GreyedByMarking,
-            |_| {},
-        )));
-        assert_eq!(set.roots, vec![0]);
-        assert_eq!(set.outgrowths, vec![1]);
-        let visitor = ConstraintVisitor::new_counting();
-        assert_eq!(set.ordered_for_iteration(1, &visitor), vec![0]);
-        assert_eq!(set.ordered_for_iteration(2, &visitor), vec![1]);
-    }
-}

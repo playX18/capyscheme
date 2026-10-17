@@ -4,11 +4,12 @@ use bytemuck::NoUninit;
 use super::barrier::*;
 use crate::heap::Gc;
 use crate::heap::Mutation;
+use crate::heap::alloc::ArrayRef;
 use crate::heap::collection::Visitor;
 use crate::heap::traits::Trace;
 use std::cell::*;
 use std::fmt;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 macro_rules! make_lock_wrapper {
     (
@@ -354,3 +355,34 @@ unsafe impl<T: NoUninit + Trace> Trace for AtomicLock<T> {
         }
     }
 }
+
+/// Compare-and-swap a cache array pointer.
+#[inline]
+pub(crate) fn cas_cache<'gc, T: Trace>(
+    field: &Lock<ArrayRef<'gc, T>>,
+    expected: ArrayRef<'gc, T>,
+    new: ArrayRef<'gc, T>,
+) -> bool {
+    const _: () = assert!(size_of::<Lock<ArrayRef<'static, u8>>>() == size_of::<usize>());
+    // SAFETY: `Lock<Gc<_>>` is a single pointer-sized word; all writers of
+    // cache fields go through this function or the clear path's atomic swap.
+    let atomic = unsafe { &*(field.as_ptr() as *const AtomicUsize) };
+    atomic
+        .compare_exchange(
+            expected.as_ptr() as usize,
+            new.as_ptr() as usize,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+}
+
+#[inline]
+pub(crate) fn swap_cache<'gc, T: Trace>(field: &Lock<ArrayRef<'gc, T>>, new: ArrayRef<'gc, T>) {
+    // SAFETY: as in `cas_cache`.
+    let atomic = unsafe { &*(field.as_ptr() as *const AtomicUsize) };
+    atomic.store(new.as_ptr() as usize, Ordering::Release);
+}
+
+/// How many times a fill retries after losing a publish race.
+pub(crate) const FILL_RETRIES: usize = 2;

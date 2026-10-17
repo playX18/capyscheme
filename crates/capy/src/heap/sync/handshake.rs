@@ -187,10 +187,6 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    // These tests share one process-wide collector and thread list with
-    // every other test, so run them alone: `cargo test -p capy handshake
-    // -- --test-threads=1`.
-
     struct Count(AtomicUsize);
 
     impl HandshakeOp for Count {

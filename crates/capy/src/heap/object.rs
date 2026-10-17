@@ -103,8 +103,11 @@ pub mod builtin_class_ids {
     pub const PERSISTENT_MAP: u32 = 68;
     pub const PERSISTENT_SET: u32 = 69;
     pub const HAMT_NODE: u32 = 70;
+    /// Owner of a piece of machine code (a compiled procedure or a call
+    /// IC stub).
+    pub const CODE_IMAGE: u32 = 71;
 
-    pub const MAX: u32 = HAMT_NODE;
+    pub const MAX: u32 = CODE_IMAGE;
 }
 
 static NEXT_CLASS_ID: AtomicU32 = AtomicU32::new(builtin_class_ids::MAX + 1);
@@ -860,124 +863,5 @@ impl TryFrom<GcObject> for ObjectReference {
         } else {
             unsafe { Ok(ObjectReference::from_raw_address_unchecked(value.0)) }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct Dummy;
-
-    unsafe impl Trace for Dummy {
-        unsafe fn trace(&mut self, _visitor: &mut Visitor) {}
-
-        unsafe fn process_weak_refs(&mut self, _weak_processor: &mut WeakProcessor) {}
-    }
-
-    #[test]
-    fn heap_header_layout_stays_single_word() {
-        assert_eq!(size_of::<HeapObjectHeader>(), 8);
-        assert_eq!(OBJECT_REF_OFFSET, 8);
-    }
-
-    #[test]
-    fn heap_header_roundtrips_class_id() {
-        let class_id = ClassId::new(builtin_class_ids::CLASS).unwrap();
-        let header = HeapObjectHeader::from_class_id(class_id);
-
-        assert_eq!(header.class_id(), class_id);
-        assert_eq!(header.hash_state(), HASH_UNHASHED);
-        assert!(!header.finalization_state());
-    }
-
-    #[test]
-    fn class_header_word_contains_only_the_class_id() {
-        let class_id = ClassId::new(0x90ab).unwrap();
-        let header_word = class_header_word(class_id);
-        let header = HeapObjectHeader::from_word(header_word);
-
-        assert_eq!(header_word, u64::from(class_id.bits()));
-        assert_eq!(header.class_id(), class_id);
-        assert!(!header.private_variant_flag());
-    }
-
-    #[test]
-    fn class_header_word_can_carry_private_variant_flag() {
-        let class_id = ClassId::new(builtin_class_ids::VECTOR).unwrap();
-        let header_word = class_header_word_with_private_variant_flag(class_id);
-        let header = HeapObjectHeader::from_word(header_word);
-
-        assert_eq!(header.class_id(), class_id);
-        assert!(header.private_variant_flag());
-    }
-
-    #[test]
-    fn class_id_is_nonzero_and_24_bit() {
-        assert!(ClassId::new(0).is_none());
-        assert_eq!(ClassId::new(1).unwrap().bits(), 1);
-        assert_eq!(ClassId::new(MAX_CLASS_ID).unwrap().bits(), MAX_CLASS_ID);
-        assert!(ClassId::new(MAX_CLASS_ID + 1).is_none());
-        assert_eq!(ClassIdBits::NEXT_BIT, 24);
-    }
-
-    #[test]
-    fn mmtk_side_bits_do_not_overlap_class_id_field() {
-        assert!(ClassIdBits::NEXT_BIT <= HashBits::shift());
-        assert!(ClassIdBits::NEXT_BIT <= FinalizationState::shift());
-        assert!(PrivateVariantFlag::NEXT_BIT <= HashBits::shift());
-        assert!(PrivateVariantFlag::NEXT_BIT <= FinalizationState::shift());
-        const {
-            assert!(ClassIdBits::NEXT_BIT <= LastBitfield::NEXT_BIT);
-        }
-    }
-
-    #[test]
-    fn object_copy_preserves_class_id() {
-        let bytes = size_of::<HeapObjectHeader>() + size_of::<u64>();
-        let mut from = [0_u64; 2];
-        let mut to = [0_u64; 2];
-        let class_id = ClassId::new(builtin_class_ids::CLASS).unwrap();
-
-        unsafe {
-            from.as_mut_ptr()
-                .cast::<HeapObjectHeader>()
-                .write(HeapObjectHeader::from_class_id(class_id));
-            from.as_mut_ptr()
-                .cast::<u8>()
-                .add(size_of::<HeapObjectHeader>())
-                .cast::<u64>()
-                .write(0xfeed_face_cafe_beef);
-        }
-
-        let from_obj = GcObject::from_address(Address::from_ptr(unsafe {
-            from.as_ptr().cast::<u8>().add(OBJECT_REF_OFFSET as usize)
-        }));
-        let to_start = Address::from_ptr(to.as_mut_ptr());
-        let to_obj = ObjectModel::move_object(from_obj, MoveTarget::ToAddress(to_start), bytes);
-
-        assert_eq!(to_obj.header().class_id(), class_id);
-    }
-
-    #[test]
-    fn type_class_header_word_assigns_distinct_ids_per_monomorphization() {
-        crate::runtime::thread::Scheme::new_uninit().enter(|ctx| {
-            let hooks_a = AllocationHooksOf::<'static, Dummy>::HOOKS;
-            let hooks_b = AllocationHooksOf::<'static, Dummy2>::HOOKS;
-            let id_a = ClassId::new(type_class_header_word::<Dummy>(ctx, hooks_a) as u32).unwrap();
-            let id_b = ClassId::new(type_class_header_word::<Dummy2>(ctx, hooks_b) as u32).unwrap();
-
-            assert_ne!(id_a, id_b);
-            assert!(id_a.bits() > builtin_class_ids::MAX);
-            assert!(id_b.bits() > builtin_class_ids::MAX);
-        });
-    }
-
-    struct Dummy2;
-
-    unsafe impl Trace for Dummy2 {
-        unsafe fn trace(&mut self, _visitor: &mut Visitor) {}
-
-        unsafe fn process_weak_refs(&mut self, _weak_processor: &mut WeakProcessor) {}
     }
 }

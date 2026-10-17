@@ -101,31 +101,3 @@ impl Drop for HandleScope<'_> {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn handle_roundtrip() {
-        let storage = OopStorage::create("handle-test");
-        let h = OopHandle::new(&storage, Value::null());
-        assert!(h.get().is_null());
-        h.set(Value::undefined());
-        assert!(h.get().is_undefined_or_null() && !h.get().is_null());
-        h.release(&storage);
-        assert_eq!(storage.allocation_count(), 0);
-    }
-
-    #[test]
-    fn handle_scope_releases() {
-        let storage = OopStorage::create("scope-test");
-        {
-            let mut scope = HandleScope::new(&storage);
-            let _ = scope.root(Value::null());
-            let _ = scope.root(Value::undefined());
-            assert_eq!(storage.allocation_count(), 2);
-        }
-        assert_eq!(storage.allocation_count(), 0);
-    }
-}

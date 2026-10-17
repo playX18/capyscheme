@@ -13,11 +13,52 @@ use mmtk::{MMTKBuilder, util::options::GCTriggerSelector};
 
 use crate::{
     heap::{MMTK, mm::MemoryManager},
-    utils::FormattedSize,
+    utils::{
+        FormattedSize,
+        flags::{self, FlagId},
+    },
 };
 
 const GC_LOG_FILTER: &str = "capy::gc=trace";
 const GC_TRACE_LOG_FILTER: &str = "mmtk=trace,capy::gc=trace";
+const JIT_LOG_TARGET: &str = "capy::runtime::codegen";
+/// Target of the GC narrative lines (summaries, trigger decisions).
+pub(crate) const GC_LOG_TARGET: &str = "capy::gc";
+/// Target of the `*_STATS` exit reporters, which span several modules.
+pub(crate) const STATS_LOG_TARGET: &str = "capy::stats";
+
+/// The log level the `CAPY_JIT_LOG*` flags ask of the codegen modules, if any.
+/// They stand in for `RUST_LOG` so the flags keep working on their own.
+fn jit_log_level() -> Option<log::LevelFilter> {
+    if flags::jit_log_resume() {
+        Some(log::LevelFilter::Trace)
+    } else if flags::jit_log_verbose() {
+        Some(log::LevelFilter::Debug)
+    } else if flags::jit_log() {
+        Some(log::LevelFilter::Info)
+    } else {
+        None
+    }
+}
+
+/// Any `*_STATS` exit report requested.
+fn stats_logging_requested() -> bool {
+    flags::jit_stats()
+        || flags::template_alloc_stats()
+        || flags::template_bail_stats()
+        || flags::template_op_stats()
+        || flags::prim_stats()
+}
+
+/// Raise the global max level to at least `level` (never lower it).
+/// Emitters whose gate is known only when they fire (dump confirmations,
+/// fatal boot errors) call this before logging: the logger's static
+/// filters were built before their gate could be evaluated.
+pub(crate) fn ensure_max_level(level: log::LevelFilter) {
+    if log::max_level() < level {
+        log::set_max_level(level);
+    }
+}
 static GC_LOGGING_ENABLED: AtomicBool = AtomicBool::new(false);
 static GC_LOG_STATE: OnceLock<Mutex<GcLogState>> = OnceLock::new();
 
@@ -50,7 +91,7 @@ where
 }
 
 fn rust_log_mentions_mmtk() -> bool {
-    std::env::var("RUST_LOG").ok().is_some_and(|rust_log| {
+    flags::rust_log().is_some_and(|rust_log| {
         rust_log.split(',').any(|part| {
             let part = part.trim();
             part == "mmtk" || part.starts_with("mmtk=")
@@ -59,29 +100,58 @@ fn rust_log_mentions_mmtk() -> bool {
 }
 
 fn parse_log_filters(builder: &mut env_logger::Builder) {
+    // Static scaffolding first: unmatched targets are denied, so every
+    // module that logs behind a runtime gate needs a directive. These run
+    // before the user filters below, so an explicit `RUST_LOG` directive
+    // for the same module wins; a blanket level never overrides them.
+    builder.filter_module(GC_LOG_TARGET, log::LevelFilter::Trace);
+    builder.filter_module("capy::heap::logging", log::LevelFilter::Info);
+    builder.filter_module("capy::compiler::dump", log::LevelFilter::Info);
+    builder.filter_module("capy::compiler::cps::optimize", log::LevelFilter::Info);
+    builder.filter_module("capy::runtime::thread", log::LevelFilter::Error);
+
     let gc_trace = process_args_request_gc_logging();
     if gc_trace {
         builder.parse_filters(GC_TRACE_LOG_FILTER);
-        return;
+    } else if flags::is_set(FlagId::rust_log) {
+        match flags::rust_log() {
+            // `RUST_LOG=""`: silence everything but explicit module
+            // directives, as before.
+            None => {
+                builder.parse_filters("mmtk=off");
+            }
+            Some(rust_log) => {
+                let filter = if rust_log_mentions_mmtk() {
+                    rust_log.to_owned()
+                } else {
+                    format!("{rust_log},mmtk=off")
+                };
+                builder.parse_filters(&filter);
+            }
+        }
+    } else {
+        builder.parse_filters(GC_LOG_FILTER);
+        if let Some(level) = jit_log_level() {
+            builder.filter_module(JIT_LOG_TARGET, level);
+        }
     }
 
-    if let Ok(rust_log) = std::env::var("RUST_LOG") {
-        let filter = if rust_log_mentions_mmtk() {
-            rust_log
-        } else if rust_log.is_empty() {
-            "mmtk=off".to_string()
-        } else {
-            format!("{rust_log},mmtk=off")
-        };
-        builder.parse_filters(&filter);
-        return;
+    // Flag-gated diagnostics last: an explicitly enabled `CAPY_*` report
+    // stays visible even under a restrictive `RUST_LOG`, as when these
+    // wrote to stderr directly.
+    if stats_logging_requested() {
+        builder.filter_module(STATS_LOG_TARGET, log::LevelFilter::Info);
     }
-
-    builder.parse_filters(GC_LOG_FILTER);
+    if flags::ic_log() {
+        builder.filter_module("capy::runtime::class::generic", log::LevelFilter::Info);
+    }
+    if flags::profile_out().is_some() {
+        builder.filter_module("capy::runtime::profile", log::LevelFilter::Warn);
+    }
 }
 
 pub(crate) fn init_rust_logger() {
-    let rust_log_is_set = std::env::var_os("RUST_LOG").is_some();
+    let rust_log_is_set = flags::is_set(FlagId::rust_log);
     let gc_trace = process_args_request_gc_logging();
     let mmtk_explicit = rust_log_mentions_mmtk();
 
@@ -108,15 +178,31 @@ pub(crate) fn init_rust_logger() {
         .try_init()
         .is_ok();
 
-    if initialized && !rust_log_is_set && !gc_logging_enabled() && !gc_trace {
+    if initialized
+        && !rust_log_is_set
+        && !gc_logging_enabled()
+        && !gc_trace
+        && jit_log_level().is_none()
+        && !stats_logging_requested()
+        && !flags::ic_log()
+        && flags::profile_out().is_none()
+        && flags::parse_errors().is_empty()
+    {
         log::set_max_level(log::LevelFilter::Off);
+    }
+
+    if initialized && !flags::parse_errors().is_empty() {
+        for error in flags::parse_errors() {
+            log::warn!("{error}");
+        }
+        log::warn!("hint: run `capy --help-flags` to list all flags");
     }
 }
 
 pub(crate) fn mmtk_builder() -> MMTKBuilder {
     let mut builder = MMTKBuilder::new();
 
-    if std::env::var_os("MMTK_GC_TRIGGER").is_none() {
+    if !flags::is_set(FlagId::mmtk_gc_trigger) {
         super::heuristics::set_default_max_heap_bytes(builder.options.gc_trigger.max_heap_size());
         builder.options.gc_trigger.set(GCTriggerSelector::Delegated);
     }
@@ -145,7 +231,7 @@ pub(crate) fn set_gc_logging_enabled(enabled: bool) {
 
     if enabled {
         log::set_max_level(log::LevelFilter::Trace);
-    } else if std::env::var_os("RUST_LOG").is_none() {
+    } else if !flags::is_set(FlagId::rust_log) {
         log::set_max_level(log::LevelFilter::Off);
     }
 }
@@ -175,13 +261,18 @@ pub(crate) fn log_gc_completed(mmtk: &MMTK<MemoryManager>) {
     let used_after = mmtk::memory_manager::used_bytes(mmtk);
     let free = mmtk::memory_manager::free_bytes(mmtk);
 
-    eprintln!(
+    log::info!(
+        target: GC_LOG_TARGET,
         "{}",
-        format_gc_summary_line(collection, pause, used_before, used_after, free)
+        gc_summary_message(collection, pause, used_before, used_after, free)
     );
 
     for (space_name, stats) in mmtk::memory_manager::live_bytes_in_last_gc(mmtk) {
-        eprintln!("{}", format_gc_space_line(space_name, stats));
+        log::info!(
+            target: GC_LOG_TARGET,
+            "{}",
+            gc_space_message(space_name, stats)
+        );
     }
 }
 
@@ -208,42 +299,48 @@ pub(crate) fn format_gc_summary_line(
     used_after: usize,
     free: usize,
 ) -> String {
-    let freed = used_before.saturating_sub(used_after);
-    let total = used_after.saturating_add(free);
     format_log_line(
         log::Level::Info,
-        "capy::gc",
-        format_args!(
-            "GC #{}: pause={}, heap={} -> {}, freed={}, free={}, total={}",
-            collection,
-            format_duration(pause),
-            FormattedSize(used_before),
-            FormattedSize(used_after),
-            FormattedSize(freed),
-            FormattedSize(free),
-            FormattedSize(total),
-        ),
+        GC_LOG_TARGET,
+        gc_summary_message(collection, pause, used_before, used_after, free),
     )
 }
 
-fn format_gc_space_line(space_name: &str, stats: mmtk::LiveBytesStats) -> String {
+fn gc_summary_message(
+    collection: u64,
+    pause: Duration,
+    used_before: usize,
+    used_after: usize,
+    free: usize,
+) -> String {
+    let freed = used_before.saturating_sub(used_after);
+    let total = used_after.saturating_add(free);
+    format!(
+        "GC #{}: pause={}, heap={} -> {}, freed={}, free={}, total={}",
+        collection,
+        format_duration(pause),
+        FormattedSize(used_before),
+        FormattedSize(used_after),
+        FormattedSize(freed),
+        FormattedSize(free),
+        FormattedSize(total),
+    )
+}
+
+fn gc_space_message(space_name: &str, stats: mmtk::LiveBytesStats) -> String {
     let live_percent = if stats.used_bytes == 0 {
         0.0
     } else {
         stats.live_bytes as f64 * 100.0 / stats.used_bytes as f64
     };
 
-    format_log_line(
-        log::Level::Info,
-        "capy::gc",
-        format_args!(
-            "GC space {}: live={}, used={} ({} pages, {:.1}% live)",
-            space_name,
-            FormattedSize(stats.live_bytes),
-            FormattedSize(stats.used_bytes),
-            stats.used_pages,
-            live_percent,
-        ),
+    format!(
+        "GC space {}: live={}, used={} ({} pages, {:.1}% live)",
+        space_name,
+        FormattedSize(stats.live_bytes),
+        FormattedSize(stats.used_bytes),
+        stats.used_pages,
+        live_percent,
     )
 }
 

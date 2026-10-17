@@ -5,7 +5,10 @@ use crate::{
         mm::MemoryManager,
         object::{AllocationHooksOf, GcObject, HeapObjectHeader, OBJECT_REF_OFFSET},
         ptr::Gc,
-        sync::thread::{AllocFastPath, Thread, current_thread, is_current_thread_registed},
+        sync::thread::{
+            AllocFastPath, Thread, ThreadNativeData, current_native_data, current_thread,
+            is_current_thread_registed,
+        },
         traits::Trace,
     },
     runtime::{State, Tc},
@@ -69,6 +72,9 @@ macro_rules! Rootable {
         $crate::Rootable!['__gc => $crate::__unelide_lifetimes!('__gc; $root)]
     };
 }
+
+/// Allocations at or above this size (including the object header) go to the large object space.
+pub(crate) const LOS_THRESHOLD_BYTES: usize = 8 * 1024;
 
 const DEFAULT_ALLOC_OPTIONS: AllocationOptions = AllocationOptions {
     allow_oom_call: false,
@@ -274,7 +280,6 @@ where
             .mutator_state
             .take()
             .expect("must have state");
-        //let _ = unsafe { Box::from_raw(self.state.as_ptr()) };
         Thread::unregister();
     }
 }
@@ -282,36 +287,51 @@ where
 #[derive(Copy, Clone)]
 #[repr(transparent)]
 pub struct Mutation<'gc> {
-    thread: &'gc Thread,
+    /// Points into the owning thread's `#[thread_local]` slot, kept as a raw
+    /// pointer so mutation through it (LAB, mutator) keeps write provenance.
+    nd: NonNull<ThreadNativeData>,
+    _gc: PhantomData<&'gc ()>,
 }
+
+// SAFETY: the handle is a pointer to thread-local data that is only mutated by
+// the owning thread, cross-thread state in it is atomic. This matches the
+// `&Thread` it replaced.
+unsafe impl Send for Mutation<'_> {}
+unsafe impl Sync for Mutation<'_> {}
 
 impl<'gc> Deref for Mutation<'gc> {
     type Target = State<'gc>;
 
     fn deref(&self) -> &Self::Target {
         debug_assert!(
-            self.thread.is_thread_state_initialized(),
+            self.thread().is_thread_state_initialized(),
             "thread state is not initialized"
         );
-        unsafe {
-            let state_ptr = self.thread.state_ptr();
-            &*(state_ptr as *const State<'gc>)
-        }
+        unsafe { &*(self.nd().state_ptr() as *const State<'gc>) }
     }
 }
 
 use mmtk::util::alloc::AllocationOptions;
 
 impl<'gc> Mutation<'gc> {
-    pub const OFFSET_OF_THREAD: usize = std::mem::offset_of!(Self, thread);
+    pub const OFFSET_OF_STATE: usize = ThreadNativeData::STATE_OFFSET;
 
-    pub const OFFSET_OF_STATE: usize = Thread::RT_STATE_OFFSET;
+    #[inline(always)]
+    fn nd(&self) -> &'gc ThreadNativeData {
+        // SAFETY: the slot outlives every `Mutation` handed out for it.
+        unsafe { &*self.nd.as_ptr() }
+    }
+
+    #[inline(always)]
+    fn nd_ptr(&self) -> *mut ThreadNativeData {
+        self.nd.as_ptr()
+    }
 
     #[inline(always)]
     unsafe fn post_alloc(&self, object: GcObject, bytes: usize, semantics: AllocationSemantics) {
         unsafe {
             mmtk::memory_manager::post_alloc(
-                self.thread.mutator_unchecked(),
+                self.nd().mutator_unchecked(),
                 object
                     .to_object_reference()
                     .expect("gc object has object reference"),
@@ -418,53 +438,56 @@ impl<'gc> Mutation<'gc> {
     #[inline(always)]
     pub fn state(&self) -> &'gc State<'gc> {
         debug_assert!(
-            self.thread.is_thread_state_initialized(),
+            self.thread().is_thread_state_initialized(),
             "thread state is not initialized"
         );
-        unsafe {
-            let state_ptr = self.thread.state_ptr();
-            &*(state_ptr as *const State<'gc>)
-        }
+        unsafe { &*(self.nd().state_ptr() as *const State<'gc>) }
     }
 
     #[inline(always)]
     pub fn tc(&self) -> &'gc Tc<'gc> {
         // The thread context is built with the thread and needs no init gate.
-        unsafe {
-            let tc_ptr = self.thread.tc_ptr();
-            &*(tc_ptr as *const Tc<'gc>)
-        }
+        unsafe { &*(self.nd().tc_ptr() as *const Tc<'gc>) }
     }
 
+    /// The pointer the `TC` register holds: the thread's [`ThreadNativeData`].
     pub fn as_ptr(self) -> *const () {
-        self.thread as *const _ as *const ()
+        self.nd.as_ptr() as *const ()
     }
 
-    /// Reconstruct a mutation handle from a raw thread pointer.
+    /// Reconstruct a mutation handle from a raw native data pointer.
     ///
     /// # Safety
     ///
     /// `ptr` must have been produced by [`Mutation::as_ptr`] for a live thread
     /// whose lifetime is valid for the returned mutation handle.
     pub unsafe fn from_ptr(ptr: *const ()) -> Self {
-        let thread = unsafe { &*(ptr as *const Thread) };
-        Mutation { thread }
+        Mutation {
+            nd: unsafe { NonNull::new_unchecked(ptr as *mut ThreadNativeData) },
+            _gc: PhantomData,
+        }
+    }
+
+    /// The native data this handle points at.
+    #[inline(always)]
+    pub(crate) fn native_data(&self) -> &'gc ThreadNativeData {
+        self.nd()
     }
 
     #[inline(always)]
     pub fn init_state(&self, state: State<'gc>) {
         assert!(
-            !self.thread.is_thread_state_initialized(),
+            !self.thread().is_thread_state_initialized(),
             "thread state is already initialized"
         );
         unsafe {
-            self.thread.initialize_state(state);
+            self.thread().initialize_state(state);
         }
     }
 
     #[inline(always)]
     pub fn thread(&self) -> &'gc Thread {
-        self.thread
+        self.nd().thread()
     }
 
     /// Returns a value of `take_yieldpoint` for current thread. This value
@@ -476,7 +499,9 @@ impl<'gc> Mutation<'gc> {
     /// meaning to the value can be assigned by implementing your own blocking adapters.
     #[must_use]
     pub fn take_yieldpoint(&self) -> i32 {
-        self.thread.take_yieldpoint()
+        self.nd()
+            .take_yieldpoint
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn finalizers(&self) -> &'gc Finalizers {
@@ -530,7 +555,7 @@ impl<'gc> Mutation<'gc> {
     /// This function is safe only if TLAB is flushed *before* call into MMTK API such as
     /// [`raw_allocate_slow_with_header_word`](Self::raw_allocate_slow_with_header_word).
     pub unsafe fn flush_tlab(&self) {
-        let tlab = unsafe { &mut (*self.thread.native_data_mut_ptr()).lab };
+        let tlab = unsafe { &mut (*self.nd_ptr()).lab };
 
         let (cursor, limit) = tlab.take();
 
@@ -547,7 +572,7 @@ impl<'gc> Mutation<'gc> {
         match selector {
             AllocatorSelector::Immix(_) => unsafe {
                 let allocator = self
-                    .thread
+                    .nd()
                     .mutator_unchecked()
                     .allocator_impl_mut::<ImmixAllocator<MemoryManager>>(selector);
                 allocator.bump_pointer.reset(cursor, limit);
@@ -555,7 +580,7 @@ impl<'gc> Mutation<'gc> {
 
             AllocatorSelector::BumpPointer(_) => unsafe {
                 let allocator = self
-                    .thread
+                    .nd()
                     .mutator_unchecked()
                     .allocator_impl_mut::<BumpAllocator<MemoryManager>>(selector);
                 allocator.bump_pointer.reset(cursor, limit);
@@ -576,7 +601,7 @@ impl<'gc> Mutation<'gc> {
     /// This function is safe only if TLAB is refilled *after* call into MMTKA API such as
     /// [`raw_allocate_slow_with_header_word`](Self::raw_allocate_slow_with_header_word).
     pub unsafe fn refill_tlab(&self) {
-        let tlab = unsafe { &mut (*self.thread.native_data_mut_ptr()).lab };
+        let tlab = unsafe { &mut (*self.nd_ptr()).lab };
 
         let selector = mmtk::memory_manager::get_allocator_mapping(
             &super::GarbageCollector::get().mmtk,
@@ -586,7 +611,7 @@ impl<'gc> Mutation<'gc> {
         let allocator = match selector {
             AllocatorSelector::Immix(_) => unsafe {
                 let allocator = self
-                    .thread
+                    .nd()
                     .mutator_unchecked()
                     .allocator_impl_mut::<ImmixAllocator<MemoryManager>>(selector);
                 &allocator.bump_pointer
@@ -594,7 +619,7 @@ impl<'gc> Mutation<'gc> {
 
             AllocatorSelector::BumpPointer(_) => unsafe {
                 let allocator = self
-                    .thread
+                    .nd()
                     .mutator_unchecked()
                     .allocator_impl_mut::<BumpAllocator<MemoryManager>>(selector);
                 &allocator.bump_pointer
@@ -623,7 +648,7 @@ impl<'gc> Mutation<'gc> {
         unsafe {
             self.flush_tlab();
             let object_start = mmtk::memory_manager::alloc_slow_with_options(
-                self.thread.mutator_unchecked(),
+                self.nd().mutator_unchecked(),
                 size + size_of::<HeapObjectHeader>(),
                 alignment,
                 OBJECT_REF_OFFSET as usize,
@@ -653,7 +678,7 @@ impl<'gc> Mutation<'gc> {
         unsafe {
             self.flush_tlab();
             let object_start = mmtk::memory_manager::alloc_slow_with_options(
-                self.thread.mutator_unchecked(),
+                self.nd().mutator_unchecked(),
                 size + size_of::<HeapObjectHeader>(),
                 alignment,
                 OBJECT_REF_OFFSET as usize,
@@ -685,11 +710,11 @@ impl<'gc> Mutation<'gc> {
         alignment: usize,
         header_word: u64,
     ) -> GcObject {
-        let semantics = self.thread.map_semantics(AllocationSemantics::NonMoving);
+        let semantics = self.nd().map_semantics(AllocationSemantics::NonMoving);
         unsafe {
             self.flush_tlab();
             let object_start = mmtk::memory_manager::alloc_slow_with_options(
-                self.thread.mutator_unchecked(),
+                self.nd().mutator_unchecked(),
                 size + size_of::<HeapObjectHeader>(),
                 alignment,
                 OBJECT_REF_OFFSET as usize,
@@ -719,7 +744,7 @@ impl<'gc> Mutation<'gc> {
         unsafe {
             self.flush_tlab();
             let object_start = mmtk::memory_manager::alloc_slow_with_options(
-                self.thread.mutator_unchecked(),
+                self.nd().mutator_unchecked(),
                 size + size_of::<HeapObjectHeader>(),
                 alignment,
                 OBJECT_REF_OFFSET as usize,
@@ -792,9 +817,9 @@ impl<'gc> Mutation<'gc> {
         header_word: u64,
         mut semantics: AllocationSemantics,
     ) -> UnpublishedAllocation {
-        semantics = self.thread.map_semantics(semantics);
+        semantics = self.nd().map_semantics(semantics);
         unsafe {
-            if size + size_of::<HeapObjectHeader>() >= 8 * 1024 {
+            if size + size_of::<HeapObjectHeader>() >= LOS_THRESHOLD_BYTES {
                 semantics = AllocationSemantics::Los;
             }
 
@@ -802,9 +827,9 @@ impl<'gc> Mutation<'gc> {
             let size = raw_align_up(size, alignment);
             debug_assert!(size.is_multiple_of(alignment));
             if semantics == AllocationSemantics::Default
-                && self.thread.alloc_fastpath() == AllocFastPath::TLAB
+                && self.nd().alloc_fastpath() == AllocFastPath::TLAB
             {
-                let lab = &mut (*self.thread.native_data_mut_ptr()).lab;
+                let lab = &mut (*self.nd_ptr()).lab;
 
                 let object_start = lab.allocate(
                     size + size_of::<HeapObjectHeader>(),
@@ -845,7 +870,7 @@ impl<'gc> Mutation<'gc> {
         mut semantics: AllocationSemantics,
     ) -> UnpublishedAllocation {
         if semantics == AllocationSemantics::Default
-            && size + size_of::<HeapObjectHeader>() >= self.thread.max_non_los_alloc_bytes()
+            && size + size_of::<HeapObjectHeader>() >= self.nd().max_non_los_alloc_bytes()
         {
             semantics = AllocationSemantics::Los;
         }
@@ -856,7 +881,7 @@ impl<'gc> Mutation<'gc> {
                 AllocationSemantics::Los => {
                     self.flush_tlab();
                     let object_start = mmtk::memory_manager::alloc_slow_with_options(
-                        self.thread.mutator_unchecked(),
+                        self.nd().mutator_unchecked(),
                         size + size_of::<HeapObjectHeader>(),
                         alignment,
                         OBJECT_REF_OFFSET as usize,
@@ -875,7 +900,7 @@ impl<'gc> Mutation<'gc> {
                 semantics => {
                     self.flush_tlab();
                     let object_start = mmtk::memory_manager::alloc_with_options(
-                        self.thread.mutator_unchecked(),
+                        self.nd().mutator_unchecked(),
                         size + size_of::<HeapObjectHeader>(),
                         alignment,
                         OBJECT_REF_OFFSET as _,
@@ -906,13 +931,10 @@ impl<'gc> Mutation<'gc> {
         }
 
         unsafe {
-            self.thread
-                .mutator_unchecked()
-                .barrier()
-                .load_weak_reference(
-                    weak.to_object_reference()
-                        .expect("gc object has object reference"),
-                );
+            self.nd().mutator_unchecked().barrier().load_weak_reference(
+                weak.to_object_reference()
+                    .expect("gc object has object reference"),
+            );
         }
     }
 
@@ -929,7 +951,7 @@ impl<'gc> Mutation<'gc> {
         slot: ObjectSlot,
         target: GcObject,
     ) {
-        match self.thread.barrier() {
+        match self.nd().barrier() {
             BarrierSelector::ObjectBarrier => unsafe {
                 let addr = src.to_address();
                 let meta_addr = global_side_metadata_vm_base_address() + (addr >> 6);
@@ -937,7 +959,7 @@ impl<'gc> Mutation<'gc> {
                 let byte_val = meta_addr.load::<u8>();
 
                 if (byte_val >> shift) & 1 == 1 {
-                    self.thread
+                    self.nd()
                         .mutator_unchecked()
                         .barrier()
                         .object_reference_write_slow(
@@ -955,7 +977,7 @@ impl<'gc> Mutation<'gc> {
                 let byte_val = unsafe { meta_addr.load::<u8>() };
                 if (byte_val >> shift) & 1 == 1 {
                     unsafe {
-                        self.thread
+                        self.nd()
                             .mutator_unchecked()
                             .barrier()
                             .object_reference_write_slow(
@@ -967,7 +989,6 @@ impl<'gc> Mutation<'gc> {
                 }
             }
 
-            // TODO
             BarrierSelector::FieldBarrier => {}
 
             BarrierSelector::NoBarrier => {}
@@ -988,7 +1009,7 @@ impl<'gc> Mutation<'gc> {
     /// `src` must be a live object outside the nursery whose reference
     /// fields are all initialized.
     pub unsafe fn remember_new_object(&self, src: GcObject) {
-        match self.thread.barrier() {
+        match self.nd().barrier() {
             BarrierSelector::ObjectBarrier => unsafe {
                 let addr = src.to_address();
                 let meta_addr = global_side_metadata_vm_base_address() + (addr >> 6);
@@ -1019,21 +1040,27 @@ impl<'gc> Mutation<'gc> {
         alignment: usize,
         mut semantics: AllocationSemantics,
     ) -> GcObject {
-        semantics = self.thread.map_semantics(semantics);
+        semantics = self.nd().map_semantics(semantics);
         unsafe {
-            if size + size_of::<HeapObjectHeader>() >= 8 * 1024 {
+            if size + size_of::<HeapObjectHeader>() >= LOS_THRESHOLD_BYTES {
                 semantics = AllocationSemantics::Los;
             }
 
-            let alignment = alignment.min(8);
+            // Never below word alignment, and never capped: the object (not
+            // the header) must land on `alignment`, like every other path.
+            let alignment = alignment.max(std::mem::size_of::<usize>());
             let size = raw_align_up(size, alignment);
 
             if semantics == AllocationSemantics::Default
-                && self.thread.alloc_fastpath() == AllocFastPath::TLAB
+                && self.nd().alloc_fastpath() == AllocFastPath::TLAB
             {
-                let lab = &mut (*self.thread.native_data_mut_ptr()).lab;
+                let lab = &mut (*self.nd_ptr()).lab;
 
-                let object_start = lab.allocate(size + size_of::<HeapObjectHeader>(), alignment, 0);
+                let object_start = lab.allocate(
+                    size + size_of::<HeapObjectHeader>(),
+                    alignment,
+                    OBJECT_REF_OFFSET as _,
+                );
                 if !object_start.is_zero() {
                     return self.finish_allocated_object(object_start, size, semantics);
                 }
@@ -1059,7 +1086,7 @@ impl<'gc> Mutation<'gc> {
         unsafe {
             self.flush_tlab();
             let object_start = mmtk::memory_manager::alloc_slow_with_options(
-                self.thread.mutator_unchecked(),
+                self.nd().mutator_unchecked(),
                 size + size_of::<HeapObjectHeader>(),
                 alignment,
                 OBJECT_REF_OFFSET as usize,
@@ -1083,9 +1110,9 @@ impl<'gc> Mutation<'gc> {
         alignment: usize,
         mut semantics: AllocationSemantics,
     ) -> GcObject {
-        semantics = self.thread.map_semantics(semantics);
+        semantics = self.nd().map_semantics(semantics);
         if semantics == AllocationSemantics::Default
-            && size + size_of::<HeapObjectHeader>() >= self.thread.max_non_los_alloc_bytes()
+            && size + size_of::<HeapObjectHeader>() >= self.nd().max_non_los_alloc_bytes()
         {
             semantics = AllocationSemantics::Los;
         }
@@ -1107,7 +1134,7 @@ impl<'gc> Mutation<'gc> {
         unsafe {
             self.flush_tlab();
             let object_start = mmtk::memory_manager::alloc_slow_with_options(
-                self.thread.mutator_unchecked(),
+                self.nd().mutator_unchecked(),
                 size + size_of::<HeapObjectHeader>(),
                 alignment,
                 OBJECT_REF_OFFSET as usize,
@@ -1129,7 +1156,7 @@ impl<'gc> Mutation<'gc> {
         unsafe {
             self.flush_tlab();
             let object_start = mmtk::memory_manager::alloc_slow_with_options(
-                self.thread.mutator_unchecked(),
+                self.nd().mutator_unchecked(),
                 size + size_of::<HeapObjectHeader>(),
                 alignment,
                 OBJECT_REF_OFFSET as usize,
@@ -1148,11 +1175,11 @@ impl<'gc> Mutation<'gc> {
     ///
     /// Same as [`raw_alloc_uninit`](Self::raw_alloc_uninit).
     pub unsafe fn raw_allocate_nonmoving_uninit(&self, size: usize, alignment: usize) -> GcObject {
-        let semantics = self.thread.map_semantics(AllocationSemantics::NonMoving);
+        let semantics = self.nd().map_semantics(AllocationSemantics::NonMoving);
         unsafe {
             self.flush_tlab();
             let object_start = mmtk::memory_manager::alloc_slow_with_options(
-                self.thread.mutator_unchecked(),
+                self.nd().mutator_unchecked(),
                 size + size_of::<HeapObjectHeader>(),
                 alignment,
                 OBJECT_REF_OFFSET as usize,
@@ -1166,7 +1193,7 @@ impl<'gc> Mutation<'gc> {
     }
 
     pub fn barrier(&self) -> BarrierSelector {
-        self.thread.barrier()
+        self.nd().barrier()
     }
 
     /// Return the current thread with an extended lifetime.
@@ -1176,16 +1203,19 @@ impl<'gc> Mutation<'gc> {
     /// The returned reference must not outlive the actual runtime thread, and
     /// callers must ensure it is not used after the thread has been torn down.
     pub unsafe fn thread_unchecked(&self) -> &'static Thread {
-        unsafe { std::mem::transmute(self.thread) }
+        unsafe { std::mem::transmute(self.thread()) }
     }
 }
 
 impl<'gc> Mutation<'gc> {
     unsafe fn new() -> Self {
-        let thread = current_thread();
+        let nd = current_native_data();
 
         Thread::leave_native();
 
-        Self { thread }
+        Self {
+            nd: NonNull::from(nd),
+            _gc: PhantomData,
+        }
     }
 }

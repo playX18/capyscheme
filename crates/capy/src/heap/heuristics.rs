@@ -6,7 +6,7 @@
 //! sibling modules when it has enough logic to stand alone.
 
 use std::{
-    env, fmt,
+    fmt,
     sync::{
         Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -25,7 +25,7 @@ use mmtk::{
 };
 
 use crate::{
-    heap::mm::MemoryManager,
+    heap::{logging::GC_LOG_TARGET, mm::MemoryManager},
     utils::FormattedSize,
     utils::flags::{self, FlagId},
 };
@@ -44,8 +44,6 @@ const DEFAULT_ADAPTIVE_DECAY_FACTOR: f64 = 0.5;
 const DEFAULT_GUARANTEED_GC_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 static DEFAULT_MAX_HEAP_OVERRIDE: AtomicUsize = AtomicUsize::new(0);
-
-const GC_LOG_TARGET: &str = "capy::gc";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HeuristicMode {
@@ -242,29 +240,17 @@ fn format_trigger_decision_message(
     message
 }
 
-fn format_trigger_decision_log_line(
-    decision: TriggerDecision,
-    mode: HeuristicMode,
-    reason: impl fmt::Display,
-    snapshot: Option<HeapSnapshot>,
-) -> String {
-    crate::heap::logging::format_log_line(
-        log::Level::Info,
-        GC_LOG_TARGET,
-        format_trigger_decision_message(decision, mode, reason, snapshot),
-    )
-}
-
 fn log_trigger_decision(
     decision: TriggerDecision,
     mode: HeuristicMode,
     reason: impl fmt::Display,
     snapshot: Option<HeapSnapshot>,
 ) {
-    if crate::heap::logging::gc_logging_enabled() {
-        eprintln!(
+    {
+        log::info!(
+            target: GC_LOG_TARGET,
             "{}",
-            format_trigger_decision_log_line(decision, mode, reason, snapshot)
+            format_trigger_decision_message(decision, mode, reason, snapshot)
         );
     }
 }
@@ -771,10 +757,7 @@ pub(crate) fn configured_max_heap_bytes() -> usize {
         return overridden;
     }
 
-    match env::var("MMTK_GC_TRIGGER")
-        .ok()
-        .and_then(|value| value.parse::<GCTriggerSelector>().ok())
-    {
+    match flags::mmtk_gc_trigger().and_then(|value| value.parse::<GCTriggerSelector>().ok()) {
         Some(GCTriggerSelector::FixedHeapSize(bytes)) => bytes,
         Some(GCTriggerSelector::DynamicHeapSize(_, bytes)) => bytes,
         _ => DEFAULT_MAX_HEAP_BYTES,

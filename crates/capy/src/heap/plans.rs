@@ -92,7 +92,7 @@ pub fn get_compile_barrier_override() -> Option<BarrierSelector> {
     decode_barrier(COMPILE_BARRIER_OVERRIDE.load(Ordering::Relaxed))
 }
 
-/// Barrier kind Cranelift should emit: explicit override, else `CAPY_BARRIER_KIND`, else live plan.
+/// Barrier kind generated code should emit: explicit override, else `CAPY_BARRIER_KIND`, else live plan.
 pub fn compile_barrier(live: BarrierSelector) -> BarrierSelector {
     if let Some(b) = get_compile_barrier_override() {
         return b;

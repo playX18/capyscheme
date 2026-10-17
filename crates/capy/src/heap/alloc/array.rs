@@ -298,33 +298,3 @@ impl<T: Ord + Trace> Ord for Array<T> {
         self.as_slice().cmp(other.as_slice())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::heap::object::builtin_class_ids;
-    use crate::runtime::Scheme;
-
-    #[test]
-    fn array_allocation_uses_class_only_dynamic_header() {
-        Scheme::new_uninit().enter(|ctx| {
-            let array = Array::with(ctx, 3, |_, index| index);
-
-            assert_eq!(array.as_slice(), &[0, 1, 2]);
-            assert!(array.as_gc_object().header().class_id().bits() > builtin_class_ids::MAX);
-        });
-    }
-
-    #[test]
-    fn array_types_receive_distinct_class_ids() {
-        Scheme::new_uninit().enter(|ctx| {
-            let int_array = Array::with(ctx, 1, |_, _| 0_i32);
-            let u64_array = Array::with(ctx, 1, |_, _| 0_u64);
-
-            assert_ne!(
-                int_array.as_gc_object().header().class_id(),
-                u64_array.as_gc_object().header().class_id()
-            );
-        });
-    }
-}

@@ -86,12 +86,10 @@ fn is_address_maybe_mmaped(addr: Address, size: usize) -> bool {
 ///
 /// ASLR has a performance penalty, notably it disables contiguous spaces which can lead to worser
 /// performance.
-#[allow(unused_mut, unused_variables)]
 pub fn vm_layout(builder: &mut MMTKBuilder) {
-    //return;
     let mut vm_layout = VMLayout::default();
 
-    let size = match *builder.options.gc_trigger {
+    let _size = match *builder.options.gc_trigger {
         GCTriggerSelector::Delegated => super::heuristics::configured_max_heap_bytes(),
         _ => builder.options.gc_trigger.max_heap_size(),
     };
