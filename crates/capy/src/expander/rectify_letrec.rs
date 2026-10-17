@@ -340,9 +340,7 @@ impl<'gc> LetrecRectifier<'gc> {
             TermKind::ToplevelRef(module, name) => {
                 match self.reified_vars.get(&(ValueEqual(*module), *name)) {
                     None => expr,
-                    Some((_, value)) => {
-                        lref(ctx, *value)
-                    }
+                    Some((_, value)) => lref(ctx, *value),
                 }
             }
             _ => expr,

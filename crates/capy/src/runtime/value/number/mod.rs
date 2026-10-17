@@ -1,5 +1,3 @@
-#![allow(unused_variables)]
-
 //! Scheme numeric tower values.
 //!
 //! This module represents fixnums, flonums, bignums, rationals, and complex
@@ -19,7 +17,7 @@ use std::{
 use crate::heap::{Gc, Trace, collection::Visitor};
 
 use crate::heap::object::{ClassId, builtin_class_ids, class_header_word};
-use crate::runtime::{Context, value::ConversionError};
+use crate::runtime::{MutationContext, value::ConversionError};
 
 use crate::runtime::value::{ClassTagged, FromValue, IntoValue, Value};
 
@@ -43,7 +41,7 @@ fn complex_header_word() -> u64 {
 
 impl<'gc> Complex<'gc> {
     /// Allocates a complex number from real and imaginary parts.
-    pub fn new(ctx: Context<'gc>, real: Number<'gc>, imag: Number<'gc>) -> Gc<'gc, Self> {
+    pub fn new(ctx: MutationContext<'gc>, real: Number<'gc>, imag: Number<'gc>) -> Gc<'gc, Self> {
         let complex = Complex { real, imag };
         Gc::new_with_header_word(ctx, complex, complex_header_word())
     }
@@ -72,7 +70,7 @@ fn rational_header_word() -> u64 {
 impl<'gc> Rational<'gc> {
     /// Allocates a rational number from numerator and denominator.
     pub fn new(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         numerator: Number<'gc>,
         denominator: Number<'gc>,
     ) -> Gc<'gc, Self> {
@@ -126,7 +124,7 @@ unsafe impl<'gc> Trace for Number<'gc> {
 }
 
 impl<'gc> IntoValue<'gc> for Number<'gc> {
-    fn into_value(self, ctx: Context<'gc>) -> Value<'gc> {
+    fn into_value(self, _ctx: MutationContext<'gc>) -> Value<'gc> {
         match self {
             Number::Fixnum(i) => Value::new(i),
             Number::Flonum(f) => Value::new(f),
@@ -142,7 +140,10 @@ impl<'gc> IntoValue<'gc> for Number<'gc> {
 }
 
 impl<'gc> FromValue<'gc> for Number<'gc> {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+    fn try_from_value(
+        _ctx: MutationContext<'gc>,
+        value: Value<'gc>,
+    ) -> Result<Self, ConversionError<'gc>> {
         if value.is_int32() {
             Ok(Number::Fixnum(value.as_int32()))
         } else if value.is::<BigInt>() {
@@ -178,7 +179,7 @@ impl<'gc> Number<'gc> {
 
     pub fn exact_integer_to_u32(self) -> Option<u32> {
         if let Number::Fixnum(i) = self {
-            Some(i as u32)
+            u32::try_from(i).ok()
         } else if let Number::BigInt(b) = self {
             b.try_as_u64()
                 .filter(|&v| v <= u32::MAX as u64)
@@ -200,7 +201,7 @@ impl<'gc> Number<'gc> {
 
     pub fn exact_integer_to_u64(self) -> Option<u64> {
         if let Number::Fixnum(i) = self {
-            Some(i as u64)
+            u64::try_from(i).ok()
         } else if let Number::BigInt(b) = self {
             b.try_as_u64()
         } else {
@@ -210,7 +211,7 @@ impl<'gc> Number<'gc> {
 
     pub fn exact_integer_to_usize(self) -> Option<usize> {
         if let Number::Fixnum(i) = self {
-            Some(i as usize)
+            usize::try_from(i).ok()
         } else if let Number::BigInt(b) = self {
             b.try_as_u64().map(|v| v as usize)
         } else {
@@ -230,7 +231,7 @@ impl<'gc> Number<'gc> {
 
     pub fn exact_integer_to_u128(self) -> Option<u128> {
         if let Number::Fixnum(i) = self {
-            Some(i as u128)
+            u128::try_from(i).ok()
         } else if let Number::BigInt(b) = self {
             b.try_as_u128()
         } else {
@@ -451,7 +452,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn real_to_f64(&self, ctx: Context<'gc>) -> f64 {
+    pub fn real_to_f64(&self, ctx: MutationContext<'gc>) -> f64 {
         match self {
             Number::Fixnum(i) => *i as f64,
             Number::Flonum(f) => *f,
@@ -493,7 +494,7 @@ impl<'gc> Number<'gc> {
         matches!(self, Number::Complex(_))
     }
 
-    pub fn inexact_negate(&self, ctx: Context<'gc>) -> Self {
+    pub fn inexact_negate(&self, ctx: MutationContext<'gc>) -> Self {
         match self {
             Number::Fixnum(i) => Number::Flonum(-(*i as f64)),
             Number::Flonum(f) => Number::Flonum(-f),
@@ -523,7 +524,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn normalize_complex(ctx: Context<'gc>, real: Self, imag: Self) -> Self {
+    pub fn normalize_complex(ctx: MutationContext<'gc>, real: Self, imag: Self) -> Self {
         assert!(!imag.is_complex());
         assert!(!real.is_complex());
 
@@ -548,7 +549,7 @@ impl<'gc> Number<'gc> {
         Number::Complex(Complex::new(ctx, real, imag))
     }
 
-    pub fn reduce_fix_fix(ctx: Context<'gc>, nume: i32, deno: i32) -> Self {
+    pub fn reduce_fix_fix(ctx: MutationContext<'gc>, nume: i32, deno: i32) -> Self {
         let mut nume = nume as SignedDigit;
         let mut deno = deno as SignedDigit;
 
@@ -614,7 +615,11 @@ impl<'gc> Number<'gc> {
         ))
     }
 
-    pub fn reduce_fix_big(ctx: Context<'gc>, nume: i32, deno: Gc<'gc, BigInt<'gc>>) -> Self {
+    pub fn reduce_fix_big(
+        ctx: MutationContext<'gc>,
+        nume: i32,
+        deno: Gc<'gc, BigInt<'gc>>,
+    ) -> Self {
         let mut nume = nume as SignedDigit;
         if nume == 0 {
             return Number::Fixnum(0);
@@ -692,7 +697,11 @@ impl<'gc> Number<'gc> {
         Self::Rational(Rational::new(ctx, ans_nume, ans_deno))
     }
 
-    pub fn reduce_big_fix(ctx: Context<'gc>, nume: Gc<'gc, BigInt<'gc>>, deno: i32) -> Self {
+    pub fn reduce_big_fix(
+        ctx: MutationContext<'gc>,
+        nume: Gc<'gc, BigInt<'gc>>,
+        deno: i32,
+    ) -> Self {
         let mut nume = nume;
         let mut deno = deno as SignedDigit;
 
@@ -739,7 +748,7 @@ impl<'gc> Number<'gc> {
         Self::Rational(Rational::new(ctx, ans_nume, ans_deno))
     }
 
-    pub fn reduce(ctx: Context<'gc>, numerator: Self, denominator: Self) -> Self {
+    pub fn reduce(ctx: MutationContext<'gc>, numerator: Self, denominator: Self) -> Self {
         assert!(matches!(numerator, Number::Fixnum(_) | Number::BigInt(_)));
         assert!(matches!(denominator, Number::Fixnum(_) | Number::BigInt(_)));
         if let Number::Fixnum(nume) = numerator {
@@ -852,7 +861,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn negate(&self, ctx: Context<'gc>) -> Self {
+    pub fn negate(&self, ctx: MutationContext<'gc>) -> Self {
         match self {
             Number::Fixnum(i) => Number::from_i64(ctx, -(*i as i64)),
             Number::Flonum(f) => Number::Flonum(-f),
@@ -871,7 +880,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn to_inexact(&self, ctx: Context<'gc>) -> Self {
+    pub fn to_inexact(&self, ctx: MutationContext<'gc>) -> Self {
         match self {
             Number::Fixnum(i) => Number::Flonum(*i as f64),
             Number::Flonum(f) => Number::Flonum(*f),
@@ -893,7 +902,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn add(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Self {
+    pub fn add(ctx: MutationContext<'gc>, lhs: Self, rhs: Self) -> Self {
         if let Number::Fixnum(lhs) = lhs {
             if let Number::Fixnum(rhs) = rhs {
                 match lhs.checked_add(rhs) {
@@ -1017,7 +1026,7 @@ impl<'gc> Number<'gc> {
         unreachable!()
     }
 
-    pub fn sub(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Self {
+    pub fn sub(ctx: MutationContext<'gc>, lhs: Self, rhs: Self) -> Self {
         match lhs {
             Number::Fixnum(lhs) => match rhs {
                 Number::Fixnum(rhs) => {
@@ -1138,7 +1147,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn mul(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Self {
+    pub fn mul(ctx: MutationContext<'gc>, lhs: Self, rhs: Self) -> Self {
         match lhs {
             Number::Fixnum(lhs) => match rhs {
                 Number::Fixnum(rhs) => {
@@ -1298,7 +1307,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn integer_div(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Self {
+    pub fn integer_div(ctx: MutationContext<'gc>, lhs: Self, rhs: Self) -> Self {
         if let Self::Fixnum(x) = lhs
             && let Number::Fixnum(y) = rhs
         {
@@ -1334,7 +1343,7 @@ impl<'gc> Number<'gc> {
         Self::div(ctx, lhs, rhs.negate(ctx)).floor(ctx).negate(ctx)
     }
 
-    pub fn integer_div0(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Self {
+    pub fn integer_div0(ctx: MutationContext<'gc>, lhs: Self, rhs: Self) -> Self {
         let div = Self::integer_div(ctx, lhs, rhs);
         let mod_ = Self::sub(ctx, lhs, Self::mul(ctx, div, rhs));
         if Self::compare(
@@ -1352,7 +1361,7 @@ impl<'gc> Number<'gc> {
         Self::sub(ctx, div, Number::Fixnum(1))
     }
 
-    pub fn div(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Self {
+    pub fn div(ctx: MutationContext<'gc>, lhs: Self, rhs: Self) -> Self {
         match lhs {
             Number::Fixnum(lhs) => {
                 if lhs == 0 {
@@ -1535,7 +1544,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn quotient(ctx: Context<'gc>, mut lhs: Self, mut rhs: Self) -> Self {
+    pub fn quotient(ctx: MutationContext<'gc>, mut lhs: Self, mut rhs: Self) -> Self {
         'start_again: loop {
             match lhs {
                 Number::Fixnum(lhs) => {
@@ -1557,7 +1566,7 @@ impl<'gc> Number<'gc> {
                             }
 
                             Number::Flonum(rhs) => {
-                                return Self::Flonum(lhs as f64 / rhs);
+                                return Self::Flonum((lhs as f64 / rhs).trunc());
                             }
 
                             Number::BigInt(rhs) => {
@@ -1583,7 +1592,11 @@ impl<'gc> Number<'gc> {
                 }
 
                 Number::Flonum(lhs) => {
-                    if lhs == lhs.round() && lhs == 0.0 {
+                    // Same policy as `remainder`: only integral flonums.
+                    if lhs != lhs.round() {
+                        unreachable!()
+                    }
+                    if lhs == 0.0 {
                         return Number::Flonum(0.0);
                     }
 
@@ -1594,15 +1607,15 @@ impl<'gc> Number<'gc> {
                                     panic!("division by zero");
                                 }
 
-                                return Self::Flonum(lhs / rhs as f64);
+                                return Self::Flonum((lhs / rhs as f64).trunc());
                             }
 
                             Number::Flonum(rhs) => {
-                                return Self::Flonum(lhs / rhs);
+                                return Self::Flonum((lhs / rhs).trunc());
                             }
 
                             Number::BigInt(rhs) => {
-                                return Self::Flonum(lhs / rhs.as_f64());
+                                return Self::Flonum((lhs / rhs.as_f64()).trunc());
                             }
 
                             Number::Rational(_) => unreachable!(),
@@ -1629,15 +1642,20 @@ impl<'gc> Number<'gc> {
                                 panic!("division by zero");
                             }
 
-                            return Self::BigInt(BigInt::div(
-                                lhs,
-                                ctx,
-                                BigInt::from_i64(ctx, rhs as i64),
-                            ));
+                            // Single-digit divisor: one pass, no boxed divisor
+                            // or multi-word division, normalized like the other arms.
+                            let (quotient, _) =
+                                BigInt::div_digit(lhs, ctx, rhs.unsigned_abs() as Digit);
+                            let quotient = if rhs < 0 {
+                                BigInt::negate(quotient, ctx)
+                            } else {
+                                quotient
+                            };
+                            return quotient.into_number(ctx);
                         }
 
                         Number::Flonum(rhs) => {
-                            return Self::Flonum(lhs.as_f64() / rhs);
+                            return Self::Flonum((lhs.as_f64() / rhs).trunc());
                         }
 
                         Number::BigInt(rhs) => {
@@ -1676,7 +1694,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn remainder(ctx: Context<'gc>, mut lhs: Self, mut rhs: Self) -> Self {
+    pub fn remainder(ctx: MutationContext<'gc>, mut lhs: Self, mut rhs: Self) -> Self {
         'start_again: loop {
             match lhs {
                 Number::Fixnum(lhs) => {
@@ -1771,11 +1789,10 @@ impl<'gc> Number<'gc> {
                                 panic!("division by zero");
                             }
 
-                            return Self::BigInt(BigInt::rem(
-                                lhs,
-                                ctx,
-                                BigInt::from_i64(ctx, rhs as i64),
-                            ));
+                            // |remainder| < |rhs| always fits a fixnum, it takes
+                            // the dividend's sign.
+                            let rem = lhs.remainder_digit(rhs.unsigned_abs() as Digit) as i32;
+                            return Self::Fixnum(if lhs.negative() { -rem } else { rem });
                         }
 
                         Number::Flonum(rhs) => {
@@ -1818,7 +1835,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn modulo(ctx: Context<'gc>, mut lhs: Self, mut rhs: Self) -> Self {
+    pub fn modulo(ctx: MutationContext<'gc>, mut lhs: Self, mut rhs: Self) -> Self {
         'start_again: loop {
             match lhs {
                 Number::Fixnum(lhs) => {
@@ -1964,17 +1981,22 @@ impl<'gc> Number<'gc> {
                 Number::BigInt(lhs) => 'bigint_again: loop {
                     match rhs {
                         Number::Fixnum(rhs) => {
-                            let bi_rhs = BigInt::from_i64(ctx, rhs as i64);
-                            let rem = BigInt::rem(lhs, ctx, bi_rhs);
-                            if rem.is_zero() {
+                            if rhs == 0 {
+                                panic!("division by zero");
+                            }
+
+                            let rem = lhs.remainder_digit(rhs.unsigned_abs() as Digit) as i32;
+                            if rem == 0 {
                                 return Self::Fixnum(0);
                             }
 
-                            if bi_rhs.is_negative() as usize + rem.is_negative() as usize == 1 {
-                                return Self::add(ctx, Self::BigInt(rem), Self::BigInt(bi_rhs));
+                            // `remainder` takes the dividend's sign, `modulo`
+                            // takes the divisor's, adding it once when they differ.
+                            let rem = if lhs.negative() { -rem } else { rem };
+                            if (rhs < 0) != (rem < 0) {
+                                return Self::add(ctx, Self::Fixnum(rem), Self::Fixnum(rhs));
                             }
-
-                            return rem.into_number(ctx);
+                            return Self::Fixnum(rem);
                         }
 
                         Number::Flonum(rhs) => {
@@ -2035,7 +2057,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    fn expt_impl(ctx: Context<'gc>, mut lhs: Self, rhs: Self) -> Self {
+    fn expt_impl(ctx: MutationContext<'gc>, mut lhs: Self, rhs: Self) -> Self {
         let Number::Fixnum(mut n) = rhs else {
             unreachable!()
         };
@@ -2103,7 +2125,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn expt(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Self {
+    pub fn expt(ctx: MutationContext<'gc>, lhs: Self, rhs: Self) -> Self {
         if let Number::Flonum(0.0) = lhs {
             if let Number::Complex(cn) = rhs {
                 if cn.real.is_positive() {
@@ -2165,7 +2187,7 @@ impl<'gc> Number<'gc> {
         Self::exp(ctx, Self::mul(ctx, rhs, Self::log(ctx, lhs)))
     }
 
-    pub fn exp(ctx: Context<'gc>, n: Self) -> Self {
+    pub fn exp(ctx: MutationContext<'gc>, n: Self) -> Self {
         match n {
             Number::Fixnum(n) => {
                 if n == 0 {
@@ -2197,7 +2219,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn log(ctx: Context<'gc>, n: Self) -> Self {
+    pub fn log(ctx: MutationContext<'gc>, n: Self) -> Self {
         match n {
             Number::Fixnum(n) => {
                 let value = n as SignedDigit;
@@ -2255,7 +2277,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn sin(ctx: Context<'gc>, n: Self) -> Self {
+    pub fn sin(ctx: MutationContext<'gc>, n: Self) -> Self {
         match n {
             Number::Fixnum(n) => {
                 if n == 0 {
@@ -2283,7 +2305,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn cos(ctx: Context<'gc>, n: Self) -> Self {
+    pub fn cos(ctx: MutationContext<'gc>, n: Self) -> Self {
         match n {
             Number::Fixnum(n) => {
                 if n == 0 {
@@ -2311,7 +2333,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn tan(ctx: Context<'gc>, n: Self) -> Self {
+    pub fn tan(ctx: MutationContext<'gc>, n: Self) -> Self {
         match n {
             Number::Fixnum(n) => {
                 if n == 0 {
@@ -2340,7 +2362,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn sqrt(ctx: Context<'gc>, n: Self) -> Self {
+    pub fn sqrt(ctx: MutationContext<'gc>, n: Self) -> Self {
         match n {
             Number::Fixnum(n) => {
                 let mut value = n as SignedDigit;
@@ -2481,7 +2503,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn magnitude(ctx: Context<'gc>, n: Self) -> Self {
+    pub fn magnitude(ctx: MutationContext<'gc>, n: Self) -> Self {
         match n {
             Self::Complex(cn) => {
                 // (magnitude 3/22+2/11i) => 5/22
@@ -2506,11 +2528,11 @@ impl<'gc> Number<'gc> {
                     let real = cn.real.real_to_f64(ctx);
                     let imag = cn.imag.real_to_f64(ctx);
                     if real.is_infinite() || imag.is_infinite() {
-                        return Self::Flonum(f64::INFINITY);
+                        return Self::Flonum(<f64>::INFINITY);
                     }
 
                     let m = libm::sqrt(real * real + imag * imag);
-                    if m < f64::EPSILON || m.is_infinite() {
+                    if m < <f64>::EPSILON || m.is_infinite() {
                         return Self::Flonum(imag / imag.atan2(real).sin());
                     }
 
@@ -2528,7 +2550,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn exact_integer_sqrt(ctx: Context<'gc>, n: Self) -> (Self, Self) {
+    pub fn exact_integer_sqrt(ctx: MutationContext<'gc>, n: Self) -> (Self, Self) {
         match n {
             Number::Fixnum(n) => {
                 let value = n as SignedDigit;
@@ -2554,7 +2576,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn inverse(ctx: Context<'gc>, n: Self) -> Self {
+    pub fn inverse(ctx: MutationContext<'gc>, n: Self) -> Self {
         match n {
             Number::Fixnum(n) => {
                 if n > 0 {
@@ -2616,7 +2638,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn asin(ctx: Context<'gc>, n: Self) -> Self {
+    pub fn asin(ctx: MutationContext<'gc>, n: Self) -> Self {
         let cn = if n.is_real_valued() {
             let x = n.real_to_f64(ctx);
             if (-1.0..=1.0).contains(&x) {
@@ -2665,7 +2687,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn acos(ctx: Context<'gc>, n: Self) -> Self {
+    pub fn acos(ctx: MutationContext<'gc>, n: Self) -> Self {
         if n.is_real_valued() {
             let x = n.real_to_f64(ctx);
             if (-1.0..=1.0).contains(&x) {
@@ -2680,7 +2702,7 @@ impl<'gc> Number<'gc> {
         )
     }
 
-    pub fn atan(ctx: Context<'gc>, n: Self) -> Self {
+    pub fn atan(ctx: MutationContext<'gc>, n: Self) -> Self {
         if n.is_real_valued() {
             let x = n.real_to_f64(ctx);
             return Self::Flonum(libm::atan(x));
@@ -2710,7 +2732,7 @@ impl<'gc> Number<'gc> {
         ))
     }
 
-    pub fn atan2(ctx: Context<'gc>, lhs: Number<'gc>, rhs: Number<'gc>) -> Number<'gc> {
+    pub fn atan2(ctx: MutationContext<'gc>, lhs: Number<'gc>, rhs: Number<'gc>) -> Number<'gc> {
         if matches!(lhs, Number::Fixnum(0)) {
             return Number::Fixnum(0);
         }
@@ -2721,7 +2743,7 @@ impl<'gc> Number<'gc> {
         Number::Flonum(libm::atan2(lhs, rhs))
     }
 
-    pub fn floor(self, ctx: Context<'gc>) -> Self {
+    pub fn floor(self, ctx: MutationContext<'gc>) -> Self {
         let n = self;
         match n {
             Number::Fixnum(_) | Number::BigInt(_) => n,
@@ -2743,7 +2765,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn ceiling(self, ctx: Context<'gc>) -> Self {
+    pub fn ceiling(self, ctx: MutationContext<'gc>) -> Self {
         let n = self;
         match n {
             Number::Fixnum(_) | Number::BigInt(_) => n,
@@ -2765,7 +2787,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn truncate(self, ctx: Context<'gc>) -> Self {
+    pub fn truncate(self, ctx: MutationContext<'gc>) -> Self {
         match self {
             Self::Fixnum(_) | Self::BigInt(_) => self,
             Self::Flonum(fl) => Self::Flonum(fl.trunc()),
@@ -2776,7 +2798,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn round(self, ctx: Context<'gc>) -> Self {
+    pub fn round(self, ctx: MutationContext<'gc>) -> Self {
         match self {
             Self::Fixnum(_) | Self::BigInt(_) => self,
             Self::Flonum(fl) => {
@@ -2820,7 +2842,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn to_exact(self, ctx: Context<'gc>) -> Self {
+    pub fn to_exact(self, ctx: MutationContext<'gc>) -> Self {
         match self {
             Self::Flonum(n) => {
                 if n == 0.0 {
@@ -2915,26 +2937,26 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn equal(ctx: Context<'gc>, lhs: Self, rhs: Self) -> bool {
+    pub fn equal(ctx: MutationContext<'gc>, lhs: Self, rhs: Self) -> bool {
         match lhs {
             Number::Fixnum(lhs) => match rhs {
                 Number::Fixnum(rhs) => lhs == rhs,
-                Number::Flonum(rhs) => (lhs as f64 - rhs).abs() < f64::EPSILON,
-                Number::BigInt(rhs) => false,
-                Number::Rational(rn) => false,
+                Number::Flonum(rhs) => (lhs as f64 - rhs).abs() < <f64>::EPSILON,
+                Number::BigInt(_rhs) => false,
+                Number::Rational(_rn) => false,
                 Number::Complex(cn) => {
                     cn.imag.is_zero() && Self::equal(ctx, Number::Fixnum(lhs), cn.real)
                 }
             },
 
             Number::Flonum(lhs) => match rhs {
-                Number::Fixnum(rhs) => (lhs - rhs as f64).abs() < f64::EPSILON,
+                Number::Fixnum(rhs) => (lhs - rhs as f64).abs() < <f64>::EPSILON,
                 Number::Flonum(rhs) => {
                     if lhs.is_infinite() && rhs.is_infinite() {
                         return lhs.is_sign_positive() == rhs.is_sign_positive();
                     }
 
-                    (lhs - rhs).abs() < f64::EPSILON
+                    (lhs - rhs).abs() < <f64>::EPSILON
                 }
                 Number::BigInt(rhs) => {
                     if rhs.as_f64() == lhs {
@@ -2951,11 +2973,11 @@ impl<'gc> Number<'gc> {
             },
 
             Number::BigInt(lhs) => match rhs {
-                Number::Fixnum(rhs) => false,
+                Number::Fixnum(_rhs) => false,
 
-                Number::Flonum(rhs) => (lhs.as_f64() - rhs).abs() < f64::EPSILON,
+                Number::Flonum(rhs) => (lhs.as_f64() - rhs).abs() < <f64>::EPSILON,
                 Number::BigInt(rhs) => lhs == rhs,
-                Number::Rational(rn) => false,
+                Number::Rational(_rn) => false,
                 Number::Complex(cn) => {
                     cn.imag.is_zero() && Self::equal(ctx, Number::BigInt(lhs), cn.real)
                 }
@@ -2966,10 +2988,10 @@ impl<'gc> Number<'gc> {
                 let deno = lhs.denominator;
 
                 match rhs {
-                    Number::Fixnum(rhs) => false,
+                    Number::Fixnum(_rhs) => false,
 
-                    Number::Flonum(rhs) => (lhs.to_f64(ctx) - rhs).abs() < f64::EPSILON,
-                    Number::BigInt(rhs) => false,
+                    Number::Flonum(rhs) => (lhs.to_f64(ctx) - rhs).abs() < <f64>::EPSILON,
+                    Number::BigInt(_rhs) => false,
                     Number::Rational(rhs) => {
                         Self::equal(ctx, nume, rhs.numerator)
                             && Self::equal(ctx, deno, rhs.denominator)
@@ -3006,7 +3028,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn compare(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Option<std::cmp::Ordering> {
+    pub fn compare(ctx: MutationContext<'gc>, lhs: Self, rhs: Self) -> Option<std::cmp::Ordering> {
         if lhs.is_nan() || rhs.is_nan() {
             return None;
         }
@@ -3123,7 +3145,7 @@ impl<'gc> Number<'gc> {
             },
 
             Number::BigInt(lhs) => match rhs {
-                Number::Fixnum(rhs) => {
+                Number::Fixnum(_rhs) => {
                     if lhs.is_negative() {
                         Some(std::cmp::Ordering::Less)
                     } else {
@@ -3220,7 +3242,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn from_i64(ctx: Context<'gc>, n: i64) -> Self {
+    pub fn from_i64(ctx: MutationContext<'gc>, n: i64) -> Self {
         if n >= i32::MIN as i64 && n <= i32::MAX as i64 {
             return Self::Fixnum(n as i32);
         }
@@ -3228,7 +3250,7 @@ impl<'gc> Number<'gc> {
         Self::BigInt(BigInt::from_i64(ctx, n))
     }
 
-    pub fn from_u64(ctx: Context<'gc>, n: u64) -> Self {
+    pub fn from_u64(ctx: MutationContext<'gc>, n: u64) -> Self {
         if n <= i32::MAX as u64 {
             return Self::Fixnum(n as i32);
         }
@@ -3236,7 +3258,7 @@ impl<'gc> Number<'gc> {
         Self::BigInt(BigInt::from_u64(ctx, n))
     }
 
-    pub fn from_u128(ctx: Context<'gc>, n: u128) -> Self {
+    pub fn from_u128(ctx: MutationContext<'gc>, n: u128) -> Self {
         if n <= i32::MAX as u128 {
             return Self::Fixnum(n as i32);
         }
@@ -3244,7 +3266,7 @@ impl<'gc> Number<'gc> {
         Self::BigInt(BigInt::from_u128(ctx, n))
     }
 
-    pub fn from_u32(ctx: Context<'gc>, n: u32) -> Self {
+    pub fn from_u32(ctx: MutationContext<'gc>, n: u32) -> Self {
         if n <= i32::MAX as u32 {
             return Self::Fixnum(n as i32);
         }
@@ -3272,7 +3294,7 @@ impl<'gc> Number<'gc> {
         Self::Fixnum(n as _)
     }
 
-    pub fn from_usize(ctx: Context<'gc>, n: usize) -> Self {
+    pub fn from_usize(ctx: MutationContext<'gc>, n: usize) -> Self {
         if n <= i32::MAX as usize {
             return Self::Fixnum(n as i32);
         }
@@ -3280,7 +3302,7 @@ impl<'gc> Number<'gc> {
         Self::BigInt(BigInt::from_u64(ctx, n as _))
     }
 
-    pub fn from_isize(ctx: Context<'gc>, n: isize) -> Self {
+    pub fn from_isize(ctx: MutationContext<'gc>, n: isize) -> Self {
         if n >= i32::MIN as isize && n <= i32::MAX as isize {
             return Self::Fixnum(n as i32);
         }
@@ -3320,7 +3342,7 @@ impl<'gc> Number<'gc> {
     pub fn is_real(&self) -> bool {
         match self {
             Self::Fixnum(_) | Self::Flonum(_) | Self::BigInt(_) | Self::Rational(_) => true,
-            Self::Complex(c) => false,
+            Self::Complex(_c) => false,
         }
     }
 
@@ -3421,7 +3443,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn ash(self, ctx: Context<'gc>, count: Self) -> Option<Self> {
+    pub fn ash(self, ctx: MutationContext<'gc>, count: Self) -> Option<Self> {
         if count.is_negative() {
             return self.rsh(ctx, count.negate(ctx));
         }
@@ -3429,7 +3451,7 @@ impl<'gc> Number<'gc> {
         self.lsh(ctx, count)
     }
 
-    pub fn lsh(self, ctx: Context<'gc>, count: Self) -> Option<Self> {
+    pub fn lsh(self, ctx: MutationContext<'gc>, count: Self) -> Option<Self> {
         if self.is_zero() {
             return Some(self);
         }
@@ -3461,22 +3483,15 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn rsh(self, ctx: Context<'gc>, count: Self) -> Option<Self> {
+    pub fn rsh(self, ctx: MutationContext<'gc>, count: Self) -> Option<Self> {
         let count = count.coerce_exact_integer_to_usize();
         if count == 0 {
             return Some(self);
         }
 
         match self {
-            Self::Fixnum(n) => {
-                let s = n.checked_shr(count as _);
-                if let Some(n) = s {
-                    return Some(Self::Fixnum(n));
-                }
-
-                let bn = BigInt::from_i64(ctx, n as _);
-                Some(Self::BigInt(BigInt::shift_right(bn, ctx, count)).normalize_integer())
-            }
+            // Shifting out every bit leaves the sign.
+            Self::Fixnum(n) => Some(Self::Fixnum(n >> count.min(i32::BITS as usize - 1))),
 
             Self::BigInt(n) => {
                 Some(Self::BigInt(BigInt::shift_right(n, ctx, count)).normalize_integer())
@@ -3486,7 +3501,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn logior(self, ctx: Context<'gc>, other: Self) -> Self {
+    pub fn logior(self, ctx: MutationContext<'gc>, other: Self) -> Self {
         match (self, other) {
             (Self::Fixnum(lhs), Self::Fixnum(rhs)) => Self::Fixnum(lhs | rhs),
 
@@ -3506,7 +3521,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn logand(self, ctx: Context<'gc>, other: Self) -> Self {
+    pub fn logand(self, ctx: MutationContext<'gc>, other: Self) -> Self {
         match (self, other) {
             (Self::Fixnum(lhs), Self::Fixnum(rhs)) => Self::Fixnum(lhs & rhs),
 
@@ -3526,7 +3541,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn logxor(self, ctx: Context<'gc>, other: Self) -> Self {
+    pub fn logxor(self, ctx: MutationContext<'gc>, other: Self) -> Self {
         match (self, other) {
             (Self::Fixnum(lhs), Self::Fixnum(rhs)) => Self::Fixnum(lhs ^ rhs),
 
@@ -3546,7 +3561,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn lognot(self, ctx: Context<'gc>) -> Self {
+    pub fn lognot(self, ctx: MutationContext<'gc>) -> Self {
         match self {
             Self::Fixnum(n) => {
                 let bn = BigInt::from_i64(ctx, n as _);
@@ -3559,7 +3574,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn logtest(self, ctx: Context<'gc>, other: Self) -> bool {
+    pub fn logtest(self, ctx: MutationContext<'gc>, other: Self) -> bool {
         match (self, other) {
             (Self::Fixnum(lhs), Self::Fixnum(rhs)) => (lhs & rhs) != 0,
             (Self::Fixnum(lhs), Self::BigInt(rhs)) => {
@@ -3575,7 +3590,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn logbit(self, ctx: Context<'gc>, n: Self) -> bool {
+    pub fn logbit(self, ctx: MutationContext<'gc>, n: Self) -> bool {
         let n = n.coerce_exact_integer_to_usize();
         if n / i32::BITS as usize >= i32::MAX as usize {
             return false;
@@ -3603,7 +3618,14 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn abs(self, ctx: Context<'gc>) -> Self {
+    pub fn abs(self, ctx: MutationContext<'gc>) -> Self {
+        // Flonums take hardware abs: `is_positive` is strict (`> 0.0`), so
+        // the general path below would negate `+0.0` to `-0.0`. This matches
+        // `FlAbs`, which always did `f64::abs`.
+        if let Self::Flonum(n) = self {
+            return Self::Flonum(n.abs());
+        }
+
         if self.is_positive() {
             return self;
         }
@@ -3611,11 +3633,11 @@ impl<'gc> Number<'gc> {
         self.negate(ctx)
     }
 
-    pub fn rectangular(self, ctx: Context<'gc>, rhs: Self) -> Self {
+    pub fn rectangular(self, ctx: MutationContext<'gc>, rhs: Self) -> Self {
         Self::normalize_complex(ctx, self, rhs)
     }
 
-    pub fn polar(self, ctx: Context<'gc>, rhs: Self) -> Self {
+    pub fn polar(self, ctx: MutationContext<'gc>, rhs: Self) -> Self {
         if rhs.is_zero() {
             return self;
         }
@@ -3629,7 +3651,7 @@ impl<'gc> Number<'gc> {
         ))
     }
 
-    pub fn angle(self, ctx: Context<'gc>) -> Self {
+    pub fn angle(self, ctx: MutationContext<'gc>) -> Self {
         if let Self::Complex(c) = self {
             let real = c.real.real_to_f64(ctx);
             let imag = c.imag.real_to_f64(ctx);
@@ -3640,7 +3662,7 @@ impl<'gc> Number<'gc> {
             return Self::Flonum(std::f64::consts::PI);
         }
 
-        if let Self::Flonum(n) = self {
+        if let Self::Flonum(_n) = self {
             return Self::Flonum(0.0);
         }
 
@@ -3649,7 +3671,7 @@ impl<'gc> Number<'gc> {
 }
 
 impl<'gc> Rational<'gc> {
-    pub fn add(ctx: Context<'gc>, lhs: Gc<'gc, Self>, rhs: Gc<'gc, Self>) -> Number<'gc> {
+    pub fn add(ctx: MutationContext<'gc>, lhs: Gc<'gc, Self>, rhs: Gc<'gc, Self>) -> Number<'gc> {
         let deno = Number::mul(ctx, lhs.denominator, rhs.denominator);
         let nume = Number::add(
             ctx,
@@ -3660,14 +3682,14 @@ impl<'gc> Rational<'gc> {
         Number::reduce(ctx, nume, deno)
     }
 
-    pub fn mul(ctx: Context<'gc>, lhs: Gc<'gc, Self>, rhs: Gc<'gc, Self>) -> Number<'gc> {
+    pub fn mul(ctx: MutationContext<'gc>, lhs: Gc<'gc, Self>, rhs: Gc<'gc, Self>) -> Number<'gc> {
         let nume = Number::mul(ctx, lhs.numerator, rhs.numerator);
         let deno = Number::mul(ctx, lhs.denominator, rhs.denominator);
 
         Number::reduce(ctx, nume, deno)
     }
 
-    pub fn sub(ctx: Context<'gc>, lhs: Gc<'gc, Self>, rhs: Gc<'gc, Self>) -> Number<'gc> {
+    pub fn sub(ctx: MutationContext<'gc>, lhs: Gc<'gc, Self>, rhs: Gc<'gc, Self>) -> Number<'gc> {
         let deno = Number::mul(ctx, lhs.denominator, rhs.denominator);
         let nume = Number::sub(
             ctx,
@@ -3678,14 +3700,14 @@ impl<'gc> Rational<'gc> {
         Number::reduce(ctx, nume, deno)
     }
 
-    pub fn div(ctx: Context<'gc>, lhs: Gc<'gc, Self>, rhs: Gc<'gc, Self>) -> Number<'gc> {
+    pub fn div(ctx: MutationContext<'gc>, lhs: Gc<'gc, Self>, rhs: Gc<'gc, Self>) -> Number<'gc> {
         let nume = Number::mul(ctx, lhs.numerator, rhs.denominator);
         let deno = Number::mul(ctx, lhs.denominator, rhs.numerator);
 
         Number::reduce(ctx, nume, deno)
     }
 
-    pub fn to_f64(&self, ctx: Context<'gc>) -> f64 {
+    pub fn to_f64(&self, ctx: MutationContext<'gc>) -> f64 {
         let mut nume = self.numerator.real_to_f64(ctx);
         let mut deno = self.denominator.real_to_f64(ctx);
 
@@ -3755,17 +3777,17 @@ impl<'gc> Rational<'gc> {
 }
 
 pub trait IntoNumber<'gc> {
-    fn into_number(self, ctx: Context<'gc>) -> Number<'gc>;
+    fn into_number(self, ctx: MutationContext<'gc>) -> Number<'gc>;
 }
 
 impl<'gc> IntoNumber<'gc> for i32 {
-    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+    fn into_number(self, _ctx: MutationContext<'gc>) -> Number<'gc> {
         Number::Fixnum(self)
     }
 }
 
 impl<'gc> IntoNumber<'gc> for i64 {
-    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+    fn into_number(self, ctx: MutationContext<'gc>) -> Number<'gc> {
         if self >= i32::MIN as i64 && self <= i32::MAX as i64 {
             Number::Fixnum(self as i32)
         } else {
@@ -3775,7 +3797,7 @@ impl<'gc> IntoNumber<'gc> for i64 {
 }
 
 impl<'gc> IntoNumber<'gc> for u32 {
-    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+    fn into_number(self, ctx: MutationContext<'gc>) -> Number<'gc> {
         if self <= i32::MAX as u32 {
             Number::Fixnum(self as i32)
         } else {
@@ -3785,7 +3807,7 @@ impl<'gc> IntoNumber<'gc> for u32 {
 }
 
 impl<'gc> IntoNumber<'gc> for u64 {
-    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+    fn into_number(self, ctx: MutationContext<'gc>) -> Number<'gc> {
         if self <= i32::MAX as u64 {
             Number::Fixnum(self as i32)
         } else {
@@ -3795,43 +3817,43 @@ impl<'gc> IntoNumber<'gc> for u64 {
 }
 
 impl<'gc> IntoNumber<'gc> for f64 {
-    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+    fn into_number(self, _ctx: MutationContext<'gc>) -> Number<'gc> {
         Number::Flonum(self)
     }
 }
 
 impl<'gc> IntoNumber<'gc> for f32 {
-    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+    fn into_number(self, _ctx: MutationContext<'gc>) -> Number<'gc> {
         Number::Flonum(self as f64)
     }
 }
 
 impl<'gc> IntoNumber<'gc> for u16 {
-    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+    fn into_number(self, _ctx: MutationContext<'gc>) -> Number<'gc> {
         Number::Fixnum(self as i32)
     }
 }
 
 impl<'gc> IntoNumber<'gc> for u8 {
-    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+    fn into_number(self, _ctx: MutationContext<'gc>) -> Number<'gc> {
         Number::Fixnum(self as i32)
     }
 }
 
 impl<'gc> IntoNumber<'gc> for i16 {
-    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+    fn into_number(self, _ctx: MutationContext<'gc>) -> Number<'gc> {
         Number::Fixnum(self as i32)
     }
 }
 
 impl<'gc> IntoNumber<'gc> for i8 {
-    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+    fn into_number(self, _ctx: MutationContext<'gc>) -> Number<'gc> {
         Number::Fixnum(self as i32)
     }
 }
 
 impl<'gc> IntoNumber<'gc> for usize {
-    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+    fn into_number(self, ctx: MutationContext<'gc>) -> Number<'gc> {
         if self <= i32::MAX as usize {
             Number::Fixnum(self as i32)
         } else {
@@ -3841,7 +3863,7 @@ impl<'gc> IntoNumber<'gc> for usize {
 }
 
 impl<'gc> IntoNumber<'gc> for isize {
-    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+    fn into_number(self, ctx: MutationContext<'gc>) -> Number<'gc> {
         if self >= i32::MIN as isize && self <= i32::MAX as isize {
             Number::Fixnum(self as i32)
         } else {
@@ -3851,19 +3873,19 @@ impl<'gc> IntoNumber<'gc> for isize {
 }
 
 impl<'gc> IntoNumber<'gc> for u128 {
-    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+    fn into_number(self, ctx: MutationContext<'gc>) -> Number<'gc> {
         Number::BigInt(BigInt::from_u128(ctx, self))
     }
 }
 
 impl<'gc> IntoNumber<'gc> for i128 {
-    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+    fn into_number(self, ctx: MutationContext<'gc>) -> Number<'gc> {
         Number::BigInt(BigInt::from_i128(ctx, self))
     }
 }
 
 impl<'gc> IntoNumber<'gc> for Gc<'gc, BigInt<'gc>> {
-    fn into_number(self, _ctx: Context<'gc>) -> Number<'gc> {
+    fn into_number(self, _ctx: MutationContext<'gc>) -> Number<'gc> {
         if let Some(i) = self
             .try_as_i64()
             .filter(|&v| v >= i32::MIN as i64 && v <= i32::MAX as i64)
@@ -3876,13 +3898,13 @@ impl<'gc> IntoNumber<'gc> for Gc<'gc, BigInt<'gc>> {
 }
 
 impl<'gc> IntoNumber<'gc> for Gc<'gc, Rational<'gc>> {
-    fn into_number(self, _ctx: Context<'gc>) -> Number<'gc> {
+    fn into_number(self, _ctx: MutationContext<'gc>) -> Number<'gc> {
         Number::Rational(self)
     }
 }
 
 impl<'gc> IntoNumber<'gc> for Gc<'gc, Complex<'gc>> {
-    fn into_number(self, _ctx: Context<'gc>) -> Number<'gc> {
+    fn into_number(self, _ctx: MutationContext<'gc>) -> Number<'gc> {
         Number::Complex(self)
     }
 }
@@ -3982,7 +4004,7 @@ pub fn prevfloat(z: f64) -> f64 {
 }
 
 pub fn parse_ubignum<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     s: &mut Peekable<impl Iterator<Item = char>>,
     radix: u32,
 ) -> Gc<'gc, BigInt<'gc>> {
@@ -4018,7 +4040,7 @@ pub fn parse_ubignum<'gc>(
 }
 
 pub fn parse_uinteger<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     s: &mut Peekable<impl Iterator<Item = char>>,
     radix: u32,
 ) -> Option<Number<'gc>> {
@@ -4109,14 +4131,14 @@ pub enum ExactInteger<'gc> {
 }
 
 impl<'gc> ExactInteger<'gc> {
-    pub fn to_number(self, ctx: Context<'gc>) -> Number<'gc> {
+    pub fn to_number(self, _ctx: MutationContext<'gc>) -> Number<'gc> {
         match self {
             Self::Fixnum(n) => Number::Fixnum(n),
             Self::BigInt(b) => Number::BigInt(b),
         }
     }
 
-    pub fn bitor(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Self {
+    pub fn bitor(ctx: MutationContext<'gc>, lhs: Self, rhs: Self) -> Self {
         match lhs {
             Self::Fixnum(l) => match rhs {
                 Self::Fixnum(r) => Self::Fixnum(l | r),
@@ -4141,7 +4163,7 @@ impl<'gc> ExactInteger<'gc> {
         }
     }
 
-    pub fn bitand(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Self {
+    pub fn bitand(ctx: MutationContext<'gc>, lhs: Self, rhs: Self) -> Self {
         match lhs {
             Self::Fixnum(l) => match rhs {
                 Self::Fixnum(r) => Self::Fixnum(l & r),
@@ -4166,7 +4188,7 @@ impl<'gc> ExactInteger<'gc> {
         }
     }
 
-    pub fn bitxor(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Self {
+    pub fn bitxor(ctx: MutationContext<'gc>, lhs: Self, rhs: Self) -> Self {
         match lhs {
             Self::Fixnum(l) => match rhs {
                 Self::Fixnum(r) => Self::Fixnum(l ^ r),
@@ -4191,7 +4213,7 @@ impl<'gc> ExactInteger<'gc> {
         }
     }
 
-    pub fn bitnot(ctx: Context<'gc>, n: Self) -> Self {
+    pub fn bitnot(ctx: MutationContext<'gc>, n: Self) -> Self {
         match n {
             Self::Fixnum(n) => Self::Fixnum(!n),
             Self::BigInt(b) => {
@@ -4201,7 +4223,7 @@ impl<'gc> ExactInteger<'gc> {
         }
     }
 
-    pub fn is_bit_set(ctx: Context<'gc>, n: Self, bit: u32) -> bool {
+    pub fn is_bit_set(_ctx: MutationContext<'gc>, n: Self, bit: u32) -> bool {
         match n {
             Self::Fixnum(n) => {
                 if bit >= 32 {
@@ -4214,7 +4236,7 @@ impl<'gc> ExactInteger<'gc> {
         }
     }
 
-    pub fn first_bit_set(ctx: Context<'gc>, n: Self) -> i32 {
+    pub fn first_bit_set(_ctx: MutationContext<'gc>, n: Self) -> i32 {
         match n {
             Self::Fixnum(n) => {
                 if n == 0 {
@@ -4240,7 +4262,7 @@ impl<'gc> ExactInteger<'gc> {
         }
     }
 
-    pub fn bit_count(self, ctx: Context<'gc>) -> i32 {
+    pub fn bit_count(self, ctx: MutationContext<'gc>) -> i32 {
         match self {
             Self::Fixnum(n) => {
                 if n == 0 {
@@ -4263,7 +4285,7 @@ impl<'gc> ExactInteger<'gc> {
         }
     }
 
-    pub fn bit_length(&self, ctx: Context<'gc>) -> u32 {
+    pub fn bit_length(&self, ctx: MutationContext<'gc>) -> u32 {
         match self {
             Self::Fixnum(n) => {
                 if *n == 0 {
@@ -4329,7 +4351,7 @@ fn i32_to_raidx(n: i32, radix: u8) -> String {
 }
 
 impl<'gc> Number<'gc> {
-    pub fn integer_to_string(self, ctx: Context<'gc>, radix: u8) -> String {
+    pub fn integer_to_string(self, ctx: MutationContext<'gc>, radix: u8) -> String {
         if !self.is_exact() {
             return format!("#i{}", self.to_exact(ctx).integer_to_string(ctx, radix));
         }
@@ -4363,7 +4385,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn flonum_to_string(self, ctx: Context<'gc>, radix: u8) -> String {
+    pub fn flonum_to_string(self, ctx: MutationContext<'gc>, radix: u8) -> String {
         let n = self.real_to_f64(ctx);
 
         if n.is_nan() {
@@ -4408,7 +4430,7 @@ impl<'gc> Number<'gc> {
         buf
     }
 
-    pub fn compnum_to_string(self, ctx: Context<'gc>, radix: u8) -> String {
+    pub fn compnum_to_string(self, ctx: MutationContext<'gc>, radix: u8) -> String {
         let c = match self {
             Self::Complex(c) => c,
             _ => unreachable!(),
@@ -4432,7 +4454,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn ratnum_to_string(self, ctx: Context<'gc>, radix: u8) -> String {
+    pub fn ratnum_to_string(self, ctx: MutationContext<'gc>, radix: u8) -> String {
         let r = match self {
             Self::Rational(r) => r,
             _ => unreachable!(),
@@ -4444,7 +4466,7 @@ impl<'gc> Number<'gc> {
         format!("{}/{}", nume, deno)
     }
 
-    pub fn make_rectangular(ctx: Context<'gc>, real: Self, imag: Self) -> Self {
+    pub fn make_rectangular(ctx: MutationContext<'gc>, real: Self, imag: Self) -> Self {
         let real = if let Self::Complex(c) = real {
             c.real
         } else {
@@ -4460,7 +4482,7 @@ impl<'gc> Number<'gc> {
         Self::Complex(Complex::new(ctx, real, imag))
     }
 
-    pub fn numerator(self, ctx: Context<'gc>) -> Self {
+    pub fn numerator(self, ctx: MutationContext<'gc>) -> Self {
         let inexact = !self.is_exact();
         let obj = self.to_exact(ctx);
         match obj {
@@ -4481,7 +4503,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn denominator(self, ctx: Context<'gc>) -> Self {
+    pub fn denominator(self, ctx: MutationContext<'gc>) -> Self {
         let inexact = !self.is_exact();
         let obj = self.to_exact(ctx);
         match obj {
@@ -4502,7 +4524,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn to_string_radix(self, ctx: Context<'gc>, base: u8) -> String {
+    pub fn to_string_radix(self, ctx: MutationContext<'gc>, base: u8) -> String {
         match self {
             Self::Fixnum(_) | Self::BigInt(_) => self.integer_to_string(ctx, base),
             Self::Flonum(_) => self.flonum_to_string(ctx, base),
@@ -4513,7 +4535,10 @@ impl<'gc> Number<'gc> {
 }
 
 impl<'gc> FromValue<'gc> for ExactInteger<'gc> {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+    fn try_from_value(
+        _ctx: MutationContext<'gc>,
+        value: Value<'gc>,
+    ) -> Result<Self, ConversionError<'gc>> {
         if value.is_int32() {
             return Ok(Self::Fixnum(value.as_int32()));
         }
@@ -4557,7 +4582,7 @@ impl<'gc> From<ExactInteger<'gc>> for Number<'gc> {
 }
 
 impl<'gc> IntoValue<'gc> for ExactInteger<'gc> {
-    fn into_value(self, _ctx: Context<'gc>) -> Value<'gc> {
+    fn into_value(self, _ctx: MutationContext<'gc>) -> Value<'gc> {
         match self {
             Self::Fixnum(n) => Value::new(n),
             Self::BigInt(b) => b
@@ -4574,6 +4599,7 @@ const fn nbits32(mut x: u32) -> u32 {
     let t = (x >> 2) & 0x33333333;
     x = (x & 0x33333333) + t;
     x = (x + (x >> 4)) & 0x0F0F0F0F;
-    x = x * 0x01010101;
+    // The top byte sums the four byte counts; the product wraps by design.
+    x = x.wrapping_mul(0x01010101);
     x >> 24
 }

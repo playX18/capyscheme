@@ -6,7 +6,7 @@
 use std::iter::Peekable;
 
 use crate::heap::{Gc, Mutation};
-use crate::runtime::Context;
+use crate::runtime::MutationContext;
 
 use super::Number;
 use super::bigint::BigInt;

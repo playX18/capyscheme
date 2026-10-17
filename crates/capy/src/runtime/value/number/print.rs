@@ -9,7 +9,7 @@ use crate::heap::Mutation;
 
 use std::fmt;
 
-use crate::runtime::Context;
+use crate::runtime::MutationContext;
 
 use super::bigint::{Base, NumberToStringOptions};
 use super::{Complex, IEXPT_2N52, IEXPT_2N53, Number, Rational};

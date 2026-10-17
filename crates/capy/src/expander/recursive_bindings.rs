@@ -335,7 +335,6 @@ fn compute_sccs<'gc>(
         node_ids.push(node);
     }
 
-
     for &node in node_ids.iter() {
         let init = &graph[node].rhs;
 

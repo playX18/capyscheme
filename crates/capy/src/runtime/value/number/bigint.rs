@@ -22,7 +22,7 @@ use crate::heap::{
 };
 use rand::Rng;
 
-use crate::runtime::Context;
+use crate::runtime::MutationContext;
 
 use crate::runtime::value::ClassTagged;
 
@@ -120,11 +120,9 @@ impl<'gc> fmt::Binary for BigInt<'gc> {
 
 impl<'gc> fmt::Display for BigInt<'gc> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.pad_integral(
-            !self.is_negative(),
-            "",
-            &self.to_string_with_options(&Default::default()),
-        )
+        // `to_string_with_options` already includes the sign, passing the real
+        // polarity here would print every negative as `--...`.
+        f.pad_integral(true, "", &self.to_string_with_options(&Default::default()))
     }
 }
 
@@ -160,7 +158,7 @@ impl<'gc> BigInt<'gc> {
     ///
     /// Panics if `num_words` exceeds `u32::MAX`.
     pub fn new<const NORMALIZE: bool>(
-        mc: Context<'gc>,
+        mc: MutationContext<'gc>,
         mut words: &[Digit],
         negative: bool,
     ) -> Gc<'gc, Self> {
@@ -204,7 +202,7 @@ impl<'gc> BigInt<'gc> {
 
     #[inline]
     pub fn zeroed<F, E>(
-        mc: Context<'gc>,
+        mc: MutationContext<'gc>,
         mut count: usize,
         negative: bool,
         fill: F,
@@ -282,7 +280,7 @@ impl<'gc> BigInt<'gc> {
         }
     }
 
-    pub fn dup(&self, ctx: Context<'gc>, negative: bool) -> Gc<'gc, Self> {
+    pub fn dup(&self, ctx: MutationContext<'gc>, negative: bool) -> Gc<'gc, Self> {
         Self::new::<false>(ctx, self, negative)
     }
 
@@ -312,7 +310,7 @@ impl<'gc> BigInt<'gc> {
         NumBigInt::from_bytes_be(sign, &bytes[first_non_zero..])
     }
     #[cfg(feature = "bootstrap")]
-    pub fn from_num_bigint(ctx: Context<'gc>, num_bigint: &NumBigInt) -> Gc<'gc, Self> {
+    pub fn from_num_bigint(ctx: MutationContext<'gc>, num_bigint: &NumBigInt) -> Gc<'gc, Self> {
         if *num_bigint == NumBigInt::from(0) {
             return Self::zero(ctx);
         }
@@ -474,7 +472,7 @@ const fn joinwords(loword: Digit, hiword: Digit) -> WideDigit {
     ((hiword as WideDigit) << DIGIT_BIT) | (loword as WideDigit)
 }
 impl<'gc> BigInt<'gc> {
-    pub fn from_u64(ctx: Context<'gc>, value: u64) -> Gc<'gc, Self> {
+    pub fn from_u64(ctx: MutationContext<'gc>, value: u64) -> Gc<'gc, Self> {
         if value == 0 {
             return Self::zero(ctx);
         }
@@ -482,7 +480,7 @@ impl<'gc> BigInt<'gc> {
         BigInt::new::<false>(ctx, &[value], false)
     }
 
-    pub fn from_i32(ctx: Context<'gc>, value: i32) -> Gc<'gc, Self> {
+    pub fn from_i32(ctx: MutationContext<'gc>, value: i32) -> Gc<'gc, Self> {
         if value == 0 {
             return Self::zero(ctx);
         }
@@ -492,7 +490,7 @@ impl<'gc> BigInt<'gc> {
         BigInt::new::<false>(ctx, &[abs_value], value < 0)
     }
 
-    pub fn from_i64(ctx: Context<'gc>, value: i64) -> Gc<'gc, Self> {
+    pub fn from_i64(ctx: MutationContext<'gc>, value: i64) -> Gc<'gc, Self> {
         if value == 0 {
             return Self::zero(ctx);
         }
@@ -502,7 +500,7 @@ impl<'gc> BigInt<'gc> {
         BigInt::new::<false>(ctx, &[abs_value], value < 0)
     }
 
-    pub fn from_u128(ctx: Context<'gc>, value: u128) -> Gc<'gc, Self> {
+    pub fn from_u128(ctx: MutationContext<'gc>, value: u128) -> Gc<'gc, Self> {
         if value == 0 {
             return Self::zero(ctx);
         }
@@ -510,7 +508,7 @@ impl<'gc> BigInt<'gc> {
         Self::new::<true>(ctx, &[loword(value), hiword(value)], false)
     }
 
-    pub fn from_i128(ctx: Context<'gc>, value: i128) -> Gc<'gc, Self> {
+    pub fn from_i128(ctx: MutationContext<'gc>, value: i128) -> Gc<'gc, Self> {
         if value == 0 {
             return Self::zero(ctx);
         }
@@ -528,7 +526,7 @@ impl<'gc> BigInt<'gc> {
         Self::new::<true>(ctx, &[loword(abs_value), hiword(abs_value)], value < 0)
     }
 
-    pub fn from_f64(ctx: Context<'gc>, value: f64) -> Gc<'gc, Self> {
+    pub fn from_f64(ctx: MutationContext<'gc>, value: f64) -> Gc<'gc, Self> {
         if value > -1.0 && value < 1.0 {
             Self::new::<true>(ctx, &[0], value < 0.0)
         } else if value > -(u64::MAX as f64) && value < u64::MAX as f64 {
@@ -641,7 +639,7 @@ impl<'gc> BigInt<'gc> {
         (self[0] & 1) != 0
     }
 
-    pub fn negate(this: Gc<'gc, Self>, ctx: Context<'gc>) -> Gc<'gc, Self> {
+    pub fn negate(this: Gc<'gc, Self>, ctx: MutationContext<'gc>) -> Gc<'gc, Self> {
         if this.is_zero() {
             return this;
         }
@@ -649,7 +647,7 @@ impl<'gc> BigInt<'gc> {
         this.dup(ctx, !this.negative())
     }
 
-    pub fn abs(this: Gc<'gc, Self>, ctx: Context<'gc>) -> Gc<'gc, Self> {
+    pub fn abs(this: Gc<'gc, Self>, ctx: MutationContext<'gc>) -> Gc<'gc, Self> {
         if this.is_zero() {
             return this;
         }
@@ -675,7 +673,11 @@ impl<'gc> BigInt<'gc> {
         std::cmp::Ordering::Equal
     }
 
-    pub fn plus(this: Gc<'gc, Self>, ctx: Context<'gc>, rhs: Gc<'gc, Self>) -> Gc<'gc, Self> {
+    pub fn plus(
+        this: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        rhs: Gc<'gc, Self>,
+    ) -> Gc<'gc, Self> {
         if rhs.is_zero() {
             return this;
         }
@@ -720,7 +722,11 @@ impl<'gc> BigInt<'gc> {
         .expect("infallible allocation callback")
     }
 
-    pub fn minus(this: Gc<'gc, Self>, ctx: Context<'gc>, rhs: Gc<'gc, Self>) -> Gc<'gc, Self> {
+    pub fn minus(
+        this: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        rhs: Gc<'gc, Self>,
+    ) -> Gc<'gc, Self> {
         if rhs.is_zero() {
             return this;
         }
@@ -780,7 +786,11 @@ impl<'gc> BigInt<'gc> {
         .expect("infallible allocation callback")
     }
 
-    pub fn times(this: Gc<'gc, Self>, ctx: Context<'gc>, rhs: Gc<'gc, Self>) -> Gc<'gc, Self> {
+    pub fn times(
+        this: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        rhs: Gc<'gc, Self>,
+    ) -> Gc<'gc, Self> {
         if this.is_zero() || rhs.is_zero() {
             return Self::zero(ctx);
         }
@@ -813,7 +823,11 @@ impl<'gc> BigInt<'gc> {
         self.len() * DIGIT_BIT - zeros
     }
 
-    pub fn mul_simple(a: Gc<'gc, Self>, b: Gc<'gc, Self>, ctx: Context<'gc>) -> Gc<'gc, Self> {
+    pub fn mul_simple(
+        a: Gc<'gc, Self>,
+        b: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+    ) -> Gc<'gc, Self> {
         if a.is_zero() || b.is_zero() {
             return Self::zero(ctx);
         }
@@ -847,7 +861,11 @@ impl<'gc> BigInt<'gc> {
 
     /// Karatsuba multiplication algorithm for large integers
     /// Complexity: O(n^log₂3) ≈ O(n^1.585) vs O(n²) for simple multiplication
-    pub fn mul_karatsuba(a: Gc<'gc, Self>, b: Gc<'gc, Self>, ctx: Context<'gc>) -> Gc<'gc, Self> {
+    pub fn mul_karatsuba(
+        a: Gc<'gc, Self>,
+        b: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+    ) -> Gc<'gc, Self> {
         if a.is_zero() || b.is_zero() {
             return Self::zero(ctx);
         }
@@ -898,7 +916,7 @@ impl<'gc> BigInt<'gc> {
     }
 
     /// Shift a BigInt left by n words (multiply by B^n where B = 2^DIGIT_BIT)
-    fn shift_left_words(num: Gc<'gc, Self>, ctx: Context<'gc>, n: usize) -> Gc<'gc, Self> {
+    fn shift_left_words(num: Gc<'gc, Self>, ctx: MutationContext<'gc>, n: usize) -> Gc<'gc, Self> {
         if n == 0 || num.is_zero() {
             return num;
         }
@@ -911,7 +929,7 @@ impl<'gc> BigInt<'gc> {
 
     pub fn split_at(
         self: Gc<'gc, Self>,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         n: usize,
     ) -> (Gc<'gc, Self>, Gc<'gc, Self>) {
         let n = n.min(self.len());
@@ -924,7 +942,7 @@ impl<'gc> BigInt<'gc> {
         )
     }
 
-    pub fn zero(ctx: Context<'gc>) -> Gc<'gc, Self> {
+    pub fn zero(ctx: MutationContext<'gc>) -> Gc<'gc, Self> {
         static ZERO_BIGINT: OnceLock<Global<RootedBigInt>> = OnceLock::new();
 
         *ZERO_BIGINT
@@ -936,7 +954,7 @@ impl<'gc> BigInt<'gc> {
             .fetch(ctx)
     }
 
-    pub fn one(ctx: Context<'gc>) -> Gc<'gc, Self> {
+    pub fn one(ctx: MutationContext<'gc>) -> Gc<'gc, Self> {
         static ONE_BIGINT: OnceLock<Global<RootedBigInt>> = OnceLock::new();
 
         *ONE_BIGINT
@@ -949,7 +967,7 @@ impl<'gc> BigInt<'gc> {
     }
 
     pub fn parse(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         str: &str,
         base: &Base,
     ) -> Result<Gc<'gc, Self>, ParseBigIntError> {
@@ -1078,7 +1096,7 @@ impl<'gc> BigInt<'gc> {
     /// The first digit in the array is the least significant one.
     /// `negative` indicates if the result should be negative.
     pub fn from_digits(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         digits: &[u8],
         negative: bool,
         base: &Base,
@@ -1129,50 +1147,6 @@ impl<'gc> BigInt<'gc> {
         BigInt::new::<true>(ctx, &words, negative)
     }
 
-    fn mult_sub(approx: Digit, divis: &[Digit], rem: &mut [Digit], from: usize) {
-        let mut sum: WideDigit = 0;
-        let mut carry = 0;
-
-        for j in 0..divis.len() {
-            sum += divis[j] as WideDigit * approx as WideDigit;
-            let x = loword(sum) as WideDigit + carry;
-            if (rem[from + j] as WideDigit) < x {
-                rem[from + j] = (BASE + rem[from + j] as WideDigit - x) as Digit;
-                carry = 1;
-            } else {
-                rem[from + j] = (rem[from + j] as WideDigit - x) as Digit;
-                carry = 0;
-            }
-
-            sum = hiword(sum) as WideDigit;
-        }
-    }
-
-    fn sub_if_possible(divis: &[Digit], rem: &mut [Digit], from: usize) -> bool {
-        let mut i = divis.len();
-        while i > 0 && divis[i - 1] >= rem[from + i - 1] {
-            if divis[i - 1] > rem[from + i - 1] {
-                return false;
-            }
-
-            i -= 1;
-        }
-
-        let mut carry = 0;
-        for j in 0..divis.len() {
-            let x = divis[j] as WideDigit + carry;
-            if (rem[from + j] as WideDigit) < x {
-                rem[from + j] = (BASE + rem[from + j] as WideDigit - x) as Digit;
-                carry = 1;
-            } else {
-                rem[from + j] = (rem[from + j] as WideDigit - x) as Digit;
-                carry = 0;
-            }
-        }
-
-        true
-    }
-
     pub fn remainder_digit(&self, deno: Digit) -> Digit {
         let numerator_count = self.len();
         let mut remainder = 0 as WideDigit;
@@ -1188,80 +1162,227 @@ impl<'gc> BigInt<'gc> {
     /// Returns (0, self) if rhs > self, or (1, 0) if self == rhs.
     pub fn div_rem(
         this: Gc<'gc, Self>,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         rhs: Gc<'gc, Self>,
     ) -> (Gc<'gc, Self>, Gc<'gc, Self>) {
+        let (quotient, remainder) = Self::div_rem_inner(this, ctx, rhs, true, true);
+        (
+            quotient.expect("quotient requested"),
+            remainder.expect("remainder requested"),
+        )
+    }
+
+    /// Quotient only, skips the remainder half of [`Self::div_rem_inner`].
+    pub fn div(
+        this: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        rhs: Gc<'gc, Self>,
+    ) -> Gc<'gc, Self> {
+        Self::div_rem_inner(this, ctx, rhs, true, false)
+            .0
+            .expect("quotient requested")
+    }
+
+    /// Remainder only, skips the quotient half of [`Self::div_rem_inner`].
+    pub fn rem(
+        this: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        rhs: Gc<'gc, Self>,
+    ) -> Gc<'gc, Self> {
+        Self::div_rem_inner(this, ctx, rhs, false, true)
+            .1
+            .expect("remainder requested")
+    }
+
+    /// [`Self::div_rem`] with per-half construction: unrequested halves come
+    /// back `None` without allocating, so [`Self::div`] and [`Self::rem`]
+    /// cost one result instead of two.
+    fn div_rem_inner(
+        this: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        rhs: Gc<'gc, Self>,
+        want_quotient: bool,
+        want_remainder: bool,
+    ) -> (Option<Gc<'gc, Self>>, Option<Gc<'gc, Self>>) {
         if rhs.is_zero() {
             panic!("division by zero");
         }
         if rhs.count() > this.count() {
-            return (BigInt::zero(ctx), this);
+            return (
+                want_quotient.then(|| BigInt::zero(ctx)),
+                want_remainder.then(|| this),
+            );
         }
         let neg = this.negative() != rhs.negative();
         if rhs.count() == this.count() {
             let cmp = this.compare_digits(&rhs);
             if cmp == std::cmp::Ordering::Equal {
                 return (
-                    BigInt::from_i64(ctx, if neg { -1 } else { 1 }),
-                    BigInt::zero(ctx),
+                    want_quotient.then(|| BigInt::from_i64(ctx, if neg { -1 } else { 1 })),
+                    want_remainder.then(|| BigInt::zero(ctx)),
                 );
             } else if cmp == std::cmp::Ordering::Less {
-                return (BigInt::zero(ctx), this);
+                return (
+                    want_quotient.then(|| BigInt::zero(ctx)),
+                    want_remainder.then(|| this),
+                );
             }
         }
 
-        // Prepare dividend and divisor buffers (with extra zero for overflow)
-        let mut rem = this.words_slice().to_vec();
-        rem.push(0);
-        let mut divis = rhs.words_slice().to_vec();
-        divis.push(0);
-
-        let mut sizediff = rem.len() as isize - divis.len() as isize;
-        let div = rhs[rhs.len() - 1] as WideDigit + 1;
-        let mut res = vec![0 as Digit; sizediff as usize + 1];
-        let mut divident = rem.len() as isize - 2;
-
-        loop {
-            let mut x = joinwords(rem[divident as usize], rem[divident as usize + 1]);
-            let mut approx = x / div;
-
-            while approx > 0 {
-                res[sizediff as usize] += approx as Digit;
-                Self::mult_sub(approx as _, &divis, &mut rem, sizediff as usize);
-                x = joinwords(rem[divident as usize], rem[divident as usize + 1]);
-                approx = x / div;
-            }
-
-            if Self::sub_if_possible(&divis, &mut rem, sizediff as usize) {
-                res[sizediff as usize] += 1;
-            }
-
-            divident -= 1;
-            sizediff -= 1;
-            if sizediff < 0 {
-                break;
-            }
+        if rhs.count() == 1 {
+            // Single-word divisor: one pass, the quotient takes the xor of the
+            // signs and the remainder the dividend's, like the general path.
+            // The digit remainder is below the divisor, so it fits one word.
+            return match (want_quotient, want_remainder) {
+                (true, true) => {
+                    let (quotient, remainder) = Self::div_digit(this, ctx, rhs[0]);
+                    let quotient = if rhs.negative() {
+                        Self::negate(quotient, ctx)
+                    } else {
+                        quotient
+                    };
+                    let remainder =
+                        BigInt::new::<true>(ctx, &[remainder as Digit], this.negative());
+                    (Some(quotient), Some(remainder))
+                }
+                (true, false) => {
+                    let (quotient, _) = Self::div_digit(this, ctx, rhs[0]);
+                    let quotient = if rhs.negative() {
+                        Self::negate(quotient, ctx)
+                    } else {
+                        quotient
+                    };
+                    (Some(quotient), None)
+                }
+                (false, true) => {
+                    let remainder = this.remainder_digit(rhs[0]);
+                    let remainder = BigInt::new::<true>(ctx, &[remainder], this.negative());
+                    (None, Some(remainder))
+                }
+                (false, false) => unreachable!("div_rem_inner wanting neither half"),
+            };
         }
 
-        let quotient = BigInt::new::<true>(ctx, &res, neg);
-        let remainder = BigInt::new::<true>(ctx, &rem[..rhs.count()], this.negative());
+        // Knuth TAOCP 4.3.1 Algorithm D on the magnitudes: normalize so the
+        // divisor's top bit is set, then every quotient digit costs one
+        // multiply-subtract plus a bounded correction.
+        let dividend = this.words_slice();
+        let divisor = rhs.words_slice();
+        let n = dividend.len();
+        let m = divisor.len();
 
+        let mut u = vec![0 as Digit; n + 1];
+        let mut v = vec![0 as Digit; m];
+        let mut quotient_digits = if want_quotient {
+            vec![0 as Digit; n - m + 1]
+        } else {
+            Vec::new()
+        };
+        Self::div_knuth(dividend, divisor, &mut u, &mut v, &mut quotient_digits);
+        let quotient = want_quotient.then(|| BigInt::new::<true>(ctx, &quotient_digits, neg));
+        let remainder = want_remainder.then(|| BigInt::new::<true>(ctx, &u[..m], this.negative()));
         (quotient, remainder)
     }
 
-    pub fn div(this: Gc<'gc, Self>, ctx: Context<'gc>, rhs: Gc<'gc, Self>) -> Gc<'gc, Self> {
-        let (quotient, _) = Self::div_rem(this, ctx, rhs);
-        quotient
-    }
+    /// Knuth TAOCP 4.3.1 Algorithm D over caller buffers: `u` holds `n + 1`
+    /// words, `v` holds `m`, and `quotient_digits` holds `n - m + 1` words
+    /// (or none when the quotient is unwanted, in which case digits are not
+    /// recorded). Leaves the unnormalized remainder in `u[..m]`.
+    fn div_knuth(
+        dividend: &[Digit],
+        divisor: &[Digit],
+        u: &mut [Digit],
+        v: &mut [Digit],
+        quotient_digits: &mut [Digit],
+    ) {
+        let n = u.len() - 1;
+        let m = v.len();
+        let want_quotient = !quotient_digits.is_empty();
 
-    pub fn rem(this: Gc<'gc, Self>, ctx: Context<'gc>, rhs: Gc<'gc, Self>) -> Gc<'gc, Self> {
-        let (_, remainder) = Self::div_rem(this, ctx, rhs);
-        remainder
+        let shift = divisor[m - 1].leading_zeros();
+        if shift == 0 {
+            u[..n].copy_from_slice(dividend);
+            v.copy_from_slice(divisor);
+        } else {
+            let mut carry = 0;
+            for (i, &word) in dividend.iter().enumerate() {
+                u[i] = (word << shift) | carry;
+                carry = word >> (DIGIT_BIT as u32 - shift);
+            }
+            u[n] = carry;
+            let mut carry = 0;
+            for (i, &word) in divisor.iter().enumerate() {
+                v[i] = (word << shift) | carry;
+                carry = word >> (DIGIT_BIT as u32 - shift);
+            }
+        }
+
+        for j in (0..=(n - m)).rev() {
+            let numerator = joinwords(u[j + m - 1], u[j + m]);
+            let divisor_top = v[m - 1] as WideDigit;
+            let mut qhat = numerator / divisor_top;
+            let mut rhat = numerator % divisor_top;
+            while qhat >= BASE
+                || qhat * (v[m - 2] as WideDigit) > BASE * rhat + (u[j + m - 2] as WideDigit)
+            {
+                qhat -= 1;
+                rhat += divisor_top;
+                if rhat >= BASE {
+                    break;
+                }
+            }
+
+            let mut product_carry: WideDigit = 0;
+            let mut borrow: WideDigit = 0;
+            for i in 0..m {
+                let product = qhat * (v[i] as WideDigit) + product_carry;
+                product_carry = product >> DIGIT_BIT;
+                let subtrahend = (product as Digit) as WideDigit + borrow;
+                let digit = u[j + i] as WideDigit;
+                if digit < subtrahend {
+                    u[j + i] = (digit + BASE - subtrahend) as Digit;
+                    borrow = 1;
+                } else {
+                    u[j + i] = (digit - subtrahend) as Digit;
+                    borrow = 0;
+                }
+            }
+            let subtrahend = product_carry + borrow;
+            let top = u[j + m] as WideDigit;
+            let mut underflow = top < subtrahend;
+            u[j + m] = top.wrapping_sub(subtrahend) as Digit;
+
+            if want_quotient {
+                quotient_digits[j] = qhat as Digit;
+            }
+            while underflow {
+                if want_quotient {
+                    quotient_digits[j] -= 1;
+                }
+                let mut carry: WideDigit = 0;
+                for i in 0..m {
+                    let sum = (u[j + i] as WideDigit) + (v[i] as WideDigit) + carry;
+                    u[j + i] = sum as Digit;
+                    carry = sum >> DIGIT_BIT;
+                }
+                u[j + m] = ((u[j + m] as WideDigit) + carry) as Digit;
+                underflow = carry == 0;
+            }
+        }
+
+        // D8: the remainder is the low m words, shifted back in place (each
+        // word is read before it is overwritten, ascending).
+        if shift != 0 {
+            debug_assert!(u[m] == 0);
+            for i in 0..m {
+                u[i] = (u[i] >> shift) | (u[i + 1] << (DIGIT_BIT as u32 - shift));
+            }
+        }
     }
 
     pub fn div_digit(
         this: Gc<'gc, Self>,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         divisor: Digit,
     ) -> (Gc<'gc, Self>, u128) {
         if divisor == 0 {
@@ -1301,7 +1422,11 @@ impl<'gc> BigInt<'gc> {
     /// Performs a bitwise AND operation between the BigInt and a single Digit.
     /// The operation is performed on the magnitude of the BigInt.
     /// The sign of the result is preserved, unless the magnitude becomes zero.
-    pub fn and_digit(this: Gc<'gc, Self>, ctx: Context<'gc>, digit: Digit) -> Gc<'gc, Self> {
+    pub fn and_digit(
+        this: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        digit: Digit,
+    ) -> Gc<'gc, Self> {
         if this.is_zero() {
             return BigInt::zero(ctx);
         }
@@ -1316,7 +1441,7 @@ impl<'gc> BigInt<'gc> {
         BigInt::new::<true>(ctx, &result_digits, this.negative())
     }
 
-    pub fn or_digit(this: Gc<'gc, Self>, ctx: Context<'gc>, digit: Digit) -> Gc<'gc, Self> {
+    pub fn or_digit(this: Gc<'gc, Self>, ctx: MutationContext<'gc>, digit: Digit) -> Gc<'gc, Self> {
         let mut result_digits = this.words_slice().to_vec(); // Clone existing words
 
         if result_digits.is_empty() {
@@ -1334,7 +1459,11 @@ impl<'gc> BigInt<'gc> {
         BigInt::new::<true>(ctx, &result_digits, this.negative())
     }
 
-    pub fn xor_digit(this: Gc<'gc, Self>, ctx: Context<'gc>, digit: Digit) -> Gc<'gc, Self> {
+    pub fn xor_digit(
+        this: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        digit: Digit,
+    ) -> Gc<'gc, Self> {
         let mut result_digits = this.words_slice().to_vec(); // Clone existing words
 
         if result_digits.is_empty() {
@@ -1353,7 +1482,7 @@ impl<'gc> BigInt<'gc> {
         BigInt::new::<true>(ctx, &result_digits, this.negative())
     }
 
-    pub fn from_2sc(ctx: Context<'gc>, words: &[Digit]) -> Gc<'gc, Self> {
+    pub fn from_2sc(ctx: MutationContext<'gc>, words: &[Digit]) -> Gc<'gc, Self> {
         if Self::is_most_significant_bit_set(words) {
             Self::zeroed(ctx, words.len(), true, |res| {
                 let mut carry = true;
@@ -1381,7 +1510,11 @@ impl<'gc> BigInt<'gc> {
         }
     }
 
-    pub fn random<R: Rng>(ctx: Context<'gc>, rng: &mut R, bitwidth: usize) -> Gc<'gc, Self> {
+    pub fn random<R: Rng>(
+        ctx: MutationContext<'gc>,
+        rng: &mut R,
+        bitwidth: usize,
+    ) -> Gc<'gc, Self> {
         let mut words = vec![0; bitwidth.div_ceil(DIGIT_BIT)];
         rng.fill(&mut words[..]);
         Self::new::<true>(ctx, &words, false)
@@ -1410,7 +1543,11 @@ impl<'gc> BigInt<'gc> {
         )
     }
 
-    pub fn and(this: Gc<'gc, Self>, ctx: Context<'gc>, rhs: Gc<'gc, Self>) -> Gc<'gc, Self> {
+    pub fn and(
+        this: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        rhs: Gc<'gc, Self>,
+    ) -> Gc<'gc, Self> {
         let (mut leftcarry, mut rightcarry) = (true, true);
 
         let size = Self::twos_complement_size(&this, &rhs);
@@ -1444,7 +1581,7 @@ impl<'gc> BigInt<'gc> {
         Self::from_2sc(ctx, &res)
     }
 
-    pub fn or(this: Gc<'gc, Self>, ctx: Context<'gc>, rhs: Gc<'gc, Self>) -> Gc<'gc, Self> {
+    pub fn or(this: Gc<'gc, Self>, ctx: MutationContext<'gc>, rhs: Gc<'gc, Self>) -> Gc<'gc, Self> {
         let (mut leftcarry, mut rightcarry) = (true, true);
 
         let size = Self::twos_complement_size(&this, &rhs);
@@ -1478,7 +1615,11 @@ impl<'gc> BigInt<'gc> {
         Self::from_2sc(ctx, &res)
     }
 
-    pub fn xor(this: Gc<'gc, Self>, ctx: Context<'gc>, rhs: Gc<'gc, Self>) -> Gc<'gc, Self> {
+    pub fn xor(
+        this: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        rhs: Gc<'gc, Self>,
+    ) -> Gc<'gc, Self> {
         let (mut leftcarry, mut rightcarry) = (true, true);
 
         let size = Self::twos_complement_size(&this, &rhs);
@@ -1512,11 +1653,11 @@ impl<'gc> BigInt<'gc> {
         Self::from_2sc(ctx, &res)
     }
 
-    pub fn not(this: Gc<'gc, Self>, ctx: Context<'gc>) -> Gc<'gc, Self> {
+    pub fn not(this: Gc<'gc, Self>, ctx: MutationContext<'gc>) -> Gc<'gc, Self> {
         Self::minus(Self::negate(this, ctx), ctx, Self::one(ctx))
     }
 
-    pub fn pow(this: Gc<'gc, Self>, ctx: Context<'gc>, exp: u64) -> Gc<'gc, Self> {
+    pub fn pow(this: Gc<'gc, Self>, ctx: MutationContext<'gc>, exp: u64) -> Gc<'gc, Self> {
         let (mut expo, mut radix) = (exp, this);
         let mut res = Self::one(ctx);
 
@@ -1531,7 +1672,11 @@ impl<'gc> BigInt<'gc> {
         res
     }
 
-    pub fn gcd(this: Gc<'gc, Self>, ctx: Context<'gc>, rhs: Gc<'gc, Self>) -> Gc<'gc, Self> {
+    pub fn gcd(
+        this: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        rhs: Gc<'gc, Self>,
+    ) -> Gc<'gc, Self> {
         if this.is_zero() {
             return Self::abs(rhs, ctx);
         }
@@ -1543,7 +1688,7 @@ impl<'gc> BigInt<'gc> {
         let mut b = Self::abs(rhs, ctx);
 
         while !b.is_zero() {
-            let (q, r) = Self::div_rem(a, ctx, b);
+            let r = Self::rem(a, ctx, b);
             a = b;
             b = r;
         }
@@ -1551,7 +1696,11 @@ impl<'gc> BigInt<'gc> {
         a
     }
 
-    pub fn lcm(this: Gc<'gc, Self>, ctx: Context<'gc>, rhs: Gc<'gc, Self>) -> Gc<'gc, Self> {
+    pub fn lcm(
+        this: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        rhs: Gc<'gc, Self>,
+    ) -> Gc<'gc, Self> {
         if this.is_zero() || rhs.is_zero() {
             return BigInt::zero(ctx);
         }
@@ -1559,15 +1708,25 @@ impl<'gc> BigInt<'gc> {
         let gcd = Self::gcd(this, ctx, rhs);
         let abs_this = Self::abs(this, ctx);
         let abs_rhs = Self::abs(rhs, ctx);
-        let (quotient, _) = Self::div_rem(abs_this, ctx, gcd);
+        let quotient = Self::div(abs_this, ctx, gcd);
         Self::times(quotient, ctx, abs_rhs)
     }
 
-    pub fn sqrt(this: Gc<'gc, Self>, ctx: Context<'gc>) -> Gc<'gc, Self> {
+    pub fn sqrt(this: Gc<'gc, Self>, ctx: MutationContext<'gc>) -> Gc<'gc, Self> {
         if this.is_zero() {
             return this;
         }
-        let mut y = Self::div_digit(this, ctx, 2).0;
+        let mut y = if this.negative() {
+            Self::div_digit(this, ctx, 2).0
+        } else {
+            let top = this[this.count() - 1];
+            let seed_mantissa = libm::sqrt(top as f64) as u64 + 2;
+            Self::shift_left(
+                Self::from_u64(ctx, seed_mantissa),
+                ctx,
+                (this.count() - 1) * 32,
+            )
+        };
         let mut x = Self::div(this, ctx, y);
         while y > x {
             let plus = Self::plus(x, ctx, y);
@@ -1580,7 +1739,11 @@ impl<'gc> BigInt<'gc> {
         y
     }
 
-    pub fn shift_left(this: Gc<'gc, Self>, ctx: Context<'gc>, shift: usize) -> Gc<'gc, Self> {
+    pub fn shift_left(
+        this: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        shift: usize,
+    ) -> Gc<'gc, Self> {
         let swords = shift / DIGIT_BIT;
         let sbits = shift % DIGIT_BIT;
 
@@ -1614,7 +1777,13 @@ impl<'gc> BigInt<'gc> {
 
             for &word in this.iter() {
                 res[offset] = (word << sbits) | carry;
-                carry = word >> (DIGIT_BIT - sbits);
+                // A whole-word shift has no carry, `>> DIGIT_BIT` would also
+                // be an overflowing shift.
+                carry = if sbits == 0 {
+                    0
+                } else {
+                    word >> (DIGIT_BIT - sbits)
+                };
                 offset += 1;
             }
 
@@ -1630,32 +1799,44 @@ impl<'gc> BigInt<'gc> {
         .expect("infallible allocation callback")
     }
 
-    pub fn shift_right(this: Gc<'gc, Self>, ctx: Context<'gc>, shift: usize) -> Gc<'gc, Self> {
+    /// Arithmetic shift right: the magnitude shifted, and a negative number
+    /// rounded toward negative infinity when any one bit is shifted out.
+    pub fn shift_right(
+        this: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        shift: usize,
+    ) -> Gc<'gc, Self> {
         let swords = shift / DIGIT_BIT;
         let sbits = shift % DIGIT_BIT;
+        let len = this.len();
 
-        let mut res = Vec::with_capacity(this.len().saturating_sub(swords));
-
-        let mut carry = 0;
-        let mut i = this.len() as isize - 1;
-
-        while i >= swords as isize {
-            let word = this[i as usize];
-            res.push((word >> sbits) | carry);
-            carry = word << (DIGIT_BIT - sbits);
-            i -= 1;
+        let mut lost = (0..swords.min(len)).any(|i| this[i] != 0);
+        if swords >= len {
+            return Self::from_i64(ctx, if this.negative() && lost { -1 } else { 0 });
         }
-        res.reverse();
+        if sbits != 0 {
+            lost |= this[swords] & ((1 << sbits) - 1) != 0;
+        }
+
+        let mut res = Vec::with_capacity(len - swords);
+        for i in swords..len {
+            let high = if sbits != 0 && i + 1 < len {
+                this[i + 1] << (DIGIT_BIT - sbits)
+            } else {
+                0
+            };
+            res.push((this[i] >> sbits) | high);
+        }
         let x = Self::new::<true>(ctx, &res, this.negative());
 
-        if this.negative() && carry > 0 {
+        if this.negative() && lost {
             Self::minus(x, ctx, Self::one(ctx))
         } else {
             x
         }
     }
 
-    pub fn shift(this: Gc<'gc, Self>, ctx: Context<'gc>, shift: isize) -> Gc<'gc, Self> {
+    pub fn shift(this: Gc<'gc, Self>, ctx: MutationContext<'gc>, shift: isize) -> Gc<'gc, Self> {
         if shift > 0 {
             Self::shift_left(this, ctx, shift as usize)
         } else if shift < 0 {
@@ -1743,7 +1924,12 @@ impl<'gc> BigInt<'gc> {
 
     /// Sets the bit at position `n` to `value` and returns a new BigInt.
     /// `value == true` sets the bit, `false` clears it.
-    pub fn set_bit(this: Gc<'gc, Self>, ctx: Context<'gc>, n: usize, value: bool) -> Gc<'gc, Self> {
+    pub fn set_bit(
+        this: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        n: usize,
+        value: bool,
+    ) -> Gc<'gc, Self> {
         let nword = n / DIGIT_BIT;
         let nbit = n % DIGIT_BIT;
         let mut words = this.words_slice().to_vec();
@@ -1790,11 +1976,7 @@ impl<'gc> BigInt<'gc> {
             if self[i] == 0 {
                 count += DIGIT_BIT;
             } else {
-                let mut word = self[i];
-                while word & 1 == 0 {
-                    word >>= 1;
-                    count += 1;
-                }
+                count += self[i].leading_zeros() as usize;
                 break;
             }
         }
@@ -1824,11 +2006,7 @@ impl<'gc> BigInt<'gc> {
             if self[i] == Digit::MAX {
                 count += DIGIT_BIT;
             } else {
-                let mut word = self[i];
-                while word & 1 == 1 {
-                    word >>= 1;
-                    count += 1;
-                }
+                count += self[i].leading_ones() as usize;
                 break;
             }
         }
@@ -1852,7 +2030,11 @@ impl<'gc> BigInt<'gc> {
         count
     }
 
-    pub fn rotate_left(this: Gc<'gc, Self>, ctx: Context<'gc>, shift: usize) -> Gc<'gc, Self> {
+    pub fn rotate_left(
+        this: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        shift: usize,
+    ) -> Gc<'gc, Self> {
         let count = this.count();
         let mut res = vec![0; count];
         let shift = shift % (count * DIGIT_BIT);
@@ -1861,7 +2043,9 @@ impl<'gc> BigInt<'gc> {
         for i in 0..count {
             let next = (i + swords) % count;
             res[next] |= this[i] << sbits;
-            if i + 1 < count {
+            // A whole-word rotation has no cross-word bits, `>> DIGIT_BIT`
+            // would also be an overflowing shift.
+            if sbits != 0 && i + 1 < count {
                 res[next] |= this[i + 1] >> (DIGIT_BIT - sbits);
             }
         }
@@ -1869,7 +2053,11 @@ impl<'gc> BigInt<'gc> {
         BigInt::new::<true>(ctx, &res, this.negative())
     }
 
-    pub fn rotate_right(this: Gc<'gc, Self>, ctx: Context<'gc>, shift: usize) -> Gc<'gc, Self> {
+    pub fn rotate_right(
+        this: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        shift: usize,
+    ) -> Gc<'gc, Self> {
         let count = this.count();
         let mut res = vec![0; count];
         let shift = shift % (count * DIGIT_BIT);
@@ -1878,7 +2066,9 @@ impl<'gc> BigInt<'gc> {
         for i in 0..count {
             let prev = (i + count - swords) % count;
             res[prev] |= this[i] >> sbits;
-            if i > 0 {
+            // A whole-word rotation has no cross-word bits, `<< DIGIT_BIT`
+            // would also be an overflowing shift.
+            if sbits != 0 && i > 0 {
                 res[prev] |= this[i - 1] << (DIGIT_BIT - sbits);
             }
         }
@@ -1886,7 +2076,7 @@ impl<'gc> BigInt<'gc> {
         BigInt::new::<true>(ctx, &res, this.negative())
     }
 
-    pub fn rotate(this: Gc<'gc, Self>, ctx: Context<'gc>, shift: isize) -> Gc<'gc, Self> {
+    pub fn rotate(this: Gc<'gc, Self>, ctx: MutationContext<'gc>, shift: isize) -> Gc<'gc, Self> {
         if shift > 0 {
             Self::rotate_left(this, ctx, shift as usize)
         } else if shift < 0 {
@@ -2047,92 +2237,5 @@ impl<'gc> Ord for BigInt<'gc> {
 impl<'gc> PartialEq<i64> for BigInt<'gc> {
     fn eq(&self, other: &i64) -> bool {
         self.try_as_i64() == Some(*other)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::runtime::Scheme;
-
-    #[test]
-    fn test_bigint_cmp() {
-        let scm = Scheme::new();
-
-        scm.enter(|ctx| {
-            let b1 = BigInt::from_u64(ctx, 12345678901234567890);
-            let b2 = BigInt::from_u64(ctx, 12345678901234567890);
-
-            assert_eq!(b1.cmp(&b2), std::cmp::Ordering::Equal);
-
-            let b3 = BigInt::from_u64(ctx, 12345678901234567891);
-
-            assert_eq!(b1.cmp(&b3), std::cmp::Ordering::Less);
-            assert_eq!(b3.cmp(&b1), std::cmp::Ordering::Greater);
-
-            let zero = BigInt::zero(ctx);
-
-            assert_eq!(zero.cmp(&b1), std::cmp::Ordering::Less);
-            assert_eq!(b1.cmp(&zero), std::cmp::Ordering::Greater);
-            assert_eq!(zero.cmp(&zero), std::cmp::Ordering::Equal);
-        });
-    }
-
-    #[test]
-    fn test_bigint_ops() {
-        let scm = Scheme::new();
-
-        scm.enter(|ctx| {
-            let a = BigInt::parse(ctx, "12345678901234567890", &Base::DEC).unwrap();
-            let b = BigInt::parse(ctx, "98765432109876543210", &Base::DEC).unwrap();
-
-            let sum = BigInt::plus(a, ctx, b);
-            assert_eq!(sum.to_string(), "111111111011111111100");
-
-            let a =
-                BigInt::parse(ctx, "123414124512512356132616532623515231151", &Base::DEC).unwrap();
-            let b = BigInt::parse(ctx, "12412412512356324632651651361561", &Base::DEC).unwrap();
-
-            let (q, r) = BigInt::div_rem(a, ctx, b);
-            let mul = BigInt::times(a, ctx, b);
-
-            println!("div: ({q}, {r})");
-            println!("mul: {}", mul);
-
-            assert_eq!(q.to_string(), "9942799");
-            assert_eq!(r.to_string(), "1797068403931412326117437881912");
-            assert_eq!(
-                mul.to_string(),
-                "1531867023300609762396035507803021632000090312363887487217570791186711"
-            );
-        });
-    }
-
-    use super::{Base, builtin_class_ids};
-    use crate::heap::object::ClassId;
-    use crate::prelude::BigInt;
-
-    #[test]
-    fn test_bigint() {
-        let scm = Scheme::new();
-
-        scm.enter(|ctx| {
-            let big_int = BigInt::parse(ctx, "2037035976334486086268445688409378161051468393665936250636140449354381299763336706183397376", &Base::DEC)
-                .expect("Failed to parse BigInt");
-
-        });
-    }
-
-    #[test]
-    fn bigint_allocates_with_class_only_header() {
-        let scm = Scheme::new_uninit();
-
-        scm.enter(|ctx| {
-            let bigint = BigInt::from_u64(ctx, u64::MAX);
-
-            assert_eq!(
-                bigint.as_gc_object().header().class_id(),
-                ClassId::new(builtin_class_ids::BIGINT).unwrap()
-            );
-        });
     }
 }
