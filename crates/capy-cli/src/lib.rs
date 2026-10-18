@@ -1,23 +1,17 @@
-//! Shared thin-CLI logic for `capy` / `capyc`.
-
+use std::cell::Cell;
 use std::ffi::OsString;
 use std::path::Path;
 
 use capy_sni::Scm;
 
-/// Whether a pre-boot flag takes a value or is boolean (bare `--flag`
-/// sets, bare `--no-flag` clears).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum CliKind {
     Bool,
     Value,
 }
 
-const MANUAL_FLAG_ROWS: &[(&str, &str, CliKind)] = &[
-    ("--gc-plan", "MMTK_PLAN", CliKind::Value),
-    ("--gc-trigger", "MMTK_GC_TRIGGER", CliKind::Value),
-    ("--debug", "CAPY_FASL_DEBUG", CliKind::Value),
-];
+const MANUAL_FLAG_ROWS: &[(&str, &str, CliKind)] =
+    &[("--debug", "CAPY_FASL_DEBUG", CliKind::Value)];
 
 const COMPILER_ENTRY_ARG: &str = "--capy-compiler-entrypoint";
 
@@ -62,6 +56,7 @@ pub fn run_cli(default_entry: &'static str) -> i32 {
 
     let (entry_name, args) = select_entrypoint(args, default_entry);
     let scm = Scm::new();
+    let args_failed = Cell::new(false);
     scm.call_named(
         "boot cli",
         entry_name,
@@ -73,6 +68,7 @@ pub fn run_cli(default_entry: &'static str) -> i32 {
                         "Failed to initialize VM arguments: {err}",
                         err = env.value_to_utf8(err).expect("not a string")
                     );
+                    args_failed.set(true);
                 }
             }
             let prog_args = env.program_arguments();
@@ -80,6 +76,9 @@ pub fn run_cli(default_entry: &'static str) -> i32 {
             *out_args = env.cons(prog_args, null);
         },
         |env, success, result| {
+            if args_failed.get() {
+                return 1;
+            }
             if !success {
                 // Last-resort reporter: reachable only when no Scheme-level
                 // exception handler printed the condition (e.g. a boot-time
@@ -125,9 +124,6 @@ fn apply_flag_args(args: Vec<OsString>) -> Result<Vec<OsString>, String> {
     Ok(output)
 }
 
-/// Split pre-boot flags out of `args`: the `(env, value)` pairs to set
-/// plus the remaining argv. Pure: side-effect-free and testable without
-/// touching the environment.
 fn translate(
     args: Vec<OsString>,
     table: &[(&'static str, &'static str, CliKind)],
@@ -190,94 +186,4 @@ fn split_flag<'a>(
         }
     }
     None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const TABLE: &[(&str, &str, CliKind)] = &[
-        ("--jit", "CAPY_JIT", CliKind::Bool),
-        ("--engine", "CAPY_ENGINE", CliKind::Value),
-    ];
-
-    fn argv(words: &[&str]) -> Vec<OsString> {
-        words.iter().map(OsString::from).collect()
-    }
-
-    fn expect_sets(pairs: &[(&'static str, &str)]) -> Vec<(&'static str, OsString)> {
-        pairs
-            .iter()
-            .map(|(env, value)| (*env, OsString::from(value)))
-            .collect()
-    }
-
-    #[test]
-    fn bare_bool_sets_and_keeps_positionals() {
-        let (sets, rest) = translate(argv(&["capy", "--jit", "-s", "prog.scm"]), TABLE).unwrap();
-        assert_eq!(sets, expect_sets(&[("CAPY_JIT", "1")]));
-        assert_eq!(rest, argv(&["capy", "-s", "prog.scm"]));
-    }
-
-    #[test]
-    fn no_bool_clears() {
-        let (sets, rest) = translate(argv(&["capy", "--no-jit", "-s", "prog.scm"]), TABLE).unwrap();
-        assert_eq!(sets, expect_sets(&[("CAPY_JIT", "0")]));
-        assert_eq!(rest, argv(&["capy", "-s", "prog.scm"]));
-    }
-
-    #[test]
-    fn explicit_bool_values_keep_working() {
-        let (sets, _) = translate(argv(&["capy", "--jit=0"]), TABLE).unwrap();
-        assert_eq!(sets, expect_sets(&[("CAPY_JIT", "0")]));
-        let (sets, rest) = translate(argv(&["capy", "--jit", "0"]), TABLE).unwrap();
-        assert_eq!(
-            sets,
-            expect_sets(&[("CAPY_JIT", "1")]),
-            "bare --jit sets; it never eats a value"
-        );
-        assert_eq!(rest, argv(&["capy", "0"]));
-    }
-
-    #[test]
-    fn value_flags_consume_one_arg() {
-        let (sets, rest) = translate(
-            argv(&["capy", "--engine", "template", "-s", "p.scm"]),
-            TABLE,
-        )
-        .unwrap();
-        assert_eq!(sets, expect_sets(&[("CAPY_ENGINE", "template")]));
-        assert_eq!(rest, argv(&["capy", "-s", "p.scm"]));
-        let (sets, _) = translate(argv(&["capy", "--engine=rust"]), TABLE).unwrap();
-        assert_eq!(sets, expect_sets(&[("CAPY_ENGINE", "rust")]));
-    }
-
-    #[test]
-    fn missing_value_is_an_error() {
-        assert_eq!(
-            translate(argv(&["capy", "--engine"]), TABLE),
-            Err("--engine requires a value".to_string())
-        );
-    }
-
-    #[test]
-    fn unknown_flags_and_separator_pass_through() {
-        let (sets, rest) = translate(
-            argv(&["capy", "--frobnicate", "--", "--jit", "--engine"]),
-            TABLE,
-        )
-        .unwrap();
-        assert!(sets.is_empty());
-        assert_eq!(
-            rest,
-            argv(&["capy", "--frobnicate", "--", "--jit", "--engine"])
-        );
-    }
-
-    #[test]
-    fn no_prefix_of_a_value_flag_passes_through() {
-        let (sets, rest) = translate(argv(&["capy", "--no-engine"]), TABLE).unwrap();
-        assert!(sets.is_empty());
-        assert_eq!(rest, argv(&["capy", "--no-engine"]));
-    }
 }

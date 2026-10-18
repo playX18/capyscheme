@@ -1,7 +1,9 @@
 //! Control utilities
 //!
-//!
-//! Continuation marks implementation based on [A CPS-like Transformation of Continuation Marks](https://jeapostrophe.github.io/home/static/students/2012-ms-kgermane.pdf).
+//! Continuation marks follow the continuation attachments design of Chez
+//! Scheme. See [`crate::runtime::interp::stack`] for how they relate to the
+//! stack. The current marks are a list of mark frames, innermost first. Each
+//! mark frame is a bare association list of key to value.
 
 use crate::heap::{
     Gc, Trace,
@@ -9,6 +11,7 @@ use crate::heap::{
 };
 use crate::prelude::*;
 use crate::prelude::{ClosureRef, Value};
+use crate::runtime::interp::stack;
 use crate::runtime::sni::{self, LocalFrame};
 use crate::runtime::vm::ExecutionResult;
 use mmtk::util::Address;
@@ -25,21 +28,9 @@ pub(crate) fn continuation_marks_header_word() -> u64 {
     )
 }
 
-fn is_c_star_continuation<'gc>(retk: ClosureRef<'gc>) -> bool {
-    if retk.nfree != 1 {
-        return false;
-    }
-
-    let proc = retk[0].get();
-    if let Some(proc) = proc.try_as::<NativeProc>() {
-        proc.proc == Address::from_ptr(_raw_scm_cont_c_star as *const ())
-    } else {
-        false
-    }
-}
-
-/// Free-var layout for `.reified-cc` / `.null-reified-cc`:
-/// `[0]=NativeProc`, `[1]=retk`, `[2]=winders`, `[3]=raw marks list`.
+/// Free-var layout for `.reified-cc` / `.reified-1cc` / `.null-reified-cc`:
+/// `[0]=NativeProc`, `[1]=captured stack (a `Continuation`)`, `[2]=winders`,
+/// `[3]=raw marks list`.
 const REIFIED_CC_NFREE: usize = 4;
 
 /// True if `value` is a reified `call/cc` continuation (code identity).
@@ -62,10 +53,11 @@ fn native_proc_addr_ref(clos: &Closure<'_>) -> Option<Address> {
 
 fn is_reified_cc_code(addr: Address) -> bool {
     addr == Address::from_ptr(_raw_scm_proc_reified_cc as *const ())
+        || addr == Address::from_ptr(_raw_scm_proc_reified_1cc as *const ())
         || addr == Address::from_ptr(_raw_scm_proc_null_reified_cc as *const ())
 }
 
-pub fn box_continuation_marks<'gc>(ctx: Context<'gc>, cmarks: Value<'gc>) -> Value<'gc> {
+pub fn box_continuation_marks<'gc>(ctx: MutationContext<'gc>, cmarks: Value<'gc>) -> Value<'gc> {
     Gc::new_with_header_word(
         ctx,
         ContinuationMarks { cmarks },
@@ -95,9 +87,14 @@ fn common_winder_tail<'gc>(x: Value<'gc>, y: Value<'gc>) -> Value<'gc> {
 
 /// Run dynamic-wind outs/ins from the current winders list to `new_winders`.
 ///
+/// A winder is `(in out marks)`, where `marks` is the raw
+/// continuation-marks list captured when `dynamic-wind` was entered. Each
+/// thunk runs with its own winder's marks installed. The caller restores the
+/// target marks afterwards.
+///
 /// Fast path: `eq?` identity. Caller must use `#[scheme(unsafe)]` and root
 /// live values across this nest.
-fn do_wind<'gc>(ctx: Context<'gc>, new_winders: Value<'gc>) -> Result<(), Value<'gc>> {
+fn do_wind<'gc>(ctx: MutationContext<'gc>, new_winders: Value<'gc>) -> Result<(), Value<'gc>> {
     let old = ctx.winders();
     if old == new_winders {
         return Ok(());
@@ -117,11 +114,25 @@ fn do_wind<'gc>(ctx: Context<'gc>, new_winders: Value<'gc>) -> Result<(), Value<
 
     // SAFETY: slots live until `frame` drops.
     let mut rec = unsafe { std::mem::transmute::<Value<'static>, Value<'gc>>(*old_slot) };
-    let tail = unsafe { std::mem::transmute::<Value<'static>, Value<'gc>>(*tail_slot) };
-    while rec != tail {
-        let out = rec.cdar();
+    loop {
+        // SAFETY: slots live until `frame` drops, both are reloaded every
+        // iteration because the thunk below may collect.
+        let tail = unsafe { std::mem::transmute::<Value<'static>, Value<'gc>>(*tail_slot) };
+        if rec == tail {
+            break;
+        }
+        let winder = rec.car();
+        let out = winder.cadr();
+        let winder_marks = winder.caddr();
         let next = rec.cdr();
+        let next_slot = frame.new_local_ref(next).as_ptr();
         ctx.set_winders(next);
+        // SAFETY: `winder_marks` is the raw marks list stored by
+        // `dynamic-wind`, the winder cell stays alive via the rooted
+        // old/new lists, and the marks move into traced state.
+        unsafe {
+            ctx.state().set_current_marks(winder_marks);
+        }
         let out_slot = frame.new_local_ref(out).as_ptr();
         // SAFETY: slot lives until `frame` drops.
         let out = unsafe { std::mem::transmute::<Value<'static>, Value<'gc>>(*out_slot) };
@@ -129,12 +140,13 @@ fn do_wind<'gc>(ctx: Context<'gc>, new_winders: Value<'gc>) -> Result<(), Value<
             ExecutionResult::Ok(_) => {}
             ExecutionResult::Err(err) => return Err(err),
         }
-        rec = next;
+        // SAFETY: slot lives until `frame` drops.
+        rec = unsafe { std::mem::transmute::<Value<'static>, Value<'gc>>(*next_slot) };
     }
 
     // Wind in: recurse to the end, then call `in` on the way back.
     fn wind_in<'gc>(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         rec_slot: *mut Value<'static>,
         tail_slot: *mut Value<'static>,
         frame: &mut LocalFrame<'_>,
@@ -148,11 +160,19 @@ fn do_wind<'gc>(ctx: Context<'gc>, new_winders: Value<'gc>) -> Result<(), Value<
         let next = rec.cdr();
         let next_slot = frame.new_local_ref(next).as_ptr();
         wind_in(ctx, next_slot, tail_slot, frame)?;
-        // SAFETY: reload after nest — slots still live.
+        // SAFETY: reload after nest, slots still live.
         let rec = unsafe { std::mem::transmute::<Value<'static>, Value<'gc>>(*rec_slot) };
-        let in_thunk = rec.caar();
+        let winder = rec.car();
+        let in_thunk = winder.car();
+        let winder_marks = winder.caddr();
         let in_slot = frame.new_local_ref(in_thunk).as_ptr();
         let in_thunk = unsafe { std::mem::transmute::<Value<'static>, Value<'gc>>(*in_slot) };
+        // SAFETY: `winder_marks` is the raw marks list stored by
+        // `dynamic-wind`, the winder cell stays alive via the rooted
+        // old/new lists, and the marks move into traced state.
+        unsafe {
+            ctx.state().set_current_marks(winder_marks);
+        }
         match sni::call_function(ctx, in_thunk, []) {
             ExecutionResult::Ok(_) => {}
             ExecutionResult::Err(err) => return Err(err),
@@ -172,44 +192,32 @@ unsafe impl<'gc> ClassTagged for ContinuationMarks<'gc> {
     const TYPE_NAME: &'static str = "continuation-marks";
 }
 
-/// A `C*` continuation that restores continuation marks from the captured frame.
-#[scheme(continuation)]
-pub(crate) fn c_star(results: &'gc [Value<'gc>]) -> Value<'gc> {
-    let cm = ctx.state().current_marks();
-    let marks = cm.car();
-    // SAFETY: `retk` is a valid continuation frame on the stack
-    unsafe {
-        ctx.state().set_current_marks(cm.cdr());
-        let results = results.to_vec();
-        return nctx.continue_to(marks.cdr(), &results);
-    };
-}
-
-/// User-facing reified continuation from `%call/cc`.
+/// Shared invocation path for reified continuations.
 ///
-/// Restores marks and winders, then continues to the captured `retk`.
-/// Free vars: `[retk, winders, raw-marks]` (plus NativeProc at `[0]`).
-#[scheme(name = " .reified-cc ", unsafe)]
-pub(crate) fn reified_cc(ans: &'gc [Value<'gc>]) -> &'gc [Value<'gc>] {
-    let clos = nctx.rator().downcast::<Closure>();
-    debug_assert_eq!(clos.nfree, REIFIED_CC_NFREE);
-    let retk = clos[1].get();
-    let winders = clos[2].get();
-    let marks = clos[3].get();
-
-    // SAFETY: marks is the raw list snapshotted at capture.
-    unsafe {
-        ctx.state().set_current_marks(marks);
-    }
-
+/// Winds to the captured winders first, each in/out thunk runs with its
+/// own winder's marks, then installs the captured marks and continues to
+/// the captured stack with `ans`.
+fn invoke_reified<'gc>(
+    call: &Call<'_, 'gc>,
+    retk: Value<'gc>,
+    winders: Value<'gc>,
+    marks: Value<'gc>,
+    ans: &[Value<'gc>],
+) -> Value<'gc> {
+    let ctx = call.ctx;
     if winders == ctx.winders() {
+        // SAFETY: marks is the raw list snapshotted at capture.
+        unsafe {
+            ctx.state().set_current_marks(marks);
+        }
         // SAFETY: retk is the captured return continuation.
-        return unsafe { nctx.continue_to(retk, ans) };
+        return unsafe { call.continue_to(retk, ans) };
     }
 
     let mut frame = LocalFrame::push();
     let retk_slot = frame.new_local_ref(retk).as_ptr();
     let winders_slot = frame.new_local_ref(winders).as_ptr();
+    let marks_slot = frame.new_local_ref(marks).as_ptr();
     let mut ans_slots: Vec<*mut Value<'static>> = Vec::with_capacity(ans.len());
     for v in ans {
         ans_slots.push(frame.new_local_ref(*v).as_ptr());
@@ -218,11 +226,17 @@ pub(crate) fn reified_cc(ans: &'gc [Value<'gc>]) -> &'gc [Value<'gc>] {
     // SAFETY: slots live until `frame` drops.
     let winders = unsafe { std::mem::transmute::<Value<'static>, Value<'gc>>(*winders_slot) };
     if let Err(err) = do_wind(ctx, winders) {
-        return nctx.return_error(err);
+        return call.err(err);
     }
 
-    // SAFETY: slots live until `frame` drops; Values reloaded after nest.
+    // SAFETY: slots live until `frame` drops. Values reloaded after nest.
     let retk = unsafe { std::mem::transmute::<Value<'static>, Value<'gc>>(*retk_slot) };
+    let marks = unsafe { std::mem::transmute::<Value<'static>, Value<'gc>>(*marks_slot) };
+    // The wind above ran thunks under winder marks, install the target's.
+    // SAFETY: marks is the raw list snapshotted at capture.
+    unsafe {
+        ctx.state().set_current_marks(marks);
+    }
     let args: Vec<Value<'gc>> = unsafe {
         ans_slots
             .iter()
@@ -230,16 +244,57 @@ pub(crate) fn reified_cc(ans: &'gc [Value<'gc>]) -> &'gc [Value<'gc>] {
             .collect()
     };
     // SAFETY: retk is the captured return continuation.
-    unsafe { nctx.continue_to(retk, &args) }
+    unsafe { call.continue_to(retk, &args) }
 }
 
-/// Null continuation: errors if invoked; still a `continuation?`.
+/// User-facing reified continuation from `%call/cc`.
+///
+/// Winds to the captured winders, restores the captured marks, then
+/// reinstates the captured stack.
+/// Free vars: `[stack, winders, raw-marks]` (plus NativeProc at `[0]`).
+#[scheme(name = " .reified-cc ", unsafe)]
+pub(crate) fn reified_cc(ans: &'gc [Value<'gc>]) -> Value<'gc> {
+    let clos = call.rator.downcast::<Closure>();
+    debug_assert_eq!(clos.nfree, REIFIED_CC_NFREE);
+    let retk = clos[1].get();
+    let winders = clos[2].get();
+    let marks = clos[3].get();
+    invoke_reified(call, retk, winders, marks, ans)
+}
+
+/// User-facing one-shot continuation from `%call/1cc`.
+///
+/// Free vars: `[continuation, winders, raw-marks]` (plus NativeProc at `[0]`).
+/// Resuming the continuation in place marks its `Continuation` shot. Invoking a
+/// shot one raises.
+#[scheme(name = " .reified-1cc ", unsafe)]
+pub(crate) fn reified_1cc(ans: &'gc [Value<'gc>]) -> Value<'gc> {
+    let clos = call.rator.downcast::<Closure>();
+    debug_assert_eq!(clos.nfree, REIFIED_CC_NFREE);
+    let retk = clos[1].get();
+    if stack::is_shot(retk) {
+        crate::runtime::vm::thunk_raise(
+            ctx,
+            crate::runtime::vm::exceptions::make_assertion_violation(
+                ctx,
+                Some("call/1cc"),
+                "attempt to invoke shot one-shot continuation",
+                &[],
+            ),
+        );
+    }
+    let winders = clos[2].get();
+    let marks = clos[3].get();
+    invoke_reified(call, retk, winders, marks, ans)
+}
+
+/// Null continuation: errors if invoked, still a `continuation?`.
 #[scheme(name = " .null-reified-cc ")]
 pub(crate) fn null_reified_cc(_ans: &'gc [Value<'gc>]) -> () {
     crate::runtime::vm::thunk_raise(
-        nctx.ctx,
+        ctx,
         crate::runtime::vm::exceptions::make_assertion_violation(
-            nctx.ctx,
+            ctx,
             Some("null-continuation"),
             "attempted to invoke the null continuation",
             &[],
@@ -247,8 +302,24 @@ pub(crate) fn null_reified_cc(_ans: &'gc [Value<'gc>]) -> () {
     );
 }
 
-fn replace_or_add_mark<'gc>(
-    ctx: Context<'gc>,
+/// Builds a `.reified-cc`-family closure through the registry's site cache.
+///
+/// Every capture for one of these primitives shares the function address
+/// and the metadata global, only the three free-var values
+/// (`[stack, winders, raw-marks]`) differ, so a cached capture allocates
+/// just the closure cell. With `CAPY_NATIVE_CLOSURE_CACHE=0` this takes
+/// the same `make_closure_*` path as before.
+fn make_reified_closure<'gc>(
+    ctx: MutationContext<'gc>,
+    proc: NativeFn<'gc>,
+    meta: Value<'gc>,
+    captured: [Value<'gc>; 3],
+) -> ClosureRef<'gc> {
+    ctx.make_cached_native_closure(proc, captured, meta)
+}
+
+pub(crate) fn replace_or_add_mark<'gc>(
+    ctx: MutationContext<'gc>,
     first_marks: Value<'gc>,
     key: Value<'gc>,
     pair: Value<'gc>,
@@ -263,37 +334,34 @@ fn replace_or_add_mark<'gc>(
     }
 }
 
-/// Allocate a new boundary continuation frame.
+/// Set the mark `key` to `value` on the continuation of the native
+/// procedure running in the top frame, which is about to tail-call the body
+/// of a `with-continuation-mark`.
 ///
-/// Returns C* continuation that restores the old marks.
-pub(crate) fn push_cframe<'gc>(
-    ctx: Context<'gc>,
-    key: Value<'gc>,
-    value: Value<'gc>,
-    retk: ClosureRef<'gc>,
-) -> Value<'gc> {
-    let old_marks = ctx.state().current_marks();
-
+/// The frame is first split off so that it is at the base of the segment,
+/// it is already there when it was called in tail position of another
+/// marked body, and then has marks of its own exactly when the current marks
+/// differ from those of the continuation object below. Those are replaced or
+/// extended, otherwise a new mark frame is pushed, which the return through
+/// `underflow` pops.
+pub(crate) fn set_mark<'gc>(ctx: MutationContext<'gc>, key: Value<'gc>, value: Value<'gc>) {
+    // SAFETY: the running native procedure owns the top frame.
+    let below = unsafe { stack::reify_cc(ctx, ctx.tc().stack.fp.get(), true) };
+    let below_marks = below
+        .try_as::<stack::Continuation>()
+        .map_or(Value::null(), |continuation| continuation.attachments.get());
+    let current = ctx.state().current_marks();
     let pair = Value::cons(ctx, key, value);
-
-    // retk == C*: we're in tail position of another wcm
-    if is_c_star_continuation(retk) {
-        let first_marks = old_marks.car();
-        let new_marks = replace_or_add_mark(ctx, first_marks.car(), key, pair);
-
-        first_marks.set_car(ctx, new_marks);
-        retk.into()
+    let marks = if current != below_marks {
+        let alist = replace_or_add_mark(ctx, current.car(), key, pair);
+        Value::cons(ctx, alist, current.cdr())
     } else {
-        let cont_closure = make_static_closure_c_star(ctx);
-        let new_marks = list!(ctx, pair);
-
-        let cframe = Value::cons(ctx, Value::cons(ctx, new_marks, retk.into()), old_marks);
-        // SAFETY: Preconditions verified by the surrounding code
-        unsafe {
-            ctx.state().set_current_marks(cframe);
-        }
-
-        cont_closure.into()
+        let alist = crate::list!(ctx, pair);
+        Value::cons(ctx, alist, current)
+    };
+    // SAFETY: the frame at the base now owns the new mark frame.
+    unsafe {
+        ctx.state().set_current_marks(marks);
     }
 }
 
@@ -306,15 +374,13 @@ pub mod control_ops {
         value: Value<'gc>,
         thunk: Gc<'gc, Closure<'gc>>,
     ) -> Value<'gc> {
-        let retk = nctx.retk;
-        let cont = push_cframe(ctx, key, value, retk.downcast());
-        nctx.retk = cont;
-        nctx.return_call(thunk.into(), &[])
+        set_mark(ctx, key, value);
+        call.tail(thunk.into(), &[])
     }
 
     #[scheme(name = "continuation-marks?")]
     pub fn is_continuation_marks(val: Value<'gc>) -> bool {
-        nctx.return_(val.is::<ContinuationMarks<'gc>>())
+        val.is::<ContinuationMarks<'gc>>()
     }
 
     #[scheme(name = "continuation-mark-set->list")]
@@ -327,7 +393,7 @@ pub mod control_ops {
         let mut result = Vec::new();
 
         while !set.is_null() {
-            let mark_set = set.caar();
+            let mark_set = set.car();
             if let Some(val) = mark_set.assq(key) {
                 result.push(val.cdr());
             }
@@ -335,11 +401,9 @@ pub mod control_ops {
             set = set.cdr();
         }
 
-        nctx.return_(
-            result
-                .into_iter()
-                .rfold(Value::null(), |acc, x| Value::cons(ctx, x, acc)),
-        )
+        result
+            .into_iter()
+            .rfold(Value::null(), |acc, x| Value::cons(ctx, x, acc))
     }
 
     #[scheme(name = "continuation-mark-set-first")]
@@ -352,15 +416,15 @@ pub mod control_ops {
         let mut set = set.cmarks;
 
         while !set.is_null() {
-            let mark_set = set.caar();
+            let mark_set = set.car();
             if let Some(val) = mark_set.assq(key) {
-                return nctx.return_(val.cdr());
+                return val.cdr();
             }
 
             set = set.cdr();
         }
 
-        nctx.return_(default_value)
+        default_value
     }
 
     #[scheme(name = "continuation-mark-set->list*")]
@@ -375,27 +439,30 @@ pub mod control_ops {
             mark_set: Value<'gc>,
             keys: Value<'gc>,
             default_value: Value<'gc>,
-            ctx: Context<'gc>,
+            ctx: MutationContext<'gc>,
         ) -> Value<'gc> {
             if mark_set.is_null() {
                 Value::null()
-            } else if !keys.list_any(|key| mark_set.caar().assq(key).is_some()) {
+            } else if !keys.list_any(|key| mark_set.car().assq(key).is_some()) {
                 rec(mark_set.cdr(), keys, default_value, ctx)
             } else {
-                Value::cons(
-                    ctx,
-                    keys.map(ctx, |key| match mark_set.caar().assq(key) {
+                // `map` builds its list back to front, restore key order.
+                let vector = keys
+                    .map(ctx, |key| match mark_set.car().assq(key) {
                         Some(val) => val.cdr(),
                         None => default_value,
                     })
-                    .list_to_vector(ctx)
-                    .into(),
+                    .list_reverse(ctx)
+                    .list_to_vector(ctx);
+                Value::cons(
+                    ctx,
+                    vector.into(),
                     rec(mark_set.cdr(), keys, default_value, ctx),
                 )
             }
         }
 
-        nctx.return_(rec(set.cmarks, keys, default_value, ctx))
+        rec(set.cmarks, keys, default_value, ctx)
     }
 
     /// Return a raw list of continuation frames.
@@ -403,38 +470,73 @@ pub mod control_ops {
     /// Note that changes to the continuation marks will be reflected in the frames.
     #[scheme(name = "$continuation-marks-markss")]
     pub fn continuation_marks_markss(marks: Gc<'gc, ContinuationMarks<'gc>>) -> Value<'gc> {
-        nctx.return_(marks.cmarks)
+        marks.cmarks
     }
 
     /// Capture the current continuation and call `proc` with the reified k.
     ///
-    /// Free vars on k: `[retk, winders, raw-marks]`.
+    /// The frames below this call become a continuation object without
+    /// being copied. Free vars on k: `[stack, winders, raw-marks]`.
     #[scheme(name = "%call/cc")]
     pub fn call_cc(proc: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
-        let retk = nctx.retk;
+        // SAFETY: this native procedure owns the top frame.
+        let captured = unsafe { stack::reify_cc(ctx, ctx.tc().stack.fp.get(), false) };
         let winders = ctx.winders();
         let marks = ctx.state().current_marks();
-        let k = make_closure_reified_cc(ctx, [retk, winders, marks]);
-        nctx.return_call(proc, &[k.into()])
+        let k = make_reified_closure(
+            ctx,
+            _raw_scm_proc_reified_cc,
+            _scheme_meta_reified_cc(ctx),
+            [captured, winders, marks],
+        );
+        call.tail(proc, &[k.into()]);
+        Err(Value::undefined())
+    }
+
+    /// Capture a one-shot continuation and call `proc` with it.
+    ///
+    /// Unlike `%call/cc`, the chain is left one-shot (no promotion). The
+    /// continuation owns its storage and is resumed in place, which marks it
+    /// shot: returning past the capture, or invoking it, uses it up and a
+    /// later invocation raises.
+    #[scheme(name = "%call/1cc")]
+    pub fn call_1cc(proc: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
+        // SAFETY: this native procedure owns the top frame.
+        let stack_state = &ctx.tc().stack;
+        let captured = unsafe { stack::call1cc(ctx, stack_state.fp.get(), stack_state.sp.get()) };
+        let winders = ctx.winders();
+        let marks = ctx.state().current_marks();
+        let k = make_reified_closure(
+            ctx,
+            _raw_scm_proc_reified_1cc,
+            _scheme_meta_reified_1cc(ctx),
+            [captured, winders, marks],
+        );
+        call.tail(proc, &[k.into()]);
+        Err(Value::undefined())
     }
 
     #[scheme(name = "%null-continuation")]
     pub fn null_continuation() -> Value<'gc> {
-        let k =
-            make_closure_null_reified_cc(ctx, [Value::new(false), Value::null(), Value::null()]);
-        nctx.return_(k.into())
+        let k = make_reified_closure(
+            ctx,
+            _raw_scm_proc_null_reified_cc,
+            _scheme_meta_null_reified_cc(ctx),
+            [Value::new(false), Value::null(), Value::null()],
+        );
+        k.into()
     }
 
     #[scheme(name = "%continuation?")]
     pub fn is_continuation_pred(val: Value<'gc>) -> bool {
-        nctx.return_(is_reified_continuation_value(val))
+        is_reified_continuation_value(val)
     }
 
     /// Box the raw marks list stored on a reified continuation.
     #[scheme(name = "%continuation-next-marks")]
     pub fn continuation_next_marks_prim(k: Value<'gc>) -> Value<'gc> {
         if !is_reified_continuation_value(k) {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "%continuation-next-marks",
                 "expected a continuation",
                 Some(k),
@@ -444,14 +546,14 @@ pub mod control_ops {
             );
         }
         let marks = k.downcast::<Closure>()[3].get();
-        nctx.return_(box_continuation_marks(ctx, marks))
+        box_continuation_marks(ctx, marks)
     }
 
     /// Install raw marks from a reified continuation into the current state.
     #[scheme(name = "%set-continuation-marks!")]
     pub fn set_continuation_marks(k: Value<'gc>) -> Value<'gc> {
         if !is_reified_continuation_value(k) {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "%set-continuation-marks!",
                 "expected a continuation",
                 Some(k),
@@ -465,27 +567,39 @@ pub mod control_ops {
         unsafe {
             ctx.state().set_current_marks(marks);
         }
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
-}
 
-pub fn init_control<'gc>(ctx: Context<'gc>) {
-    control_ops::register(ctx);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::runtime::Scheme;
-
-    #[test]
-    fn continuation_marks_allocate_with_class_only_headers() {
-        Scheme::new_uninit().enter(|ctx| {
-            let marks = ctx.current_continuation_marks();
-            assert_eq!(
-                marks.as_gc_object().header().class_id(),
-                ClassId::new(builtin_class_ids::CONTINUATION_MARKS).unwrap()
+    /// Raw winders list stored on a reified continuation.
+    #[scheme(name = "$continuation-winders")]
+    pub fn continuation_winders_prim(k: Value<'gc>) -> Value<'gc> {
+        if !is_reified_continuation_value(k) {
+            return call.wrong_argument_violation(
+                "$continuation-winders",
+                "expected a continuation",
+                Some(k),
+                Some(1),
+                1,
+                &[k],
             );
-        });
+        }
+        let winders = k.downcast::<Closure>()[2].get();
+        winders
     }
+
+    /// Wind from the current winders to `new_winders`, running out/in thunks.
+    ///
+    /// Each thunk runs with its own winder's marks, the caller restores the
+    /// target marks afterwards.
+    #[scheme(name = "$do-wind", unsafe)]
+    pub fn do_wind_prim(new_winders: Value<'gc>) -> Value<'gc> {
+        if let Err(err) = do_wind(ctx, new_winders) {
+            return call.err(err);
+        }
+        Value::undefined()
+    }
+}
+
+pub fn init_control<'gc>(ctx: MutationContext<'gc>) {
+    control_ops::register(ctx);
 }

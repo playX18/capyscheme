@@ -71,7 +71,7 @@ impl ClassFlags {
     }
 }
 
-// SAFETY: GC trace for `ClassFlags` — all reachable heap fields are visited
+// SAFETY: GC trace for `ClassFlags`, all reachable heap fields are visited
 unsafe impl Trace for ClassFlags {
     // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor<'_>) {

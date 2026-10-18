@@ -14,7 +14,7 @@ pub struct Socket {
     pub(crate) addrlen: i32,
 }
 
-// SAFETY: GC trace for `Socket` — all reachable heap fields are visited
+// SAFETY: GC trace for `Socket`, all reachable heap fields are visited
 unsafe impl Trace for Socket {
     // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::Visitor) {

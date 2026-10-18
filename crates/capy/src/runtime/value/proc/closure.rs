@@ -37,7 +37,7 @@ impl<'gc> Index<usize> for Closure<'gc> {
     }
 }
 
-// SAFETY: Closure's Index impl already validates bounds; IndexWrite just permits mutable
+// SAFETY: Closure's Index impl already validates bounds. IndexWrite just permits mutable
 // access to the same in-bounds slots. The GC write barrier is handled at the call site.
 unsafe impl<'gc> IndexWrite<usize> for Closure<'gc> {}
 
@@ -89,46 +89,44 @@ impl<'gc> Closure<'gc> {
     /// Offset of the free variables array from the start of the Closure struct. Used for codegen.
     pub const DATA_OFFSET: isize = std::mem::offset_of!(Closure, free) as isize;
 
-    pub fn new(
-        ctx: Context<'gc>,
-        code_block: Gc<'gc, CodeBlock<'gc>>,
-        nfree: usize,
-        is_cont: bool,
-    ) -> Gc<'gc, Self> {
-        Self::new_with_entry(ctx, code_block, nfree, is_cont, code_block.entrypoint)
+    /// The machine entry of a new closure for `code_block`: `interpreter_enter_cp`
+    /// for bytecode, `subr_call` for natives, once the template interpreter is loaded, else the
+    /// bytecode entry (the Rust engine never reads `code`, so its value
+    /// does not matter there).
+    pub fn closure_entry(code_block: Gc<'gc, CodeBlock<'gc>>) -> Address {
+        #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
+        if code_block.is_native() {
+            if let Some(addr) = crate::runtime::codegen::template_image::subr_call_if_loaded() {
+                return Address::from_ptr(addr);
+            }
+        } else if let Some(addr) =
+            crate::runtime::codegen::template_image::interpreter_enter_if_loaded()
+        {
+            return Address::from_ptr(addr);
+        }
+        code_block.entrypoint
     }
 
-    pub fn new_with_entry(
-        ctx: Context<'gc>,
+    pub fn new(
+        ctx: MutationContext<'gc>,
         code_block: Gc<'gc, CodeBlock<'gc>>,
         nfree: usize,
         is_cont: bool,
-        entry: Address,
     ) -> Gc<'gc, Self> {
-        Self::new_inner(ctx, code_block, nfree, None, is_cont, entry)
+        Self::new_inner(ctx, code_block, nfree, None, is_cont)
     }
 
     pub fn new_with_free_vars(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         code_block: Gc<'gc, CodeBlock<'gc>>,
         free: &[Value<'gc>],
         is_cont: bool,
     ) -> Gc<'gc, Self> {
-        Self::new_with_entry_and_free_vars(ctx, code_block, free, is_cont, code_block.entrypoint)
-    }
-
-    pub fn new_with_entry_and_free_vars(
-        ctx: Context<'gc>,
-        code_block: Gc<'gc, CodeBlock<'gc>>,
-        free: &[Value<'gc>],
-        is_cont: bool,
-        entry: Address,
-    ) -> Gc<'gc, Self> {
-        Self::new_inner(ctx, code_block, free.len(), Some(free), is_cont, entry)
+        Self::new_inner(ctx, code_block, free.len(), Some(free), is_cont)
     }
 
     pub fn new_native(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         code_block: Gc<'gc, CodeBlock<'gc>>,
         free: &[Value<'gc>],
         is_cont: bool,
@@ -137,12 +135,11 @@ impl<'gc> Closure<'gc> {
     }
 
     fn new_inner(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         code_block: Gc<'gc, CodeBlock<'gc>>,
         nfree: usize,
         free: Option<&[Value<'gc>]>,
         is_cont: bool,
-        entry: Address,
     ) -> Gc<'gc, Self> {
         let meta = code_block.metadata.get();
 
@@ -158,7 +155,7 @@ impl<'gc> Closure<'gc> {
                 AllocationSemantics::Default,
             );
             let this = ptr.to_address().as_mut_ref::<Self>();
-            this.code = entry;
+            this.code = Self::closure_entry(code_block);
             this.code_block = code_block;
 
             this.meta = Lock::new(meta);
@@ -171,7 +168,7 @@ impl<'gc> Closure<'gc> {
         }
     }
 
-    pub fn documentation(&self, ctx: Context<'gc>) -> Option<Value<'gc>> {
+    pub fn documentation(&self, ctx: MutationContext<'gc>) -> Option<Value<'gc>> {
         let meta = self.meta.get();
         if !meta.is_pair() {
             return None;
@@ -180,7 +177,7 @@ impl<'gc> Closure<'gc> {
         doc.map(|d| d.cdr())
     }
 
-    pub fn source(&self, ctx: Context<'gc>) -> Option<(Value<'gc>, u32, u32)> {
+    pub fn source(&self, ctx: MutationContext<'gc>) -> Option<(Value<'gc>, u32, u32)> {
         let meta = self.meta.get();
         if !meta.is_pair() {
             return None;
@@ -215,7 +212,7 @@ impl<'gc> Closure<'gc> {
         None
     }
 
-    pub fn name(&self, ctx: Context<'gc>) -> Option<Value<'gc>> {
+    pub fn name(&self, ctx: MutationContext<'gc>) -> Option<Value<'gc>> {
         let meta = self.meta.get();
         if !meta.is_pair() {
             return None;
@@ -238,7 +235,7 @@ impl<'gc> Closure<'gc> {
     }
 
     /// Check if this closure is a continuation produced by `call/cc`.
-    pub fn is_reified_continuation(&self, _ctx: Context<'gc>) -> bool {
+    pub fn is_reified_continuation(&self, _ctx: MutationContext<'gc>) -> bool {
         crate::runtime::vm::control::is_reified_continuation_closure(self)
     }
 
@@ -247,7 +244,7 @@ impl<'gc> Closure<'gc> {
     /// Marks are returned as a boxed [`ContinuationMarks`] object.
     pub fn reified_continuation_attachments(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
     ) -> Option<(Value<'gc>, Value<'gc>)> {
         if !self.is_reified_continuation(ctx) {
             return None;
@@ -260,5 +257,41 @@ impl<'gc> Closure<'gc> {
 
     pub fn is_foreign(&self) -> bool {
         self.code_block.kind == CodeBlockKind::NativeProc
+    }
+
+    /// Free variable `index` of `clo`, for interpreter slot traffic.
+    pub(crate) fn free_get(clo: Gc<'gc, Self>, index: usize) -> Value<'gc> {
+        clo[index].get()
+    }
+
+    /// Store free variable `index` of `clo`, for interpreter slot traffic.
+    /// The store goes through unchecked, exactly as before: setting a free
+    /// variable never was a safepoint and takes no barrier.
+    pub(crate) fn free_set(clo: Gc<'gc, Self>, index: usize, value: Value<'gc>) {
+        // SAFETY: `clo[index]` is the in-range slot (bounds debug-checked by
+        // the `Index` impl), `as_ptr` only re-exposes it for the store.
+        unsafe { clo[index].as_ptr().write(value) }
+    }
+
+    /// The closure behind a closure value, debug-checked.
+    pub(crate) fn from_value(value: Value<'gc>) -> Gc<'gc, Self> {
+        value.downcast::<Self>()
+    }
+
+    /// The closure behind a closure value, without the class check.
+    ///
+    /// # Safety
+    ///
+    /// `value` is a closure, or the old copy of one a copying collection has
+    /// already forwarded: its class header is then a forwarding pointer, but
+    /// its fields are intact for the rest of the pause.
+    pub(crate) unsafe fn from_value_unchecked(value: Value<'gc>) -> Gc<'gc, Self> {
+        // SAFETY: by the contract above.
+        unsafe { value.downcast_unchecked::<Self>() }
+    }
+
+    /// The code block of `clo`.
+    pub(crate) fn code_block(clo: Gc<'gc, Self>) -> Gc<'gc, CodeBlock<'gc>> {
+        clo.code_block
     }
 }

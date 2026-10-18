@@ -4,83 +4,41 @@ use crate::{
     heap::{
         GarbageCollector, Gc, Mutation, Mutator, Trace,
         barrier::{self},
-        mmtk::util::Address,
         sync::thread::Thread,
     },
     prelude::{HashTable, Keyword},
     runtime::stats::ThreadStats,
 };
 use crate::{
-    prelude::{IntoValue, NativeContinuation, NativeFn, PROCEDURES, current_module},
+    prelude::{IntoValue, NativeFn, PROCEDURES, current_module},
     runtime::{
         fluids::DynamicState,
         global::{Globals, VM_GLOBALS},
+        interp::stack::{Ip, Slot, StackState},
         //image::{ALLOWED_GC, AllowedGc, reader::ImageReader},
         modules::{Module, ModuleRef, resolve_module},
         prelude::VariableRef,
         value::{
-            Closure, NativeReturn, ReturnCode, Str, Symbol, Value, init_symbols, init_weak_sets,
-            init_weak_tables,
+            Closure, ReturnCode, Str, Symbol, Value, init_symbols, init_weak_sets, init_weak_tables,
         },
         vm::{
-            ExecutionResult, control::ContinuationMarks, debug, load::load_thunk_in_vicinity,
+            ExecutionResult, control::ContinuationMarks, load::load_thunk_in_vicinity,
             threading::ThreadObject,
         },
     },
 };
 use std::{
-    cell::{Cell, UnsafeCell},
-    sync::{Once, atomic::AtomicUsize},
+    cell::Cell,
+    sync::{
+        Once,
+        atomic::{AtomicPtr, AtomicUsize},
+    },
 };
 
-pub(crate) const REGISTER_ARG_COUNT: usize = 4;
-pub(crate) const COMPILED_ENTRY_ARG_COUNT: usize = REGISTER_ARG_COUNT + 2;
+/// Historical name of [`Mutation`], kept so call sites need not change.
+pub type MutationContext<'gc> = Mutation<'gc>;
 
-#[derive(Clone, Copy)]
-#[repr(transparent)]
-pub struct Context<'gc> {
-    pub(crate) mc: Mutation<'gc>,
-}
-
-impl<'gc> From<Mutation<'gc>> for Context<'gc> {
-    fn from(mc: Mutation<'gc>) -> Self {
-        Self { mc }
-    }
-}
-
-impl<'gc> From<Context<'gc>> for Mutation<'gc> {
-    fn from(ctx: Context<'gc>) -> Self {
-        ctx.mutation()
-    }
-}
-
-impl<'gc> Context<'gc> {
-    pub const OFFSET_OF_STATE: usize = Mutation::OFFSET_OF_STATE;
-
-    pub fn as_ptr(self) -> *const () {
-        self.mc.as_ptr()
-    }
-
-    /// # Safety
-    ///
-    /// `ptr` must have been obtained from `Context::as_ptr()` on a live mutator thread.
-    /// The underlying `Mutation` must still be valid for the `'gc` lifetime.
-    // SAFETY: Caller must ensure preconditions are met (see fn docs)
-    pub unsafe fn from_ptr(ptr: *const ()) -> Self {
-        Self {
-            // SAFETY: Delegates to `Mutation::from_ptr`; caller guarantees the pointer is valid.
-            mc: unsafe { Mutation::from_ptr(ptr) },
-        }
-    }
-
-    pub fn new(mc: Mutation<'gc>) -> Self {
-        Self { mc }
-    }
-
-    pub fn mutation(self) -> Mutation<'gc> {
-        self.mc
-    }
-
+impl<'gc> Mutation<'gc> {
     /// Allocate `value` in the default GC space.
     #[inline]
     pub fn alloc<T: crate::heap::Trace + 'gc>(self, value: T) -> crate::heap::Gc<'gc, T> {
@@ -94,18 +52,13 @@ impl<'gc> Context<'gc> {
         space: crate::heap::space::Space,
         value: T,
     ) -> crate::heap::Gc<'gc, T> {
-        self.mc.allocate(value, space.to_semantics())
+        self.allocate(value, space.to_semantics())
     }
 
     /// Open a [`crate::runtime::root::RootScope`] on this thread's root stack.
     #[inline]
     pub fn roots(self) -> crate::runtime::root::RootScope<'gc, 'gc> {
         crate::runtime::root::RootScope::new(self)
-    }
-
-    #[inline(always)]
-    pub fn state(self) -> &'gc State<'gc> {
-        self.mc.state()
     }
 
     pub fn dynamic_state(self) -> Value<'gc> {
@@ -118,7 +71,7 @@ impl<'gc> Context<'gc> {
 
     pub fn current_continuation_marks(self) -> Gc<'gc, ContinuationMarks<'gc>> {
         Gc::new_with_header_word(
-            *self,
+            self,
             ContinuationMarks {
                 cmarks: self.state().current_marks(),
             },
@@ -143,7 +96,7 @@ impl<'gc> Context<'gc> {
     }
 
     pub fn str(self, s: &str) -> Value<'gc> {
-        Str::from_str(*self, s).into()
+        Str::from_str(self, s).into()
     }
 
     pub fn make_native_closure(
@@ -153,19 +106,37 @@ impl<'gc> Context<'gc> {
         meta: Value<'gc>,
     ) -> Gc<'gc, Closure<'gc>> {
         PROCEDURES
-            .fetch(*self)
+            .fetch(self)
             .make_closure(self, proc, free_vars, meta)
     }
 
     pub fn make_native_continuation(
         self,
-        proc: NativeContinuation<'gc>,
+        proc: NativeFn<'gc>,
         free_vars: impl IntoIterator<Item = Value<'gc>>,
         meta: Value<'gc>,
     ) -> Gc<'gc, Closure<'gc>> {
         PROCEDURES
-            .fetch(*self)
+            .fetch(self)
             .make_cont_closure(self, proc, free_vars, meta)
+    }
+
+    /// Builds a native procedure closure with three free variables, reusing
+    /// the cached proc wrapper and code block for `proc`.
+    ///
+    /// This is the `call/cc`-family fast path, see
+    /// [`crate::runtime::value::ProcedureRegistry::make_cached_closure`].
+    /// With `CAPY_NATIVE_CLOSURE_CACHE=0` this is exactly
+    /// [`Self::make_native_closure`].
+    pub fn make_cached_native_closure(
+        self,
+        proc: NativeFn<'gc>,
+        captured: [Value<'gc>; 3],
+        meta: Value<'gc>,
+    ) -> Gc<'gc, Closure<'gc>> {
+        PROCEDURES
+            .fetch(self)
+            .make_cached_closure(self, proc, captured, meta)
     }
 
     pub fn make_static_closure(
@@ -174,27 +145,27 @@ impl<'gc> Context<'gc> {
         meta: Value<'gc>,
     ) -> Gc<'gc, Closure<'gc>> {
         PROCEDURES
-            .fetch(*self)
+            .fetch(self)
             .register_static_closure(self, proc, meta)
     }
 
     pub fn make_static_continuation(
         self,
-        proc: NativeContinuation<'gc>,
+        proc: NativeFn<'gc>,
         meta: Value<'gc>,
     ) -> Gc<'gc, Closure<'gc>> {
         PROCEDURES
-            .fetch(*self)
+            .fetch(self)
             .register_static_cont_closure(self, proc, meta)
     }
 
     /// Run `f` outside the GC-mutating world (`InNative`).
     ///
-    /// Preparation that needs `Context`, allocation, or tracing must happen before calling
+    /// Preparation that needs `MutationContext`, allocation, or tracing must happen before calling
     /// this function. The closure must not capture GC handles or interior pointers into
     /// movable objects unless they are rooted on [`State::root_stack`] /
     /// [`crate::runtime::root`] or in OopStorage. After return, reload Values from those
-    /// slots — stack copies are not updated by moving GC.
+    /// slots, stack copies are not updated by moving GC.
     pub fn call_in_native<T>(self, f: impl FnOnce() -> T) -> T {
         use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -225,71 +196,71 @@ impl<'gc> Context<'gc> {
         self.call_in_native(f)
     }
 
-    pub fn return_call(
-        self,
-        rator: Value<'gc>,
-        rands: impl IntoIterator<Item = Value<'gc>>,
-        retk: Option<Value<'gc>>,
-    ) -> NativeReturn<'gc> {
-        self.prepare_call_data(rator, rands, retk);
-
-        NativeReturn {
-            code: ReturnCode::Continue,
-            value: Value::new(false),
-        }
+    /// Stage a return of `values` to the current frame's caller (`fp[0]`).
+    ///
+    /// The driver (`native_continue_step`) copies the values into `fp[2..]`
+    /// and returns to the frame's return address.
+    pub fn stage_return_values(self, values: &[Value<'gc>]) -> ReturnCode {
+        self.prepare_call_data(Value::current_k(), values, None);
+        ReturnCode::Continue
     }
 
-    pub(crate) fn return_apply(
-        self,
-        rator: Value<'gc>,
-        fixed: &[Value<'gc>],
-        mut rest: Value<'gc>,
-        retk: Value<'gc>,
-    ) -> Result<NativeReturn<'gc>, Value<'gc>> {
-        let mut rest_len = 0usize;
-        let mut cursor = rest;
-        while !cursor.is_null() {
-            if !cursor.is_pair() {
-                return Err(rest);
-            }
-            rest_len += 1;
-            cursor = cursor.cdr();
-        }
-
-        let mut args = Vec::with_capacity(fixed.len() + rest_len);
-        args.extend_from_slice(fixed);
-        while !rest.is_null() {
-            args.push(rest.car());
-            rest = rest.cdr();
-        }
-
-        Ok(self.return_call(rator, args, Some(retk)))
+    /// Stage a tail call of `proc` with `args` from the current frame.
+    pub fn stage_tail_call(self, proc: Value<'gc>, args: &[Value<'gc>]) -> ReturnCode {
+        self.prepare_call_data(proc, args, Some(Value::current_k()));
+        ReturnCode::Continue
     }
 
-    fn prepare_call_data(
+    /// Stage a call of `proc` with `args` that returns to the native
+    /// continuation `k` through `subr_ret`.
+    pub fn stage_call_with(
         self,
-        rator: Value<'gc>,
-        rands: impl IntoIterator<Item = Value<'gc>>,
-        retk: Option<Value<'gc>>,
-    ) {
-        let state = self.state();
-        let packed = pack_call_args(state, rands, retk);
-
-        state.call_data.clear();
-        for (index, arg) in packed.regs.iter().copied().enumerate() {
-            state.call_data.set_arg(index, arg);
-        }
-        state.call_data.argc.set(packed.argc);
-        state.call_data.rator.set(rator);
+        proc: Value<'gc>,
+        args: &[Value<'gc>],
+        k: Value<'gc>,
+    ) -> ReturnCode {
+        self.prepare_call_data(proc, args, Some(k));
+        ReturnCode::Continue
     }
 
-    pub(crate) fn prepare_scheme_call_args(
-        self,
-        rands: impl IntoIterator<Item = Value<'gc>>,
-        retk: Option<Value<'gc>>,
-    ) -> (usize, [Value<'gc>; REGISTER_ARG_COUNT]) {
-        let packed = pack_call_args(self.state(), rands, retk);
-        (packed.argc, packed.regs)
+    /// Stage the invocation of the continuation `cont` with `args`: a return
+    /// to the caller for the current-continuation token, a throw for a
+    /// captured continuation, a tail entry for a native continuation closure.
+    pub fn stage_resume(self, cont: Value<'gc>, args: &[Value<'gc>]) -> ReturnCode {
+        self.prepare_call_data(cont, args, None);
+        ReturnCode::Continue
+    }
+
+    /// Stage the call a native procedure asks the interpreter to make when
+    /// it returns `ReturnCode::Continue`.
+    ///
+    /// The wire format below is private to this module and the driver
+    /// (`native_continue_step`): `retk` is `Some(current_k)` for a tail
+    /// call, `Some(k)` for a native continuation `k`, and `None` when
+    /// `rator` is itself a continuation being invoked.
+    fn prepare_call_data(self, rator: Value<'gc>, args: &[Value<'gc>], retk: Option<Value<'gc>>) {
+        use crate::runtime::interp::stack;
+        // `args` arrives already collected outside the frame: reserving room
+        // below may move the frame, so the copy must not alias it.
+        let stack_state = &self.tc().stack;
+        // SAFETY: a native procedure owns the top frame, so `sp` is the
+        // first free slot. Four slots are skipped so the arguments sit
+        // above wherever the interpreter will move them to.
+        unsafe {
+            stack::reserve(self, args.len() + 8);
+            let staging = stack_state.sp.get().add(4);
+            std::ptr::copy_nonoverlapping(
+                args.as_ptr().cast::<Value<'static>>(),
+                staging,
+                args.len(),
+            );
+            stack_state.call_args.set(staging);
+        }
+        stack_state.call_argc.set(args.len());
+        stack_state.call_rator.set(rator);
+        stack_state
+            .call_k
+            .set(retk.unwrap_or_else(Value::undefined));
     }
 
     pub fn module(self, name: &str) -> Option<Gc<'gc, Module<'gc>>> {
@@ -306,7 +277,7 @@ impl<'gc> Context<'gc> {
         VM_GLOBALS
             .get()
             .expect("VM globals not initialized")
-            .fetch(*self)
+            .fetch(self)
     }
 
     pub fn nest_level(&self) -> usize {
@@ -344,7 +315,7 @@ impl<'gc> Context<'gc> {
 
         let module =
             resolve_module(self, name, false, true).expect("module resolve succeeds when creating");
-        let wmodule = Gc::write(*self, module);
+        let wmodule = Gc::write(self, module);
         if module.uses.get().is_null() {
             barrier::field!(wmodule, Module, uses)
                 .unlock()
@@ -384,7 +355,7 @@ impl<'gc> Context<'gc> {
         let mut set = self.state().current_marks();
 
         while !set.is_null() {
-            let mark_set = set.caar();
+            let mark_set = set.car();
             if let Some(val) = mark_set.assq(key) {
                 return Some(val.cdr());
             }
@@ -404,36 +375,117 @@ impl<'gc> Context<'gc> {
     }
 }
 
-impl<'gc> std::ops::Deref for Context<'gc> {
-    type Target = Mutation<'gc>;
+/// Execution engine, chosen by `CAPY_ENGINE` (via [`flags::engine`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Engine {
+    Rust,
+    Template,
+}
 
-    fn deref(&self) -> &Self::Target {
-        &self.mc
+impl Engine {
+    fn as_str(self) -> &'static str {
+        match self {
+            Engine::Rust => "rust",
+            Engine::Template => "template",
+        }
+    }
+
+    /// Build default: the template interpreter when compiled in, else the Rust engine.
+    pub fn default_for_build() -> Self {
+        #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            Engine::Template
+        }
+        #[cfg(not(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64"))))]
+        {
+            Engine::Rust
+        }
+    }
+
+    /// Engine from the `engine` flag. An unset flag or an invalid value
+    /// (already warned about by the flag registry) gives the build default.
+    fn from_flags_or_default() -> Self {
+        match crate::utils::flags::engine() {
+            "rust" => Engine::Rust,
+            "template" => Engine::Template,
+            _ => Self::default_for_build(),
+        }
     }
 }
 
-/// Hardcoded limit for runstack to not make calls too slow and runstack too large.
-const RUNSTACK_SIZE: usize = 4096;
+/// Machine-level thread context: everything SABI code touches.
+///
+/// Lives directly in [`ThreadNativeData`](crate::heap::sync::thread::ThreadNativeData),
+/// so the `TC` register (which points at the [`Thread`](crate::heap::sync::thread::Thread))
+/// reaches every field at a constant offset, see [`sabi`](crate::runtime::sabi).
+#[repr(C)]
+pub struct Tc<'gc> {
+    /// The Scheme stack and the registers the interpreter parks in it.
+    pub(crate) stack: StackState<'gc>,
+    /// Overflow limit, null forces the slow path. Atomic so another thread
+    /// can poke it to null when requesting a yieldpoint, every other
+    /// field is only touched by the owning thread.
+    pub(crate) esp: AtomicPtr<Value<'gc>>,
+    pub(crate) real_esp: Cell<Slot<'gc>>,
+    pub(crate) ac: Cell<u64>,
+    pub(crate) rv: Cell<Value<'gc>>,
+    pub(crate) cp: Cell<Value<'gc>>,
+    pub(crate) ip: Cell<Ip>,
+    pub(crate) exit_value: Cell<Value<'gc>>,
+    /// Stub table for code that calls stubs instead of patching, null until the generated image is installed.
+    pub(crate) stubs: *const (),
+}
+
+impl<'gc> Tc<'gc> {
+    pub(crate) fn new() -> Self {
+        Self {
+            stack: StackState::new(),
+            esp: AtomicPtr::new(std::ptr::null_mut()),
+            real_esp: Cell::new(std::ptr::null_mut()),
+            ac: Cell::new(0),
+            rv: Cell::new(Value::undefined()),
+            cp: Cell::new(Value::undefined()),
+            ip: Cell::new(std::ptr::null()),
+            exit_value: Cell::new(Value::undefined()),
+            stubs: std::ptr::null(),
+        }
+    }
+}
+
+// SAFETY: Tc holds GC roots (the Scheme stack, rv/cp/exit_value).
+// All traced fields are exclusively owned by this mutator thread during GC stop-the-world.
+unsafe impl Trace for Tc<'_> {
+    // SAFETY: Weak refs are processed through the given weak_processor
+    unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::heap::WeakProcessor) {}
+
+    // SAFETY: All GC-reachable fields are traced via `visitor`
+    unsafe fn trace(&mut self, visitor: &mut crate::heap::collection::Visitor) {
+        // SAFETY: the mutator is stopped, so the stack registers describe a
+        // consistent stack: every frame below the top one is parked at a
+        // return point, and the top one at a safepoint.
+        unsafe {
+            crate::runtime::interp::stack::trace_stack(&mut self.stack, visitor);
+        }
+        visitor.trace(&mut self.rv);
+        visitor.trace(&mut self.cp);
+        visitor.trace(&mut self.exit_value);
+    }
+}
 
 pub struct State<'gc> {
     pub(crate) dynamic_state: DynamicState<'gc>,
-    pub(crate) runstack: Cell<Address>,
-    pub(crate) runstack_start: Address,
-    pub(crate) runstack_end: Address,
+    /// Stored engine choice (`CAPY_ENGINE`): which engine runs new activations.
+    pub(crate) engine: Engine,
     /// Nest depth of Scheme activations entered via the nest API
     /// ([`crate::runtime::sni`] / unsafe [`crate::runtime::vm::call_scheme`]).
     /// A `#[scheme]` leaf does not change this. When nest increases, GC may run
-    /// at compiled yieldpoints; outer native locals must be rooted in local frames.
+    /// at compiled yieldpoints, outer native locals must be rooted in local frames.
     pub(crate) nest_level: AtomicUsize,
-    pub(crate) gc_save: GcSave<'gc>,
-    pub(crate) call_data: CallData<'gc>,
-    pub(crate) shadow_stack: UnsafeCell<debug::ShadowStack<'gc>>,
-    pub(crate) last_ret_addr: Cell<Address>,
     pub(crate) thread_object: Gc<'gc, ThreadObject<'gc>>,
     pub(crate) accumulator: Cell<Value<'gc>>,
     pub(crate) current_marks: Cell<Value<'gc>>,
     pub(crate) winders: Cell<Value<'gc>>,
-    /// Active `setjmp` buffer for exiting CPSed code back to Rust; null when not in Scheme entry.
+    /// Active `setjmp` buffer for exiting CPSed code back to Rust, null when not in Scheme entry.
     pub(crate) exit_jmp: Cell<*mut crate::runtime::vm::setjmp::JmpBuf>,
     /// Staged return code for [`crate::runtime::vm::scheme_longjmp`].
     pub(crate) exit_code: Cell<ReturnCode>,
@@ -441,192 +493,12 @@ pub struct State<'gc> {
     pub(crate) exit_value: Cell<Value<'gc>>,
     pub(crate) stats: ThreadStats,
     /// Precise relocatable roots for Values held across `call_in_native`.
-    /// Kept at the end so it does not shift Cranelift/FASL offsets of earlier fields.
     pub(crate) root_stack: crate::runtime::root::RootStack<'gc>,
 }
 
-#[repr(C)]
-pub struct CallData<'gc> {
-    pub rator: Cell<Value<'gc>>,
-    pub argc: Cell<usize>,
-    pub arg0: Cell<Value<'gc>>,
-    pub arg1: Cell<Value<'gc>>,
-    pub arg2: Cell<Value<'gc>>,
-    pub arg3: Cell<Value<'gc>>,
-}
-
-impl<'gc> CallData<'gc> {
-    fn new() -> Self {
-        Self {
-            rator: Cell::new(Value::undefined()),
-            argc: Cell::new(0),
-            arg0: Cell::new(Value::undefined()),
-            arg1: Cell::new(Value::undefined()),
-            arg2: Cell::new(Value::undefined()),
-            arg3: Cell::new(Value::undefined()),
-        }
-    }
-
-    pub(crate) fn set_arg(&self, index: usize, value: Value<'gc>) {
-        match index {
-            0 => self.arg0.set(value),
-            1 => self.arg1.set(value),
-            2 => self.arg2.set(value),
-            3 => self.arg3.set(value),
-            _ => panic!("call register argument index out of bounds: {index}"),
-        }
-    }
-
-    pub(crate) fn clear(&self) {
-        self.rator.set(Value::undefined());
-        self.argc.set(0);
-        for index in 0..REGISTER_ARG_COUNT {
-            self.set_arg(index, Value::undefined());
-        }
-    }
-}
-
-struct PackedCallArgs<'gc> {
-    argc: usize,
-    regs: [Value<'gc>; REGISTER_ARG_COUNT],
-}
-
-fn pack_call_args<'gc>(
-    state: &State<'gc>,
-    rands: impl IntoIterator<Item = Value<'gc>>,
-    retk: Option<Value<'gc>>,
-) -> PackedCallArgs<'gc> {
-    let overflow = state.runstack.get().to_mut_ptr::<Value>();
-    let mut regs = [Value::undefined(); REGISTER_ARG_COUNT];
-    let mut argc = 0usize;
-
-    if let Some(retk) = retk {
-        regs[argc] = retk;
-        argc += 1;
-    }
-
-    for rand in rands {
-        if argc < REGISTER_ARG_COUNT {
-            regs[argc] = rand;
-        } else {
-            let overflow_index = argc - REGISTER_ARG_COUNT;
-            // SAFETY: The pointer was derived from a valid allocation or symbol address
-            unsafe {
-                let slot = overflow.add(overflow_index);
-                if Address::from_ptr(slot) >= state.runstack_end {
-                    panic!(
-                        "runstack overflow: {} >= {}, too many arguments: {}, can fit: {}",
-                        Address::from_ptr(slot),
-                        state.runstack_end,
-                        argc + 1,
-                        (state.runstack_end - state.runstack_start) / size_of::<Value>()
-                    );
-                }
-                if Address::from_ptr(slot) < state.runstack_start {
-                    panic!("runstack underflow");
-                }
-                *slot = rand;
-            }
-        }
-        argc += 1;
-    }
-
-    let overflow_count = argc.saturating_sub(REGISTER_ARG_COUNT);
-    // SAFETY: The pointer was derived from a valid allocation or symbol address
-    unsafe {
-        state
-            .runstack
-            .set(Address::from_ptr(overflow.add(overflow_count)));
-    }
-
-    PackedCallArgs { argc, regs }
-}
-
-#[repr(C)]
-pub struct GcSave<'gc> {
-    pub rator: Cell<Value<'gc>>,
-    pub argc: Cell<usize>,
-    pub arg0: Cell<Value<'gc>>,
-    pub arg1: Cell<Value<'gc>>,
-    pub arg2: Cell<Value<'gc>>,
-    pub arg3: Cell<Value<'gc>>,
-}
-
-impl<'gc> GcSave<'gc> {
-    fn new() -> Self {
-        Self {
-            rator: Cell::new(Value::undefined()),
-            argc: Cell::new(0),
-            arg0: Cell::new(Value::undefined()),
-            arg1: Cell::new(Value::undefined()),
-            arg2: Cell::new(Value::undefined()),
-            arg3: Cell::new(Value::undefined()),
-        }
-    }
-
-    pub(crate) fn save(&self, argc: usize, args: [Value<'gc>; REGISTER_ARG_COUNT]) {
-        self.argc.set(argc);
-        self.arg0.set(args[0]);
-        self.arg1.set(args[1]);
-        self.arg2.set(args[2]);
-        self.arg3.set(args[3]);
-    }
-
-    pub(crate) fn save_entry(
-        &self,
-        rator: Value<'gc>,
-        argc: usize,
-        args: [Value<'gc>; REGISTER_ARG_COUNT],
-    ) {
-        self.rator.set(rator);
-        self.save(argc, args);
-    }
-
-    pub(crate) fn clear(&self) {
-        self.rator.set(Value::undefined());
-        self.argc.set(0);
-        self.arg0.set(Value::undefined());
-        self.arg1.set(Value::undefined());
-        self.arg2.set(Value::undefined());
-        self.arg3.set(Value::undefined());
-    }
-}
-
-// SAFETY: CallData stores GC-managed Values used to stage a tail call from native code.
-unsafe impl<'gc> Trace for CallData<'gc> {
-    // SAFETY: All GC-reachable fields are traced via `visitor`
-    unsafe fn trace(&mut self, visitor: &mut crate::heap::collection::Visitor) {
-        visitor.trace(&mut self.rator);
-        visitor.trace(&mut self.arg0);
-        visitor.trace(&mut self.arg1);
-        visitor.trace(&mut self.arg2);
-        visitor.trace(&mut self.arg3);
-    }
-    // SAFETY: Weak refs are processed through the given weak_processor
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::heap::WeakProcessor) {
-        let _ = weak_processor;
-    }
-}
-
-// SAFETY: `gc` for `GcSave` upholds all trait invariants
-unsafe impl<'gc> Trace for GcSave<'gc> {
-    // SAFETY: Trace entry ABI slots as precise roots so GC relocates them in
-    // place. Compiled code reloads these Values after the yield.
-    unsafe fn trace(&mut self, visitor: &mut crate::heap::collection::Visitor) {
-        visitor.trace(&mut self.rator);
-        visitor.trace(&mut self.arg0);
-        visitor.trace(&mut self.arg1);
-        visitor.trace(&mut self.arg2);
-        visitor.trace(&mut self.arg3);
-    }
-    // SAFETY: Weak refs are processed through the given weak_processor
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::heap::WeakProcessor) {
-        let _ = weak_processor;
-    }
-}
-
-// SAFETY: State contains GC roots (dynamic_state, runstack values, shadow_stack, etc.).
+// SAFETY: State contains GC roots (dynamic_state, etc.).
 // All traced fields are exclusively owned by this mutator thread during GC stop-the-world.
+// The Scheme stack moved to `Tc`, which the collector traces separately.
 unsafe impl Trace for State<'_> {
     // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::heap::WeakProcessor) {}
@@ -635,36 +507,7 @@ unsafe impl Trace for State<'_> {
     unsafe fn trace(&mut self, visitor: &mut crate::heap::collection::Visitor) {
         visitor.trace(&mut self.dynamic_state);
 
-        // SAFETY: Pointer is valid for the given element count
-        let runstack = unsafe {
-            // SAFETY: `runstack_start` through `runstack.get()` is a contiguous buffer of Values
-            // allocated in `make_fresh_runstack`. The distance gives the number of live slots.
-            std::slice::from_raw_parts_mut(
-                self.runstack_start.to_mut_ptr::<Value>(),
-                (self.runstack.get() - self.runstack_start) / size_of::<Value>(),
-            )
-        };
-
-        for value in runstack {
-            visitor.trace(value);
-        }
-
-        visitor.trace(&mut self.gc_save);
-        visitor.trace(&mut self.call_data);
         visitor.trace(&mut self.root_stack);
-
-        // SAFETY: Preconditions verified by the surrounding code
-        unsafe {
-            // SAFETY: `shadow_stack` UnsafeCell is only accessed during GC tracing (stop-the-world)
-            // while no other thread can mutate it.
-            let stack = &mut *self.shadow_stack.get();
-
-            stack.for_each_mut(|frame| {
-                visitor.trace(&mut frame.rator);
-                visitor.trace(&mut frame.rands);
-            });
-        }
-
         visitor.trace(&mut self.thread_object);
         visitor.trace(&mut self.accumulator);
         visitor.trace(&mut self.current_marks);
@@ -675,18 +518,17 @@ unsafe impl Trace for State<'_> {
 
 impl<'gc> State<'gc> {
     pub fn new(mc: Mutation<'gc>, thread_object: Gc<'gc, ThreadObject<'gc>>) -> Self {
-        let (runstack_start, _runstack_end) = make_fresh_runstack();
-
+        let engine = Engine::from_flags_or_default();
+        #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
+        if engine == Engine::Template {
+            // Load the image before any closure is created: new closures
+            // carry its `interpreter_enter` as their machine entry.
+            crate::runtime::codegen::template_image::ensure_loaded();
+        }
         Self {
-            shadow_stack: UnsafeCell::new(debug::ShadowStack::new(64)),
-            dynamic_state: DynamicState::new(Context::from(mc)),
-            runstack: Cell::new(runstack_start),
-            runstack_end: _runstack_end,
+            dynamic_state: DynamicState::new(MutationContext::from(mc)),
+            engine,
             nest_level: AtomicUsize::new(0),
-            gc_save: GcSave::new(),
-            runstack_start,
-            call_data: CallData::new(),
-            last_ret_addr: Cell::new(Address::ZERO),
             thread_object,
             accumulator: Cell::new(Value::new(false)),
             current_marks: Cell::new(Value::null()),
@@ -722,21 +564,15 @@ pub struct Scheme {
 impl Scheme {
     pub fn enter<F, T>(&self, f: F) -> T
     where
-        F: for<'gc> FnOnce(Context<'gc>) -> T,
+        F: for<'gc> FnOnce(MutationContext<'gc>) -> T,
     {
-        self.mutator.mutate(|ctx, _| {
-            let result = f(ctx);
-
-            // SAFETY: Preconditions verified by the surrounding code
-            unsafe { (*ctx.state().shadow_stack.get()).clear() };
-            result
-        })
+        self.mutator.mutate(|ctx, _| f(ctx))
     }
 
     pub fn call_value<PREP, F, R>(&self, prep: PREP, finish: F) -> R
     where
-        F: for<'gc> Fn(Context<'gc>, Result<Value<'gc>, Value<'gc>>) -> R,
-        PREP: for<'gc> FnOnce(Context<'gc>, &mut Vec<Value<'gc>>) -> Value<'gc>,
+        F: for<'gc> Fn(MutationContext<'gc>, Result<Value<'gc>, Value<'gc>>) -> R,
+        PREP: for<'gc> FnOnce(MutationContext<'gc>, &mut Vec<Value<'gc>>) -> Value<'gc>,
     {
         self.enter(|ctx| {
             let mut args = Vec::with_capacity(4);
@@ -756,8 +592,8 @@ impl Scheme {
     /// Calls `entry_name` in module `mod_name`.
     pub fn call<ARGS, F, R>(&self, mod_name: &str, entry_name: &str, setup: ARGS, finish: F) -> R
     where
-        F: for<'gc> Fn(Context<'_>, Result<Value<'gc>, Value<'gc>>) -> R,
-        ARGS: for<'gc> FnOnce(Context<'gc>, &mut Vec<Value<'gc>>),
+        F: for<'gc> Fn(MutationContext<'_>, Result<Value<'gc>, Value<'gc>>) -> R,
+        ARGS: for<'gc> FnOnce(MutationContext<'gc>, &mut Vec<Value<'gc>>),
     {
         self.call_value(
             move |ctx, args| {
@@ -805,7 +641,7 @@ impl Scheme {
         let scm = Self {
             mutator: {
                 let m = Mutator::new(|mc| {
-                    let ctx = Context::from(mc);
+                    let ctx = MutationContext::from(mc);
                     init_weak_sets(ctx);
                     init_weak_tables(ctx);
                     init_symbols(ctx);
@@ -842,7 +678,7 @@ impl Scheme {
         Self {
             mutator: {
                 Mutator::new(|mc| {
-                    let ctx = Context::from(mc);
+                    let ctx = MutationContext::from(mc);
                     init_weak_sets(ctx);
                     init_weak_tables(ctx);
                     init_symbols(ctx);
@@ -914,7 +750,10 @@ impl Scheme {
             match crate::runtime::sni::call_function(ctx, thunk, []) {
                 ExecutionResult::Ok(_) => {}
                 ExecutionResult::Err(err) => {
-                    eprintln!("Failed to boot: {err}");
+                    // Fatal and final: make sure the message is visible
+                    // even under default-off logging before exiting.
+                    crate::heap::logging::ensure_max_level(log::LevelFilter::Error);
+                    log::error!(target: crate::heap::logging::BOOT_LOG_TARGET, "Failed to boot: {err}");
                     std::process::exit(1);
                 }
             }
@@ -953,150 +792,4 @@ impl Default for Scheme {
     }
 }
 
-impl<'gc> Drop for State<'gc> {
-    fn drop(&mut self) {
-        // SAFETY: `runstack_start` was allocated in `make_fresh_runstack` with the same
-        // layout. We deallocate it here on State drop; no other code frees this buffer.
-        unsafe {
-            let layout = std::alloc::Layout::from_size_align(
-                RUNSTACK_SIZE * std::mem::size_of::<Value>(),
-                std::mem::align_of::<Value>(),
-            )
-            .expect("infallible allocation callback");
-            std::alloc::dealloc(self.runstack_start.to_mut_ptr(), layout);
-        }
-    }
-}
-
-fn make_fresh_runstack() -> (Address, Address) {
-    let layout = std::alloc::Layout::from_size_align(
-        RUNSTACK_SIZE * std::mem::size_of::<Value>(),
-        std::mem::align_of::<Value>(),
-    )
-    .expect("infallible allocation callback");
-    // SAFETY: Layout is valid (non-zero, properly aligned). `alloc` returns a valid
-    // pointer or null; we handle the null case. The returned addresses are valid for the
-    // lifetime of the State that owns them.
-    unsafe {
-        let ptr = std::alloc::alloc(layout) as *mut Value;
-        if ptr.is_null() {
-            std::alloc::handle_alloc_error(layout);
-        }
-        let start = Address::from_ptr(ptr);
-        let end = Address::from_ptr(ptr.add(RUNSTACK_SIZE));
-        (start, end)
-    }
-}
-
 pub(crate) static SCM_INITIALIZED: Once = Once::new();
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use mmtk::vm::SlotVisitor;
-
-    #[derive(Default)]
-    struct RecordingSlotVisitor {
-        slots: Vec<crate::heap::ObjectSlot>,
-    }
-
-    impl SlotVisitor<crate::heap::ObjectSlot> for RecordingSlotVisitor {
-        fn visit_slot(&mut self, slot: crate::heap::ObjectSlot) {
-            self.slots.push(slot);
-        }
-    }
-
-    fn with_ctx(f: impl for<'gc> FnOnce(Context<'gc>)) {
-        Scheme::new_uninit().enter(f);
-    }
-
-    fn overflow_values<'gc>(state: &State<'gc>, count: usize) -> Vec<Value<'gc>> {
-        // SAFETY: Pointer is valid for the given element count
-        unsafe {
-            std::slice::from_raw_parts(state.runstack_start.to_ptr::<Value>(), count).to_vec()
-        }
-    }
-
-    #[test]
-    fn pack_call_args_handles_zero_args_without_advancing_runstack() {
-        with_ctx(|ctx| {
-            let state = ctx.state();
-            let start = state.runstack.get();
-
-            let packed = pack_call_args(state, [], None);
-
-            assert_eq!(packed.argc, 0);
-            assert_eq!(packed.regs, [Value::undefined(); REGISTER_ARG_COUNT]);
-            assert_eq!(state.runstack.get(), start);
-        });
-    }
-
-    #[test]
-    fn pack_call_args_keeps_four_args_in_registers() {
-        with_ctx(|ctx| {
-            let state = ctx.state();
-            let start = state.runstack.get();
-            let args = [1, 2, 3, 4].map(Value::new);
-
-            let packed = pack_call_args(state, args, None);
-
-            assert_eq!(packed.argc, 4);
-            assert_eq!(packed.regs, args);
-            assert_eq!(state.runstack.get(), start);
-        });
-    }
-
-    #[test]
-    fn pack_call_args_treats_retk_as_first_arg_and_spills_overflow() {
-        with_ctx(|ctx| {
-            let state = ctx.state();
-            let retk = Value::new(99);
-            let args = [1, 2, 3, 4, 5].map(Value::new);
-
-            let packed = pack_call_args(state, args, Some(retk));
-
-            assert_eq!(packed.argc, 6);
-            assert_eq!(packed.regs, [retk, args[0], args[1], args[2]]);
-            assert_eq!(overflow_values(state, 2), vec![args[3], args[4]]);
-            assert_eq!(
-                state.runstack.get(),
-                state.runstack_start + 2 * size_of::<Value>()
-            );
-        });
-    }
-
-    #[test]
-    fn gc_save_traces_compiled_entry_roots() {
-        with_ctx(|ctx| {
-            let rator = ctx.str("saved-rator");
-            let arg0 = ctx.str("saved-arg0");
-            let arg1 = ctx.str("saved-arg1");
-
-            ctx.state().gc_save.save_entry(
-                rator,
-                2,
-                [arg0, arg1, Value::undefined(), Value::undefined()],
-            );
-
-            let mut slot_visitor = RecordingSlotVisitor::default();
-            // SAFETY: Preconditions verified by the surrounding code
-            let mut visitor = unsafe {
-                crate::heap::collection::Visitor::new(
-                    crate::heap::collection::VisitorKind::Slot(&mut slot_visitor),
-                    None,
-                )
-            };
-
-            let gc_save = std::ptr::addr_of!(ctx.state().gc_save).cast_mut();
-            // SAFETY: Preconditions verified by the surrounding code
-            unsafe {
-                (*gc_save).trace(&mut visitor);
-            }
-            drop(visitor);
-
-            assert!(slot_visitor.slots.len() >= 3);
-
-            ctx.state().gc_save.clear();
-        });
-    }
-}

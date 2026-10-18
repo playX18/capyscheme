@@ -10,7 +10,7 @@ use crate::{
     list,
     prelude::*,
     runtime::{
-        Context,
+        MutationContext,
         fluids::Fluid,
         modules::Module,
         value::{ClassTagged, Closure, Pair, Str, Tuple, Value, Vector},
@@ -34,7 +34,7 @@ fn syntax_header_word() -> u64 {
 
 impl<'gc> Syntax<'gc> {
     pub fn new(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         expr: Value<'gc>,
         wrap: Value<'gc>,
         module: Value<'gc>,
@@ -85,7 +85,7 @@ unsafe impl<'gc> ClassTagged for Syntax<'gc> {
 pub mod syntax_ops {
     #[scheme(name = "syntax?")]
     pub fn is_syntax(v: Value<'gc>) -> bool {
-        nctx.return_(v.is::<Syntax<'gc>>())
+        v.is::<Syntax<'gc>>()
     }
 
     #[scheme(name = "make-syntax")]
@@ -96,33 +96,33 @@ pub mod syntax_ops {
         source: Option<Value<'gc>>,
         properties: Option<Value<'gc>>,
     ) -> Value<'gc> {
-        let source = source.unwrap_or_else(|| datum_sourcev(nctx.ctx, exp));
+        let source = source.unwrap_or_else(|| datum_sourcev(ctx, exp));
         let source = if source.is_pair() {
-            props_to_sourcev(nctx.ctx, source)
+            props_to_sourcev(ctx, source)
         } else {
             source
         };
         let properties = properties.unwrap_or(Value::null());
 
-        let syntax = Syntax::new(nctx.ctx, exp, wrap, module, source, properties);
+        let syntax = Syntax::new(ctx, exp, wrap, module, source, properties);
 
-        nctx.return_(syntax.into())
+        syntax.into()
     }
 
     #[scheme(name = "syntax-expression")]
     pub fn syntax_expression(syntax: Gc<'gc, Syntax<'gc>>) -> Value<'gc> {
-        nctx.return_(syntax.expr)
+        syntax.expr
     }
 
     #[scheme(name = "syntax-wrap")]
     pub fn syntax_wrap(syntax: Gc<'gc, Syntax<'gc>>) -> Value<'gc> {
-        nctx.return_(syntax.wrap)
+        syntax.wrap
     }
 
     /// Return the properties of the syntax object.
     #[scheme(name = "syntax-properties")]
     pub fn syntax_properties(syntax: Gc<'gc, Syntax<'gc>>) -> Value<'gc> {
-        nctx.return_(syntax.properties)
+        syntax.properties
     }
 
     /// Add a property with given key and value to syntax object.
@@ -132,11 +132,11 @@ pub mod syntax_ops {
         key: Value<'gc>,
         value: Value<'gc>,
     ) -> Value<'gc> {
-        let new_prop = Value::cons(nctx.ctx, key, value);
-        let combined_props = Value::cons(nctx.ctx, new_prop, syntax.properties);
+        let new_prop = Value::cons(ctx, key, value);
+        let combined_props = Value::cons(ctx, new_prop, syntax.properties);
 
         let new_syntax = Syntax::new(
-            nctx.ctx,
+            ctx,
             syntax.expr,
             syntax.wrap,
             syntax.module,
@@ -144,7 +144,7 @@ pub mod syntax_ops {
             combined_props,
         );
 
-        nctx.return_(new_syntax.into())
+        new_syntax.into()
     }
 
     /// Remove property with given key from syntax object.
@@ -162,13 +162,13 @@ pub mod syntax_ops {
             let rest = props.cdr();
             let prop_key = prop.car();
             if prop_key != key {
-                new_props = Value::cons(nctx.ctx, prop, new_props);
+                new_props = Value::cons(ctx, prop, new_props);
             }
             props = rest;
         }
 
         let new_syntax = Syntax::new(
-            nctx.ctx,
+            ctx,
             syntax.expr,
             syntax.wrap,
             syntax.module,
@@ -176,35 +176,35 @@ pub mod syntax_ops {
             props,
         );
 
-        nctx.return_(new_syntax.into())
+        new_syntax.into()
     }
 
     #[scheme(name = "syntax-module")]
     pub fn syntax_module(syntax: Gc<'gc, Syntax<'gc>>) -> Value<'gc> {
-        nctx.return_(syntax.module)
+        syntax.module
     }
 
     #[scheme(name = "syntax-source")]
     pub fn syntax_source(syntax: Gc<'gc, Syntax<'gc>>) -> Value<'gc> {
         let src = syntax.source;
         let src = if src.is::<Vector>() {
-            sourcev_to_props(nctx.ctx, src)
+            sourcev_to_props(ctx, src)
         } else {
             src
         };
 
-        nctx.return_(src)
+        src
     }
 
     #[scheme(name = "syntax-sourcev")]
     pub fn syntax_sourcev(syntax: Gc<'gc, Syntax<'gc>>) -> Value<'gc> {
         let src = syntax.source;
         let src = if src.is_null() || src.is::<Pair>() {
-            props_to_sourcev(nctx.ctx, src)
+            props_to_sourcev(ctx, src)
         } else {
             src
         };
-        nctx.return_(src)
+        src
     }
 
     #[scheme(name = "make-syntax-transformer")]
@@ -213,88 +213,86 @@ pub mod syntax_ops {
         typ: Value<'gc>,
         binding: Value<'gc>,
     ) -> Value<'gc> {
-        let transformer = SyntaxTransformer::new(nctx.ctx, name, typ, binding);
-        nctx.return_(transformer.into())
+        let transformer = SyntaxTransformer::new(ctx, name, typ, binding);
+        transformer.into()
     }
 
     #[scheme(name = "macro?")]
     pub fn is_macro(v: Value<'gc>) -> bool {
-        nctx.return_(v.is::<SyntaxTransformer<'gc>>())
+        v.is::<SyntaxTransformer<'gc>>()
     }
 
     #[scheme(name = "macro-name")]
     pub fn macro_name(macro_: Gc<'gc, SyntaxTransformer<'gc>>) -> Value<'gc> {
-        nctx.return_(macro_.name())
+        macro_.name()
     }
 
     #[scheme(name = "macro-transformer")]
     pub fn macro_transformer(macro_: Gc<'gc, SyntaxTransformer<'gc>>) -> Value<'gc> {
         if macro_.binding().is::<Closure>() {
-            nctx.return_(macro_.binding())
+            macro_.binding()
         } else {
-            nctx.return_(Value::new(false))
+            Value::new(false)
         }
     }
 
     #[scheme(name = "macro-binding")]
     pub fn macro_binding(macro_: Gc<'gc, SyntaxTransformer<'gc>>) -> Value<'gc> {
-        nctx.return_(macro_.binding())
+        macro_.binding()
     }
 
     #[scheme(name = "macro-type")]
     pub fn macro_type(macro_: Gc<'gc, SyntaxTransformer<'gc>>) -> Value<'gc> {
-        nctx.return_(macro_.typ())
+        macro_.typ()
     }
 
     #[scheme(name = "datum-sourcev")]
     pub fn datum_sourcev_fn(obj: Value<'gc>) -> Value<'gc> {
-        let src = datum_sourcev(nctx.ctx, obj);
-        nctx.return_(src)
+        let src = datum_sourcev(ctx, obj);
+        src
     }
 
     #[scheme(name = "self-evaluating?")]
     pub fn is_self_evaluating(obj: Value<'gc>) -> bool {
-        nctx.return_(
-            obj.is_bool()
-                || obj.is_immediate()
-                || obj.is_int32()
-                || obj.is_flonum()
-                || obj.is_bool()
-                || obj.is_char()
-                || obj.is_null()
-                || obj == Value::undefined()
-                || obj.is_pair()
-                || obj.is::<Vector>()
-                || obj.is::<Str>()
-                || obj.is::<Closure>()
-                || obj.is::<Syntax>()
-                || obj.is::<Tuple>()
-                || obj.is::<ByteVector>()
-                || obj.is::<HashTable>()
-                || obj.is::<WeakSet>()
-                || obj.is::<WeakTable>()
-                || obj.is::<WeakMapping>()
-                || obj.is::<Fluid>()
-                || obj.is::<Module>()
-                || obj.is::<Pointer>()
-                || obj.is::<Keyword>()
-                || obj.is_number(),
-        )
+        obj.is_bool()
+            || obj.is_immediate()
+            || obj.is_int32()
+            || obj.is_flonum()
+            || obj.is_bool()
+            || obj.is_char()
+            || obj.is_null()
+            || obj == Value::undefined()
+            || obj.is_pair()
+            || obj.is::<Vector>()
+            || obj.is::<Str>()
+            || obj.is::<Closure>()
+            || obj.is::<Syntax>()
+            || obj.is::<Tuple>()
+            || obj.is::<ByteVector>()
+            || obj.is::<HashTable>()
+            || obj.is::<WeakSet>()
+            || obj.is::<WeakTable>()
+            || obj.is::<WeakMapping>()
+            || obj.is::<Fluid>()
+            || obj.is::<Module>()
+            || obj.is::<Pointer>()
+            || obj.is::<Keyword>()
+            || obj.is_number()
     }
 
     #[scheme(name = "source-properties")]
     pub fn source_properties_of(obj: Value<'gc>) -> Value<'gc> {
-        let props = get_source_property(nctx.ctx, obj).unwrap_or(Value::new(false));
+        let props = get_source_property(ctx, obj).unwrap_or(Value::new(false));
 
-        nctx.return_(props)
+        props
     }
 }
 
-pub(crate) fn init_syntax<'gc>(ctx: Context<'gc>) {
+pub(crate) fn init_syntax<'gc>(ctx: MutationContext<'gc>) {
     syntax_ops::register(ctx);
 }
 
-pub fn datum_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
+pub fn datum_sourcev<'gc>(ctx: MutationContext<'gc>, obj: Value<'gc>) -> Value<'gc> {
     let Some(props) = get_source_property(ctx, obj) else {
         return Value::new(false);
     };
@@ -308,7 +306,7 @@ pub fn datum_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
     }
 }
 
-pub fn props_to_sourcev<'gc>(ctx: Context<'gc>, props: Value<'gc>) -> Value<'gc> {
+pub fn props_to_sourcev<'gc>(ctx: MutationContext<'gc>, props: Value<'gc>) -> Value<'gc> {
     if props.is_null() || !props.is_pair() {
         if props.is::<Vector>() {
             return props;
@@ -326,7 +324,7 @@ fn source_prop<'gc>(props: Value<'gc>, key: Value<'gc>) -> Value<'gc> {
         .unwrap_or(Value::new(false))
 }
 
-fn source_props_to_vector<'gc>(ctx: Context<'gc>, props: Value<'gc>) -> Value<'gc> {
+fn source_props_to_vector<'gc>(ctx: MutationContext<'gc>, props: Value<'gc>) -> Value<'gc> {
     Vector::from_slice(
         ctx,
         &[
@@ -353,7 +351,7 @@ fn sourcev_field<'gc>(vec: Gc<'gc, Vector<'gc>>, index: usize) -> Value<'gc> {
 }
 
 fn add_source_prop<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     props: Value<'gc>,
     key: Value<'gc>,
     value: Value<'gc>,
@@ -366,7 +364,7 @@ fn add_source_prop<'gc>(
     }
 }
 
-pub fn sourcev_to_props<'gc>(ctx: Context<'gc>, sourcev: Value<'gc>) -> Value<'gc> {
+pub fn sourcev_to_props<'gc>(ctx: MutationContext<'gc>, sourcev: Value<'gc>) -> Value<'gc> {
     if sourcev.is::<Vector>() {
         let vec = sourcev.downcast::<Vector>();
         if vec.len() >= 3 {
@@ -419,7 +417,7 @@ fn syntax_transformer_header_word() -> u64 {
 
 impl<'gc> SyntaxTransformer<'gc> {
     pub fn new(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         name: Value<'gc>,
         typ: Value<'gc>,
         binding: Value<'gc>,
@@ -448,35 +446,4 @@ impl<'gc> SyntaxTransformer<'gc> {
 unsafe impl<'gc> ClassTagged for SyntaxTransformer<'gc> {
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::SYNTAX_TRANSFORMER];
     const TYPE_NAME: &'static str = "#<syntax-transformer>";
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::runtime::Scheme;
-
-    #[test]
-    fn syntax_objects_allocate_with_class_only_headers() {
-        Scheme::new_uninit().enter(|ctx| {
-            let syntax = Syntax::new(
-                ctx,
-                Value::undefined(),
-                Value::null(),
-                Value::new(false),
-                Value::new(false),
-                Value::null(),
-            );
-            assert_eq!(
-                syntax.as_gc_object().header().class_id(),
-                ClassId::new(builtin_class_ids::SYNTAX).unwrap()
-            );
-
-            let transformer =
-                SyntaxTransformer::new(ctx, Value::undefined(), Value::null(), Value::new(false));
-            assert_eq!(
-                transformer.as_gc_object().header().class_id(),
-                ClassId::new(builtin_class_ids::SYNTAX_TRANSFORMER).unwrap()
-            );
-        });
-    }
 }

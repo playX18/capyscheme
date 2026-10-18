@@ -3,11 +3,15 @@ use crate::heap::Gc;
 use crate::runtime::value::{ByteVector, IntoValue, Number};
 use crate::runtime::vm::thunk_raise;
 use crate::runtime::{
-    Context,
+    MutationContext,
     value::{Str, Symbol, Tuple, Value, Vector},
 };
 
-pub fn make_vector<'gc>(ctx: Context<'gc>, size: Value<'gc>, fill: Value<'gc>) -> Value<'gc> {
+pub fn make_vector<'gc>(
+    ctx: MutationContext<'gc>,
+    size: Value<'gc>,
+    fill: Value<'gc>,
+) -> Value<'gc> {
     let Some(size) = size.number() else {
         thunk_raise(
             ctx,
@@ -59,7 +63,11 @@ pub fn make_vector<'gc>(ctx: Context<'gc>, size: Value<'gc>, fill: Value<'gc>) -
     Vector::new::<false>(ctx, size, fill).into()
 }
 
-pub fn make_tuple<'gc>(ctx: Context<'gc>, size: Value<'gc>, fill: Value<'gc>) -> Value<'gc> {
+pub fn make_tuple<'gc>(
+    ctx: MutationContext<'gc>,
+    size: Value<'gc>,
+    fill: Value<'gc>,
+) -> Value<'gc> {
     let Some(size) = size.number() else {
         thunk_raise(
             ctx,
@@ -111,7 +119,11 @@ pub fn make_tuple<'gc>(ctx: Context<'gc>, size: Value<'gc>, fill: Value<'gc>) ->
     Tuple::new(ctx, size, fill).into()
 }
 
-pub fn vector_ref<'gc>(ctx: Context<'gc>, vec: Value<'gc>, index: Value<'gc>) -> Value<'gc> {
+pub fn vector_ref<'gc>(
+    ctx: MutationContext<'gc>,
+    vec: Value<'gc>,
+    index: Value<'gc>,
+) -> Value<'gc> {
     let Some(v) = vec.try_as::<Vector>() else {
         thunk_raise(
             ctx,
@@ -182,7 +194,7 @@ pub fn vector_ref<'gc>(ctx: Context<'gc>, vec: Value<'gc>, index: Value<'gc>) ->
 }
 
 pub fn vector_set<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     vec: Value<'gc>,
     index: Value<'gc>,
     new_value: Value<'gc>,
@@ -259,7 +271,7 @@ pub fn vector_set<'gc>(
     Value::undefined()
 }
 
-pub fn tuple_size<'gc>(ctx: Context<'gc>, tup: Value<'gc>) -> Value<'gc> {
+pub fn tuple_size<'gc>(ctx: MutationContext<'gc>, tup: Value<'gc>) -> Value<'gc> {
     let Some(t) = tup.try_as::<Tuple>() else {
         thunk_raise(
             ctx,
@@ -275,7 +287,7 @@ pub fn tuple_size<'gc>(ctx: Context<'gc>, tup: Value<'gc>) -> Value<'gc> {
     Number::from_usize(ctx, t.len()).into_value(ctx)
 }
 
-pub fn bytevector_length<'gc>(ctx: Context<'gc>, bv: Value<'gc>) -> Value<'gc> {
+pub fn bytevector_length<'gc>(ctx: MutationContext<'gc>, bv: Value<'gc>) -> Value<'gc> {
     let Some(bv) = bv.try_as::<ByteVector>() else {
         thunk_raise(
             ctx,
@@ -290,7 +302,11 @@ pub fn bytevector_length<'gc>(ctx: Context<'gc>, bv: Value<'gc>) -> Value<'gc> {
     Number::from_usize(ctx, bv.len()).into_value(ctx)
 }
 
-pub fn bytevector_u8_ref<'gc>(ctx: Context<'gc>, bv: Value<'gc>, index: Value<'gc>) -> Value<'gc> {
+pub fn bytevector_u8_ref<'gc>(
+    ctx: MutationContext<'gc>,
+    bv: Value<'gc>,
+    index: Value<'gc>,
+) -> Value<'gc> {
     let Some(bv) = bv.try_as::<ByteVector>() else {
         thunk_raise(
             ctx,

@@ -1,30 +1,20 @@
+use super::*;
+use crate::bytecode::{def, verify};
+use crate::heap::{Gc, Global, Trace, Visitor, mmtk::util::Address, sync::monitor::Monitor};
+use crate::runtime::{MutationContext, value::*, vm::syntax::Syntax};
+use flate2::read::GzDecoder;
 use std::{
-    collections::{HashMap, hash_map::Entry},
+    collections::HashMap,
     io::{self, BufReader, Cursor, Read},
 };
-use flate2::read::GzDecoder;
-use crate::heap::{Gc, Global, Trace, Visitor, mmtk::util::Address, sync::monitor::Monitor};
-use crate::runtime::{
-    Context,
-    code_memory::{CodeAllocation, runtime_code_memory},
-    symbols::{RuntimeData, RuntimeThunk},
-    value::*,
-    vm::{syntax::Syntax, trampolines::get_debug_trampoline_from_scheme},
-};
-use super::*;
 
 pub struct Reader<'gc, R: io::Read> {
-    pub ctx: Context<'gc>,
+    pub ctx: MutationContext<'gc>,
     pub reader: BufReader<R>,
     pub lites: Gc<'gc, HashTable<'gc>>,
     options: LoadOptions,
     roots: Global<crate::Rootable!(Roots<'_>)>,
     pub reference_map: HashMap<u32, Address>,
-    graph_stack: Vec<graph::Table<'gc>>,
-    shared_cache_slots: Vec<HashMap<u32, SharedCacheSlot<'gc>>>,
-    pending_code_entry_relocations: Vec<Vec<PendingCodeEntryRelocation>>,
-    pending_data_slot_fills: Vec<Vec<PendingDataSlotFill>>,
-    pending_code_entry_slot_fills: Vec<Vec<PendingCodeEntrySlotFill>>,
     format_version: u32,
 }
 
@@ -41,10 +31,12 @@ impl LoadOptions {
         debug_entries: true,
     };
 
-    pub fn from_env() -> Self {
-        match std::env::var_os("CAPY_FASL_DEBUG") {
-            Some(v) if v != "0" && v != "false" => Self::DEBUG,
-            _ => Self::NORMAL,
+    /// Options from the `fasl_debug` flag (`CAPY_FASL_DEBUG`).
+    pub fn from_flags() -> Self {
+        if crate::utils::flags::fasl_debug() {
+            Self::DEBUG
+        } else {
+            Self::NORMAL
         }
     }
 }
@@ -75,61 +67,27 @@ unsafe impl Send for Roots<'_> {}
 // SAFETY: `Roots` is `Sync` because all mutable access is serialized
 unsafe impl Sync for Roots<'_> {}
 
-#[derive(Clone, Copy)]
-struct SharedCacheSlot<'gc> {
-    address: Address,
-    owner: Value<'gc>,
+/// A constant-pool entry as read, before code blocks exist to point at.
+enum ReadConst<'gc> {
+    Value(Value<'gc>),
+    Code(u32),
+    Cell(u32),
 }
 
-#[derive(Clone)]
-struct PendingCodeEntryRelocation {
-    source_index: u32,
-    base: Address,
-    offset: usize,
-    target: reloc::RelocTarget,
-    kind: reloc::RelocKind,
-    addend: i64,
-    original_bytes: Vec<u8>,
-}
-
-#[derive(Clone, Copy)]
-struct PendingDataSlotFill {
-    target_index: u32,
-    slot_address: Address,
-    code_block_index: usize,
-}
-
-#[derive(Clone, Copy)]
-struct PendingCodeEntrySlotFill {
-    target: reloc::RelocTarget,
-    slot_address: Address,
-}
-
-fn nonzero_u32(value: u32) -> Option<u32> {
-    if value == 0 { None } else { Some(value) }
-}
-
-fn source_map_u32<'gc>(value: u32, label: &'static str) -> io::Result<Value<'gc>> {
-    i32::try_from(value).map(Value::new).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("FASL {label} is too large for a Scheme fixnum"),
-        )
-    })
-}
-
-fn option_u32_value<'gc>(value: Option<u32>, label: &'static str) -> io::Result<Value<'gc>> {
-    value.map_or(Ok(Value::new(false)), |value| source_map_u32(value, label))
-}
-
-struct ReadCodeBlockSpec<'gc> {
-    bytes: Vec<u8>,
-    entry_offset: u32,
+struct ReadCode<'gc> {
+    code: Vec<u8>,
+    pool: Vec<u32>,
+    metadata_counts: [u32; def::NUM_METADATA_KINDS],
+    constants: Vec<ReadConst<'gc>>,
     arity: i32,
-    is_cont: bool,
+    frame_size: u32,
     metadata: Value<'gc>,
-    relocations: Vec<reloc::Relocation>,
-    source_map: Vec<CodeSourceMapEntry>,
+    spans: Vec<Value<'gc>>,
+    srcmap: Vec<(u32, u32, u8, u32)>,
+}
+
+fn invalid(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
 impl<'gc, R: io::Read> Reader<'gc, R> {
@@ -149,6 +107,25 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
         let mut buf = [0; 8];
         self.reader.read_exact(&mut buf)?;
         Ok(u64::from_le_bytes(buf))
+    }
+
+    fn read_uleb128(&mut self) -> io::Result<u32> {
+        let mut result = 0u32;
+        for shift in [0, 7, 14, 21, 28] {
+            let byte = self.read8()?;
+            let payload = (byte & 0x7f) as u32;
+            if shift == 28 {
+                if payload > 0x0f || byte & 0x80 != 0 {
+                    return Err(invalid("FASL uleb128 overflow"));
+                }
+                return Ok(result | (payload << 28));
+            }
+            result |= payload << shift;
+            if byte & 0x80 == 0 {
+                return Ok(result);
+            }
+        }
+        unreachable!("FASL uleb128 always terminates by the fifth byte");
     }
 
     pub fn read_lites(&mut self) -> io::Result<()> {
@@ -198,7 +175,10 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
                             format!("Invalid UTF-8 (string): {}", String::from_utf8_lossy(&buf)),
                         )
                     })?;
-                    Value::new(Str::new(self.ctx, str, false))
+                    // Decoded constants are immutable (R6RS string literals),
+                    // the encoding carries no mutability bit and fasl only
+                    // stores compiler artifacts, never user data.
+                    Value::new(Str::new(self.ctx, str, true))
                 }
                 _ => {
                     return Err(io::Error::new(
@@ -402,145 +382,7 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
                 Ok(kw.into())
             }
 
-            _x @ FASL_TAG_GRAPH => {
-                let graph_len = self.read32()? as usize;
-                let external_count = self.read32()?;
-                if external_count != 0 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "FASL graph external references are not supported yet",
-                    ));
-                }
-                self.graph_stack.push(graph::Table::new(graph_len));
-                self.shared_cache_slots.push(HashMap::new());
-                self.pending_code_entry_relocations.push(Vec::new());
-                self.pending_data_slot_fills.push(Vec::new());
-                self.pending_code_entry_slot_fills.push(Vec::new());
-                let value = self.read_value();
-                let pending_entry_slots = self
-                    .pending_code_entry_slot_fills
-                    .pop()
-                    .expect("pending code entry slot stack should match graph stack");
-                let pending_data = self
-                    .pending_data_slot_fills
-                    .pop()
-                    .expect("pending data slot stack should match graph stack");
-                let pending = self
-                    .pending_code_entry_relocations
-                    .pop()
-                    .expect("pending relocation stack should match graph stack");
-                self.shared_cache_slots
-                    .pop()
-                    .expect("shared cache slot stack should match graph stack");
-                self.graph_stack.pop();
-                if value.is_ok()
-                    && (!pending.is_empty()
-                        || !pending_data.is_empty()
-                        || !pending_entry_slots.is_empty())
-                {
-                    let detail = if !pending.is_empty() {
-                        format!(
-                            "unresolved FASL code entry relocation (target indices: {:?})",
-                            pending.iter().map(|r| r.target).collect::<Vec<_>>()
-                        )
-                    } else if !pending_entry_slots.is_empty() {
-                        format!(
-                            "unresolved FASL code entry data slot fill (target indices: {:?})",
-                            pending_entry_slots
-                                .iter()
-                                .map(|f| f.target)
-                                .collect::<Vec<_>>()
-                        )
-                    } else {
-                        format!(
-                            "unresolved FASL data slot fill (target indices: {:?})",
-                            pending_data
-                                .iter()
-                                .map(|f| f.target_index)
-                                .collect::<Vec<_>>()
-                        )
-                    };
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, detail));
-                }
-                value
-            }
-
-            _x @ FASL_TAG_GRAPH_DEF => {
-                let index = self.read32()?;
-                self.read_graph_definition(index)
-            }
-
-            _x @ FASL_TAG_GRAPH_REF => {
-                let index = self.read32()?;
-                let graph = self.graph_stack.last().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "FASL graph reference outside graph context",
-                    )
-                })?;
-                graph.get(index)
-            }
-
-            _x @ FASL_TAG_BEGIN => {
-                let count = self.read32()? as usize;
-                if count == 0 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "FASL begin block is empty",
-                    ));
-                }
-                let mut value = Value::undefined();
-                for _ in 0..count {
-                    value = self.read_value()?;
-                }
-                Ok(value)
-            }
-
-            _x @ FASL_TAG_ENTRY => {
-                let index = self.read32()?;
-                let graph = self.graph_stack.last().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "FASL entry outside graph context",
-                    )
-                })?;
-                let value = graph.get(index)?;
-                let code_block = value.try_as::<CodeBlock>().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "FASL entry target is not a code block",
-                    )
-                })?;
-                Ok(Value::from(code_block))
-            }
-
-            _x @ FASL_TAG_CODE_BLOCK => {
-                let spec = self.read_code_block_spec()?;
-                Ok(Value::from(self.link_code_block_from_spec(None, spec)?))
-            }
-
-            _x @ FASL_TAG_UNLINKED_CODEBLOCK => {
-                let unlinked = self.read_relocatable_code_block()?;
-                Ok(Value::from(unlinked))
-            }
-
-            _x @ FASL_TAG_CLOSURE => {
-                let code_block = self.read_closure_code_block()?;
-                let free_count = self.read32()? as usize;
-                let mut free = Vec::with_capacity(free_count);
-                for _ in 0..free_count {
-                    free.push(self.read_value()?);
-                }
-                let is_cont = self.read8()? != 0;
-                let entry = if self.options.debug_entries {
-                    get_debug_trampoline_from_scheme()
-                } else {
-                    code_block.entrypoint
-                };
-                Ok(Value::from(Closure::new_with_entry_and_free_vars(
-                    self.ctx, code_block, &free, is_cont, entry,
-                )))
-            }
+            _x @ FASL_TAG_PROGRAM => self.read_program(),
 
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -549,280 +391,161 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
         }
     }
 
-    fn read_closure_code_block(&mut self) -> io::Result<Gc<'gc, CodeBlock<'gc>>> {
-        let tag = self.read8()?;
-        match tag {
-            FASL_TAG_GRAPH_DEF => {
-                let index = self.read32()?;
-                let inner_tag = self.read8()?;
-                let value = match inner_tag {
-                    FASL_TAG_CODE_BLOCK | FASL_TAG_UNLINKED_CODEBLOCK => {
-                        let spec = self.read_code_block_spec()?;
-                        Value::from(self.link_code_block_from_spec(Some(index), spec)?)
-                    }
-                    _ => self.read_tagged_value(inner_tag)?,
-                };
-                let graph = self.graph_stack.last_mut().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "FASL graph definition outside graph context",
-                    )
-                })?;
-                graph.define(index, value)?;
-                self.resolve_pending_code_entry_relocations(index)?;
-                self.resolve_pending_code_entry_slot_fills(index)?;
-                self.resolve_pending_data_slot_fills(index)?;
-                value.try_as::<CodeBlock>().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "FASL closure code is not a code block",
-                    )
-                })
-            }
-            FASL_TAG_CODE_BLOCK | FASL_TAG_UNLINKED_CODEBLOCK => {
-                let spec = self.read_code_block_spec()?;
-                self.link_code_block_from_spec(None, spec)
-            }
-            _ => {
-                let value = self.read_tagged_value(tag)?;
-                value.try_as::<CodeBlock>().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "FASL closure code is not a code block",
-                    )
-                })
-            }
-        }
-    }
-
-    fn read_code_block_spec(&mut self) -> io::Result<ReadCodeBlockSpec<'gc>> {
-        let code_len = self.read32()? as usize;
-        let mut bytes = vec![0; code_len];
-        self.reader.read_exact(&mut bytes)?;
-        let entry_offset = self.read32()?;
-        if bytes.is_empty() || entry_offset as usize >= bytes.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "FASL code block entry offset out of bounds",
+    fn read_program(&mut self) -> io::Result<Value<'gc>> {
+        let hash = self.read64()?;
+        if hash != def::format_hash() {
+            return Err(invalid(
+                "FASL bytecode was compiled for a different instruction set",
             ));
         }
-        let arity = self.read32()? as i32;
-        let is_cont = self.read8()? != 0;
-        let metadata = self.read_value()?;
-        let relocation_count = self.read32()?;
-        let mut relocations = Vec::with_capacity(relocation_count as usize);
-        for _ in 0..relocation_count {
-            relocations.push(reloc::Relocation::decode(&mut self.reader)?);
-        }
-        let source_map = if self.format_version >= 6 {
-            self.read_source_map()?
-        } else {
-            Vec::new()
-        };
-        Ok(ReadCodeBlockSpec {
-            bytes,
-            entry_offset,
-            arity,
-            is_cont,
-            metadata,
-            relocations,
-            source_map,
-        })
-    }
 
-    fn read_source_map(&mut self) -> io::Result<Vec<CodeSourceMapEntry>> {
+        const PREALLOC: usize = 4096;
         let count = self.read32()? as usize;
-        let mut source_map = Vec::with_capacity(count);
+        let mut specs: Vec<ReadCode<'gc>> = Vec::with_capacity(count.min(PREALLOC));
         for _ in 0..count {
-            let start = self.read32()?;
-            let end = self.read32()?;
-            if start >= end {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "FASL code source-map range is empty or reversed",
-                ));
+            let arity = self.read32()? as i32;
+            let frame_size = self.read32()?;
+            let metadata = self.read_value()?;
+            let ncode = self.read32()? as usize;
+            let mut code = Vec::with_capacity(ncode.min(PREALLOC));
+            (&mut self.reader)
+                .take(ncode as u64)
+                .read_to_end(&mut code)?;
+            if code.len() != ncode {
+                return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
             }
-            let source = self.read_source_location()?;
-            source_map.push(CodeSourceMapEntry::new(start, end, source));
+            let npool = self.read32()? as usize;
+            let mut pool = Vec::with_capacity(npool.min(PREALLOC));
+            for _ in 0..npool {
+                pool.push(self.read32()?);
+            }
+            let nkinds = self.read32()? as usize;
+            if nkinds != def::NUM_METADATA_KINDS {
+                return Err(invalid("FASL metadata kind count mismatch"));
+            }
+            let mut metadata_counts = [0u32; def::NUM_METADATA_KINDS];
+            for count in &mut metadata_counts {
+                *count = self.read32()?;
+            }
+            let nconsts = self.read32()? as usize;
+            let mut constants = Vec::with_capacity(nconsts.min(PREALLOC));
+            for _ in 0..nconsts {
+                constants.push(match self.read8()? {
+                    0 => ReadConst::Value(self.read_value()?),
+                    1 => ReadConst::Code(self.read32()?),
+                    2 => ReadConst::Cell(self.read32()?),
+                    _ => return Err(invalid("unknown FASL constant kind")),
+                });
+            }
+            let nspans = self.read32()? as usize;
+            let mut spans = Vec::with_capacity(nspans.min(PREALLOC));
+            for _ in 0..nspans {
+                spans.push(self.read_value()?);
+            }
+            let nruns = self.read32()? as usize;
+            let mut srcmap = Vec::with_capacity(nruns.min(PREALLOC));
+            let mut prev_start = 0u32;
+            for _ in 0..nruns {
+                let start = prev_start.wrapping_add(self.read_uleb128()?);
+                let len = self.read_uleb128()?;
+                let flags = self.read8()?;
+                let span = self.read_uleb128()?;
+                if span as usize > spans.len() {
+                    return Err(invalid("FASL source span id out of range"));
+                }
+                srcmap.push((start, len, flags, span));
+                prev_start = start;
+            }
+            specs.push(ReadCode {
+                code,
+                pool,
+                metadata_counts,
+                constants,
+                arity,
+                frame_size,
+                metadata,
+                spans,
+                srcmap,
+            });
         }
-        Ok(source_map)
-    }
+        let entry = self.read32()? as usize;
+        if entry >= specs.len() {
+            return Err(invalid("FASL entry code block index out of range"));
+        }
 
-    fn read_source_location(&mut self) -> io::Result<CodeSourceLocation> {
-        let file = self.read_utf8_string("source file")?;
-        let line = self.read32()?;
-        let column = self.read32()?;
-        let end_line = nonzero_u32(self.read32()?);
-        let end_column = nonzero_u32(self.read32()?);
-        Ok(CodeSourceLocation::new(
-            file, line, column, end_line, end_column,
-        ))
-    }
+        for spec in &specs {
+            verify::verify(&verify::CodeShape {
+                code: &spec.code,
+                pool: &spec.pool,
+                nconsts: spec.constants.len(),
+                frame_size: spec.frame_size as usize,
+                metadata_counts: &spec.metadata_counts,
+            })
+            .map_err(invalid)?;
+            for constant in &spec.constants {
+                if let ReadConst::Code(index) = constant
+                    && *index as usize >= specs.len()
+                {
+                    return Err(invalid("FASL constant names a code block out of range"));
+                }
+            }
+        }
 
-    fn read_utf8_string(&mut self, label: &'static str) -> io::Result<String> {
-        let len = self.read32()? as usize;
-        let mut buf = vec![0; len];
-        self.reader.read_exact(&mut buf)?;
-        String::from_utf8(buf).map_err(|err| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid UTF-8 in FASL {label}: {err}"),
-            )
-        })
-    }
-
-    fn read_relocatable_code_block(&mut self) -> io::Result<Gc<'gc, RelocatableCodeBlock<'gc>>> {
-        let spec = self.read_code_block_spec()?;
-        let data_slots = self.collect_code_block_data_slots(None, &spec.relocations)?;
-        let encoded = reloc::encode_unlinked_relocations(&spec.relocations)?;
-        let unlinked = RelocatableCodeBlock::new(
-            self.ctx,
-            &spec.bytes,
-            spec.entry_offset,
-            &encoded,
-            &data_slots.value_bitmap,
-        );
-        self.keep_value(Value::from(unlinked));
-        Ok(unlinked)
-    }
-
-    fn link_code_block_from_spec(
-        &mut self,
-        source_index: Option<u32>,
-        spec: ReadCodeBlockSpec<'gc>,
-    ) -> io::Result<Gc<'gc, CodeBlock<'gc>>> {
-        let data_slots = self.collect_code_block_data_slots(source_index, &spec.relocations)?;
-        let mut loaded = runtime_code_memory()
-            .lock()
-            .expect("infallible allocation callback")
-            .allocate_copy_with_data_slots(&spec.bytes, data_slots.slots.len())?;
-        let result = (|| {
-            self.initialize_loaded_data_slots(&loaded, &data_slots);
-            self.add_pending_code_entry_slot_fills(&loaded, &data_slots)?;
-            let encoded = reloc::encode_unlinked_relocations(&spec.relocations)?;
-            let unlinked = RelocatableCodeBlock::new(
-                self.ctx,
-                &spec.bytes,
-                spec.entry_offset,
-                &encoded,
-                &data_slots.value_bitmap,
-            );
-            self.keep_value(Value::from(unlinked));
-            let metadata = self.metadata_with_source_map(spec.metadata, &spec.source_map)?;
-            let code_block = CodeBlock::new_loaded_with_data(
-                self.ctx,
-                LoadedCodeBlockInit {
-                    entrypoint: loaded.entrypoint + spec.entry_offset as usize,
+        let ctx = self.ctx;
+        let mut cells: HashMap<u32, Value<'gc>> = HashMap::new();
+        let mut code_blocks: Vec<Gc<'gc, CodeBlock<'gc>>> = Vec::with_capacity(specs.len());
+        for spec in &specs {
+            let constants: Vec<Value<'gc>> = spec
+                .constants
+                .iter()
+                .map(|constant| match constant {
+                    ReadConst::Value(value) => *value,
+                    // Patched below, once every code block exists.
+                    ReadConst::Code(_) => Value::new(false),
+                    ReadConst::Cell(id) => *cells.entry(*id).or_insert_with(|| {
+                        crate::runtime::vm::thunks::make_variable(ctx, Value::new(false))
+                    }),
+                })
+                .collect();
+            let srcmap = if spec.srcmap.is_empty() {
+                Value::new(false)
+            } else {
+                pack_srcmap(ctx, &spec.spans, &spec.srcmap)
+            };
+            code_blocks.push(CodeBlock::new_bytecode(
+                ctx,
+                CodeBlockInit {
+                    code: &spec.code,
+                    pool: &spec.pool,
+                    metadata: def::MetadataLayout::new(&spec.metadata_counts),
+                    constants: &constants,
                     arity: CodeArity::new(spec.arity),
-                    is_continuation: spec.is_cont,
-                    metadata,
-                    unlinked,
-                    span: loaded.take_span().ok_or_else(|| {
-                        io::Error::other("loaded code span has already been moved")
-                    })?,
-                    loaded_data_base: loaded.data_rw_base,
-                    loaded_data_slot_count: loaded.data_len as u32,
+                    frame_size: spec.frame_size,
+                    info: spec.metadata,
+                    srcmap,
                 },
-            );
-            self.keep_value(Value::from(code_block));
-            self.add_pending_data_slot_fills(&loaded, &data_slots, Value::from(code_block))?;
-            self.register_shared_cache_slots(source_index, code_block, &loaded, &data_slots)?;
-            if let Err(err) = self.apply_code_block_relocations(
-                source_index,
-                code_block,
-                &loaded,
-                &spec.bytes,
-                &spec.relocations,
-                &data_slots,
-            ) {
-                // SAFETY: No concurrent access to the span; we own the code block
-                if let Some(span) = unsafe { code_block.take_span_for_finalization() } {
-                    let _ = runtime_code_memory().lock().unwrap().release_span(span);
+            ));
+        }
+        for (spec, code_block) in specs.iter().zip(code_blocks.iter()) {
+            let mut patched = false;
+            for (index, constant) in spec.constants.iter().enumerate() {
+                if let ReadConst::Code(target) = constant {
+                    // SAFETY: `index` is in range of the buffer built from
+                    // the same constant list.
+                    unsafe {
+                        code_block
+                            .buffer
+                            .constant_slot(index)
+                            .write(code_blocks[*target as usize].into());
+                    }
+                    patched = true;
                 }
-                return Err(err);
             }
-            Ok(code_block)
-        })();
-        match result {
-            Ok(code_block) => Ok(code_block),
-            Err(err) => {
-                if let Some(span) = loaded.take_span() {
-                    let _ = runtime_code_memory()
-                        .lock()
-                        .expect("lock should not be poisoned")
-                        .release_span(span);
-                }
-                Err(err)
+            if patched {
+                let _ = Gc::write(ctx, code_block.buffer);
             }
         }
-    }
-
-    fn metadata_with_source_map(
-        &self,
-        metadata: Value<'gc>,
-        source_map: &[CodeSourceMapEntry],
-    ) -> io::Result<Value<'gc>> {
-        if source_map.is_empty() {
-            return Ok(metadata);
-        }
-
-        let source_map_key = Symbol::from_str(self.ctx, "source-map").into();
-        if metadata.is_pair() && metadata.assq(source_map_key).is_some() {
-            return Ok(metadata);
-        }
-
-        let metadata = if metadata == Value::new(false) {
-            Value::null()
-        } else {
-            metadata
-        };
-        if !metadata.is_alist() {
-            return Ok(metadata);
-        }
-
-        let source_map = self.source_map_value(source_map)?;
-        let source_map_entry = Value::cons(self.ctx, source_map_key, source_map);
-        Ok(Value::cons(self.ctx, source_map_entry, metadata))
-    }
-
-    fn source_map_value(&self, source_map: &[CodeSourceMapEntry]) -> io::Result<Value<'gc>> {
-        let mut values = Value::null();
-        for entry in source_map.iter().rev() {
-            let source = self.source_location_value(&entry.source)?;
-            let record = Vector::from_slice(
-                self.ctx,
-                &[
-                    source_map_u32(entry.start, "source-map start offset")?,
-                    source_map_u32(entry.end, "source-map end offset")?,
-                    source,
-                ],
-            )
-            .into_value(self.ctx);
-            values = Value::cons(self.ctx, record, values);
-        }
-        Ok(values)
-    }
-
-    fn source_location_value(&self, source: &CodeSourceLocation) -> io::Result<Value<'gc>> {
-        let file = Str::from_str(self.ctx, &source.file).into_value(self.ctx);
-        let origin = Symbol::from_str(self.ctx, "cranelift").into_value(self.ctx);
-        let end_line = option_u32_value(source.end_line, "source-map end line")?;
-        let end_column = option_u32_value(source.end_column, "source-map end column")?;
-        Ok(Vector::from_slice(
-            self.ctx,
-            &[
-                file,
-                source_map_u32(source.line, "source-map line")?,
-                source_map_u32(source.column, "source-map column")?,
-                end_line,
-                end_column,
-                Value::new(false),
-                Value::new(false),
-                origin,
-                Value::null(),
-            ],
-        )
-        .into_value(self.ctx))
+        Ok(Closure::new(ctx, code_blocks[entry], 0, false).into())
     }
 
     pub fn read_header(&mut self) -> io::Result<()> {
@@ -869,11 +592,11 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
         Ok(value)
     }
 
-    pub fn new(ctx: Context<'gc>, reader: R) -> Self {
+    pub fn new(ctx: MutationContext<'gc>, reader: R) -> Self {
         Self::new_with_options(ctx, reader, LoadOptions::NORMAL)
     }
 
-    pub fn new_with_options(ctx: Context<'gc>, reader: R, options: LoadOptions) -> Self {
+    pub fn new_with_options(ctx: MutationContext<'gc>, reader: R, options: LoadOptions) -> Self {
         let lites = HashTable::new(ctx, HashTableType::Eq, 32, 0.75);
         let roots = Global::new(Roots {
             values: Monitor::new(vec![Value::from(lites)]),
@@ -886,11 +609,6 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
             options,
             roots,
             reference_map: HashMap::new(),
-            graph_stack: Vec::new(),
-            shared_cache_slots: Vec::new(),
-            pending_code_entry_relocations: Vec::new(),
-            pending_data_slot_fills: Vec::new(),
-            pending_code_entry_slot_fills: Vec::new(),
             format_version: 0,
         }
     }
@@ -945,884 +663,5 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
             ));
         }
         Ok(value)
-    }
-
-    fn read_graph_definition(&mut self, index: u32) -> io::Result<Value<'gc>> {
-        let tag = self.read8()?;
-        if tag == FASL_TAG_DLIST {
-            return self.read_graph_defined_dlist(index);
-        }
-
-        if tag != FASL_TAG_VECTOR {
-            let value = if tag == FASL_TAG_CODE_BLOCK || tag == FASL_TAG_UNLINKED_CODEBLOCK {
-                let spec = self.read_code_block_spec()?;
-                Value::from(self.link_code_block_from_spec(Some(index), spec)?)
-            } else {
-                self.read_tagged_value(tag)?
-            };
-            let graph = self.graph_stack.last_mut().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "FASL graph definition outside graph context",
-                )
-            })?;
-            graph.define(index, value)?;
-            self.resolve_pending_code_entry_relocations(index)?;
-            self.resolve_pending_code_entry_slot_fills(index)?;
-            self.resolve_pending_data_slot_fills(index)?;
-            return Ok(value);
-        }
-
-        let count = self.read32()? as usize;
-        let vector = Vector::new::<false>(self.ctx, count, Value::undefined());
-        {
-            let graph = self.graph_stack.last_mut().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "FASL graph definition outside graph context",
-                )
-            })?;
-            graph.define(index, Value::new(vector))?;
-        }
-        self.resolve_pending_code_entry_relocations(index)?;
-        self.resolve_pending_code_entry_slot_fills(index)?;
-        self.resolve_pending_data_slot_fills(index)?;
-
-        for i in 0..count {
-            let value = self.read_value()?;
-            Gc::write(self.ctx, vector)[i].unlock().set(value);
-        }
-        Ok(Value::new(vector))
-    }
-
-    fn read_graph_defined_dlist(&mut self, index: u32) -> io::Result<Value<'gc>> {
-        let count = self.read32()? as usize;
-        if count == 0 {
-            let value = self.read_value()?;
-            let graph = self.graph_stack.last_mut().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "FASL graph definition outside graph context",
-                )
-            })?;
-            graph.define(index, value)?;
-            self.resolve_pending_code_entry_relocations(index)?;
-            self.resolve_pending_code_entry_slot_fills(index)?;
-            self.resolve_pending_data_slot_fills(index)?;
-            return Ok(value);
-        }
-
-        let head = Pair::new(self.ctx, Value::undefined(), Value::undefined());
-        {
-            let graph = self.graph_stack.last_mut().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "FASL graph definition outside graph context",
-                )
-            })?;
-            graph.define(index, Value::new(head))?;
-        }
-        self.resolve_pending_code_entry_relocations(index)?;
-        self.resolve_pending_code_entry_slot_fills(index)?;
-        self.resolve_pending_data_slot_fills(index)?;
-
-        let mut current = head;
-        for i in 0..count {
-            let car = self.read_value()?;
-            current.set_car(self.ctx, car);
-            if i + 1 == count {
-                let cdr = self.read_value()?;
-                current.set_cdr(self.ctx, cdr);
-            } else {
-                let next = Pair::new(self.ctx, Value::undefined(), Value::undefined());
-                current.set_cdr(self.ctx, Value::new(next));
-                current = next;
-            }
-        }
-        Ok(Value::new(head))
-    }
-
-    fn apply_code_block_relocations(
-        &mut self,
-        source_index: Option<u32>,
-        code_block: Gc<'gc, CodeBlock<'gc>>,
-        loaded: &CodeAllocation,
-        code_bytes: &[u8],
-        relocations: &[reloc::Relocation],
-        data_slots: &CodeDataSlots<'gc>,
-    ) -> io::Result<()> {
-        let mut patches = Vec::with_capacity(relocations.len());
-        for relocation in relocations {
-            if let Some(patch) = self.resolve_code_block_relocation_patch(
-                source_index,
-                loaded,
-                code_bytes,
-                relocation,
-                data_slots,
-            )? {
-                patches.push(patch);
-            }
-        }
-        let patch_refs = patches
-            .iter()
-            .map(|(offset, bytes)| (*offset, bytes.as_slice()))
-            .collect::<Vec<_>>();
-        code_block.with_live_span(|span| {
-            runtime_code_memory()
-                .lock()
-                .expect("infallible allocation callback")
-                .patch_many_raw(span, &patch_refs)
-        })
-    }
-
-    fn resolve_code_block_relocation_patch(
-        &mut self,
-        source_index: Option<u32>,
-        loaded: &CodeAllocation,
-        code_bytes: &[u8],
-        relocation: &reloc::Relocation,
-        data_slots: &CodeDataSlots<'gc>,
-    ) -> io::Result<Option<(usize, Vec<u8>)>> {
-        let offset = usize::try_from(relocation.offset).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "FASL code block relocation offset is too large",
-            )
-        })?;
-        let target_address = match (&relocation.kind, relocation.target) {
-            (reloc::RelocKind::Asmkit(_), reloc::RelocTarget::RuntimeSymbol(symbol_id)) => {
-                if let Some(runtime_data) = RuntimeData::from_id(symbol_id) {
-                    runtime_data.address().as_usize()
-                } else {
-                    RuntimeThunk::from_id(symbol_id)
-                        .ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "unknown FASL runtime symbol",
-                            )
-                        })?
-                        .address()
-                        .as_usize()
-                }
-            }
-            (reloc::RelocKind::Asmkit(_), reloc::RelocTarget::SideMetadata(kind)) => {
-                patch::side_metadata_address(kind)
-            }
-            (
-                reloc::RelocKind::Asmkit(_),
-                reloc::RelocTarget::Entry(_)
-                | reloc::RelocTarget::DebugEntry(_)
-                | reloc::RelocTarget::Object(_),
-            ) => match self.graph_code_block_link_entrypoint_if_defined(relocation.target)? {
-                Some(entrypoint) => entrypoint,
-                None => {
-                    let source_index = source_index.ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "FASL pending code entry relocation outside graph definition",
-                        )
-                    })?;
-                    self.add_pending_code_entry_relocation(PendingCodeEntryRelocation {
-                        source_index,
-                        base: loaded.entrypoint,
-                        offset,
-                        target: relocation.target,
-                        kind: relocation.kind.clone(),
-                        addend: relocation.addend,
-                        original_bytes: patch::relocation_original_bytes(
-                            code_bytes,
-                            offset,
-                            &relocation.kind,
-                        )?
-                        .to_vec(),
-                    })?;
-                    return Ok(None);
-                }
-            },
-            (reloc::RelocKind::Cranelift(_), reloc::RelocTarget::RuntimeSymbol(symbol_id)) => {
-                if let Some(runtime_data) = RuntimeData::from_id(symbol_id) {
-                    runtime_data.address().as_usize()
-                } else {
-                    RuntimeThunk::from_id(symbol_id)
-                        .ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "unknown FASL runtime symbol",
-                            )
-                        })?
-                        .address()
-                        .as_usize()
-                }
-            }
-            (reloc::RelocKind::Cranelift(_), reloc::RelocTarget::SideMetadata(kind)) => {
-                patch::side_metadata_address(kind)
-            }
-            (
-                reloc::RelocKind::Cranelift(_),
-                reloc::RelocTarget::Object(_) | reloc::RelocTarget::CacheCell(_),
-            ) => data_slots.slot_rw_address(loaded, relocation.target)?,
-            (reloc::RelocKind::CraneliftDataSlot(_), _) => {
-                data_slots.slot_rw_address(loaded, relocation.target)?
-            }
-            (reloc::RelocKind::Cranelift(_), reloc::RelocTarget::Entry(_)) => {
-                match self.graph_code_block_link_entrypoint_if_defined(relocation.target)? {
-                    Some(entrypoint) => entrypoint,
-                    None => {
-                        let source_index = source_index.ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "FASL pending code entry relocation outside graph definition",
-                            )
-                        })?;
-                        self.add_pending_code_entry_relocation(PendingCodeEntryRelocation {
-                            source_index,
-                            base: loaded.entrypoint,
-                            offset,
-                            target: relocation.target,
-                            kind: relocation.kind.clone(),
-                            addend: relocation.addend,
-                            original_bytes: patch::relocation_original_bytes(
-                                code_bytes,
-                                offset,
-                                &relocation.kind,
-                            )?
-                            .to_vec(),
-                        })?;
-                        return Ok(None);
-                    }
-                }
-            }
-            (reloc::RelocKind::Cranelift(_), reloc::RelocTarget::DebugEntry(_)) => {
-                match self.graph_code_block_link_entrypoint_if_defined(relocation.target)? {
-                    Some(entrypoint) => entrypoint,
-                    None => {
-                        let source_index = source_index.ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "FASL pending code entry relocation outside graph definition",
-                            )
-                        })?;
-                        self.add_pending_code_entry_relocation(PendingCodeEntryRelocation {
-                            source_index,
-                            base: loaded.entrypoint,
-                            offset,
-                            target: relocation.target,
-                            kind: relocation.kind.clone(),
-                            addend: relocation.addend,
-                            original_bytes: patch::relocation_original_bytes(
-                                code_bytes,
-                                offset,
-                                &relocation.kind,
-                            )?
-                            .to_vec(),
-                        })?;
-                        return Ok(None);
-                    }
-                }
-            }
-            (
-                reloc::RelocKind::RuntimeData | reloc::RelocKind::AbsWord,
-                reloc::RelocTarget::RuntimeSymbol(symbol_id),
-            ) => {
-                let runtime_data = RuntimeData::from_id(symbol_id).ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "unknown FASL runtime data symbol",
-                    )
-                })?;
-                runtime_data.address().as_usize()
-            }
-            (reloc::RelocKind::RuntimeThunk, reloc::RelocTarget::RuntimeSymbol(symbol_id)) => {
-                let runtime_thunk = RuntimeThunk::from_id(symbol_id).ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "unknown FASL runtime thunk symbol",
-                    )
-                })?;
-                runtime_thunk.address().as_usize()
-            }
-            (reloc::RelocKind::SideMetadata, reloc::RelocTarget::SideMetadata(kind)) => {
-                patch::side_metadata_address(kind)
-            }
-            (reloc::RelocKind::DataSlotAddress, target) => {
-                data_slots.slot_rw_address(loaded, target)?
-            }
-            (reloc::RelocKind::CacheCell, target) => data_slots.slot_rw_address(loaded, target)?,
-            (
-                reloc::RelocKind::CodeEntry,
-                reloc::RelocTarget::Entry(_)
-                | reloc::RelocTarget::DebugEntry(_)
-                | reloc::RelocTarget::Object(_),
-            ) => match self.graph_code_block_link_entrypoint_if_defined(relocation.target)? {
-                Some(entrypoint) => entrypoint,
-                None => {
-                    let source_index = source_index.ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "FASL pending code entry relocation outside graph definition",
-                        )
-                    })?;
-                    self.add_pending_code_entry_relocation(PendingCodeEntryRelocation {
-                        source_index,
-                        base: loaded.entrypoint,
-                        offset,
-                        target: relocation.target,
-                        kind: relocation.kind.clone(),
-                        addend: relocation.addend,
-                        original_bytes: patch::relocation_original_bytes(
-                            code_bytes,
-                            offset,
-                            &relocation.kind,
-                        )?
-                        .to_vec(),
-                    })?;
-                    return Ok(None);
-                }
-            },
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "unsupported FASL code block relocation",
-                ));
-            }
-        };
-        patch::relocation_patch_bytes(
-            loaded.entrypoint,
-            offset,
-            &relocation.kind,
-            target_address,
-            relocation.addend,
-            patch::relocation_original_bytes(code_bytes, offset, &relocation.kind)?,
-        )
-        .map(|bytes| Some((offset, bytes)))
-    }
-
-    fn collect_code_block_data_slots(
-        &mut self,
-        source_index: Option<u32>,
-        relocations: &[reloc::Relocation],
-    ) -> io::Result<CodeDataSlots<'gc>> {
-        let mut slots = CodeDataSlots::default();
-        for relocation in relocations {
-            if let Some(index) = code_entry_keepalive_index(relocation) {
-                let target = reloc::RelocTarget::Object(index);
-                match slots.indices.entry(target) {
-                    Entry::Occupied(_) => {}
-                    Entry::Vacant(_) => {
-                        if let Some(value) = self.graph_value_optional(index)? {
-                            slots.push_value(target, value)?;
-                        } else {
-                            slots.push_pending_value(target, index)?;
-                        }
-                    }
-                }
-            }
-
-            if matches!(relocation.target, reloc::RelocTarget::CacheCell(_)) {
-                let reloc::RelocTarget::CacheCell(index) = relocation.target else {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "FASL cache-cell relocation target is not an object",
-                    ));
-                };
-                if let Some(shared) = self.shared_cache_slot(index)? {
-                    slots.push_keepalive_value(shared.owner);
-                    slots
-                        .external_addresses
-                        .insert(relocation.target, shared.address);
-                    continue;
-                }
-                let _ = source_index;
-            }
-
-            if !matches!(relocation.kind, reloc::RelocKind::DataSlotAddress)
-                && !matches!(relocation.kind, reloc::RelocKind::CacheCell)
-                && !matches!(relocation.kind, reloc::RelocKind::CraneliftDataSlot(_))
-                && !matches!(
-                    (&relocation.kind, relocation.target),
-                    (
-                        reloc::RelocKind::Cranelift(_),
-                        reloc::RelocTarget::Object(_) | reloc::RelocTarget::CacheCell(_)
-                    )
-                )
-            {
-                continue;
-            }
-            let target = relocation.target;
-            let is_local_cache_cell = matches!(target, reloc::RelocTarget::CacheCell(_));
-            if slots.indices.contains_key(&target) {
-                continue;
-            }
-            match target {
-                reloc::RelocTarget::Object(index) | reloc::RelocTarget::CacheCell(index) => {
-                    if let Some(value) = self.graph_value_optional(index)? {
-                        slots.push_value(target, value)?;
-                    } else {
-                        slots.push_pending_value(target, index)?;
-                    }
-                }
-                reloc::RelocTarget::Entry(_) | reloc::RelocTarget::DebugEntry(_) => {
-                    if let Some(entrypoint) =
-                        self.graph_code_block_link_entrypoint_if_defined(target)?
-                    {
-                        slots.push_raw(target, entrypoint)?;
-                    } else {
-                        slots.push_pending_entry(target)?;
-                    }
-                }
-                reloc::RelocTarget::SideMetadata(kind) => {
-                    slots.push_raw(target, patch::side_metadata_address(kind))?;
-                }
-                reloc::RelocTarget::RuntimeSymbol(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "FASL runtime-symbol data slots are not supported",
-                    ));
-                }
-            }
-            if is_local_cache_cell {
-                let reloc::RelocTarget::CacheCell(index) = target else {
-                    unreachable!("cache-cell relocation target was validated above");
-                };
-                slots.local_cache_indices.push(index);
-            }
-        }
-        Ok(slots)
-    }
-
-    fn shared_cache_slot(&self, index: u32) -> io::Result<Option<SharedCacheSlot<'gc>>> {
-        let Some(shared) = self.shared_cache_slots.last() else {
-            return Ok(None);
-        };
-        Ok(shared.get(&index).copied())
-    }
-
-    fn register_shared_cache_slots(
-        &mut self,
-        source_index: Option<u32>,
-        code_block: Gc<'gc, CodeBlock<'gc>>,
-        loaded: &CodeAllocation,
-        data_slots: &CodeDataSlots<'gc>,
-    ) -> io::Result<()> {
-        let Some(_source_index) = source_index else {
-            return Ok(());
-        };
-        let Some(shared) = self.shared_cache_slots.last_mut() else {
-            return Ok(());
-        };
-        for graph_index in &data_slots.local_cache_indices {
-            let slot_index = data_slots.slot_index(reloc::RelocTarget::CacheCell(*graph_index))?;
-            shared.entry(*graph_index).or_insert(SharedCacheSlot {
-                address: loaded.data_rw_base + slot_index * std::mem::size_of::<Value<'gc>>(),
-                owner: Value::from(code_block),
-            });
-        }
-        Ok(())
-    }
-
-    fn initialize_loaded_data_slots(
-        &self,
-        loaded: &CodeAllocation,
-        data_slots: &CodeDataSlots<'gc>,
-    ) {
-        if data_slots.slots.is_empty() {
-            return;
-        }
-        debug_assert_eq!(loaded.data_len, data_slots.slots.len());
-        // SAFETY: Preconditions verified by the surrounding code
-        unsafe {
-            let slots = loaded.data_rw_base.as_usize() as *mut usize;
-            for (index, slot) in data_slots.slots.iter().copied().enumerate() {
-                slots.add(index).write(slot.as_word());
-            }
-        }
-    }
-
-    fn add_pending_data_slot_fills(
-        &mut self,
-        loaded: &CodeAllocation,
-        data_slots: &CodeDataSlots<'gc>,
-        code_block: Value<'gc>,
-    ) -> io::Result<()> {
-        if data_slots.pending_value_indices.is_empty() {
-            return Ok(());
-        }
-        let pending = self.pending_data_slot_fills.last_mut().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "FASL data slot relocation outside graph context",
-            )
-        })?;
-        let mut owners = self.roots.fetch(self.ctx).fill_code_blocks.lock();
-        let code_block_index = owners.len();
-        owners.push(code_block);
-        drop(owners);
-        for (target, graph_index) in &data_slots.pending_value_indices {
-            let slot_index = data_slots.slot_index(*target)?;
-            pending.push(PendingDataSlotFill {
-                target_index: *graph_index,
-                slot_address: loaded.data_rw_base + slot_index * std::mem::size_of::<Value<'gc>>(),
-                code_block_index,
-            });
-        }
-        Ok(())
-    }
-
-    fn add_pending_code_entry_slot_fills(
-        &mut self,
-        loaded: &CodeAllocation,
-        data_slots: &CodeDataSlots<'gc>,
-    ) -> io::Result<()> {
-        if data_slots.pending_entry_indices.is_empty() {
-            return Ok(());
-        }
-        let pending = self
-            .pending_code_entry_slot_fills
-            .last_mut()
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "FASL code entry data slot relocation outside graph context",
-                )
-            })?;
-        for target in &data_slots.pending_entry_indices {
-            let slot_index = data_slots.slot_index(*target)?;
-            pending.push(PendingCodeEntrySlotFill {
-                target: *target,
-                slot_address: loaded.data_rw_base + slot_index * std::mem::size_of::<usize>(),
-            });
-        }
-        Ok(())
-    }
-
-    fn graph_value(&self, index: u32) -> io::Result<Value<'gc>> {
-        let graph = self.graph_stack.last().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "FASL object data slot relocation outside graph context",
-            )
-        })?;
-        graph.get(index)
-    }
-
-    fn graph_value_optional(&self, index: u32) -> io::Result<Option<Value<'gc>>> {
-        let graph = self.graph_stack.last().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "FASL object relocation outside graph context",
-            )
-        })?;
-        graph.get_optional(index)
-    }
-
-    fn graph_code_block_entrypoint_if_defined(&self, index: u32) -> io::Result<Option<usize>> {
-        let Some(value) = self.graph_value_optional(index)? else {
-            return Ok(None);
-        };
-        let code_block = value.try_as::<CodeBlock>().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "FASL code entry relocation target is not a code block",
-            )
-        })?;
-        Ok(Some(code_block.entrypoint.as_usize()))
-    }
-
-    fn graph_code_block_link_entrypoint_if_defined(
-        &self,
-        target: reloc::RelocTarget,
-    ) -> io::Result<Option<usize>> {
-        let index = code_entry_target_index(target).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "FASL code entry relocation target is not a code entry target",
-            )
-        })?;
-        let Some(value) = self.graph_value_optional(index)? else {
-            return Ok(None);
-        };
-        let code_block = value.try_as::<CodeBlock>().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "FASL code entry relocation target is not a code block",
-            )
-        })?;
-        if matches!(target, reloc::RelocTarget::DebugEntry(_)) && self.options.debug_entries {
-            Ok(Some(get_debug_trampoline_from_scheme().as_usize()))
-        } else {
-            Ok(Some(code_block.entrypoint.as_usize()))
-        }
-    }
-
-    fn add_pending_code_entry_relocation(
-        &mut self,
-        relocation: PendingCodeEntryRelocation,
-    ) -> io::Result<()> {
-        let pending = self
-            .pending_code_entry_relocations
-            .last_mut()
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "FASL code entry relocation outside graph context",
-                )
-            })?;
-        pending.push(relocation);
-        Ok(())
-    }
-
-    fn resolve_pending_code_entry_relocations(&mut self, index: u32) -> io::Result<()> {
-        let Some(pending) = self.pending_code_entry_relocations.last_mut() else {
-            return Ok(());
-        };
-        let mut remaining = Vec::with_capacity(pending.len());
-        let mut resolved = Vec::new();
-        for relocation in pending.drain(..) {
-            if code_entry_target_index(relocation.target) == Some(index) {
-                resolved.push(relocation);
-            } else {
-                remaining.push(relocation);
-            }
-        }
-        *pending = remaining;
-        if resolved.is_empty() {
-            return Ok(());
-        }
-        let graph = self.graph_stack.last().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "FASL code entry relocation outside graph context",
-            )
-        })?;
-        let mut patches = Vec::with_capacity(resolved.len());
-        for relocation in resolved {
-            let target = self
-                .graph_code_block_link_entrypoint_if_defined(relocation.target)?
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "unresolved FASL code entry relocation",
-                    )
-                })?;
-            let source = graph.get(relocation.source_index)?;
-            let code_block = source.try_as::<CodeBlock>().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "FASL code entry relocation source is not a code block",
-                )
-            })?;
-            let bytes = patch::relocation_patch_bytes(
-                relocation.base,
-                relocation.offset,
-                &relocation.kind,
-                target,
-                relocation.addend,
-                &relocation.original_bytes,
-            )?;
-            patches.push((code_block, relocation.offset, bytes));
-        }
-        let mut memory = runtime_code_memory()
-            .lock()
-            .expect("lock should not be poisoned");
-        for (code_block, offset, bytes) in &mut patches {
-            code_block.with_live_span(|span| memory.patch_raw(span, *offset, bytes))?;
-        }
-        Ok(())
-    }
-
-    fn resolve_pending_code_entry_slot_fills(&mut self, index: u32) -> io::Result<()> {
-        let Some(pending) = self.pending_code_entry_slot_fills.last_mut() else {
-            return Ok(());
-        };
-        let mut remaining = Vec::with_capacity(pending.len());
-        let mut resolved = Vec::new();
-        for fill in pending.drain(..) {
-            if code_entry_target_index(fill.target) == Some(index) {
-                resolved.push(fill);
-            } else {
-                remaining.push(fill);
-            }
-        }
-        *pending = remaining;
-        if resolved.is_empty() {
-            return Ok(());
-        }
-        for fill in resolved {
-            let target = self
-                .graph_code_block_link_entrypoint_if_defined(fill.target)?
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "unresolved FASL code entry data slot fill",
-                    )
-                })?;
-            // SAFETY: Preconditions verified by the surrounding code
-            unsafe {
-                (fill.slot_address.as_usize() as *mut usize).write(target);
-            }
-        }
-        Ok(())
-    }
-
-    fn resolve_pending_data_slot_fills(&mut self, index: u32) -> io::Result<()> {
-        let Some(pending) = self.pending_data_slot_fills.last_mut() else {
-            return Ok(());
-        };
-        let mut remaining = Vec::with_capacity(pending.len());
-        let mut resolved = Vec::new();
-        for fill in pending.drain(..) {
-            if fill.target_index == index {
-                resolved.push(fill);
-            } else {
-                remaining.push(fill);
-            }
-        }
-        *pending = remaining;
-        if resolved.is_empty() {
-            return Ok(());
-        }
-        let value = self.graph_value(index)?;
-        let owner = {
-            let owners = self.roots.fetch(self.ctx).fill_code_blocks.lock();
-            owners
-                .get(resolved.first().map_or(0, |f| f.code_block_index))
-                .copied()
-        };
-        for fill in resolved {
-            // SAFETY: Preconditions verified by the surrounding code
-            unsafe {
-                (fill.slot_address.as_usize() as *mut Value<'gc>).write(value);
-            }
-        }
-        
-        if value.is_cell() {
-            if let Some(owner) = owner {
-                if let Some(code_block) = owner.try_as::<CodeBlock>() {
-                    Gc::write(self.ctx, code_block);
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-fn code_entry_keepalive_index(relocation: &reloc::Relocation) -> Option<u32> {
-    match (&relocation.kind, relocation.target) {
-        (
-            reloc::RelocKind::Asmkit(_) | reloc::RelocKind::CodeEntry,
-            reloc::RelocTarget::Entry(index)
-            | reloc::RelocTarget::DebugEntry(index)
-            | reloc::RelocTarget::Object(index),
-        ) => Some(index),
-        (
-            reloc::RelocKind::Cranelift(_)
-            | reloc::RelocKind::DataSlotAddress
-            | reloc::RelocKind::CraneliftDataSlot(_),
-            reloc::RelocTarget::Entry(index) | reloc::RelocTarget::DebugEntry(index),
-        ) => Some(index),
-        _ => None,
-    }
-}
-
-fn code_entry_target_index(target: reloc::RelocTarget) -> Option<u32> {
-    match target {
-        reloc::RelocTarget::Entry(index)
-        | reloc::RelocTarget::DebugEntry(index)
-        | reloc::RelocTarget::Object(index) => Some(index),
-        _ => None,
-    }
-}
-
-#[derive(Clone, Copy)]
-enum CodeDataSlot<'gc> {
-    Value(Value<'gc>),
-    Raw(usize),
-}
-
-impl CodeDataSlot<'_> {
-    fn as_word(self) -> usize {
-        match self {
-            Self::Value(value) => value.bits() as usize,
-            Self::Raw(word) => word,
-        }
-    }
-}
-
-#[derive(Default)]
-struct CodeDataSlots<'gc> {
-    indices: HashMap<reloc::RelocTarget, usize>,
-    external_addresses: HashMap<reloc::RelocTarget, Address>,
-    slots: Vec<CodeDataSlot<'gc>>,
-    value_bitmap: Vec<usize>,
-    pending_value_indices: Vec<(reloc::RelocTarget, u32)>,
-    pending_entry_indices: Vec<reloc::RelocTarget>,
-    local_cache_indices: Vec<u32>,
-}
-
-impl<'gc> CodeDataSlots<'gc> {
-    fn push_value(&mut self, target: reloc::RelocTarget, value: Value<'gc>) -> io::Result<()> {
-        let slot_index = self.slots.len();
-        let word_index = slot_index / usize::BITS as usize;
-        if self.value_bitmap.len() <= word_index {
-            self.value_bitmap.resize(word_index + 1, 0);
-        }
-        self.indices.insert(target, slot_index);
-        self.slots.push(CodeDataSlot::Value(value));
-        self.value_bitmap[word_index] |= 1usize << (slot_index % usize::BITS as usize);
-        Ok(())
-    }
-
-    fn push_keepalive_value(&mut self, value: Value<'gc>) {
-        let slot_index = self.slots.len();
-        let word_index = slot_index / usize::BITS as usize;
-        if self.value_bitmap.len() <= word_index {
-            self.value_bitmap.resize(word_index + 1, 0);
-        }
-        self.slots.push(CodeDataSlot::Value(value));
-        self.value_bitmap[word_index] |= 1usize << (slot_index % usize::BITS as usize);
-    }
-
-    fn push_raw(&mut self, target: reloc::RelocTarget, word: usize) -> io::Result<()> {
-        let slot_index = self.slots.len();
-        self.indices.insert(target, slot_index);
-        self.slots.push(CodeDataSlot::Raw(word));
-        Ok(())
-    }
-
-    fn push_pending_value(
-        &mut self,
-        target: reloc::RelocTarget,
-        graph_index: u32,
-    ) -> io::Result<()> {
-        self.push_value(target, Value::undefined())?;
-        self.pending_value_indices.push((target, graph_index));
-        Ok(())
-    }
-
-    fn push_pending_entry(&mut self, target: reloc::RelocTarget) -> io::Result<()> {
-        self.push_raw(target, 0)?;
-        self.pending_entry_indices.push(target);
-        Ok(())
-    }
-
-    fn slot_index(&self, target: reloc::RelocTarget) -> io::Result<usize> {
-        self.indices.get(&target).copied().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "FASL data slot relocation references unknown slot",
-            )
-        })
-    }
-
-    fn slot_rw_address(
-        &self,
-        loaded: &CodeAllocation,
-        target: reloc::RelocTarget,
-    ) -> io::Result<usize> {
-        if let Some(address) = self.external_addresses.get(&target) {
-            return Ok(address.as_usize());
-        }
-        let slot_index = self.slot_index(target)?;
-        Ok(loaded.data_rw_base.as_usize() + slot_index * std::mem::size_of::<Value<'gc>>())
     }
 }

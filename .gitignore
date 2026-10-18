@@ -6,11 +6,6 @@
 
 /.direnv
 .direnv/
-out
-io-tmp*
-tmp-catch-out
-main.scm
-capy.heap
 bin/capy
 bin/capyc
 bin/capy-*
@@ -18,3 +13,4 @@ bin/capyc-*
 stage-*
 dist
 .fmt-tmp
+/benchmarks/clos/build

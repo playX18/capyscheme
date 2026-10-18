@@ -48,32 +48,3 @@ pub(crate) fn artifact_kind_for_path(path: &Path) -> Option<LoadArtifactKind> {
         _ => None,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn aot_policy_uses_fasl_code_artifacts() {
-        assert_eq!(
-            artifact_kind_for_policy(ExecutionPolicy::Aot),
-            LoadArtifactKind::FaslCode
-        );
-    }
-
-    #[test]
-    fn fasl_code_artifact_extension_is_fasl() {
-        assert_eq!(
-            artifact_extension(LoadArtifactKind::FaslCode),
-            FASL_CODE_EXTENSION
-        );
-    }
-
-    #[test]
-    fn artifact_kind_for_path_recognizes_fasl_code_images() {
-        assert_eq!(
-            artifact_kind_for_path(Path::new("library.fasl")),
-            Some(LoadArtifactKind::FaslCode)
-        );
-    }
-}

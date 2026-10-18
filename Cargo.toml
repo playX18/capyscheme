@@ -8,26 +8,22 @@ members = [
     "crates/capy-sni-derive",
     "crates/capy-cli",
 ]
+
+exclude = ["vendor"]
+
 default-members = ["crates/capy", "crates/capy-cli"]
 
 [workspace.package]
 edition = "2024"
-version = "2.0.2"
+version = "3.0.0"
 
 [workspace.dependencies]
-
-bytecodegen = { git = "https://github.com/playx18/bytecodegen" }
 mmtk = { git = "https://github.com/mmtk/mmtk-core" }
-cranelift = "0.134.2"
-cranelift-codegen = "0.134.2"
-target-lexicon = "*"
-gimli = "0.32.2"
-object = { version = "0.37.3", features = ["macho"] }
 libc = "0.2.174"
 atomic = "0.6.1"
 bitflags = "2.10.0"
 bytemuck = "1.10.2"
-easy-bitfield = "0.1.0"
+capstone = "0.14.0"
 env_logger = "0.11.8"
 libm = "0.2.15"
 num-bigint = "0.4.6"
@@ -38,26 +34,15 @@ tree-sitter = "0.25.5"
 tree-sitter-scheme = { git = "https://github.com/6cdh/tree-sitter-scheme" }
 paste = "1.0.15"
 pretty = "0.12.4"
-hashlink = "0.11.0"
 petgraph = "0.8.2"
 log = "0.4.27"
-memmap2 = "0.9.8"
-probe = "0.5.2"
-lexical = { version = "7.0.4", features = ["power-of-two"] }
 backtrace = "0.3.75"
-which = "8.0.0"
 libffi = { version = "5.0.0" }
 tinyvec = "1.6.0"
 unicode-general-category = "1.1.0"
 unicode-normalization = "0.1.25"
 capy-derive = { path = "crates/capy-derive" }
 serde = { version = "1.0.228", features = ["derive"] }
-capstone = { version = "0.14.0", default-features = false, features = [
-    "std",
-    "full",
-    "arch_x86",
-    "arch_arm64",
-] }
 
 [profile.release]
 incremental = true

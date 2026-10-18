@@ -11,7 +11,7 @@ use crate::heap::{
     weak::WeakProcessor,
 };
 
-use crate::runtime::Context;
+use crate::runtime::MutationContext;
 
 use super::{ClassTagged, HashTableType, IntoValue, Value};
 
@@ -123,7 +123,9 @@ extern "C" fn trace_hamt_node(obj: GcObject, vis: &mut Visitor) {
             TAG_BITMAP => {
                 let header = obj.to_address().as_mut_ref::<HamtBitmapHeader<'static>>();
                 for i in 0..header.child_count as usize {
-                    let mut child = header.children.as_ptr().add(i).read();
+                    // Trace the field itself: the visitor records its address
+                    // and the collector writes the forwarded pointer there.
+                    let child = &mut *header.children.as_mut_ptr().add(i);
                     child.trace(vis);
                 }
             }
@@ -188,7 +190,7 @@ impl HamtNode {
 }
 
 fn alloc_leaf<'gc>(
-    mc: Context<'gc>,
+    mc: MutationContext<'gc>,
     hash: u32,
     key: Value<'gc>,
     value: Value<'gc>,
@@ -209,7 +211,7 @@ fn alloc_leaf<'gc>(
 }
 
 fn alloc_bitmap<'gc>(
-    mc: Context<'gc>,
+    mc: MutationContext<'gc>,
     bitmap: u32,
     children: &[Gc<'gc, HamtNode>],
 ) -> Gc<'gc, HamtNode> {
@@ -236,7 +238,7 @@ fn alloc_bitmap<'gc>(
 }
 
 fn alloc_array<'gc>(
-    mc: Context<'gc>,
+    mc: MutationContext<'gc>,
     children: [Option<Gc<'gc, HamtNode>>; HAMT_WIDTH],
 ) -> Gc<'gc, HamtNode> {
     let mut locks = [const { Lock::new(None) }; HAMT_WIDTH];
@@ -257,7 +259,7 @@ fn alloc_array<'gc>(
 }
 
 fn alloc_collision<'gc>(
-    mc: Context<'gc>,
+    mc: MutationContext<'gc>,
     hash: u32,
     entries: &[(Value<'gc>, Value<'gc>, u32)],
 ) -> Gc<'gc, HamtNode> {
@@ -292,7 +294,7 @@ fn alloc_collision<'gc>(
 }
 
 fn array_to_bitmap<'gc>(
-    mc: Context<'gc>,
+    mc: MutationContext<'gc>,
     children: &[Option<Gc<'gc, HamtNode>>; HAMT_WIDTH],
 ) -> Option<Gc<'gc, HamtNode>> {
     let mut bitmap = 0u32;
@@ -383,7 +385,7 @@ fn hamt_get<'gc>(
 
 #[allow(clippy::too_many_arguments)] // Represents the two leaf entries being merged into a HAMT node.
 fn make_leaf_or_collision<'gc>(
-    mc: Context<'gc>,
+    mc: MutationContext<'gc>,
     shift: u32,
     key1: Value<'gc>,
     value1: Value<'gc>,
@@ -423,7 +425,7 @@ fn make_leaf_or_collision<'gc>(
 }
 
 fn hamt_assoc_leaf<'gc>(
-    mc: Context<'gc>,
+    mc: MutationContext<'gc>,
     typ: HashTableType<'gc>,
     shift: u32,
     leaf: &HamtLeafNode<'gc>,
@@ -442,7 +444,7 @@ fn hamt_assoc_leaf<'gc>(
 }
 
 fn hamt_assoc_collision<'gc>(
-    mc: Context<'gc>,
+    mc: MutationContext<'gc>,
     typ: HashTableType<'gc>,
     header: &HamtCollisionHeader<'gc>,
     key: Value<'gc>,
@@ -474,7 +476,7 @@ fn hamt_assoc_collision<'gc>(
 }
 
 fn hamt_assoc<'gc>(
-    mc: Context<'gc>,
+    mc: MutationContext<'gc>,
     typ: HashTableType<'gc>,
     node: Option<Gc<'gc, HamtNode>>,
     shift: u32,
@@ -596,7 +598,7 @@ fn hamt_remove_leaf<'gc>(
 
 fn hamt_remove_collision<'gc>(
     typ: HashTableType<'gc>,
-    mc: Context<'gc>,
+    mc: MutationContext<'gc>,
     header: &HamtCollisionHeader<'gc>,
     key: Value<'gc>,
 ) -> (Option<Gc<'gc, HamtNode>>, bool) {
@@ -631,7 +633,7 @@ fn hamt_remove_collision<'gc>(
 }
 
 fn hamt_remove<'gc>(
-    mc: Context<'gc>,
+    mc: MutationContext<'gc>,
     typ: HashTableType<'gc>,
     node: Gc<'gc, HamtNode>,
     shift: u32,
@@ -769,7 +771,7 @@ unsafe impl<'gc> Trace for HamtTrie<'gc> {
 }
 
 impl<'gc> HamtTrie<'gc> {
-    pub fn new(_mc: Context<'gc>, typ: HashTableType<'gc>, kind: HamtKind) -> Self {
+    pub fn new(_mc: MutationContext<'gc>, typ: HashTableType<'gc>, kind: HamtKind) -> Self {
         Self {
             root: Lock::new(None),
             count: 0,
@@ -908,7 +910,7 @@ pub struct PersistentMap<'gc> {
 }
 
 impl<'gc> PersistentMap<'gc> {
-    pub fn new(mc: Context<'gc>, typ: HashTableType<'gc>) -> Gc<'gc, Self> {
+    pub fn new(mc: MutationContext<'gc>, typ: HashTableType<'gc>) -> Gc<'gc, Self> {
         Gc::new_with_header_word(
             mc,
             Self {
@@ -940,7 +942,7 @@ impl<'gc> PersistentMap<'gc> {
 
     pub fn assoc(
         self: Gc<'gc, Self>,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         key: impl IntoValue<'gc>,
         value: impl IntoValue<'gc>,
     ) -> Gc<'gc, Self> {
@@ -974,7 +976,11 @@ impl<'gc> PersistentMap<'gc> {
         )
     }
 
-    pub fn dissoc(self: Gc<'gc, Self>, ctx: Context<'gc>, key: Value<'gc>) -> Gc<'gc, Self> {
+    pub fn dissoc(
+        self: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        key: Value<'gc>,
+    ) -> Gc<'gc, Self> {
         let Some(root) = self.trie.root.get() else {
             return self;
         };
@@ -1005,7 +1011,7 @@ impl<'gc> PersistentMap<'gc> {
     }
 
     pub fn from_alist(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         typ: HashTableType<'gc>,
         pairs: &[(Value<'gc>, Value<'gc>)],
     ) -> Gc<'gc, Self> {
@@ -1032,7 +1038,7 @@ pub struct PersistentSet<'gc> {
 }
 
 impl<'gc> PersistentSet<'gc> {
-    pub fn new(mc: Context<'gc>, typ: HashTableType<'gc>) -> Gc<'gc, Self> {
+    pub fn new(mc: MutationContext<'gc>, typ: HashTableType<'gc>) -> Gc<'gc, Self> {
         Gc::new_with_header_word(
             mc,
             Self {
@@ -1058,7 +1064,7 @@ impl<'gc> PersistentSet<'gc> {
         self.trie.contains_key(key)
     }
 
-    pub fn add(self: Gc<'gc, Self>, ctx: Context<'gc>, key: Value<'gc>) -> Gc<'gc, Self> {
+    pub fn add(self: Gc<'gc, Self>, ctx: MutationContext<'gc>, key: Value<'gc>) -> Gc<'gc, Self> {
         let hash = self.trie.key_hash(key);
         let (new_root, added) = hamt_assoc(
             ctx,
@@ -1087,7 +1093,11 @@ impl<'gc> PersistentSet<'gc> {
         )
     }
 
-    pub fn remove(self: Gc<'gc, Self>, ctx: Context<'gc>, key: Value<'gc>) -> Gc<'gc, Self> {
+    pub fn remove(
+        self: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        key: Value<'gc>,
+    ) -> Gc<'gc, Self> {
         let Some(root) = self.trie.root.get() else {
             return self;
         };
@@ -1117,7 +1127,11 @@ impl<'gc> PersistentSet<'gc> {
         self.trie.fold(f, init)
     }
 
-    pub fn union(self: Gc<'gc, Self>, ctx: Context<'gc>, other: Gc<'gc, Self>) -> Gc<'gc, Self> {
+    pub fn union(
+        self: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        other: Gc<'gc, Self>,
+    ) -> Gc<'gc, Self> {
         let mut result = self;
         if let Some(root) = other.trie.root.get() {
             result = fold_set_into(ctx, result, root);
@@ -1127,7 +1141,7 @@ impl<'gc> PersistentSet<'gc> {
 
     pub fn intersection(
         self: Gc<'gc, Self>,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         other: Gc<'gc, Self>,
     ) -> Gc<'gc, Self> {
         let mut result = Self::new(ctx, self.typ());
@@ -1139,7 +1153,7 @@ impl<'gc> PersistentSet<'gc> {
 
     pub fn difference(
         self: Gc<'gc, Self>,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         other: Gc<'gc, Self>,
     ) -> Gc<'gc, Self> {
         let mut result = Self::new(ctx, self.typ());
@@ -1151,7 +1165,7 @@ impl<'gc> PersistentSet<'gc> {
 }
 
 fn fold_set_into<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     mut set: Gc<'gc, PersistentSet<'gc>>,
     node: Gc<'gc, HamtNode>,
 ) -> Gc<'gc, PersistentSet<'gc>> {
@@ -1209,7 +1223,7 @@ fn fold_set_into<'gc>(
 }
 
 fn intersect_nodes<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     mut result: Gc<'gc, PersistentSet<'gc>>,
     node: Gc<'gc, HamtNode>,
     other: &PersistentSet<'gc>,
@@ -1273,7 +1287,7 @@ fn intersect_nodes<'gc>(
 }
 
 fn diff_nodes<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     mut result: Gc<'gc, PersistentSet<'gc>>,
     node: Gc<'gc, HamtNode>,
     other: &PersistentSet<'gc>,

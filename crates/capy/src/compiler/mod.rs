@@ -1,4 +1,4 @@
-//! Compilation pipeline: expander IR → graph CPS → CFG/SSA → bytecode → FASL.
+//! Compilation pipeline: expander IR -> graph CPS -> CFG/SSA -> bytecode -> FASL.
 //!
 //! [`lower_to_cps`] (in the private `pipeline` module) is the frontend
 //! driver. It runs the expander-level passes, primitive resolution,

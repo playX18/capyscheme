@@ -10,7 +10,7 @@ use std::{
 
 use crate::heap::object::{ClassId, builtin_class_ids, class_header_word};
 use crate::heap::{Gc, Global};
-use crate::runtime::{Context, value::*};
+use crate::runtime::{MutationContext, value::*};
 
 #[derive(Trace)]
 #[collect(no_drop)]
@@ -36,11 +36,11 @@ pub static SYMBOL_TABLE: OnceLock<Global<RootedSymbolTable>> = OnceLock::new();
 static ONCE: Once = Once::new();
 
 #[allow(dead_code)]
-pub(crate) fn symbol_table<'gc>(mc: Context<'gc>) -> Gc<'gc, WeakSet<'gc>> {
+pub(crate) fn symbol_table<'gc>(mc: MutationContext<'gc>) -> Gc<'gc, WeakSet<'gc>> {
     *SYMBOL_TABLE.get().expect("index in range").fetch(mc)
 }
 
-pub fn init_symbols<'gc>(mc: Context<'gc>) {
+pub fn init_symbols<'gc>(mc: MutationContext<'gc>) {
     ONCE.call_once(|| {
         let symbol_table = WeakSet::new(mc, 31);
         let _ = SYMBOL_TABLE.set(Global::new(symbol_table));
@@ -48,7 +48,7 @@ pub fn init_symbols<'gc>(mc: Context<'gc>) {
 }
 
 fn lookup_interned_symbol<'gc>(
-    mc: Context<'gc>,
+    mc: MutationContext<'gc>,
     name: Value<'gc>,
     raw_hash: u64,
 ) -> Option<Value<'gc>> {
@@ -79,7 +79,7 @@ fn lookup_interned_symbol<'gc>(
 }
 
 fn symbool_lookup_predicate<'gc>(
-    mc: Context<'gc>,
+    mc: MutationContext<'gc>,
     sym: Value<'gc>,
     other: Gc<'gc, Symbol<'gc>>,
 ) -> bool {
@@ -98,12 +98,12 @@ fn symbool_lookup_predicate<'gc>(
 
 impl<'gc> Symbol<'gc> {
     /// Returns this symbol as an immutable string.
-    pub fn to_str(&self, mc: Context<'gc>) -> Gc<'gc, Str<'gc>> {
+    pub fn to_str(&self, mc: MutationContext<'gc>) -> Gc<'gc, Str<'gc>> {
         self.substring(mc, 0, self.len())
     }
 
     /// Interns a string and returns the canonical symbol for its contents.
-    pub fn from_string(mc: Context<'gc>, str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Symbol<'gc>> {
+    pub fn from_string(mc: MutationContext<'gc>, str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Symbol<'gc>> {
         let mut hasher = simplehash::CityHasher64::new();
         str.hash(&mut hasher);
         let hash = hasher.finish();
@@ -128,7 +128,7 @@ impl<'gc> Symbol<'gc> {
 
     /// Allocates a fresh uninterned symbol from a string.
     pub fn from_string_uninterned(
-        mc: Context<'gc>,
+        mc: MutationContext<'gc>,
         str: Gc<'gc, Str<'gc>>,
         prefix_offset: Option<u16>,
     ) -> Gc<'gc, Symbol<'gc>> {
@@ -140,14 +140,14 @@ impl<'gc> Symbol<'gc> {
     }
 
     /// Interns a UTF-8 string slice.
-    pub fn from_str(mc: Context<'gc>, str: &str) -> Gc<'gc, Symbol<'gc>> {
-        let str = Str::new(*mc, str, false);
+    pub fn from_str(mc: MutationContext<'gc>, str: &str) -> Gc<'gc, Symbol<'gc>> {
+        let str = Str::new(mc, str, false);
         Self::from_string(mc, str)
     }
 
     /// Allocates an uninterned symbol from a UTF-8 string slice.
     pub fn from_str_uninterned(
-        mc: Context<'gc>,
+        mc: MutationContext<'gc>,
         str: &str,
         prefix_offset: Option<u16>,
     ) -> Gc<'gc, Symbol<'gc>> {
@@ -156,7 +156,10 @@ impl<'gc> Symbol<'gc> {
     }
 
     /// Generates a fresh symbol with an optional prefix.
-    pub fn gensym(mc: Context<'gc>, prefix: Option<Gc<'gc, Str<'gc>>>) -> Gc<'gc, Symbol<'gc>> {
+    pub fn gensym(
+        mc: MutationContext<'gc>,
+        prefix: Option<Gc<'gc, Str<'gc>>>,
+    ) -> Gc<'gc, Symbol<'gc>> {
         static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);
 
         let string = match prefix {
@@ -174,7 +177,7 @@ impl<'gc> Symbol<'gc> {
             }
         };
 
-        let str = Str::new(*mc, string, false);
+        let str = Str::new(mc, string, false);
 
         Symbol::from_string(mc, str)
     }
@@ -187,7 +190,7 @@ impl<'gc> Symbol<'gc> {
         heap_header(self).private_variant_flag()
     }
 
-    pub fn uninterned_suffix(&self, ctx: Context<'gc>) -> Gc<'gc, Str<'gc>> {
+    pub fn uninterned_suffix(&self, ctx: MutationContext<'gc>) -> Gc<'gc, Str<'gc>> {
         let offset = self.prefix_offset;
         if offset == 0 {
             Str::new(ctx, "", true)
@@ -196,7 +199,7 @@ impl<'gc> Symbol<'gc> {
         }
     }
 
-    pub fn uninterned_prefix(&self, ctx: Context<'gc>) -> Gc<'gc, Str<'gc>> {
+    pub fn uninterned_prefix(&self, ctx: MutationContext<'gc>) -> Gc<'gc, Str<'gc>> {
         let offset = self.prefix_offset;
         if offset == 0 {
             Str::new(ctx, "", true)
@@ -233,17 +236,20 @@ impl<'gc> Str<'gc> {
         }
     }
 
-    pub fn to_symbol(self: Gc<'gc, Self>, mc: Context<'gc>) -> Gc<'gc, Symbol<'gc>> {
+    pub fn to_symbol(self: Gc<'gc, Self>, mc: MutationContext<'gc>) -> Gc<'gc, Symbol<'gc>> {
         Symbol::from_string(mc, self)
     }
 
-    pub fn to_symbol_uninterned(self: Gc<'gc, Self>, mc: Context<'gc>) -> Gc<'gc, Symbol<'gc>> {
+    pub fn to_symbol_uninterned(
+        self: Gc<'gc, Self>,
+        mc: MutationContext<'gc>,
+    ) -> Gc<'gc, Symbol<'gc>> {
         Symbol::from_string_uninterned(mc, self, None)
     }
 
     pub fn to_symbol_uninterned_with_prefix(
         self: Gc<'gc, Self>,
-        mc: Context<'gc>,
+        mc: MutationContext<'gc>,
         prefix_offset: u16,
     ) -> Gc<'gc, Symbol<'gc>> {
         Symbol::from_string_uninterned(mc, self, Some(prefix_offset))
@@ -315,10 +321,10 @@ macro_rules! static_symbols {
                 $crate::heap::global::Global<$crate::runtime::value::RootedSymbol>
             > = ::std::sync::OnceLock::new();
             paste::paste! {
-                pub fn [<$name: lower>] <'gc>(mc: $crate::runtime::Context<'gc>) ->
+                pub fn [<$name: lower>] <'gc>(mc: $crate::runtime::MutationContext<'gc>) ->
                     $crate::heap::Gc<'gc, $crate::runtime::value::Symbol<'gc>>
                 {
-                    *$name.get_or_init(|| $crate::heap::global::Global::new($crate::runtime::value::Symbol::from_str(mc, $value))).fetch(*mc)
+                    *$name.get_or_init(|| $crate::heap::global::Global::new($crate::runtime::value::Symbol::from_str(mc, $value))).fetch(mc)
                 }
             }
         )*
@@ -346,7 +352,10 @@ unsafe impl<'gc> ClassTagged for Keyword<'gc> {
 
 impl<'gc> Keyword<'gc> {
     /// Allocates a keyword for `symbol`.
-    pub fn from_symbol(mc: Context<'gc>, symbol: Gc<'gc, Symbol<'gc>>) -> Gc<'gc, Keyword<'gc>> {
+    pub fn from_symbol(
+        mc: MutationContext<'gc>,
+        symbol: Gc<'gc, Symbol<'gc>>,
+    ) -> Gc<'gc, Keyword<'gc>> {
         Gc::new_with_header_word(mc, Keyword { symbol }, keyword_header_word())
     }
 

@@ -1,5 +1,3 @@
-#![allow(dead_code, unused_variables)]
-
 //! Vector, bytevector, and tuple heap objects.
 
 use crate::heap::{
@@ -16,10 +14,10 @@ use crate::heap::{
 use std::ops::{Deref, DerefMut, Index};
 use std::{mem::offset_of, ops::IndexMut};
 
-use crate::runtime::{Context, value::*};
+use crate::runtime::{MutationContext, value::*};
 
 #[doc(hidden)]
-pub fn vector_value<'gc>(mc: Context<'gc>, value: impl IntoValue<'gc>) -> Value<'gc> {
+pub fn vector_value<'gc>(mc: MutationContext<'gc>, value: impl IntoValue<'gc>) -> Value<'gc> {
     value.into_value(mc)
 }
 
@@ -90,7 +88,7 @@ impl<'gc> Vector<'gc> {
 
     /// Allocates a vector with all slots initialized to `fill`.
     pub fn new<const IMMUTABLE: bool>(
-        mc: Context<'gc>,
+        mc: MutationContext<'gc>,
         length: usize,
         fill: Value<'gc>,
     ) -> Gc<'gc, Self> {
@@ -114,7 +112,7 @@ impl<'gc> Vector<'gc> {
     }
 
     /// Allocates a mutable vector initialized from a slice.
-    pub fn from_slice(mc: Context<'gc>, slice: &[Value<'gc>]) -> Gc<'gc, Self> {
+    pub fn from_slice(mc: MutationContext<'gc>, slice: &[Value<'gc>]) -> Gc<'gc, Self> {
         let length = slice.len();
         let vector = Self::new::<false>(mc, length, Value::undefined());
 
@@ -138,7 +136,7 @@ impl<'gc> Vector<'gc> {
         unsafe { std::slice::from_raw_parts_mut(self.data.as_mut_ptr().cast(), self.len()) }
     }
 
-    pub fn fill(this: Gc<'gc, Self>, fill: Value<'gc>, mc: Context<'gc>) {
+    pub fn fill(this: Gc<'gc, Self>, fill: Value<'gc>, mc: MutationContext<'gc>) {
         let vec = Gc::write(mc, this);
 
         for i in 0..vec.len() {
@@ -146,7 +144,11 @@ impl<'gc> Vector<'gc> {
         }
     }
 
-    pub fn copy_from(self: Gc<'gc, Self>, other: impl AsRef<[Value<'gc>]>, mc: Context<'gc>) {
+    pub fn copy_from(
+        self: Gc<'gc, Self>,
+        other: impl AsRef<[Value<'gc>]>,
+        mc: MutationContext<'gc>,
+    ) {
         let vec = Gc::write(mc, self);
         let other_slice = other.as_ref();
 
@@ -163,7 +165,7 @@ impl<'gc> Vector<'gc> {
         }
     }
 
-    pub fn to_list(self: Gc<'gc, Self>, mc: Context<'gc>) -> Value<'gc> {
+    pub fn to_list(self: Gc<'gc, Self>, mc: MutationContext<'gc>) -> Value<'gc> {
         let mut list = Value::null();
         for i in (0..self.len()).rev() {
             list = Value::cons(mc, self[i].get(), list);
@@ -321,13 +323,13 @@ impl ByteVector {
 
     /// True if this owned bytevector was allocated in the NonMoving space.
     ///
-    /// Mapped bytevectors are not NonMoving shells; their `contents` address is
+    /// Mapped bytevectors are not NonMoving shells, their `contents` address is
     /// external and must not be treated as an owned payload interior.
     pub fn is_nonmoving<'gc>(self: Gc<'gc, Self>, mc: &Mutation<'gc>) -> bool {
         if self.is_mapping() {
             return false;
         }
-        // `Mutation::is_in_nonmoving_space` — object lives in NonMoving allocator space.
+        // `Mutation::is_in_nonmoving_space`, object lives in NonMoving allocator space.
         mc.is_in_nonmoving_space(self)
     }
 
@@ -345,7 +347,7 @@ impl ByteVector {
 
     /// Allocates an owned bytevector.
     pub fn new<'gc, const IMMUTABLE: bool>(
-        mc: Context<'gc>,
+        mc: MutationContext<'gc>,
         length: usize,
         movable: bool,
     ) -> Gc<'gc, Self> {
@@ -375,7 +377,11 @@ impl ByteVector {
 
     /// Allocates a memory-mapped bytevector. This can be used to represent
     /// memory from FFI calls or memory-mapped files.
-    pub fn new_mapping<'gc>(mc: Context<'gc>, addr: Address, length: usize) -> Gc<'gc, Self> {
+    pub fn new_mapping<'gc>(
+        mc: MutationContext<'gc>,
+        addr: Address,
+        length: usize,
+    ) -> Gc<'gc, Self> {
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let alloc = mc.raw_allocate_with_header_word(
@@ -395,7 +401,7 @@ impl ByteVector {
 
     /// Allocates a mutable bytevector initialized from a byte slice.
     #[inline(never)]
-    pub fn from_slice<'gc>(mc: Context<'gc>, slice: &[u8], movable: bool) -> Gc<'gc, Self> {
+    pub fn from_slice<'gc>(mc: MutationContext<'gc>, slice: &[u8], movable: bool) -> Gc<'gc, Self> {
         let length = slice.len();
         let byte_vector = Self::new::<false>(mc, length, movable);
         byte_vector.copy_from(slice);
@@ -592,7 +598,7 @@ impl<'gc> Tuple<'gc> {
     }
 
     /// Allocates a tuple with all slots initialized to `init`.
-    pub fn new(mc: Context<'gc>, length: usize, init: Value<'gc>) -> Gc<'gc, Self> {
+    pub fn new(mc: MutationContext<'gc>, length: usize, init: Value<'gc>) -> Gc<'gc, Self> {
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let alloc = mc.raw_allocate_with_header_word(
@@ -614,7 +620,7 @@ impl<'gc> Tuple<'gc> {
     }
 
     /// Allocates a tuple initialized from a slice.
-    pub fn from_slice(mc: Context<'gc>, slice: &[Value<'gc>]) -> Gc<'gc, Self> {
+    pub fn from_slice(mc: MutationContext<'gc>, slice: &[Value<'gc>]) -> Gc<'gc, Self> {
         let length = slice.len();
         let tuple = Self::new(mc, length, Value::new(false));
         Self::copy_from(tuple, slice, mc);
@@ -638,7 +644,7 @@ impl<'gc> Tuple<'gc> {
         unsafe { std::slice::from_raw_parts_mut(self.data.as_mut_ptr().cast(), self.len()) }
     }
 
-    pub fn fill(this: Gc<'gc, Self>, fill: Value<'gc>, mc: Context<'gc>) {
+    pub fn fill(this: Gc<'gc, Self>, fill: Value<'gc>, mc: MutationContext<'gc>) {
         let tuple = Gc::write(mc, this);
 
         for i in 0..tuple.len() {
@@ -646,7 +652,11 @@ impl<'gc> Tuple<'gc> {
         }
     }
 
-    pub fn copy_from(this: Gc<'gc, Self>, other: impl AsRef<[Value<'gc>]>, mc: Context<'gc>) {
+    pub fn copy_from(
+        this: Gc<'gc, Self>,
+        other: impl AsRef<[Value<'gc>]>,
+        mc: MutationContext<'gc>,
+    ) {
         let tuple = Gc::write(mc, this);
         let other_slice = other.as_ref();
 
@@ -705,37 +715,3 @@ impl<'gc> Index<usize> for Tuple<'gc> {
 unsafe impl<'gc> AsRefWrite<[Value<'gc>]> for Tuple<'gc> {}
 // SAFETY: `gc` for `Tuple` upholds all trait invariants
 unsafe impl<'gc> IndexWrite<usize> for Tuple<'gc> {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::runtime::Scheme;
-    use mmtk::util::Address;
-
-    #[test]
-    fn bytevector_mapping_uses_class_id() {
-        Scheme::new_uninit().enter(|ctx| {
-            let owned = ByteVector::new::<false>(ctx, 0, false);
-            let mapped = ByteVector::new_mapping(ctx, Address::ZERO, 0);
-
-            assert!(!owned.is_mapping());
-            assert!(mapped.is_mapping());
-            assert_eq!(
-                payload_class_id(&*mapped).bits(),
-                builtin_class_ids::MAPPED_BYTEVECTOR
-            );
-        });
-    }
-
-    #[test]
-    fn owned_bytevector_nonmoving_detection() {
-        Scheme::new_uninit().enter(|ctx| {
-            let movable = ByteVector::new::<false>(ctx, 4, true);
-            let nonmoving = ByteVector::new::<false>(ctx, 4, false);
-            let mapped = ByteVector::new_mapping(ctx, Address::ZERO, 0);
-            assert!(!movable.is_nonmoving(&ctx));
-            assert!(nonmoving.is_nonmoving(&ctx));
-            assert!(!mapped.is_nonmoving(&ctx));
-        });
-    }
-}

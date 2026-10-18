@@ -1,5 +1,3 @@
-
-
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 static COLLECTIONS: AtomicUsize = AtomicUsize::new(0);

@@ -19,7 +19,7 @@ use crate::heap::{
 };
 use simplehash::MurmurHasher64;
 
-use crate::runtime::Context;
+use crate::runtime::MutationContext;
 
 use super::{WeakValue, *};
 
@@ -71,7 +71,7 @@ unsafe impl<'gc> ClassTagged for WeakMapping<'gc> {
 
 impl<'gc> WeakMapping<'gc> {
     /// Allocates a weak mapping from a heap-object key to a value.
-    pub fn new(ctx: Context<'gc>, key: Value<'gc>, value: Value<'gc>) -> Gc<'gc, Self> {
+    pub fn new(ctx: MutationContext<'gc>, key: Value<'gc>, value: Value<'gc>) -> Gc<'gc, Self> {
         assert!(key.is_cell(), "weak-mappings can only have cells as keys");
 
         Gc::new_with_header_word(
@@ -88,7 +88,7 @@ impl<'gc> WeakMapping<'gc> {
         self._key.is_bwp() || self._value.is_bwp()
     }
 
-    pub fn key(&self, mc: Context<'gc>) -> Value<'gc> {
+    pub fn key(&self, mc: MutationContext<'gc>) -> Value<'gc> {
         if self._key.is_bwp() {
             return Value::bwp();
         }
@@ -99,7 +99,7 @@ impl<'gc> WeakMapping<'gc> {
         self._key
     }
 
-    pub fn value(&self, mc: Context<'gc>) -> Value<'gc> {
+    pub fn value(&self, mc: MutationContext<'gc>) -> Value<'gc> {
         if self._value.is_bwp() || !self._value.is_cell() {
             return self._value;
         }
@@ -121,11 +121,11 @@ struct WeakEntry<'gc> {
 }
 
 impl<'gc> WeakEntry<'gc> {
-    fn key(&self, mc: Context<'gc>) -> Value<'gc> {
+    fn key(&self, mc: MutationContext<'gc>) -> Value<'gc> {
         self._key.get(mc)
     }
 
-    fn value(&self, _mc: Context<'gc>) -> Value<'gc> {
+    fn value(&self, _mc: MutationContext<'gc>) -> Value<'gc> {
         self._value.get()
     }
 }
@@ -231,7 +231,11 @@ fn make_hash<'gc>(key: Value<'gc>) -> u64 {
 
 impl<'gc> WeakTable<'gc> {
     /// Allocates a weak table with the given capacity and load factor.
-    pub fn new(ctx: Context<'gc>, initial_capacity: usize, load_factor: f64) -> Gc<'gc, Self> {
+    pub fn new(
+        ctx: MutationContext<'gc>,
+        initial_capacity: usize,
+        load_factor: f64,
+    ) -> Gc<'gc, Self> {
         assert!(
             initial_capacity > 0,
             "initial capacity must be greater than 0"
@@ -271,7 +275,7 @@ impl<'gc> WeakTable<'gc> {
     #[allow(dead_code)]
     // SAFETY: Caller must ensure preconditions are met (see fn docs)
     pub(crate) unsafe fn at_object(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         obj: GcObject,
         kvs: Vec<(Value<'gc>, Value<'gc>)>,
     ) {
@@ -308,7 +312,7 @@ impl<'gc> WeakTable<'gc> {
         }
     }
 
-    fn rehash(inner: &Write<WeakTableInner<'gc>>, ctx: Context<'gc>) {
+    fn rehash(inner: &Write<WeakTableInner<'gc>>, ctx: MutationContext<'gc>) {
         let old_capacity = inner.entries.get().len();
         let old_table = inner.entries.get();
 
@@ -347,7 +351,7 @@ impl<'gc> WeakTable<'gc> {
 
     fn add_entry(
         this: &Write<WeakTableInner<'gc>>,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         mut hash: u64,
         key: Value<'gc>,
         value: Value<'gc>,
@@ -378,7 +382,7 @@ impl<'gc> WeakTable<'gc> {
 
     pub fn put(
         self: Gc<'gc, Self>,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         key: impl IntoValue<'gc>,
         value: impl IntoValue<'gc>,
     ) -> Option<Value<'gc>> {
@@ -405,7 +409,7 @@ impl<'gc> WeakTable<'gc> {
         }
 
         Self::add_entry(
-            // SAFETY: The guard provides exclusive write access; no aliasing references
+            // SAFETY: The guard provides exclusive write access, no aliasing references
             unsafe { Write::assume(&*guard) },
             ctx,
             hash,
@@ -418,7 +422,11 @@ impl<'gc> WeakTable<'gc> {
         None
     }
 
-    pub fn remove(self: Gc<'gc, Self>, ctx: Context<'gc>, key: Value<'gc>) -> Option<Value<'gc>> {
+    pub fn remove(
+        self: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        key: Value<'gc>,
+    ) -> Option<Value<'gc>> {
         let guard = self.inner.lock();
         Gc::write(ctx, self);
         let hash = make_hash(key);
@@ -450,7 +458,7 @@ impl<'gc> WeakTable<'gc> {
         None
     }
 
-    pub fn vacuum(self: Gc<'gc, Self>, mc: Context<'gc>) {
+    pub fn vacuum(self: Gc<'gc, Self>, mc: MutationContext<'gc>) {
         let guard = self.inner.lock();
         Gc::write(mc, self);
         let table = Gc::write(mc, guard.entries.get());
@@ -478,7 +486,7 @@ impl<'gc> WeakTable<'gc> {
         guard.mod_count.set(guard.mod_count.get() + 1);
     }
 
-    pub fn clear(self: Gc<'gc, Self>, ctx: Context<'gc>) {
+    pub fn clear(self: Gc<'gc, Self>, ctx: MutationContext<'gc>) {
         let guard = self.inner.lock();
         Gc::write(ctx, self);
         let table = Gc::write(ctx, guard.entries.get());
@@ -489,7 +497,7 @@ impl<'gc> WeakTable<'gc> {
         guard.mod_count.set(guard.mod_count.get() + 1);
     }
 
-    pub fn get(&self, ctx: Context<'gc>, key: impl IntoValue<'gc>) -> Option<Value<'gc>> {
+    pub fn get(&self, ctx: MutationContext<'gc>, key: impl IntoValue<'gc>) -> Option<Value<'gc>> {
         let key = key.into_value(ctx);
         let guard = self.inner.lock();
         let hash = make_hash(key);
@@ -509,7 +517,7 @@ impl<'gc> WeakTable<'gc> {
         None
     }
 
-    pub fn contains_key(&self, ctx: Context<'gc>, key: Value<'gc>) -> bool {
+    pub fn contains_key(&self, ctx: MutationContext<'gc>, key: Value<'gc>) -> bool {
         self.get(ctx, key).is_some()
     }
 
@@ -529,7 +537,7 @@ impl<'gc> WeakTable<'gc> {
 
     pub fn fold(
         self: Gc<'gc, Self>,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         mut f: impl FnMut(Value<'gc>, Value<'gc>, Value<'gc>) -> Value<'gc>,
         mut init: Value<'gc>,
     ) -> Value<'gc> {
@@ -562,7 +570,7 @@ impl<'gc> WeakTable<'gc> {
 
     pub fn for_each(
         self: Gc<'gc, Self>,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         mut f: impl FnMut(Value<'gc>, Value<'gc>),
     ) {
         self.vacuum(ctx);
@@ -582,7 +590,7 @@ impl<'gc> WeakTable<'gc> {
         }
     }
 
-    pub fn copy(self: Gc<'gc, Self>, ctx: Context<'gc>) -> Gc<'gc, Self> {
+    pub fn copy(self: Gc<'gc, Self>, ctx: MutationContext<'gc>) -> Gc<'gc, Self> {
         let guard = self.inner.lock();
         let new_table = WeakTable::new(ctx, guard.entries.get().len(), guard.load_factor);
 
@@ -662,7 +670,7 @@ unsafe impl<'gc> Trace for AllWeakTables<'gc> {
 }
 struct WeakTableCleanup;
 
-pub fn vacuum_weak_tables<'gc>(mc: Context<'gc>) {
+pub fn vacuum_weak_tables<'gc>(mc: MutationContext<'gc>) {
     let Some(all_weak_tables) = ALL_WEAK_TABLES.get() else {
         return;
     };
@@ -686,7 +694,7 @@ impl FinalizationNotify for WeakTableCleanup {
 
 static ONCE: Once = Once::new();
 
-pub fn init_weak_tables<'gc>(mc: Context<'gc>) {
+pub fn init_weak_tables<'gc>(mc: MutationContext<'gc>) {
     ONCE.call_once(|| {
         let all_weak_tables = AllWeakTables {
             tables: Monitor::new(Vec::new()),

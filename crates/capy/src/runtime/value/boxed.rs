@@ -6,7 +6,7 @@ use crate::{
         cell::Lock,
         object::{ClassId, builtin_class_ids, class_header_word},
     },
-    runtime::Context,
+    runtime::MutationContext,
 };
 
 use super::{ClassTagged, Value};
@@ -24,7 +24,7 @@ fn box_header_word() -> u64 {
 
 impl<'gc> Boxed<'gc> {
     /// Allocates a box containing `val`.
-    pub fn new(ctx: Context<'gc>, val: Value<'gc>) -> Gc<'gc, Self> {
+    pub fn new(ctx: MutationContext<'gc>, val: Value<'gc>) -> Gc<'gc, Self> {
         Gc::new_with_header_word(
             ctx,
             Self {

@@ -20,26 +20,26 @@ pub const RTD_OPAQUE: usize = 5;
 pub const RTD_FIELDS: usize = 6;
 
 impl<'gc> Value<'gc> {
-    pub fn is_recod_type_descriptor(&self, ctx: Context<'gc>) -> bool {
+    pub fn is_recod_type_descriptor(&self, ctx: MutationContext<'gc>) -> bool {
         self.is::<Tuple>() && self.downcast::<Tuple>()[0].get() == sym_type_rtd(ctx).into()
     }
 
-    pub fn is_record(&self, ctx: Context<'gc>) -> bool {
+    pub fn is_record(&self, ctx: MutationContext<'gc>) -> bool {
         self.is::<Tuple>()
             && self.downcast::<Tuple>()[0]
                 .get()
                 .is_recod_type_descriptor(ctx)
     }
 
-    pub fn is_record_constructor_descriptor(&self, ctx: Context<'gc>) -> bool {
+    pub fn is_record_constructor_descriptor(&self, ctx: MutationContext<'gc>) -> bool {
         self.is::<Tuple>() && self.downcast::<Tuple>()[0].get() == sym_type_rcd(ctx).into()
     }
 
-    pub fn is_record_type(&self, ctx: Context<'gc>) -> bool {
+    pub fn is_record_type(&self, ctx: MutationContext<'gc>) -> bool {
         self.is::<Tuple>() && self.downcast::<Tuple>()[0].get() == sym_type_record(ctx).into()
     }
 
-    pub fn record_rtd(&self, ctx: Context<'gc>) -> Option<Gc<'gc, Tuple<'gc>>> {
+    pub fn record_rtd(&self, ctx: MutationContext<'gc>) -> Option<Gc<'gc, Tuple<'gc>>> {
         if self.is_record(ctx) {
             Some(self.downcast::<Tuple>()[0].get().downcast())
         } else {
@@ -47,12 +47,12 @@ impl<'gc> Value<'gc> {
         }
     }
 
-    pub fn rtd_parent(&self, ctx: Context<'gc>) -> Value<'gc> {
+    pub fn rtd_parent(&self, ctx: MutationContext<'gc>) -> Value<'gc> {
         assert!(self.is_recod_type_descriptor(ctx), "not a record: {self}");
         self.downcast::<Tuple>()[RTD_PARENT].get()
     }
 
-    pub fn rtd_ancestor(&self, ctx: Context<'gc>, parent: Value<'gc>) -> bool {
+    pub fn rtd_ancestor(&self, ctx: MutationContext<'gc>, parent: Value<'gc>) -> bool {
         let mut rtd = *self;
         loop {
             if rtd == parent {
@@ -68,12 +68,12 @@ impl<'gc> Value<'gc> {
         }
     }
 
-    pub fn record_type_rtd(&self, ctx: Context<'gc>) -> Value<'gc> {
+    pub fn record_type_rtd(&self, ctx: MutationContext<'gc>) -> Value<'gc> {
         assert!(self.is_record_type(ctx));
         self.downcast::<Tuple>()[2].get()
     }
 
-    pub fn is_record_of(&self, ctx: Context<'gc>, rtd: Value<'gc>) -> bool {
+    pub fn is_record_of(&self, ctx: MutationContext<'gc>, rtd: Value<'gc>) -> bool {
         self.is::<Tuple>()
             && (self.downcast::<Tuple>()[0].get() == rtd
                 || self.downcast::<Tuple>()[0].get().rtd_ancestor(ctx, rtd))

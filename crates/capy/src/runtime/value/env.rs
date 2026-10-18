@@ -1,24 +1,16 @@
 //! Shared closure environment records (`EnvRecord`).
-//!
-//! One heap record shared by all closures created at the same site: it holds
-//! the free variables common to the group, and each closure stores a single
-//! pointer to it plus its private captures.
-//!
-//! Layout: `[length | slot 0 .. slot length-1]`. The length word is stored
-//! before the slot array (mirroring `Closure`'s `nfree`); the GC traces
-//! exactly `length` slots.
 
 use std::ops::Index;
 
 use mmtk::AllocationSemantics;
 
+use crate::IndexWrite;
 use crate::heap::object::{
     AllocationHooks, ClassId, GcObject, builtin_class_ids, class_header_word,
 };
 use crate::heap::{Gc, cell::Lock, collection::Visitor};
-use crate::runtime::Context;
-use crate::runtime::value::Value;
-use crate::IndexWrite;
+use crate::runtime::MutationContext;
+use crate::runtime::value::{ClassTagged, Value};
 
 #[repr(C)]
 pub struct EnvRecord<'gc> {
@@ -72,11 +64,18 @@ impl<'gc> EnvRecord<'gc> {
     /// Offset of the slot array from the start of the struct. Used for codegen.
     pub const DATA_OFFSET: isize = std::mem::offset_of!(EnvRecord, slots) as isize;
 
+    /// Allocate an env record of `length` slots, each undefined.
+    pub fn new_undefined(ctx: MutationContext<'gc>, length: usize) -> Gc<'gc, Self> {
+        let slots: smallvec::SmallVec<[Value<'gc>; 16]> =
+            smallvec::smallvec![Value::undefined(); length];
+        Self::new(ctx, &slots)
+    }
+
     /// Allocate an env record holding exactly `slots` values.
     ///
     /// `length` is written before anything else so the GC never observes an
     /// uninitialized trace length (same discipline as `Closure::nfree`).
-    pub fn new(ctx: Context<'gc>, slots: &[Value<'gc>]) -> Gc<'gc, Self> {
+    pub fn new(ctx: MutationContext<'gc>, slots: &[Value<'gc>]) -> Gc<'gc, Self> {
         let length = slots.len();
         let size = size_of::<Self>() + size_of::<Value>() * length;
         // SAFETY: We raw-allocate an `EnvRecord` + trailing slot array via the
@@ -87,7 +86,8 @@ impl<'gc> EnvRecord<'gc> {
                 size,
                 align_of::<Self>(),
                 class_header_word(
-                    ClassId::new(builtin_class_ids::ENV_RECORD).expect("builtin class id is nonzero"),
+                    ClassId::new(builtin_class_ids::ENV_RECORD)
+                        .expect("builtin class id is nonzero"),
                 ),
                 AllocationSemantics::Default,
             );
@@ -98,6 +98,24 @@ impl<'gc> EnvRecord<'gc> {
             }
             Gc::from_gc_object(ptr)
         }
+    }
+
+    /// The env record behind an env-record value, debug-checked.
+    pub(crate) fn from_value(env: Value<'gc>) -> Gc<'gc, Self> {
+        env.downcast::<Self>()
+    }
+
+    /// Slot `index` of `record`, for interpreter slot traffic.
+    pub(crate) fn slot_get(record: Gc<'gc, Self>, index: usize) -> Value<'gc> {
+        record[index].get()
+    }
+
+    /// Store slot `index` of `record`
+    pub(crate) fn slot_set(record: Gc<'gc, Self>, index: usize, value: Value<'gc>) {
+        // SAFETY: `record[index]` is the in-range slot (bounds
+        // debug-checked by the `Index` impl), `as_ptr` only re-exposes it
+        // for the store.
+        unsafe { record[index].as_ptr().write(value) }
     }
 }
 
@@ -111,12 +129,20 @@ impl<'gc> Index<usize> for EnvRecord<'gc> {
             length = self.length
         );
         // SAFETY: `slots` is a flexible array member allocated with `length`
-        // elements; the debug_assert above ensures `index < length`.
+        // elements, the debug_assert above ensures `index < length`.
         unsafe { self.slots.as_ptr().add(index).as_ref_unchecked() }
     }
 }
 
-// SAFETY: EnvRecord's Index impl already validates bounds; IndexWrite just
+// SAFETY: EnvRecord's Index impl already validates bounds. IndexWrite just
 // permits mutable access to the same in-bounds slots. The GC write barrier is
 // handled at the call site.
 unsafe impl<'gc> IndexWrite<usize> for EnvRecord<'gc> {}
+
+// SAFETY: EnvRecord stores its class ID in the heap header selected at
+// construction time.
+unsafe impl<'gc> ClassTagged for EnvRecord<'gc> {
+    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::ENV_RECORD];
+
+    const TYPE_NAME: &'static str = "env-record";
+}

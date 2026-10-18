@@ -64,14 +64,14 @@ fn utf32_bom_type(bv: &[u8]) -> Option<Endianness> {
 
 /// Helper for chained string ordering comparisons (>, >=, <, <=, and their -ci variants).
 fn string_compare_chain<'gc>(
-    nctx: NativeCallContext<'_, 'gc, bool>,
+    call: &Call<'_, 'gc>,
     rest: &[Value<'gc>],
     name: &str,
     case_insensitive: bool,
     accept: &[Ordering],
-) -> NativeCallReturn<'gc> {
+) -> Value<'gc> {
     if rest.is_empty() {
-        return nctx.wrong_argument_violation(
+        return call.wrong_argument_violation(
             name,
             "at least 1 argument required",
             None,
@@ -82,12 +82,12 @@ fn string_compare_chain<'gc>(
     }
 
     if rest.len() < 2 {
-        return nctx.return_(true);
+        return Value::new(true);
     }
 
     let s1 = rest[0];
     if !s1.is::<Str>() {
-        return nctx.wrong_argument_violation(
+        return call.wrong_argument_violation(
             name,
             "expected a string",
             Some(s1),
@@ -100,7 +100,7 @@ fn string_compare_chain<'gc>(
 
     for (i, val) in rest.iter().enumerate().skip(1) {
         if !val.is::<Str>() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 name,
                 "expected a string",
                 Some(*val),
@@ -112,12 +112,12 @@ fn string_compare_chain<'gc>(
         let s2 = val.downcast::<Str>();
         let cmp = Str::compare(&s1, &s2, case_insensitive, None, None, None, None);
         if !cmp.is_some_and(|o| accept.contains(&o)) {
-            return nctx.return_(false);
+            return Value::new(false);
         }
         s1 = s2;
     }
 
-    nctx.return_(true)
+    Value::new(true)
 }
 
 #[scheme(path=capy)]
@@ -125,14 +125,14 @@ mod string_ops {
     use crate::runtime::vm::vector::{Endianness, sym_big, sym_little};
 
     #[scheme(name = "string=?")]
-    pub fn string_equal(rest: &'gc [Value<'gc>]) -> bool {
+    pub fn string_equal(rest: &'gc [Value<'gc>]) -> Value<'gc> {
         if rest.len() < 2 {
-            return nctx.return_(true);
+            return (true).into();
         }
 
         let s1 = rest[0];
         if !s1.is::<Str>() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "string=?",
                 "expected a string",
                 Some(s1),
@@ -144,7 +144,7 @@ mod string_ops {
         let s1 = s1.downcast::<Str>();
         for (i, val) in rest.iter().enumerate().skip(1) {
             if !val.is::<Str>() {
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "string=?",
                     "expected a string",
                     Some(*val),
@@ -155,22 +155,22 @@ mod string_ops {
             }
             let s2 = val.downcast::<Str>();
             if s1 != s2 {
-                return nctx.return_(false);
+                return (false).into();
             }
         }
-        nctx.return_(true)
+        (true).into()
     }
 
     #[scheme(name = "string-ci=?")]
-    pub fn string_ci_equal(rest: &'gc [Value<'gc>]) -> bool {
+    pub fn string_ci_equal(rest: &'gc [Value<'gc>]) -> Value<'gc> {
         if rest.len() < 2 {
-            return nctx.return_(true);
+            return (true).into();
         }
 
         let s1 = rest[0];
         let s2 = rest[1];
         if !s1.is::<Str>() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "string-ci=?",
                 "expected a string",
                 Some(s1),
@@ -181,7 +181,7 @@ mod string_ops {
         }
 
         if !s2.is::<Str>() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "string-ci=?",
                 "expected a string",
                 Some(s2),
@@ -201,10 +201,10 @@ mod string_ops {
             let s1l = cm.fold_string(&s1str);
             let s2l = cm.fold_string(&s2str);
             if s1l != s2l {
-                return nctx.return_(false);
+                return (false).into();
             }
             if !r.is::<Str>() {
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "string-ci=?",
                     "expected a string",
                     Some(r),
@@ -228,23 +228,23 @@ mod string_ops {
             None
         };
 
-        nctx.return_(matches!(cmp, Some(Ordering::Equal)))
+        Value::new(matches!(cmp, Some(Ordering::Equal)))
     }
 
     #[scheme(name = "string>?")]
-    pub fn string_gt(rest: &'gc [Value<'gc>]) -> bool {
-        string_compare_chain(nctx, rest, "string>?", false, &[Ordering::Greater])
+    pub fn string_gt(rest: &'gc [Value<'gc>]) -> Value<'gc> {
+        string_compare_chain(call, rest, "string>?", false, &[Ordering::Greater])
     }
 
     #[scheme(name = "string-ci>?")]
-    pub fn string_ci_gt(rest: &'gc [Value<'gc>]) -> bool {
-        string_compare_chain(nctx, rest, "string-ci>?", true, &[Ordering::Greater])
+    pub fn string_ci_gt(rest: &'gc [Value<'gc>]) -> Value<'gc> {
+        string_compare_chain(call, rest, "string-ci>?", true, &[Ordering::Greater])
     }
 
     #[scheme(name = "string>=?")]
-    pub fn string_ge(rest: &'gc [Value<'gc>]) -> bool {
+    pub fn string_ge(rest: &'gc [Value<'gc>]) -> Value<'gc> {
         string_compare_chain(
-            nctx,
+            call,
             rest,
             "string>=?",
             false,
@@ -253,9 +253,9 @@ mod string_ops {
     }
 
     #[scheme(name = "string-ci>=?")]
-    pub fn string_ci_ge(rest: &'gc [Value<'gc>]) -> bool {
+    pub fn string_ci_ge(rest: &'gc [Value<'gc>]) -> Value<'gc> {
         string_compare_chain(
-            nctx,
+            call,
             rest,
             "string-ci>=?",
             true,
@@ -264,19 +264,19 @@ mod string_ops {
     }
 
     #[scheme(name = "string<?")]
-    pub fn string_lt(rest: &'gc [Value<'gc>]) -> bool {
-        string_compare_chain(nctx, rest, "string<?", false, &[Ordering::Less])
+    pub fn string_lt(rest: &'gc [Value<'gc>]) -> Value<'gc> {
+        string_compare_chain(call, rest, "string<?", false, &[Ordering::Less])
     }
 
     #[scheme(name = "string-ci<?")]
-    pub fn string_ci_lt(rest: &'gc [Value<'gc>]) -> bool {
-        string_compare_chain(nctx, rest, "string-ci<?", true, &[Ordering::Less])
+    pub fn string_ci_lt(rest: &'gc [Value<'gc>]) -> Value<'gc> {
+        string_compare_chain(call, rest, "string-ci<?", true, &[Ordering::Less])
     }
 
     #[scheme(name = "string<=?")]
-    pub fn string_le(rest: &'gc [Value<'gc>]) -> bool {
+    pub fn string_le(rest: &'gc [Value<'gc>]) -> Value<'gc> {
         string_compare_chain(
-            nctx,
+            call,
             rest,
             "string<=?",
             false,
@@ -285,9 +285,9 @@ mod string_ops {
     }
 
     #[scheme(name = "string-ci<=?")]
-    pub fn string_ci_le(rest: &'gc [Value<'gc>]) -> bool {
+    pub fn string_ci_le(rest: &'gc [Value<'gc>]) -> Value<'gc> {
         string_compare_chain(
-            nctx,
+            call,
             rest,
             "string-ci<=?",
             true,
@@ -298,19 +298,19 @@ mod string_ops {
     #[scheme(name = "string-length")]
     pub fn string_length(str: Gc<'gc, Str<'gc>>) -> usize {
         let len = str.len();
-        nctx.return_(len)
+        len
     }
 
     #[scheme(name = "string-append")]
     pub fn string_append(strs: &'gc [Value<'gc>]) -> Result<Gc<'gc, Str<'gc>>, Value<'gc>> {
         if strs.is_empty() {
-            let s = Str::new(nctx.ctx, "", false);
-            return nctx.return_(Ok(s));
+            let s = Str::new(ctx, "", false);
+            return Ok(s);
         }
 
         if strs.len() == 1 {
             if !strs[0].is::<Str>() {
-                return nctx.wrong_argument_violation(
+                call.wrong_argument_violation(
                     "string-append",
                     "expected a string",
                     Some(strs[0]),
@@ -318,16 +318,21 @@ mod string_ops {
                     1,
                     &[strs[0]],
                 );
+                return Err(Value::undefined());
             }
 
-            return nctx.return_(Ok(strs[0].downcast::<Str>()));
+            return Ok(strs[0].downcast::<Str>());
         }
 
-        let mut buffer = String::new();
-
+        // Size the buffer first: one allocation, no growth, and no
+        // per-argument temporary string. Type errors raise with the same
+        // argument index as the appending loop below did (no partial
+        // state escapes either way). Wide lengths are upper bounds (4
+        // bytes per char), so the capacity never under-fits.
+        let mut total = 0usize;
         for (i, str) in strs.iter().enumerate() {
             if !str.is::<Str>() {
-                return nctx.wrong_argument_violation(
+                call.wrong_argument_violation(
                     "string-append",
                     "expected a string",
                     Some(*str),
@@ -335,24 +340,35 @@ mod string_ops {
                     strs.len(),
                     strs,
                 );
+                return Err(Value::undefined());
             }
-
-            buffer.push_str(&str.downcast::<Str>().to_string());
+            let str = str.downcast::<Str>();
+            total += if str.is_narrow() {
+                str.len()
+            } else {
+                str.len() * 4
+            };
         }
-        let s = Ok(Str::new(nctx.ctx, &buffer, false));
-        nctx.return_(s)
+
+        use std::fmt::Write as _;
+        let mut buffer = String::with_capacity(total);
+        for str in strs.iter() {
+            write!(buffer, "{}", str.downcast::<Str>()).unwrap();
+        }
+        let s = Ok(Str::new(ctx, &buffer, false));
+        s
     }
 
     #[scheme(name = "symbol-append")]
     pub fn symbol_append(syms: &'gc [Value<'gc>]) -> Result<Gc<'gc, Symbol<'gc>>, Value<'gc>> {
         if syms.is_empty() {
-            let s = Symbol::from_str(nctx.ctx, "");
-            return nctx.return_(Ok(s));
+            let s = Symbol::from_str(ctx, "");
+            return Ok(s);
         }
 
         if syms.len() == 1 {
             if !syms[0].is::<Symbol>() {
-                return nctx.wrong_argument_violation(
+                call.wrong_argument_violation(
                     "symbol-append",
                     "expected a symbol",
                     Some(syms[0]),
@@ -360,16 +376,17 @@ mod string_ops {
                     1,
                     &[syms[0]],
                 );
+                return Err(Value::undefined());
             }
 
-            return nctx.return_(Ok(syms[0].downcast::<Symbol>()));
+            return Ok(syms[0].downcast::<Symbol>());
         }
 
         let mut buffer = String::new();
 
         for (i, sym) in syms.iter().enumerate() {
             if !sym.is::<Symbol>() {
-                return nctx.wrong_argument_violation(
+                call.wrong_argument_violation(
                     "symbol-append",
                     "expected a symbol",
                     Some(*sym),
@@ -377,36 +394,37 @@ mod string_ops {
                     syms.len(),
                     syms,
                 );
+                return Err(Value::undefined());
             }
 
             buffer.push_str(&sym.downcast::<Symbol>().to_string());
         }
-        let s = Ok(Symbol::from_str(nctx.ctx, &buffer));
-        nctx.return_(s)
+        let s = Ok(Symbol::from_str(ctx, &buffer));
+        s
     }
 
     #[scheme(name = "symbol->string")]
     pub fn symbol_to_string(sym: Gc<'gc, Symbol<'gc>>) -> Gc<'gc, Str<'gc>> {
-        let s = sym.to_str(nctx.ctx);
+        let s = sym.to_str(ctx);
 
-        nctx.return_(s)
+        s
     }
 
     #[scheme(name = "string->symbol")]
     pub fn string_to_symbol(str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Symbol<'gc>> {
-        let sym = Symbol::from_string(nctx.ctx, str);
-        nctx.return_(sym)
+        let sym = Symbol::from_string(ctx, str);
+        sym
     }
 
     #[scheme(name = "string->uninterned-symbol")]
     pub fn string_to_uninterned_symbol(str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Symbol<'gc>> {
-        let sym = Symbol::from_string_uninterned(nctx.ctx, str, None);
-        nctx.return_(sym)
+        let sym = Symbol::from_string_uninterned(ctx, str, None);
+        sym
     }
 
     #[scheme(name = "uninterned-symbol?")]
     pub fn is_uninterned_symbol(sym: Gc<'gc, Symbol<'gc>>) -> bool {
-        nctx.return_(sym.is_uninterned())
+        sym.is_uninterned()
     }
 
     #[scheme(name = "string-fill!")]
@@ -420,8 +438,7 @@ mod string_ops {
         let end = end.unwrap_or(str.len());
 
         if start > end {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "string-fill!",
                 "start greater than end",
                 None,
@@ -432,8 +449,7 @@ mod string_ops {
         }
 
         if end > str.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "string-fill!",
                 "end out of bounds",
                 None,
@@ -444,10 +460,19 @@ mod string_ops {
         }
 
         for i in start..end {
-            Str::set(str, nctx.ctx, i, ch);
+            if !Str::set(str, ctx, i, ch) {
+                return call.wrong_argument_violation(
+                    "string-fill!",
+                    "string is immutable",
+                    None,
+                    None,
+                    3,
+                    &[str.into(), ch.into_value(ctx)],
+                );
+            }
         }
 
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     /// prints all arguments using their `Display` implementation, followed by a newline.
@@ -457,7 +482,7 @@ mod string_ops {
             print!("{}", arg);
         }
         println!();
-        nctx.return_(())
+        ()
     }
 
     #[scheme(name = "substring")]
@@ -468,8 +493,7 @@ mod string_ops {
     ) -> Result<Gc<'gc, Str<'gc>>, Value<'gc>> {
         let end = end.unwrap_or(str.len());
         if start > end || end > str.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "substring",
                 "invalid start or end",
                 None,
@@ -477,32 +501,33 @@ mod string_ops {
                 3,
                 &[str.into(), start.into_value(ctx), end.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
-        let s = Str::substring(str, nctx.ctx, start, end);
+        let s = Str::substring(str, ctx, start, end);
 
-        nctx.return_(Ok(s))
+        Ok(s)
     }
 
     #[scheme(name = "string?")]
     pub fn is_string(val: Value<'gc>) -> bool {
-        nctx.return_(val.is::<Str>())
+        val.is::<Str>()
     }
 
     #[scheme(name = "symbol?")]
     pub fn is_symbol(val: Value<'gc>) -> bool {
-        nctx.return_(val.is::<Symbol>())
+        val.is::<Symbol>()
     }
 
     #[scheme(name = "string-prefix?")]
     pub fn string_prefix(prefix: Gc<'gc, Str<'gc>>, str: Gc<'gc, Str<'gc>>) -> bool {
-        nctx.return_(str.to_string().starts_with(&prefix.to_string()))
+        str.to_string().starts_with(&prefix.to_string())
     }
 
     #[scheme(name = "string-copy")]
     pub fn string_copy(s1: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
-        let s2 = Str::substring_copy(s1, nctx.ctx, 0, s1.len());
-        nctx.return_(s2)
+        let s2 = Str::substring_copy(s1, ctx, 0, s1.len());
+        s2
     }
 
     #[scheme(name = "string-contains")]
@@ -514,11 +539,9 @@ mod string_ops {
         start2: OptionalIndex,
         end2: OptionalIndex,
     ) -> Value<'gc> {
-        let ctx = nctx.ctx;
         let mut cstart1 = if let Some(start1) = start1 {
             if start1 >= s1.len() {
-                let ctx = nctx.ctx;
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "string-contains",
                     "start1 out of bounds",
                     None,
@@ -534,8 +557,7 @@ mod string_ops {
 
         let cend1 = if let Some(end1) = end1 {
             if end1 > s1.len() {
-                let ctx = nctx.ctx;
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "string-contains",
                     "end1 out of bounds",
                     None,
@@ -550,8 +572,7 @@ mod string_ops {
         };
 
         if cstart1 > cend1 {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "string-contains",
                 "start1 greater than end1",
                 None,
@@ -568,8 +589,7 @@ mod string_ops {
 
         let cstart2 = if let Some(start2) = start2 {
             if start2 >= s2.len() {
-                let ctx = nctx.ctx;
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "string-contains",
                     "start2 out of bounds",
                     None,
@@ -585,8 +605,7 @@ mod string_ops {
 
         let cend2 = if let Some(end2) = end2 {
             if end2 > s2.len() {
-                let ctx = nctx.ctx;
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "string-contains",
                     "end2 out of bounds",
                     None,
@@ -613,13 +632,13 @@ mod string_ops {
                 }
 
                 if j == cend2 {
-                    return nctx.return_(cstart1.into_value(ctx));
+                    return cstart1.into_value(ctx);
                 }
                 cstart1 += 1;
             }
         }
 
-        nctx.return_(Value::new(false))
+        Value::new(false)
     }
 
     #[scheme(name = "string-contains-ci")]
@@ -631,11 +650,9 @@ mod string_ops {
         start2: OptionalIndex,
         end2: OptionalIndex,
     ) -> Value<'gc> {
-        let ctx = nctx.ctx;
         let mut cstart1 = if let Some(start1) = start1 {
             if start1 >= s1.len() {
-                let ctx = nctx.ctx;
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "string-contains-ci",
                     "start1 out of bounds",
                     None,
@@ -651,8 +668,7 @@ mod string_ops {
 
         let cend1 = if let Some(end1) = end1 {
             if end1 > s1.len() {
-                let ctx = nctx.ctx;
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "string-contains-ci",
                     "end1 out of bounds",
                     None,
@@ -667,8 +683,7 @@ mod string_ops {
         };
 
         if cstart1 > cend1 {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "string-contains-ci",
                 "start1 greater than end1",
                 None,
@@ -685,8 +700,7 @@ mod string_ops {
 
         let cstart2 = if let Some(start2) = start2 {
             if start2 >= s2.len() {
-                let ctx = nctx.ctx;
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "string-contains-ci",
                     "start2 out of bounds",
                     None,
@@ -702,8 +716,7 @@ mod string_ops {
 
         let cend2 = if let Some(end2) = end2 {
             if end2 > s2.len() {
-                let ctx = nctx.ctx;
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "string-contains-ci",
                     "end2 out of bounds",
                     None,
@@ -737,18 +750,18 @@ mod string_ops {
                 }
 
                 if j == cend2 {
-                    return nctx.return_(cstart1.into_value(ctx));
+                    return cstart1.into_value(ctx);
                 }
                 cstart1 += 1;
             }
         }
 
-        nctx.return_(Value::new(false))
+        Value::new(false)
     }
 
     #[scheme(name = "string-null?")]
     pub fn string_null(str: Gc<'gc, Str<'gc>>) -> bool {
-        nctx.return_(str.is_empty())
+        str.is_empty()
     }
     #[scheme(name = "string-split")]
     pub fn string_split(str: Gc<'gc, Str<'gc>>, ch: char) -> Value<'gc> {
@@ -757,9 +770,9 @@ mod string_ops {
             .split(ch)
             .rev()
             .fold(Value::null(), |acc, part| {
-                Value::cons(nctx.ctx, Str::new(nctx.ctx, part, false).into(), acc)
+                Value::cons(ctx, Str::new(ctx, part, false).into(), acc)
             });
-        nctx.return_(parts)
+        parts
     }
 
     #[scheme(name = "string")]
@@ -768,7 +781,7 @@ mod string_ops {
 
         for (i, ch_val) in chars.iter().enumerate() {
             if !ch_val.is_char() {
-                return nctx.wrong_argument_violation(
+                call.wrong_argument_violation(
                     "string",
                     "expected a character",
                     Some(*ch_val),
@@ -776,27 +789,27 @@ mod string_ops {
                     chars.len(),
                     chars,
                 );
+                return Err(Value::undefined());
             }
             let ch = ch_val.char();
             buffer.push(ch);
         }
 
-        let s = Str::new(nctx.ctx, &buffer, false);
-        nctx.return_(Ok(s))
+        let s = Str::new(ctx, &buffer, false);
+        Ok(s)
     }
 
     #[scheme(name = "make-string")]
     pub fn make_string(length: usize, fill_char: Option<char>) -> Gc<'gc, Str<'gc>> {
         let ch = fill_char.unwrap_or(0x20u8 as char);
-        let s = Str::from_char(nctx.ctx, ch, length);
-        nctx.return_(s)
+        let s = Str::from_char(ctx, ch, length);
+        s
     }
 
     #[scheme(name = "string-ref")]
     pub fn string_ref(str: Gc<'gc, Str<'gc>>, index: usize) -> Result<char, Value<'gc>> {
         if index >= str.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "string-ref",
                 "index out of bounds",
                 None,
@@ -804,18 +817,18 @@ mod string_ops {
                 2,
                 &[str.into(), index.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let ch = str.get(index).expect("index in range"); // safe due to the bounds check above
 
-        nctx.return_(Ok(ch))
+        Ok(ch)
     }
 
     #[scheme(name = "string-set!")]
     pub fn string_set(str: Gc<'gc, Str<'gc>>, index: usize, ch: char) -> Result<(), Value<'gc>> {
         if index >= str.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "string-set!",
                 "index out of bounds",
                 None,
@@ -823,28 +836,42 @@ mod string_ops {
                 3,
                 &[str.into(), index.into_value(ctx), ch.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
-        Str::set(str, nctx.ctx, index, ch);
+        if !Str::set(str, ctx, index, ch) {
+            call.wrong_argument_violation(
+                "string-set!",
+                "string is immutable",
+                None,
+                None,
+                3,
+                &[str.into(), index.into_value(ctx), ch.into_value(ctx)],
+            );
+            return Err(Value::undefined());
+        }
 
-        nctx.return_(Ok(()))
+        Ok(())
     }
 
     #[scheme(name = "utf8->string")]
     pub fn utf8_to_string(bytes: Gc<'gc, ByteVector>) -> Result<Gc<'gc, Str<'gc>>, Value<'gc>> {
         match std::str::from_utf8(bytes.as_slice()) {
             Ok(s) => {
-                let str = Str::new(nctx.ctx, s, false);
-                nctx.return_(Ok(str))
+                let str = Str::new(ctx, s, false);
+                Ok(str)
             }
-            Err(_) => nctx.wrong_argument_violation(
-                "utf8->string",
-                "invalid UTF-8 bytevector",
-                None,
-                None,
-                1,
-                &[bytes.into()],
-            ),
+            Err(_) => {
+                call.wrong_argument_violation(
+                    "utf8->string",
+                    "invalid UTF-8 bytevector",
+                    None,
+                    None,
+                    1,
+                    &[bytes.into()],
+                );
+                Err(Value::undefined())
+            }
         }
     }
 
@@ -853,16 +880,16 @@ mod string_ops {
         let bytes = str.to_string().into_bytes();
         // Default (movable): general conversion. FFI paths use string->utf8/nul,
         // string->pointer, or bytevector->pointer (which copies to NonMoving).
-        let bytevec = ByteVector::from_slice(nctx.ctx, &bytes, true);
-        nctx.return_(bytevec)
+        let bytevec = ByteVector::from_slice(ctx, &bytes, true);
+        bytevec
     }
 
     #[scheme(name = "string->utf8/nul")]
     pub fn string_to_utf8_nul(str: Gc<'gc, Str<'gc>>) -> Gc<'gc, ByteVector> {
         let mut bytes = str.to_string().into_bytes();
         bytes.push(0); // NUL terminator
-        let bytevec = ByteVector::from_slice(nctx.ctx, &bytes, false);
-        nctx.return_(bytevec)
+        let bytevec = ByteVector::from_slice(ctx, &bytes, false);
+        bytevec
     }
 
     #[scheme(name = "utf16->string")]
@@ -894,8 +921,8 @@ mod string_ops {
 
         let s = String::from_utf16_lossy(&utf16_data[..]);
 
-        let str = Str::new(nctx.ctx, &s, false);
-        nctx.return_(Ok(str))
+        let str = Str::new(ctx, &s, false);
+        Ok(str)
     }
 
     #[scheme(name = "string->utf16")]
@@ -914,21 +941,18 @@ mod string_ops {
             bytes.extend_from_slice(&ebytes);
         }
 
-        let bytevec = ByteVector::from_slice(nctx.ctx, &bytes, true);
-        nctx.return_(bytevec)
+        let bytevec = ByteVector::from_slice(ctx, &bytes, true);
+        bytevec
     }
 
     #[scheme(name = "string->utf32")]
-    pub fn string_to_utf32(
-        str: Gc<'gc, Str<'gc>>,
-        endian: Option<Value<'gc>>,
-    ) -> Gc<'gc, ByteVector> {
+    pub fn string_to_utf32(str: Gc<'gc, Str<'gc>>, endian: Option<Value<'gc>>) -> Value<'gc> {
         let endian = if endian == Some(sym_little(ctx).into()) {
             Endianness::Little
         } else if endian == Some(sym_big(ctx).into()) || endian.is_none() {
             Endianness::Big // default
         } else {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "string->utf32",
                 "endian must be 'little, 'big, or omitted",
                 endian,
@@ -951,8 +975,8 @@ mod string_ops {
             bytes.extend_from_slice(&code_point.to_le_bytes());
         }
 
-        let bytevec = ByteVector::from_slice(nctx.ctx, &bytes, true);
-        nctx.return_(bytevec)
+        let bytevec = ByteVector::from_slice(ctx, &bytes, true);
+        (bytevec).into()
     }
 
     #[scheme(name = "utf32->string")]
@@ -999,7 +1023,7 @@ mod string_ops {
             match char::from_u32(value) {
                 Some(ch) => s.push(ch),
                 None => {
-                    return nctx.wrong_argument_violation(
+                    call.wrong_argument_violation(
                         "utf32->string",
                         "invalid UTF-32 code point",
                         None,
@@ -1007,13 +1031,14 @@ mod string_ops {
                         1,
                         &[bv.into()],
                     );
+                    return Err(Value::undefined());
                 }
             }
             i += 4;
         }
-        let str = Str::new(nctx.ctx, &s, false);
+        let str = Str::new(ctx, &s, false);
 
-        nctx.return_(Ok(str))
+        Ok(str)
     }
 
     #[scheme(name = "char-general-category")]
@@ -1055,14 +1080,14 @@ mod string_ops {
             _ => "Cn", // Shouldn't happen
         };
 
-        let sym = Symbol::from_str(nctx.ctx, category_str);
-        nctx.return_(sym)
+        let sym = Symbol::from_str(ctx, category_str);
+        sym
     }
 
     #[scheme(name = "list->string")]
     pub fn list_to_string(lst: Value<'gc>) -> Result<Gc<'gc, Str<'gc>>, Value<'gc>> {
         if !lst.is_list() {
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "list->string",
                 "expected a list",
                 Some(lst),
@@ -1070,6 +1095,7 @@ mod string_ops {
                 1,
                 &[lst],
             );
+            return Err(Value::undefined());
         }
         let mut walk = lst;
         let mut buffer = String::new();
@@ -1077,7 +1103,7 @@ mod string_ops {
         while walk.is_pair() {
             let ch_val = walk.car();
             if !ch_val.is_char() {
-                return nctx.wrong_argument_violation(
+                call.wrong_argument_violation(
                     "list->string",
                     "expected a list of characters",
                     Some(ch_val),
@@ -1085,6 +1111,7 @@ mod string_ops {
                     1,
                     &[lst],
                 );
+                return Err(Value::undefined());
             }
             let ch = ch_val.char();
             buffer.push(ch);
@@ -1092,7 +1119,7 @@ mod string_ops {
         }
 
         if !walk.is_null() {
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "list->string",
                 "expected a proper list",
                 Some(walk),
@@ -1100,21 +1127,22 @@ mod string_ops {
                 1,
                 &[lst],
             );
+            return Err(Value::undefined());
         }
 
-        let s = Str::new(nctx.ctx, &buffer, false);
-        nctx.return_(Ok(s))
+        let s = Str::new(ctx, &buffer, false);
+        Ok(s)
     }
 
     #[scheme(name = "char=?")]
-    pub fn char_equal(rest: &'gc [Value<'gc>]) -> bool {
+    pub fn char_equal(rest: &'gc [Value<'gc>]) -> Value<'gc> {
         if rest.len() < 2 {
-            return nctx.return_(true);
+            return (true).into();
         }
 
         let ch1_val = rest[0];
         if !ch1_val.is_char() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "char=?",
                 "expected a character",
                 Some(ch1_val),
@@ -1127,7 +1155,7 @@ mod string_ops {
 
         for (i, val) in rest.iter().enumerate().skip(1) {
             if !val.is_char() {
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "char=?",
                     "expected a character",
                     Some(*val),
@@ -1138,21 +1166,21 @@ mod string_ops {
             }
             let ch2 = val.char();
             if ch1 != ch2 {
-                return nctx.return_(false);
+                return (false).into();
             }
         }
-        nctx.return_(true)
+        (true).into()
     }
 
     #[scheme(name = "char-ci=?")]
-    pub fn char_ci_equal(rest: &'gc [Value<'gc>]) -> bool {
+    pub fn char_ci_equal(rest: &'gc [Value<'gc>]) -> Value<'gc> {
         if rest.len() < 2 {
-            return nctx.return_(true);
+            return (true).into();
         }
 
         let ch1_val = rest[0];
         if !ch1_val.is_char() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "char-ci=?",
                 "expected a character",
                 Some(ch1_val),
@@ -1167,7 +1195,7 @@ mod string_ops {
 
         for (i, val) in rest.iter().enumerate().skip(1) {
             if !val.is_char() {
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "char-ci=?",
                     "expected a character",
                     Some(*val),
@@ -1178,16 +1206,16 @@ mod string_ops {
             }
             let ch2 = cm.simple_fold(val.char());
             if ch1 != ch2 {
-                return nctx.return_(false);
+                return (false).into();
             }
         }
-        nctx.return_(true)
+        (true).into()
     }
 
     #[scheme(name = "char<?")]
-    pub fn char_lt(rest: &'gc [Value<'gc>]) -> bool {
+    pub fn char_lt(rest: &'gc [Value<'gc>]) -> Value<'gc> {
         if rest.is_empty() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "char<?",
                 "at least 1 argument required",
                 None,
@@ -1198,12 +1226,12 @@ mod string_ops {
         }
 
         if rest.len() < 2 {
-            return nctx.return_(true);
+            return (true).into();
         }
 
         let ch1_val = rest[0];
         if !ch1_val.is_char() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "char<?",
                 "expected a character",
                 Some(ch1_val),
@@ -1217,7 +1245,7 @@ mod string_ops {
 
         for (i, val) in rest.iter().enumerate().skip(1) {
             if !val.is_char() {
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "char<?",
                     "expected a character",
                     Some(*val),
@@ -1228,17 +1256,17 @@ mod string_ops {
             }
             let ch2 = val.char();
             if ch1 >= ch2 {
-                return nctx.return_(false);
+                return (false).into();
             }
             ch1 = ch2;
         }
-        nctx.return_(true)
+        (true).into()
     }
 
     #[scheme(name = "char-ci<?")]
-    pub fn char_ci_lt(rest: &'gc [Value<'gc>]) -> bool {
+    pub fn char_ci_lt(rest: &'gc [Value<'gc>]) -> Value<'gc> {
         if rest.is_empty() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "char-ci<?",
                 "at least 1 argument required",
                 None,
@@ -1249,12 +1277,12 @@ mod string_ops {
         }
 
         if rest.len() < 2 {
-            return nctx.return_(true);
+            return (true).into();
         }
 
         let ch1_val = rest[0];
         if !ch1_val.is_char() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "char-ci<?",
                 "expected a character",
                 Some(ch1_val),
@@ -1270,7 +1298,7 @@ mod string_ops {
 
         for (i, val) in rest.iter().enumerate().skip(1) {
             if !val.is_char() {
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "char-ci<?",
                     "expected a character",
                     Some(*val),
@@ -1281,17 +1309,17 @@ mod string_ops {
             }
             let ch2 = cm.simple_fold(val.char());
             if ch1 >= ch2 {
-                return nctx.return_(false);
+                return (false).into();
             }
             ch1 = ch2;
         }
-        nctx.return_(true)
+        (true).into()
     }
 
     #[scheme(name = "char>?")]
-    pub fn char_gt(rest: &'gc [Value<'gc>]) -> bool {
+    pub fn char_gt(rest: &'gc [Value<'gc>]) -> Value<'gc> {
         if rest.is_empty() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "char>?",
                 "at least 1 argument required",
                 None,
@@ -1302,12 +1330,12 @@ mod string_ops {
         }
 
         if rest.len() < 2 {
-            return nctx.return_(true);
+            return (true).into();
         }
 
         let ch1_val = rest[0];
         if !ch1_val.is_char() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "char>?",
                 "expected a character",
                 Some(ch1_val),
@@ -1321,7 +1349,7 @@ mod string_ops {
 
         for (i, val) in rest.iter().enumerate().skip(1) {
             if !val.is_char() {
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "char>?",
                     "expected a character",
                     Some(*val),
@@ -1332,17 +1360,17 @@ mod string_ops {
             }
             let ch2 = val.char();
             if ch1 <= ch2 {
-                return nctx.return_(false);
+                return (false).into();
             }
             ch1 = ch2;
         }
-        nctx.return_(true)
+        (true).into()
     }
 
     #[scheme(name = "char-ci>?")]
-    pub fn char_ci_gt(rest: &'gc [Value<'gc>]) -> bool {
+    pub fn char_ci_gt(rest: &'gc [Value<'gc>]) -> Value<'gc> {
         if rest.is_empty() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "char-ci>?",
                 "at least 1 argument required",
                 None,
@@ -1353,12 +1381,12 @@ mod string_ops {
         }
 
         if rest.len() < 2 {
-            return nctx.return_(true);
+            return (true).into();
         }
 
         let ch1_val = rest[0];
         if !ch1_val.is_char() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "char-ci>?",
                 "expected a character",
                 Some(ch1_val),
@@ -1374,7 +1402,7 @@ mod string_ops {
 
         for (i, val) in rest.iter().enumerate().skip(1) {
             if !val.is_char() {
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "char-ci>?",
                     "expected a character",
                     Some(*val),
@@ -1385,17 +1413,17 @@ mod string_ops {
             }
             let ch2 = cm.simple_fold(val.char());
             if ch1 <= ch2 {
-                return nctx.return_(false);
+                return (false).into();
             }
             ch1 = ch2;
         }
-        nctx.return_(true)
+        (true).into()
     }
 
     #[scheme(name = "char<=?")]
-    pub fn char_le(rest: &'gc [Value<'gc>]) -> bool {
+    pub fn char_le(rest: &'gc [Value<'gc>]) -> Value<'gc> {
         if rest.is_empty() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "char<=?",
                 "at least 1 argument required",
                 None,
@@ -1406,12 +1434,12 @@ mod string_ops {
         }
 
         if rest.len() < 2 {
-            return nctx.return_(true);
+            return (true).into();
         }
 
         let ch1_val = rest[0];
         if !ch1_val.is_char() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "char<=?",
                 "expected a character",
                 Some(ch1_val),
@@ -1424,7 +1452,7 @@ mod string_ops {
 
         for (i, val) in rest.iter().enumerate().skip(1) {
             if !val.is_char() {
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "char<=?",
                     "expected a character",
                     Some(*val),
@@ -1435,17 +1463,17 @@ mod string_ops {
             }
             let ch2 = val.char();
             if ch1 > ch2 {
-                return nctx.return_(false);
+                return (false).into();
             }
             ch1 = ch2;
         }
-        nctx.return_(true)
+        (true).into()
     }
 
     #[scheme(name = "char-ci<=?")]
-    pub fn char_ci_le(rest: &'gc [Value<'gc>]) -> bool {
+    pub fn char_ci_le(rest: &'gc [Value<'gc>]) -> Value<'gc> {
         if rest.is_empty() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "char-ci<=?",
                 "at least 1 argument required",
                 None,
@@ -1456,12 +1484,12 @@ mod string_ops {
         }
 
         if rest.len() < 2 {
-            return nctx.return_(true);
+            return (true).into();
         }
 
         let ch1_val = rest[0];
         if !ch1_val.is_char() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "char-ci<=?",
                 "expected a character",
                 Some(ch1_val),
@@ -1477,7 +1505,7 @@ mod string_ops {
 
         for (i, val) in rest.iter().enumerate().skip(1) {
             if !val.is_char() {
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "char-ci<=?",
                     "expected a character",
                     Some(*val),
@@ -1488,17 +1516,17 @@ mod string_ops {
             }
             let ch2 = cm.simple_fold(val.char());
             if ch1 > ch2 {
-                return nctx.return_(false);
+                return (false).into();
             }
             ch1 = ch2;
         }
-        nctx.return_(true)
+        (true).into()
     }
 
     #[scheme(name = "char>=?")]
-    pub fn char_ge(rest: &'gc [Value<'gc>]) -> bool {
+    pub fn char_ge(rest: &'gc [Value<'gc>]) -> Value<'gc> {
         if rest.is_empty() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "char>=?",
                 "at least 1 argument required",
                 None,
@@ -1509,12 +1537,12 @@ mod string_ops {
         }
 
         if rest.len() < 2 {
-            return nctx.return_(true);
+            return (true).into();
         }
 
         let ch1_val = rest[0];
         if !ch1_val.is_char() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "char>=?",
                 "expected a character",
                 Some(ch1_val),
@@ -1527,7 +1555,7 @@ mod string_ops {
 
         for (i, val) in rest.iter().enumerate().skip(1) {
             if !val.is_char() {
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "char>=?",
                     "expected a character",
                     Some(*val),
@@ -1538,17 +1566,17 @@ mod string_ops {
             }
             let ch2 = val.char();
             if ch1 < ch2 {
-                return nctx.return_(false);
+                return (false).into();
             }
             ch1 = ch2;
         }
-        nctx.return_(true)
+        (true).into()
     }
 
     #[scheme(name = "char-ci>=?")]
-    pub fn char_ci_ge(rest: &'gc [Value<'gc>]) -> bool {
+    pub fn char_ci_ge(rest: &'gc [Value<'gc>]) -> Value<'gc> {
         if rest.is_empty() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "char-ci>=?",
                 "at least 1 argument required",
                 None,
@@ -1559,12 +1587,12 @@ mod string_ops {
         }
 
         if rest.len() < 2 {
-            return nctx.return_(true);
+            return (true).into();
         }
 
         let ch1_val = rest[0];
         if !ch1_val.is_char() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "char-ci>=?",
                 "expected a character",
                 Some(ch1_val),
@@ -1578,7 +1606,7 @@ mod string_ops {
 
         for (i, val) in rest.iter().enumerate().skip(1) {
             if !val.is_char() {
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "char-ci>=?",
                     "expected a character",
                     Some(*val),
@@ -1589,42 +1617,42 @@ mod string_ops {
             }
             let ch2 = cm.simple_fold(val.char());
             if ch1 < ch2 {
-                return nctx.return_(false);
+                return (false).into();
             }
             ch1 = ch2;
         }
-        nctx.return_(true)
+        (true).into()
     }
 
     #[scheme(name = "char-title-case?")]
     pub fn char_title_case(ch: char) -> bool {
         let category = get_general_category(ch);
-        nctx.return_(category == GeneralCategory::TitlecaseLetter)
+        category == GeneralCategory::TitlecaseLetter
     }
 
     #[scheme(name = "char-lower-case?")]
     pub fn char_lower_case(ch: char) -> bool {
-        nctx.return_(ch.is_lowercase())
+        ch.is_lowercase()
     }
 
     #[scheme(name = "char-upper-case?")]
     pub fn char_upper_case(ch: char) -> bool {
-        nctx.return_(ch.is_uppercase())
+        ch.is_uppercase()
     }
 
     #[scheme(name = "char-whitespace?")]
     pub fn char_whitespace(ch: char) -> bool {
-        nctx.return_(ch.is_whitespace())
+        ch.is_whitespace()
     }
 
     #[scheme(name = "char-numeric?")]
     pub fn char_numericp(ch: char) -> bool {
-        nctx.return_(ch.is_numeric())
+        ch.is_numeric()
     }
 
     #[scheme(name = "char-alphabetic?")]
     pub fn char_alphabeticp(ch: char) -> bool {
-        nctx.return_(ch.is_alphabetic())
+        ch.is_alphabetic()
     }
 
     #[scheme(name = "string-downcase")]
@@ -1632,8 +1660,8 @@ mod string_ops {
         let cm = icu::casemap::CaseMapperBorrowed::new();
         let str = str.to_string();
         let lowercased = cm.lowercase_to_string(&str, &icu::locale::langid!("und"));
-        let s = Str::new(nctx.ctx, &lowercased, false);
-        nctx.return_(s)
+        let s = Str::new(ctx, &lowercased, false);
+        s
     }
 
     #[scheme(name = "string-foldcase")]
@@ -1641,8 +1669,8 @@ mod string_ops {
         let cm = icu::casemap::CaseMapperBorrowed::new();
         let str = str.to_string();
         let folded = cm.fold_string(&str);
-        let s = Str::new(nctx.ctx, &folded, false);
-        nctx.return_(s)
+        let s = Str::new(ctx, &folded, false);
+        s
     }
 
     #[scheme(name = "string-upcase")]
@@ -1650,8 +1678,8 @@ mod string_ops {
         let str = str.to_string();
         let cm = icu::casemap::CaseMapperBorrowed::new();
         let uppercased = cm.uppercase_to_string(&str, &icu::locale::langid!("und"));
-        let s = Str::new(nctx.ctx, &uppercased, false);
-        nctx.return_(s)
+        let s = Str::new(ctx, &uppercased, false);
+        s
     }
 
     #[scheme(name = "string-titlecase")]
@@ -1669,36 +1697,36 @@ mod string_ops {
                 ch.is_whitespace() || get_general_category(ch) == GeneralCategory::DashPunctuation;
         }
 
-        let s = Str::new(nctx.ctx, &result, false);
-        nctx.return_(s)
+        let s = Str::new(ctx, &result, false);
+        s
     }
 
     #[scheme(name = "char-upcase")]
     pub fn char_upcase(ch: char) -> char {
         let cm = icu::casemap::CaseMapperBorrowed::new();
         let uppercased = cm.simple_uppercase(ch);
-        nctx.return_(uppercased)
+        uppercased
     }
 
     #[scheme(name = "char-downcase")]
     pub fn char_downcase(ch: char) -> char {
         let cm = icu::casemap::CaseMapperBorrowed::new();
         let lowercased = cm.simple_lowercase(ch);
-        nctx.return_(lowercased)
+        lowercased
     }
 
     #[scheme(name = "char-foldcase")]
     pub fn char_foldcase(ch: char) -> char {
         let cm = icu::casemap::CaseMapperBorrowed::new();
         let folded = cm.simple_fold(ch);
-        nctx.return_(folded)
+        folded
     }
 
     #[scheme(name = "char-titlecase")]
     pub fn char_titlecase(ch: char) -> char {
         let cm = icu::casemap::CaseMapperBorrowed::new();
         let titlecased = cm.simple_titlecase(ch);
-        nctx.return_(titlecased)
+        titlecased
     }
 
     #[scheme(name = "string-normalize-nfc")]
@@ -1706,8 +1734,8 @@ mod string_ops {
         use unicode_normalization::UnicodeNormalization;
 
         let normalized: String = str.to_string().nfc().collect();
-        let s = Str::new(nctx.ctx, &normalized, false);
-        nctx.return_(s)
+        let s = Str::new(ctx, &normalized, false);
+        s
     }
 
     #[scheme(name = "string-normalize-nfd")]
@@ -1715,8 +1743,8 @@ mod string_ops {
         use unicode_normalization::UnicodeNormalization;
 
         let normalized: String = str.to_string().nfd().collect();
-        let s = Str::new(nctx.ctx, &normalized, false);
-        nctx.return_(s)
+        let s = Str::new(ctx, &normalized, false);
+        s
     }
 
     #[scheme(name = "string-normalize-nfkc")]
@@ -1724,8 +1752,8 @@ mod string_ops {
         use unicode_normalization::UnicodeNormalization;
 
         let normalized: String = str.to_string().nfkc().collect();
-        let s = Str::new(nctx.ctx, &normalized, false);
-        nctx.return_(s)
+        let s = Str::new(ctx, &normalized, false);
+        s
     }
 
     #[scheme(name = "string-normalize-nfkd")]
@@ -1733,18 +1761,18 @@ mod string_ops {
         use unicode_normalization::UnicodeNormalization;
 
         let normalized: String = str.to_string().nfkd().collect();
-        let s = Str::new(nctx.ctx, &normalized, false);
-        nctx.return_(s)
+        let s = Str::new(ctx, &normalized, false);
+        s
     }
 
     #[scheme(name = "keyword?")]
     pub fn keywordp(val: Value<'gc>) -> bool {
-        nctx.return_(val.is::<Keyword>())
+        val.is::<Keyword>()
     }
 
     #[scheme(name = "keyword=?")]
     pub fn keyword_equal(kw1: Gc<'gc, Keyword<'gc>>, kw2: Gc<'gc, Keyword<'gc>>) -> bool {
-        nctx.return_(Gc::ptr_eq(kw1, kw2))
+        Gc::ptr_eq(kw1, kw2)
     }
 
     #[scheme(name = "symbol->keyword")]
@@ -1752,28 +1780,28 @@ mod string_ops {
         let globals = ctx.globals().keyword_map.get().downcast::<HashTable>();
 
         if let Some(kw) = globals.get(ctx, sym) {
-            return nctx.return_(kw.downcast::<Keyword>());
+            return kw.downcast::<Keyword>();
         }
 
-        let kw = Keyword::from_symbol(nctx.ctx, sym);
+        let kw = Keyword::from_symbol(ctx, sym);
         globals.put(ctx, sym, kw);
-        nctx.return_(kw)
+        kw
     }
 
     #[scheme(name = "keyword->symbol")]
     pub fn keyword_to_symbol(kw: Gc<'gc, Keyword<'gc>>) -> Gc<'gc, Symbol<'gc>> {
-        nctx.return_(kw.symbol)
+        kw.symbol
     }
 
     #[scheme(name = "keyword->string")]
     pub fn keyword_to_string(kw: Gc<'gc, Keyword<'gc>>) -> Gc<'gc, Str<'gc>> {
         let sym = kw.symbol;
         let s = sym.to_str(ctx);
-        nctx.return_(s)
+        s
     }
 }
 
-pub fn init_strings<'gc>(ctx: Context<'gc>) {
+pub fn init_strings<'gc>(ctx: MutationContext<'gc>) {
     let _ = &*LOCALE;
     let _ = string_ops::register(ctx);
 }

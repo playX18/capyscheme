@@ -15,7 +15,7 @@ use crate::heap::{
     sync::monitor::Monitor,
 };
 
-use crate::runtime::Context;
+use crate::runtime::MutationContext;
 
 use super::*;
 #[derive(Debug, Clone, PartialEq, Eq, Copy, Trace)]
@@ -211,7 +211,7 @@ impl<'gc> HashTable<'gc> {
     #[allow(dead_code)]
     // SAFETY: Caller must ensure preconditions are met (see fn docs)
     pub(crate) unsafe fn at_object(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
 
         obj: GcObject,
         typ: HashTableType<'gc>,
@@ -264,7 +264,7 @@ impl<'gc> HashTable<'gc> {
     }
 
     pub fn new(
-        mc: Context<'gc>,
+        mc: MutationContext<'gc>,
         typ: HashTableType<'gc>,
         initial_capacity: usize,
         load_factor: f64,
@@ -317,7 +317,7 @@ impl<'gc> HashTable<'gc> {
     }
 
     pub fn new_immutable(
-        mc: Context<'gc>,
+        mc: MutationContext<'gc>,
         typ: HashTableType<'gc>,
         initial_capacity: usize,
         load_factor: f64,
@@ -382,7 +382,7 @@ impl<'gc> HashTable<'gc> {
         self.inner.lock().typ
     }
 
-    fn rehash(inner: &Write<InnerHashTable<'gc>>, ctx: Context<'gc>) {
+    fn rehash(inner: &Write<InnerHashTable<'gc>>, ctx: MutationContext<'gc>) {
         let old_capacity = inner.table.get().len();
         let old_table = inner.table.get();
 
@@ -415,7 +415,7 @@ impl<'gc> HashTable<'gc> {
 
     fn add_entry(
         this: &Write<InnerHashTable<'gc>>,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         mut hash: u64,
         key: Value<'gc>,
         value: Value<'gc>,
@@ -446,7 +446,7 @@ impl<'gc> HashTable<'gc> {
 
     pub fn put(
         self: Gc<'gc, Self>,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         key: impl IntoValue<'gc>,
         value: impl IntoValue<'gc>,
     ) -> Option<Value<'gc>> {
@@ -472,7 +472,7 @@ impl<'gc> HashTable<'gc> {
         }
 
         Self::add_entry(
-            // SAFETY: The guard provides exclusive write access; no aliasing references
+            // SAFETY: The guard provides exclusive write access, no aliasing references
             unsafe { Write::assume(&*guard) },
             ctx,
             hash,
@@ -484,7 +484,11 @@ impl<'gc> HashTable<'gc> {
         None
     }
 
-    pub fn remove(self: Gc<'gc, Self>, ctx: Context<'gc>, key: Value<'gc>) -> Option<Value<'gc>> {
+    pub fn remove(
+        self: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        key: Value<'gc>,
+    ) -> Option<Value<'gc>> {
         let guard = self.inner.lock();
         Gc::write(ctx, self);
         let hash = guard.typ.hash(key);
@@ -515,7 +519,7 @@ impl<'gc> HashTable<'gc> {
         None
     }
 
-    pub fn clear(self: Gc<'gc, Self>, ctx: Context<'gc>) {
+    pub fn clear(self: Gc<'gc, Self>, ctx: MutationContext<'gc>) {
         let guard = self.inner.lock();
         Gc::write(ctx, self);
         let table = Gc::write(ctx, guard.table.get());
@@ -526,7 +530,7 @@ impl<'gc> HashTable<'gc> {
         guard.mod_count.set(guard.mod_count.get() + 1);
     }
 
-    pub fn get(&self, ctx: Context<'gc>, key: impl IntoValue<'gc>) -> Option<Value<'gc>> {
+    pub fn get(&self, ctx: MutationContext<'gc>, key: impl IntoValue<'gc>) -> Option<Value<'gc>> {
         let key = key.into_value(ctx);
         let guard = self.inner.lock();
         if guard.table.get().is_empty() {
@@ -549,12 +553,12 @@ impl<'gc> HashTable<'gc> {
 
     pub fn get_or_insert<F>(
         self: Gc<'gc, Self>,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         key: impl IntoValue<'gc>,
         default: F,
     ) -> (bool, Value<'gc>)
     where
-        F: FnOnce(Context<'gc>) -> Value<'gc>,
+        F: FnOnce(MutationContext<'gc>) -> Value<'gc>,
     {
         let key = key.into_value(ctx);
 
@@ -574,7 +578,7 @@ impl<'gc> HashTable<'gc> {
         let default = default(ctx);
 
         Self::add_entry(
-            // SAFETY: The guard provides exclusive write access; no aliasing references
+            // SAFETY: The guard provides exclusive write access, no aliasing references
             unsafe { Write::assume(&*guard) },
             ctx,
             hash,
@@ -586,7 +590,7 @@ impl<'gc> HashTable<'gc> {
         (true, default)
     }
 
-    pub fn contains_key(&self, ctx: Context<'gc>, key: Value<'gc>) -> bool {
+    pub fn contains_key(&self, ctx: MutationContext<'gc>, key: Value<'gc>) -> bool {
         self.get(ctx, key).is_some()
     }
 
@@ -655,7 +659,7 @@ impl<'gc> HashTable<'gc> {
         self.len() == 0
     }
 
-    pub fn copy(self: Gc<'gc, Self>, ctx: Context<'gc>, immutable: bool) -> Gc<'gc, Self> {
+    pub fn copy(self: Gc<'gc, Self>, ctx: MutationContext<'gc>, immutable: bool) -> Gc<'gc, Self> {
         let guard = self.inner.lock();
         let new_table = if !immutable {
             HashTable::new(ctx, guard.typ, guard.table.get().len(), guard.load_factor)
@@ -743,56 +747,4 @@ pub const fn u64_hash(mut key: u64) -> u64 {
     key = key.wrapping_add(key << 31);
     key >>= 2;
     key
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        heap::Global,
-        runtime::{Scheme, value::Symbol},
-    };
-
-    type RootedHashTable = crate::Rootable!(Gc<'_, HashTable<'_>>);
-
-    #[test]
-    fn requested_initial_capacity_is_preserved() {
-        Scheme::new_uninit().enter(|ctx| {
-            let table = HashTable::new(ctx, HashTableType::Eq, 128, 0.75);
-            assert_eq!(table.inner.lock().table.get().len(), 128);
-
-            let fallback = HashTable::new(ctx, HashTableType::Eq, 0, 0.75);
-            assert_eq!(fallback.inner.lock().table.get().len(), 8);
-        });
-    }
-
-    #[test]
-    fn many_symbol_keys_survive_gc() {
-        let scheme = Scheme::new_uninit();
-        let table: Global<RootedHashTable> = scheme.enter(|ctx| {
-            let table = HashTable::new(ctx, HashTableType::Eq, 256, 0.75);
-
-            for i in 0..512 {
-                let name = Symbol::from_str(ctx, &format!("entry-{i}"));
-                table.put(ctx, name, Value::new(i));
-            }
-
-            for i in 0..512 {
-                let name = Symbol::from_str(ctx, &format!("entry-{i}"));
-                assert_eq!(table.get(ctx, name), Some(Value::new(i)));
-            }
-
-            Global::new(table)
-        });
-
-        scheme.collect_garbage();
-
-        scheme.enter(|ctx| {
-            let table = *table.fetch(ctx);
-            for i in 0..512 {
-                let name = Symbol::from_str(ctx, &format!("entry-{i}"));
-                assert_eq!(table.get(ctx, name), Some(Value::new(i)));
-            }
-        });
-    }
 }

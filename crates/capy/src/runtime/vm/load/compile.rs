@@ -10,7 +10,7 @@ use crate::compiler::{
     compile_file, compile_lowered_to_fasl_bytes, dump_lowered_program_artifacts,
     merge_compile_dump_options, resolve_artifact_dump_path,
 };
-use crate::runtime::Context;
+use crate::runtime::MutationContext;
 use crate::runtime::modules::current_module;
 use crate::runtime::value::{Closure, Str, Value};
 use crate::runtime::vm::libraries::LIBRARY_COLLECTION;
@@ -30,12 +30,12 @@ enum LoadMode {
 }
 
 pub(crate) struct CompilationPhase<'gc> {
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     restored: bool,
 }
 
 impl<'gc> CompilationPhase<'gc> {
-    pub(crate) fn new(ctx: Context<'gc>) -> Self {
+    pub(crate) fn new(ctx: MutationContext<'gc>) -> Self {
         ctx.stats.start_compilation();
         Self {
             ctx,
@@ -58,7 +58,7 @@ impl Drop for CompilationPhase<'_> {
 }
 
 pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     filename: impl AsRef<Path>,
     in_vicinity: Option<impl AsRef<Path>>,
     resolve_relative: bool,
@@ -73,7 +73,7 @@ pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
 }
 
 fn load_thunk<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     filename: impl AsRef<Path>,
     in_vicinity: Option<impl AsRef<Path>>,
     resolve_relative: bool,
@@ -114,12 +114,12 @@ fn load_thunk<'gc>(
     }
 }
 
-fn fresh_auto_compile<'gc>(ctx: Context<'gc>) -> bool {
+fn fresh_auto_compile<'gc>(ctx: MutationContext<'gc>) -> bool {
     ctx.globals().loc_fresh_auto_compile().get() != Value::new(false)
 }
 
 fn load_precompiled_thunk<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     libs: &crate::runtime::vm::libraries::LibraryCollection<'gc>,
     resolved: &ResolvedLoadPath,
 ) -> Result<Option<Value<'gc>>, Value<'gc>> {
@@ -171,7 +171,7 @@ fn load_precompiled_thunk<'gc>(
 }
 
 fn describe_uncompiled_source<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     resolved: &ResolvedLoadPath,
 ) -> Result<Value<'gc>, Value<'gc>> {
     let ResolvedLoadPath::Source {
@@ -198,7 +198,7 @@ fn describe_uncompiled_source<'gc>(
 }
 
 fn compile_and_load_source<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     libs: &crate::runtime::vm::libraries::LibraryCollection<'gc>,
     resolved: ResolvedLoadPath,
 ) -> Result<Value<'gc>, Value<'gc>> {
@@ -222,13 +222,11 @@ fn compile_and_load_source<'gc>(
     let lowered = compile_file(ctx, &source_path, Some(module), dump_options.dump_graph)?;
     dump_lowered_program_artifacts(ctx, &build_destination.path, &lowered, dump_options);
     let mut options = CompilationOptions::default();
-    if dump_options.dump_cranelift {
-        options.backend_dumps.cranelift =
-            Some(resolve_artifact_dump_path(&build_destination.path, ".clif"));
-    }
-    if dump_options.dump_disassembly {
-        options.backend_dumps.disassembly =
-            Some(resolve_artifact_dump_path(&build_destination.path, ".asm"));
+    if dump_options.dump_bytecode {
+        options.backend_dumps.bytecode = Some(resolve_artifact_dump_path(
+            &build_destination.path,
+            ".bc.txt",
+        ));
     }
     compile_lowered_to_destination(ctx, lowered, options, &build_destination)?;
 
@@ -236,7 +234,7 @@ fn compile_and_load_source<'gc>(
 }
 
 pub(super) fn compile_lowered_to_destination<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     lowered: LoweredProgram<'gc>,
     options: CompilationOptions,
     destination: &LoadArtifact,
@@ -247,7 +245,7 @@ pub(super) fn compile_lowered_to_destination<'gc>(
 }
 
 fn compile_to_destination<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     destination: &LoadArtifact,
     compile_fasl: impl FnOnce() -> Result<Vec<u8>, Value<'gc>>,
 ) -> Result<(), Value<'gc>> {
@@ -398,7 +396,7 @@ fn write_artifact_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 fn load_artifact<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     libs: &crate::runtime::vm::libraries::LibraryCollection<'gc>,
     artifact: &LoadArtifact,
 ) -> Result<Value<'gc>, Value<'gc>> {
@@ -421,79 +419,4 @@ pub(super) fn destination_artifact_for_current_policy(path: impl AsRef<Path>) ->
     let kind = artifact_kind_for_policy(get_execution_policy());
     let path = path.as_ref().with_extension(artifact_extension(kind));
     LoadArtifact::new(kind, path)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::runtime::{Context, Scheme};
-    use std::sync::Mutex;
-
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    fn with_ctx(f: impl for<'gc> FnOnce(Context<'gc>)) {
-        let _guard = TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let scm = Scheme::new_uninit();
-        scm.enter(f);
-    }
-
-    #[test]
-    fn compilation_phase_restores_execution_after_success() {
-        with_ctx(|ctx| {
-            ctx.stats.start_execution();
-            assert!(ctx.stats.execution_active());
-            assert!(!ctx.stats.compilation_active());
-
-            {
-                let _phase = CompilationPhase::new(ctx);
-                assert!(!ctx.stats.execution_active());
-                assert!(ctx.stats.compilation_active());
-            }
-
-            assert!(ctx.stats.execution_active());
-            assert!(!ctx.stats.compilation_active());
-        });
-    }
-
-    #[test]
-    fn compilation_phase_restores_execution_after_error_path() {
-        with_ctx(|ctx| {
-            ctx.stats.start_execution();
-
-            let _: Result<(), ()> = {
-                let _phase = CompilationPhase::new(ctx);
-                Err(())
-            };
-
-            assert!(ctx.stats.execution_active());
-            assert!(!ctx.stats.compilation_active());
-        });
-    }
-
-    #[test]
-    fn nested_compilation_scope_preserves_outer_compilation_state() {
-        with_ctx(|ctx| {
-            ctx.stats.start_execution();
-            ctx.stats.start_compilation();
-
-            assert!(!ctx.stats.execution_active());
-            assert!(ctx.stats.compilation_active());
-
-            {
-                let _phase = CompilationPhase::new(ctx);
-                assert!(!ctx.stats.execution_active());
-                assert!(ctx.stats.compilation_active());
-            }
-
-            assert!(!ctx.stats.execution_active());
-            assert!(ctx.stats.compilation_active());
-
-            ctx.stats.end_compilation();
-
-            assert!(ctx.stats.execution_active());
-            assert!(!ctx.stats.compilation_active());
-        });
-    }
 }

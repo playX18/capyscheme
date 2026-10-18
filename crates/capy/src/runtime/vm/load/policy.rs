@@ -12,7 +12,7 @@ pub(crate) enum ExecutionPolicy {
 
 static EXECUTION_POLICY: RwLock<ExecutionPolicy> = RwLock::new(ExecutionPolicy::Aot);
 static FASL_LOAD_OPTIONS: LazyLock<RwLock<LoadOptions>> =
-    LazyLock::new(|| RwLock::new(LoadOptions::from_env()));
+    LazyLock::new(|| RwLock::new(LoadOptions::from_flags()));
 
 pub(crate) fn get_execution_policy() -> ExecutionPolicy {
     *EXECUTION_POLICY

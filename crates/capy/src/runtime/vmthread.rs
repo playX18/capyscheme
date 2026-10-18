@@ -10,6 +10,9 @@ use std::{
 
 use crate::heap::{GarbageCollector, Mutation, Mutator, mmtk, sync::monitor::Monitor};
 
+/// How long the worker thread waits before re-checking for work or shutdown.
+const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
 pub enum Command {
     /// Vacuum weak sets. This task walks all live weak sets and removes broken
     /// entries. It runs in mutator context, so it waits until GC completes.
@@ -45,14 +48,14 @@ impl TaskThread {
                 // Wait until there's work or a shutdown signal.
                 let mut guard = thread_pair.lock();
                 while !guard.load(Ordering::Relaxed) {
-                    guard.wait_for(Duration::from_millis(100));
+                    guard.wait_for(WORKER_POLL_INTERVAL);
                 }
                 guard.store(false, Ordering::Relaxed); // Reset the flag
                 drop(guard);
 
                 let mut shutdown_requested = false;
                 loop {
-                    match receiver.recv_timeout(Duration::from_millis(100)) {
+                    match receiver.recv_timeout(WORKER_POLL_INTERVAL) {
                         Ok(task) => match task {
                             Command::FinalizePointers => (),
                             Command::ClosePorts => {

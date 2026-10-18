@@ -18,7 +18,8 @@ impl JmpBuf {
 pub type SchemeEntryFn = unsafe extern "C" fn(*mut c_void);
 
 unsafe extern "C" {
-    /// Run `entry(data)` under `setjmp(*env)`; returns after a matching `capy_longjmp`.
+    /// Run `entry(data)` under `setjmp(*env)`. Returns 0 when `entry` returns
+    /// and nonzero when a matching `capy_longjmp` cut it short.
     pub fn capy_with_setjmp(env: *mut JmpBuf, entry: SchemeEntryFn, data: *mut c_void) -> i32;
 
     /// Restore the environment saved by `capy_with_setjmp` and never return.

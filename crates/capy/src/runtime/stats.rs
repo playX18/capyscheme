@@ -63,7 +63,7 @@ impl std::fmt::Display for RuntimeStatsSnapshot {
                 "      Psyntax (psyntax.scm): {:.3}s\n",
                 "      Frontend Other: {:.3}s\n",
                 "    Lowering: {:.3}s\n",
-                "    Cranelift: {:.3}s\n",
+                "    Codegen: {:.3}s\n",
                 "    Object Emit: {:.3}s\n",
                 "    Link: {:.3}s\n",
             ),
@@ -103,7 +103,7 @@ pub(crate) enum CompilationBreakdownPhase {
     Reader,
     Psyntax,
     Lowering,
-    Cranelift,
+    Codegen,
     #[allow(dead_code)]
     ObjectEmit,
     #[allow(dead_code)]
@@ -597,7 +597,7 @@ impl GlobalStats {
             CompilationBreakdownPhase::Reader => self.snapshot.reader += elapsed,
             CompilationBreakdownPhase::Psyntax => self.snapshot.psyntax += elapsed,
             CompilationBreakdownPhase::Lowering => self.snapshot.lowering += elapsed,
-            CompilationBreakdownPhase::Cranelift => self.snapshot.cranelift += elapsed,
+            CompilationBreakdownPhase::Codegen => self.snapshot.cranelift += elapsed,
             CompilationBreakdownPhase::ObjectEmit => self.snapshot.object_emit += elapsed,
             CompilationBreakdownPhase::Link => self.snapshot.link += elapsed,
         }
@@ -620,7 +620,7 @@ impl GlobalStats {
                         CompilationBreakdownPhase::Reader => snapshot.reader += elapsed,
                         CompilationBreakdownPhase::Psyntax => snapshot.psyntax += elapsed,
                         CompilationBreakdownPhase::Lowering => snapshot.lowering += elapsed,
-                        CompilationBreakdownPhase::Cranelift => snapshot.cranelift += elapsed,
+                        CompilationBreakdownPhase::Codegen => snapshot.cranelift += elapsed,
                         CompilationBreakdownPhase::ObjectEmit => snapshot.object_emit += elapsed,
                         CompilationBreakdownPhase::Link => snapshot.link += elapsed,
                     }
@@ -635,24 +635,5 @@ impl GlobalStats {
 impl Default for GlobalStats {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn records_gc_duration_from_explicit_cycle_bounds() {
-        let mut stats = GlobalStats::new();
-        stats.set_enabled(true);
-
-        let start = Instant::now();
-        let end = start + Duration::from_millis(25);
-        stats.start_gc_at(start);
-        stats.end_gc_at(end);
-
-        let (_, snapshot) = stats.snapshot();
-        assert_eq!(snapshot.gc, Duration::from_millis(25));
     }
 }

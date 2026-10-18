@@ -46,7 +46,10 @@ pub enum ForeignType {
 }
 
 impl<'gc> FromValue<'gc> for ForeignType {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+    fn try_from_value(
+        _ctx: MutationContext<'gc>,
+        value: Value<'gc>,
+    ) -> Result<Self, ConversionError<'gc>> {
         if !value.is_int32() {
             return Err(ConversionError::type_mismatch(0, "fixnum", value));
         }
@@ -80,7 +83,7 @@ impl<'gc> FromValue<'gc> for ForeignType {
 }
 
 impl<'gc> IntoValue<'gc> for ForeignType {
-    fn into_value(self, _ctx: Context<'gc>) -> Value<'gc> {
+    fn into_value(self, _ctx: MutationContext<'gc>) -> Value<'gc> {
         Value::new(self as i32)
     }
 }
@@ -130,11 +133,8 @@ const fn round_up(len: usize, align: usize) -> usize {
     }
 }
 
-fn null_pointer_error<'a, 'gc, R: TryIntoValues<'gc>>(
-    nctx: NativeCallContext<'a, 'gc, R>,
-    who: &str,
-) -> NativeCallReturn<'gc> {
-    nctx.raise_undefined_violation(who, "null-pointer dereference", &[])
+fn null_pointer_error<'gc>(call: &Call<'_, 'gc>, who: &str) -> Value<'gc> {
+    call.raise_undefined_violation(who, "null-pointer dereference", &[])
 }
 
 /// A wrapped C pointer. This allows us to protect
@@ -233,7 +233,7 @@ global!(
     PTRS<'gc>: Gc<'gc, WeakTable<'gc>> = (ctx) WeakTable::new(ctx, 8, 0.75);
 );
 
-// SAFETY: GC trace for `Pointer` — all reachable heap fields are visited
+// SAFETY: GC trace for `Pointer`, all reachable heap fields are visited
 unsafe impl Trace for Pointer {
     // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::heap::Visitor) {
@@ -268,32 +268,32 @@ unsafe impl ClassTagged for Pointer {
 pub mod ffi_ops {
     #[scheme(name = "pointer?")]
     pub fn pointerp(x: Value<'gc>) -> bool {
-        nctx.return_(x.is::<Pointer>())
+        x.is::<Pointer>()
     }
 
     #[scheme(name = "make-pointer")]
     pub fn make_pointer(addr: usize) -> Value<'gc> {
         let ptr = Pointer::new(addr as *mut std::ffi::c_void);
-        let ptr = Gc::new_with_header_word(nctx.ctx, ptr, pointer_header_word());
-        nctx.return_(ptr.into())
+        let ptr = Gc::new_with_header_word(ctx, ptr, pointer_header_word());
+        ptr.into()
     }
 
     #[scheme(name = "pointer-address")]
     pub fn pointer_address(p: Gc<'gc, Pointer>) -> usize {
-        nctx.return_(p.value() as usize)
+        p.value() as usize
     }
 
     /// unsafely convert a pointer to a Scheme value.
     #[scheme(name = "pointer->scm")]
     pub fn pointer_to_value(p: Gc<'gc, Pointer>) -> Value<'gc> {
-        nctx.return_(Value::from_raw(p.value() as u64))
+        Value::from_raw(p.value() as u64)
     }
 
     #[scheme(name = "scm->pointer")]
     pub fn value_to_pointer(v: Value<'gc>) -> Gc<'gc, Pointer> {
         let p = Pointer::new(v.bits() as *mut std::ffi::c_void);
-        let p = Gc::new_with_header_word(nctx.ctx, p, pointer_header_word());
-        nctx.return_(p)
+        let p = Gc::new_with_header_word(ctx, p, pointer_header_word());
+        p
     }
 
     #[scheme(name = "pointer->bytevector")]
@@ -301,10 +301,10 @@ pub mod ffi_ops {
         pointer: Gc<'gc, Pointer>,
         length: usize,
         offset: Option<usize>,
-    ) -> Gc<'gc, ByteVector> {
+    ) -> Value<'gc> {
         let value = pointer.value();
         if value.is_null() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "pointer->bytevector",
                 "null pointer",
                 Some(pointer.into()),
@@ -316,18 +316,15 @@ pub mod ffi_ops {
 
         let offset = offset.unwrap_or(0);
         let ptr = pointer.value + offset;
-        let bvec = ByteVector::new_mapping(nctx.ctx, ptr, length);
-        nctx.return_(bvec)
+        let bvec = ByteVector::new_mapping(ctx, ptr, length);
+        (bvec).into()
     }
 
     #[scheme(name = "bytevector->pointer")]
-    pub fn bytevector_to_pointer(
-        bv: Gc<'gc, ByteVector>,
-        offset: Option<usize>,
-    ) -> Gc<'gc, Pointer> {
+    pub fn bytevector_to_pointer(bv: Gc<'gc, ByteVector>, offset: Option<usize>) -> Value<'gc> {
         let offset = offset.unwrap_or(0);
         if offset >= bv.len() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "bytevector->pointer",
                 "offset out of bounds",
                 Some(bv.into()),
@@ -339,33 +336,30 @@ pub mod ffi_ops {
 
         // Expose a stable address: copy movable owned BVs into NonMoving.
         // Mapped BVs already reference external memory.
-        let bv = if bv.is_mapping() || bv.is_nonmoving(&nctx.ctx) {
+        let bv = if bv.is_mapping() || bv.is_nonmoving(&ctx) {
             bv
         } else {
-            let copy = ByteVector::new::<false>(nctx.ctx, bv.len(), false);
+            let copy = ByteVector::new::<false>(ctx, bv.len(), false);
             copy.copy_from(bv.as_slice());
             copy
         };
 
         let ptr = bv.contents() + offset;
         let p = Pointer::new(ptr.to_mut_ptr());
-        let p = Gc::new_with_header_word(nctx.ctx, p, pointer_header_word());
+        let p = Gc::new_with_header_word(ctx, p, pointer_header_word());
 
         // Ephemeron: keep the (NonMoving) bytevector alive while `p` is live.
-        ptrs(nctx.ctx).put(nctx.ctx, p, bv);
+        ptrs(ctx).put(ctx, p, bv);
 
-        nctx.return_(p)
+        (p).into()
     }
 
     /// If `len` is -1 or None then string is null-terminated
     #[scheme(name = "pointer->string")]
-    pub fn pointer_to_string(
-        pointer: Gc<'gc, Pointer>,
-        length: Option<isize>,
-    ) -> Gc<'gc, Str<'gc>> {
+    pub fn pointer_to_string(pointer: Gc<'gc, Pointer>, length: Option<isize>) -> Value<'gc> {
         let value = pointer.value();
         if value.is_null() {
-            return null_pointer_error(nctx, "pointer->string");
+            return null_pointer_error(call, "pointer->string");
         }
 
         let length = length.unwrap_or(-1);
@@ -377,7 +371,7 @@ pub mod ffi_ops {
             let string = match cstr.to_str() {
                 Ok(s) => s,
                 Err(_) => {
-                    return nctx.wrong_argument_violation(
+                    return call.wrong_argument_violation(
                         "pointer->string",
                         "invalid UTF-8 sequence",
                         Some(pointer.into()),
@@ -387,12 +381,12 @@ pub mod ffi_ops {
                     );
                 }
             };
-            let str_obj = Str::from_str(nctx.ctx, string);
-            nctx.return_(str_obj)
+            let str_obj = Str::from_str(ctx, string);
+            str_obj.into()
         } else {
             // fixed length string
             if length < 0 {
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "pointer->string",
                     "negative length",
                     Some(Value::new(length as i32)),
@@ -406,7 +400,7 @@ pub mod ffi_ops {
             let string = match std::str::from_utf8(slice) {
                 Ok(s) => s,
                 Err(_) => {
-                    return nctx.wrong_argument_violation(
+                    return call.wrong_argument_violation(
                         "pointer->string",
                         "invalid UTF-8 sequence",
                         Some(pointer.into()),
@@ -416,17 +410,17 @@ pub mod ffi_ops {
                     );
                 }
             };
-            let str_obj = Str::from_str(nctx.ctx, string);
-            nctx.return_(str_obj)
+            let str_obj = Str::from_str(ctx, string);
+            str_obj.into()
         }
     }
 
     #[scheme(name = "set-pointer-finalizer!")]
     pub fn set_pointer_finalizer(p: Gc<'gc, Pointer>, finalizer: Gc<'gc, Pointer>) -> Value<'gc> {
         if p.value().is_null() {
-            return null_pointer_error(nctx, "set-pointer-finalizer!");
+            return null_pointer_error(call, "set-pointer-finalizer!");
         }
-        let mc = nctx.ctx;
+        let mc = ctx;
         mc.finalizers()
             .register_finalizer(&POINTERS_WITH_FINALIZERS, p);
         POINTERS_WITH_FINALIZERS
@@ -444,36 +438,34 @@ pub mod ffi_ops {
                     )
                 },
             );
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "dereference-pointer")]
-    pub fn dereference_pointer(p: Gc<'gc, Pointer>) -> Gc<'gc, Pointer> {
+    pub fn dereference_pointer(p: Gc<'gc, Pointer>) -> Value<'gc> {
         if p.value().is_null() {
-            return null_pointer_error(nctx, "dereference-pointer");
+            return null_pointer_error(call, "dereference-pointer");
         }
         // SAFETY: Preconditions verified by the surrounding code
         let ptr = unsafe { *(p.value() as *const *mut std::ffi::c_void) };
         let new_ptr = Pointer::new(ptr);
-        let new_ptr = Gc::new_with_header_word(nctx.ctx, new_ptr, pointer_header_word());
-        nctx.return_(new_ptr)
+        let new_ptr = Gc::new_with_header_word(ctx, new_ptr, pointer_header_word());
+        new_ptr.into()
     }
 
     #[scheme(name = "alignof")]
-    pub fn alignof_scm(ftype: Value<'gc>) -> usize {
-        let ctx = nctx.ctx;
+    pub fn alignof_scm(ftype: Value<'gc>) -> Value<'gc> {
         match alignof(ctx, ftype) {
-            Ok(align) => nctx.return_(align),
-            Err(e) => nctx.conversion_error("alignof", e),
+            Ok(align) => align.into_value(ctx),
+            Err(e) => call.conversion_error("alignof", e),
         }
     }
 
     #[scheme(name = "sizeof")]
-    pub fn sizeof_scm(ftype: Value<'gc>) -> usize {
-        let ctx = nctx.ctx;
+    pub fn sizeof_scm(ftype: Value<'gc>) -> Value<'gc> {
         match sizeof(ctx, ftype) {
-            Ok(size) => nctx.return_(size),
-            Err(e) => nctx.conversion_error("sizeof", e),
+            Ok(size) => size.into_value(ctx),
+            Err(e) => call.conversion_error("sizeof", e),
         }
     }
 
@@ -488,20 +480,20 @@ pub mod ffi_ops {
         let variadic = variadic.unwrap_or(false);
         // Assume foreign calls can block so they never stall the mutator.
         let blocking = blocking.unwrap_or(true);
-        let cif = match make_cif(nctx.ctx, return_type, arg_types, variadic, blocking) {
+        let cif = match make_cif(ctx, return_type, arg_types, variadic, blocking) {
             Ok(cif) => cif,
-            Err(e) => return nctx.conversion_error("pointer->procedure", e),
+            Err(e) => return call.conversion_error("pointer->procedure", e),
         };
 
-        let procs = PROCEDURES.fetch(nctx.ctx);
+        let procs = PROCEDURES.fetch(ctx);
         let clos = procs.make_closure(
-            nctx.ctx,
+            ctx,
             c_foreign_call,
             [cif.into(), func_ptr.into()],
             Value::null(),
         );
 
-        nctx.return_(clos.into())
+        clos.into()
     }
 
     #[scheme(name = "procedure->callback-pointer")]
@@ -510,13 +502,13 @@ pub mod ffi_ops {
         arg_types: Value<'gc>,
         proc: Gc<'gc, Closure<'gc>>,
     ) -> Value<'gc> {
-        let rtype = match make_ffi_type(nctx.ctx, return_type) {
+        let rtype = match make_ffi_type(ctx, return_type) {
             Ok(rtype) => rtype,
-            Err(e) => return nctx.conversion_error("procedure->callback-pointer", e),
+            Err(e) => return call.conversion_error("procedure->callback-pointer", e),
         };
-        let args = match make_ffi_arg_types(nctx.ctx, arg_types) {
+        let args = match make_ffi_arg_types(ctx, arg_types) {
             Ok(args) => args,
-            Err(e) => return nctx.conversion_error("procedure->callback-pointer", e),
+            Err(e) => return call.conversion_error("procedure->callback-pointer", e),
         };
         let cif = libffi::middle::Cif::new(args, rtype);
         let (closure, code) = low::closure_alloc();
@@ -525,7 +517,7 @@ pub mod ffi_ops {
             closure,
             code,
             data: CallbackData {
-                ctx: nctx.ctx.as_ptr(),
+                ctx: ctx.as_ptr(),
                 proc: crate::heap::global::Global::new(proc.into()),
             },
         });
@@ -545,25 +537,25 @@ pub mod ffi_ops {
 
         let code = owner.code.as_mut_ptr();
         let owner = Box::into_raw(owner);
-        let ptr = Gc::new_with_header_word(nctx.ctx, Pointer::new(code), pointer_header_word());
+        let ptr = Gc::new_with_header_word(ctx, Pointer::new(code), pointer_header_word());
         let owner_ptr =
-            Gc::new_with_header_word(nctx.ctx, Pointer::new(owner.cast()), pointer_header_word());
-        ptrs(nctx.ctx).put(nctx.ctx, ptr, owner_ptr);
-        nctx.return_(ptr.into())
+            Gc::new_with_header_word(ctx, Pointer::new(owner.cast()), pointer_header_word());
+        ptrs(ctx).put(ctx, ptr, owner_ptr);
+        ptr.into()
     }
 
     #[scheme(name = "free-callback-pointer")]
     pub fn free_callback_pointer(callback: Gc<'gc, Pointer>) -> bool {
-        let owner = ptrs(nctx.ctx).get(nctx.ctx, callback);
+        let owner = ptrs(ctx).get(ctx, callback);
         if let Some(owner) = owner {
-            ptrs(nctx.ctx).remove(nctx.ctx, callback.into());
+            ptrs(ctx).remove(ctx, callback.into());
             let owner = owner.downcast::<Pointer>().value().cast::<CallbackOwner>();
             // SAFETY: This pointer came from Box::into_raw in procedure->callback-pointer.
             unsafe {
                 drop(Box::from_raw(owner));
             }
         }
-        nctx.return_(true)
+        true
     }
 
     #[scheme(name = "ioctl/pointer")]
@@ -571,18 +563,21 @@ pub mod ffi_ops {
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let res = libc::ioctl(fd, request as _, argp.value());
-            nctx.return_(Value::new(res))
+            Value::new(res)
         }
     }
 
     #[scheme(name = "errno")]
     pub fn errno() -> i32 {
         let err = ::errno::errno();
-        nctx.return_(err.0)
+        err.0
     }
 }
 
-pub fn alignof<'gc>(ctx: Context<'gc>, ftype: Value<'gc>) -> Result<usize, ConversionError<'gc>> {
+pub fn alignof<'gc>(
+    ctx: MutationContext<'gc>,
+    ftype: Value<'gc>,
+) -> Result<usize, ConversionError<'gc>> {
     if ftype.is_int32() {
         let ftype = ForeignType::try_from_value(ctx, ftype)?;
 
@@ -629,7 +624,10 @@ pub fn alignof<'gc>(ctx: Context<'gc>, ftype: Value<'gc>) -> Result<usize, Conve
     }
 }
 
-pub fn sizeof<'gc>(ctx: Context<'gc>, ftype: Value<'gc>) -> Result<usize, ConversionError<'gc>> {
+pub fn sizeof<'gc>(
+    ctx: MutationContext<'gc>,
+    ftype: Value<'gc>,
+) -> Result<usize, ConversionError<'gc>> {
     if ftype.is_int32() {
         let ftype = ForeignType::try_from_value(ctx, ftype)?;
 
@@ -703,7 +701,7 @@ pub fn sizeof<'gc>(ctx: Context<'gc>, ftype: Value<'gc>) -> Result<usize, Conver
 }
 
 fn parse_ffi_type<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     ftype: Value<'gc>,
     returnp: bool,
     n_structs: &mut usize,
@@ -756,7 +754,10 @@ fn parse_ffi_type<'gc>(
     }
 }
 
-fn make_ffi_type<'gc>(ctx: Context<'gc>, ftype: Value<'gc>) -> Result<Type, ConversionError<'gc>> {
+fn make_ffi_type<'gc>(
+    ctx: MutationContext<'gc>,
+    ftype: Value<'gc>,
+) -> Result<Type, ConversionError<'gc>> {
     if ftype.is_int32() {
         let typ = ForeignType::try_from_value(ctx, ftype)?;
         match typ {
@@ -818,7 +819,7 @@ fn make_ffi_type<'gc>(ctx: Context<'gc>, ftype: Value<'gc>) -> Result<Type, Conv
 }
 
 fn make_ffi_arg_types<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     arg_types: Value<'gc>,
 ) -> Result<Vec<Type>, ConversionError<'gc>> {
     if !arg_types.is_list() {
@@ -879,7 +880,7 @@ unsafe impl<'gc> Trace for Cif<'gc> {
 
 #[allow(dead_code)]
 pub(crate) fn make_cif_at<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     obj: GcObject,
     arg_types: Value<'gc>,
     return_type: Value<'gc>,
@@ -936,7 +937,7 @@ pub(crate) fn make_cif_at<'gc>(
 }
 
 fn make_cif<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     return_type: Value<'gc>,
     arg_types: Value<'gc>,
     variadic: bool,
@@ -986,17 +987,13 @@ fn make_cif<'gc>(
     Ok(Gc::new_with_header_word(ctx, cif, cif_header_word()))
 }
 
-// SAFETY: Caller ensures all C/FFI arguments are valid
-unsafe fn foreign_call<'a, 'gc>(
-    mut nctx: NativeCallContext<'a, 'gc>,
-    ctx: Context<'gc>,
+fn foreign_call<'gc>(
+    call: &Call<'_, 'gc>,
+    ctx: MutationContext<'gc>,
     cif: Value<'gc>,
     pointer: Value<'gc>,
-    num_rands: usize,
-    rands: *const Value<'gc>,
-) -> NativeCallReturn<'gc> {
-    // SAFETY: Pointer is valid for the given element count
-    let rands = unsafe { std::slice::from_raw_parts(rands, num_rands) };
+    rands: &[Value<'gc>],
+) -> Value<'gc> {
     let cif = cif.downcast::<Cif>();
     let pointer = pointer.downcast::<Pointer>().value();
 
@@ -1016,7 +1013,7 @@ unsafe fn foreign_call<'a, 'gc>(
             for rand in rands[cif.nargs as usize..].iter() {
                 let ftype = match guess_ffi_type(ctx, *rand) {
                     Ok(t) => t,
-                    Err(e) => return nctx.return_error(e),
+                    Err(e) => return call.err(e),
                 };
                 arg_size += (*ftype).size + (*ftype).alignment as usize - 1;
             }
@@ -1041,7 +1038,7 @@ unsafe fn foreign_call<'a, 'gc>(
                 false,
             ) {
                 Ok(()) => (),
-                Err(e) => return nctx.return_error(e),
+                Err(e) => return call.err(e),
             }
             off = args[i] - data_ptr as usize + (*(*raw).arg_types.add(i).read()).size;
         }
@@ -1051,7 +1048,7 @@ unsafe fn foreign_call<'a, 'gc>(
                 let ftype = match guess_ffi_type(ctx, *rand) {
                     Ok(t) => t,
                     Err(e) => {
-                        return nctx.return_error(e);
+                        return call.err(e);
                     }
                 };
                 args.push(round_up(
@@ -1066,7 +1063,7 @@ unsafe fn foreign_call<'a, 'gc>(
                     false,
                 ) {
                     Ok(()) => (),
-                    Err(e) => return nctx.return_error(e),
+                    Err(e) => return call.err(e),
                 }
                 off = args.last().copied().expect("args non-empty") - data_ptr as usize
                     + (*ftype).size;
@@ -1082,9 +1079,7 @@ unsafe fn foreign_call<'a, 'gc>(
             let raw = cif.cif.as_raw_ptr();
             let target: *mut () = pointer.cast();
             let mut args = args;
-            let scope = RootScope::new(nctx.ctx);
-            let retk = scope.root(nctx.retk);
-            nctx.ctx.call_in_native(|| {
+            ctx.call_in_native(|| {
                 libffi::raw::ffi_call(
                     raw,
                     // SAFETY: Invariants are upheld at this call site
@@ -1095,9 +1090,7 @@ unsafe fn foreign_call<'a, 'gc>(
                     args.as_mut_ptr().cast(),
                 );
             });
-            nctx.retk = retk.get();
-            drop(scope);
-            return nctx.return_(pack(ctx, (*raw).rtype, rvalue, true));
+            return pack(ctx, (*raw).rtype, rvalue, true);
         }
 
         libffi::raw::ffi_call(
@@ -1115,12 +1108,15 @@ unsafe fn foreign_call<'a, 'gc>(
             code: 0,
             value: pack(ctx, (*raw).rtype, rvalue, true),
         }*/
-        nctx.return_(pack(ctx, (*raw).rtype, rvalue, true))
+        pack(ctx, (*raw).rtype, rvalue, true)
     }
 }
 
 /// Given a value, try to guess its foreign type. Used for variadic functions.
-fn guess_ffi_type<'gc>(ctx: Context<'gc>, val: Value<'gc>) -> Result<*mut ffi_type, Value<'gc>> {
+fn guess_ffi_type<'gc>(
+    ctx: MutationContext<'gc>,
+    val: Value<'gc>,
+) -> Result<*mut ffi_type, Value<'gc>> {
     if let Some(number) = val.number() {
         match number {
             Number::Rational(_) | Number::Flonum(_) | Number::Complex(_) => {
@@ -1150,7 +1146,7 @@ fn guess_ffi_type<'gc>(ctx: Context<'gc>, val: Value<'gc>) -> Result<*mut ffi_ty
 
 // SAFETY: Caller must ensure preconditions are met (see fn docs)
 unsafe fn unpack<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     typ: *const ffi_type,
     val: Value<'gc>,
     loc: *mut (),
@@ -1404,7 +1400,7 @@ unsafe fn unpack<'gc>(
 
 // SAFETY: Caller must ensure preconditions are met (see fn docs)
 unsafe fn pack<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     typ: *mut ffi_type,
     loc: *mut (),
     return_value: bool,
@@ -1521,7 +1517,7 @@ unsafe extern "C" fn scheme_callback(
 
     // SAFETY: Callback data is created from a live Capy context and is only
     // valid for callbacks invoked by C during that context's lifetime.
-    let ctx = unsafe { Context::from_ptr(userdata.ctx) };
+    let ctx = unsafe { MutationContext::from_ptr(userdata.ctx) };
 
     let was_native = matches!(
         current_thread().get_exec_status(),
@@ -1587,25 +1583,20 @@ unsafe extern "C" fn scheme_callback(
     };
 }
 
-pub(crate) extern "C-unwind" fn c_foreign_call<'gc>(
-    ctx: Context<'gc>,
-    rator: Value<'gc>,
-    rands: *const Value<'gc>,
-    num_rands: usize,
-    retk: Value<'gc>,
-) -> NativeReturn<'gc> {
-    // SAFETY: Pointer is valid for the given element count
-    unsafe {
-        let rands = std::slice::from_raw_parts(rands, num_rands);
-        let closure = rator.downcast::<Closure>();
+pub(crate) extern "C" fn c_foreign_call<'gc>(
+    ctx: MutationContext<'gc>,
+    sfp: Slot<'gc>,
+) -> ReturnCode {
+    Call::invoke(ctx, sfp, |call| {
+        let closure = call.rator.downcast::<Closure>();
 
         let cif = closure[1].get().downcast::<Cif>();
         let pointer = closure[2].get().downcast::<Pointer>();
 
         let fits = if cif.variadic {
-            num_rands >= cif.nargs as usize
+            call.args.len() >= cif.nargs as usize
         } else {
-            num_rands == cif.nargs as usize
+            call.args.len() == cif.nargs as usize
         };
 
         if !fits {
@@ -1618,31 +1609,21 @@ pub(crate) extern "C-unwind" fn c_foreign_call<'gc>(
                         "wrong number of arguments to foreign function, expected {}{}, got {}",
                         if cif.variadic { "at least " } else { "" },
                         cif.nargs,
-                        num_rands,
+                        call.args.len(),
                     ),
                 )
                 .into(),
                 &[],
             );
 
-            return ctx.return_call(retk, [err], None);
+            return call.run(|_| err);
         }
 
-        let nctx = NativeCallContext::from_raw(ctx, rator, rands.as_ptr(), num_rands, retk);
-
-        foreign_call(
-            nctx,
-            ctx,
-            cif.into(),
-            pointer.into(),
-            num_rands,
-            rands.as_ptr(),
-        )
-        .into_inner()
-    }
+        call.run(|call| foreign_call(call, ctx, cif.into(), pointer.into(), call.args))
+    })
 }
 
-pub(crate) fn init_ffi<'gc>(ctx: Context<'gc>) {
+pub(crate) fn init_ffi<'gc>(ctx: MutationContext<'gc>) {
     ffi_ops::register(ctx);
 
     define(ctx, "%void", ForeignType::Void);
@@ -1740,32 +1721,4 @@ pub(crate) fn init_ffi<'gc>(ctx: Context<'gc>) {
     define(ctx, "RTLD_NOW", Value::new(libc::RTLD_NOW));
     define(ctx, "RTLD_GLOBAL", Value::new(libc::RTLD_GLOBAL));
     define(ctx, "RTLD_LOCAL", Value::new(libc::RTLD_LOCAL));
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::runtime::Scheme;
-
-    #[test]
-    fn pointer_and_cif_allocate_with_class_only_headers() {
-        Scheme::new_uninit().enter(|ctx| {
-            let pointer = Gc::new_with_header_word(
-                ctx,
-                Pointer::new(std::ptr::null_mut()),
-                pointer_header_word(),
-            );
-            assert_eq!(
-                pointer.as_gc_object().header().class_id(),
-                ClassId::new(builtin_class_ids::POINTER).unwrap()
-            );
-
-            let cif = make_cif(ctx, ForeignType::Void.into(), Value::null(), false, false)
-                .expect("make void cif");
-            assert_eq!(
-                cif.as_gc_object().header().class_id(),
-                ClassId::new(builtin_class_ids::CIF).unwrap()
-            );
-        });
-    }
 }

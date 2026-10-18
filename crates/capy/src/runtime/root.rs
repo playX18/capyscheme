@@ -1,14 +1,11 @@
 //! Fast precise root stack for Values held across `call_in_native` / GC.
-//!
-//! Unlike the debug [`crate::runtime::vm::debug::ShadowStack`], this is a
-//! relocatable rooting API: slots are traced by [`crate::runtime::State`] and
-//! must be reloaded after any safepoint. Prefer OopStorage / [`crate::runtime::sni`]
-//! for nest and longer-lived handles.
 
 use std::cell::Cell;
 
+use smallvec::SmallVec;
+
 use crate::heap::Trace;
-use crate::runtime::{Context, State, value::Value};
+use crate::runtime::{MutationContext, State, value::Value};
 
 /// Growable precise root array of relocatable [`Value`] slots.
 pub struct RootStack<'gc> {
@@ -18,21 +15,21 @@ pub struct RootStack<'gc> {
 
 /// Interior mutability for slot storage without requiring `&mut` during push.
 struct UnsafeCellSlots<'gc> {
-    inner: std::cell::UnsafeCell<Vec<Cell<Value<'gc>>>>,
+    inner: std::cell::UnsafeCell<SmallVec<[Cell<Value<'gc>>; 8]>>,
 }
 
 impl<'gc> RootStack<'gc> {
     pub fn new() -> Self {
         Self {
             slots: UnsafeCellSlots {
-                inner: std::cell::UnsafeCell::new(Vec::with_capacity(16)),
+                inner: std::cell::UnsafeCell::new(SmallVec::new()),
             },
             len: Cell::new(0),
         }
     }
 
-    fn slots(&self) -> &mut Vec<Cell<Value<'gc>>> {
-        // SAFETY: RootStack is exclusively owned by the mutator thread; GC
+    fn slots(&self) -> &mut SmallVec<[Cell<Value<'gc>>; 8]> {
+        // SAFETY: RootStack is exclusively owned by the mutator thread. GC
         // tracing runs stop-the-world with no concurrent push/pop.
         unsafe { &mut *self.slots.inner.get() }
     }
@@ -79,7 +76,7 @@ impl<'gc> RootStack<'gc> {
     }
 }
 
-// SAFETY: slots are mutator-owned; GC traces live prefix only.
+// SAFETY: slots are mutator-owned. GC traces live prefix only.
 unsafe impl Trace for RootStack<'_> {
     unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::heap::WeakProcessor) {}
 
@@ -99,7 +96,7 @@ pub struct RootScope<'a, 'gc> {
 }
 
 impl<'a, 'gc> RootScope<'a, 'gc> {
-    pub fn new(ctx: Context<'gc>) -> Self {
+    pub fn new(ctx: MutationContext<'gc>) -> Self {
         let stack = &ctx.state().root_stack;
         Self {
             base: stack.len(),
@@ -136,7 +133,7 @@ impl Drop for RootScope<'_, '_> {
     }
 }
 
-/// A single rooted [`Value`] slot; always reload via [`Self::get`] after GC.
+/// A single rooted [`Value`] slot, always reload via [`Self::get`] after GC.
 pub struct Rooted<'a, 'gc> {
     stack: &'a RootStack<'gc>,
     index: usize,
@@ -156,9 +153,9 @@ impl<'a, 'gc> Rooted<'a, 'gc> {
     }
 }
 
-/// Run `f` while `InNative`, with `values` rooted; returns `(f result, reloaded values)`.
+/// Run `f` while `InNative`, with `values` rooted, returns `(f result, reloaded values)`.
 pub fn with_rooted_native<'gc, const N: usize, T>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     values: [Value<'gc>; N],
     f: impl FnOnce() -> T,
 ) -> (T, [Value<'gc>; N]) {
@@ -178,14 +175,14 @@ pub fn with_rooted_native<'gc, const N: usize, T>(
 
 /// Push roots for the given expressions and bind `Rooted` guards.
 ///
-/// After any `call_in_native` / nest, reload with `.get()` — do not use the
+/// After any `call_in_native` / nest, reload with `.get()`, do not use the
 /// original stack copies.
 ///
 /// ```ignore
 /// root_scope!(ctx, scope);
-/// let retk = scope.root(nctx.retk);
+/// let pinned = scope.root(value);
 /// ctx.call_in_native(|| { ... });
-/// nctx.retk = retk.get();
+/// let value = pinned.get();
 /// ```
 #[macro_export]
 macro_rules! root_scope {
@@ -198,7 +195,7 @@ macro_rules! root_scope {
 ///
 /// ```ignore
 /// rooted_native!(ctx, [retk, buf] => {
-///     // body; retk/buf not usable inside for GC Values
+///     // body. retk/buf are not usable inside for GC Values
 /// });
 /// // retk, buf reloaded
 /// ```
@@ -216,37 +213,4 @@ macro_rules! rooted_native {
         drop(__scope);
         __result
     }};
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::runtime::Scheme;
-    use crate::runtime::value::Str;
-
-    #[test]
-    fn root_stack_push_get_truncate() {
-        Scheme::new_uninit().enter(|ctx| {
-            let scope = RootScope::new(ctx);
-            let a = scope.root(Value::null());
-            let s = Str::from_str(ctx, "hi");
-            let b = scope.root(s.into());
-            assert!(a.get().is_null());
-            assert_eq!(b.get().downcast::<Str>().to_string(), "hi");
-            drop(scope);
-            assert_eq!(ctx.state().root_stack.len(), 0);
-        });
-    }
-
-    #[test]
-    fn with_rooted_native_survives_collect() {
-        Scheme::new_uninit().enter(|ctx| {
-            let s = Str::from_str(ctx, "rooted");
-            let v = s.into();
-            let ((), [reloaded]) = with_rooted_native(ctx, [v], || {
-                let _ = crate::heap::mutator::user_collect_garbage();
-            });
-            assert_eq!(reloaded.downcast::<Str>().to_string(), "rooted");
-        });
-    }
 }

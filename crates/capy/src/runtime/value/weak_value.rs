@@ -58,7 +58,7 @@ impl<'gc> WeakValue<'gc> {
 }
 
 // SAFETY: WeakValue wraps the same NaN-boxed representation as Value. During
-// tracing we only register for weak processing; actual pointer updates happen
+// tracing we only register for weak processing, actual pointer updates happen
 // in `process_weak_refs` where we check liveness and replace dead refs with BWP.
 unsafe impl<'gc> Trace for WeakValue<'gc> {
     // SAFETY: All GC-reachable fields are traced via `visitor`

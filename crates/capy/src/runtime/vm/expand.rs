@@ -3,10 +3,7 @@ use std::{cell::Cell, collections::HashMap};
 use crate::heap::{alloc::Array, barrier, cell::Lock};
 
 use crate::{
-    expander::{
-        core::{self, LVar, LVarRef, Term, TermKind, TermRef, seq_from_slice},
-        sym_column, sym_filename, sym_line,
-    },
+    expander::core::{self, LVar, LVarRef, Term, TermKind, TermRef, seq_from_slice},
     runtime::prelude::*,
     static_symbols,
 };
@@ -41,21 +38,24 @@ static_symbols!(
     SYM_LETREC_STAR = "letrec*"
 );
 
-pub fn is_term<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn is_term<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(
         ctx,
         ctx.globals().loc_term_type().get().record_type_rtd(ctx),
     )
 }
 
-pub fn term_sourcev<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn term_sourcev<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_term(ctx, v));
-    let src = v.downcast::<Tuple>()[1].get();
+    term_slot_sourcev(ctx, v.downcast::<Tuple>()[1].get())
+}
+
+/// Normalize a `&term` record's source slot to a 9-vector sourcev or `#f`.
+/// Pair alists convert field-by-field like every other span converter,
+/// anything that is neither alist nor vector carries no span.
+fn term_slot_sourcev<'gc>(ctx: MutationContext<'gc>, src: Value<'gc>) -> Value<'gc> {
     if src.is_pair() {
-        let filename = src.assq(sym_filename(ctx).into()).expect("invariant holds");
-        let line = src.assq(sym_line(ctx).into()).expect("invariant holds");
-        let col = src.assq(sym_column(ctx).into()).expect("invariant holds");
-        Vector::from_slice(ctx, &[filename, line, col]).into()
+        crate::runtime::vm::syntax::props_to_sourcev(ctx, src)
     } else if src.is::<Vector>() {
         src
     } else {
@@ -67,19 +67,19 @@ const TERM_SOURCEV: usize = 1;
 const LREF_VARIABLE: usize = TERM_SOURCEV + 1;
 const LREF_SYM: usize = TERM_SOURCEV + 2;
 
-pub fn is_lref<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn is_lref<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(
         ctx,
         ctx.globals().loc_lref_type().get().record_type_rtd(ctx),
     )
 }
 
-pub fn lref_name<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn lref_name<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_lref(ctx, v));
     v.downcast::<Tuple>()[LREF_VARIABLE].get()
 }
 
-pub fn lref_sym<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn lref_sym<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_lref(ctx, v));
     v.downcast::<Tuple>()[LREF_SYM].get()
 }
@@ -88,29 +88,29 @@ const LSET_VARIABLE_: usize = TERM_SOURCEV + 1;
 const LSET_SYM: usize = TERM_SOURCEV + 2;
 const LSET_VALUE: usize = TERM_SOURCEV + 3;
 
-pub fn is_lset<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn is_lset<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(
         ctx,
         ctx.globals().loc_lset_type().get().record_type_rtd(ctx),
     )
 }
 
-pub fn lset_name<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn lset_name<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_lset(ctx, v));
     v.downcast::<Tuple>()[LSET_VARIABLE_].get()
 }
 
-pub fn lset_sym<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn lset_sym<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_lset(ctx, v));
     v.downcast::<Tuple>()[LSET_SYM].get()
 }
 
-pub fn lset_value<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn lset_value<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_lset(ctx, v));
     v.downcast::<Tuple>()[LSET_VALUE].get()
 }
 
-pub fn is_module_ref<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn is_module_ref<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(
         ctx,
         ctx.globals()
@@ -124,22 +124,22 @@ const MODULE_REF_MODULE: usize = TERM_SOURCEV + 1;
 const MODULE_REF_NAME: usize = TERM_SOURCEV + 2;
 const MODULE_REF_PUBLIC: usize = TERM_SOURCEV + 3;
 
-pub fn module_ref_module<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn module_ref_module<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_module_ref(ctx, v));
     v.downcast::<Tuple>()[MODULE_REF_MODULE].get()
 }
 
-pub fn module_ref_name<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn module_ref_name<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_module_ref(ctx, v));
     v.downcast::<Tuple>()[MODULE_REF_NAME].get()
 }
 
-pub fn module_ref_public<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn module_ref_public<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     assert!(is_module_ref(ctx, v));
     v.downcast::<Tuple>()[MODULE_REF_PUBLIC].get() != Value::new(false)
 }
 
-pub fn is_module_set<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn is_module_set<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(
         ctx,
         ctx.globals()
@@ -154,22 +154,22 @@ const MODULE_SET_NAME: usize = TERM_SOURCEV + 2;
 const MODULE_SET_PUBLIC: usize = TERM_SOURCEV + 3;
 const MODULE_SET_VALUE: usize = TERM_SOURCEV + 4;
 
-pub fn module_set_module<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn module_set_module<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_module_set(ctx, v));
     v.downcast::<Tuple>()[MODULE_SET_MODULE].get()
 }
 
-pub fn module_set_name<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn module_set_name<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_module_set(ctx, v));
     v.downcast::<Tuple>()[MODULE_SET_NAME].get()
 }
 
-pub fn module_set_public<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn module_set_public<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     assert!(is_module_set(ctx, v));
     v.downcast::<Tuple>()[MODULE_SET_PUBLIC].get() != Value::new(false)
 }
 
-pub fn module_set_value<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn module_set_value<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_module_set(ctx, v));
     v.downcast::<Tuple>()[MODULE_SET_VALUE].get()
 }
@@ -177,7 +177,7 @@ pub fn module_set_value<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
 const TOPLEVEL_REF_MOD: usize = TERM_SOURCEV + 1;
 const TOPLEVEL_REF_NAME: usize = TERM_SOURCEV + 2;
 
-pub fn is_toplevel_ref<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn is_toplevel_ref<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(
         ctx,
         ctx.globals()
@@ -187,12 +187,12 @@ pub fn is_toplevel_ref<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
     )
 }
 
-pub fn toplevel_ref_mod<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn toplevel_ref_mod<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_toplevel_ref(ctx, v));
     v.downcast::<Tuple>()[TOPLEVEL_REF_MOD].get()
 }
 
-pub fn toplevel_ref_name<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn toplevel_ref_name<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_toplevel_ref(ctx, v));
     v.downcast::<Tuple>()[TOPLEVEL_REF_NAME].get()
 }
@@ -201,7 +201,7 @@ const TOPLEVEL_SET_MOD: usize = TERM_SOURCEV + 1;
 const TOPLEVEL_SET_NAME: usize = TERM_SOURCEV + 2;
 const TOPLEVEL_SET_VALUE: usize = TERM_SOURCEV + 3;
 
-pub fn is_toplevel_set<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn is_toplevel_set<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(
         ctx,
         ctx.globals()
@@ -211,17 +211,17 @@ pub fn is_toplevel_set<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
     )
 }
 
-pub fn toplevel_set_mod<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn toplevel_set_mod<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_toplevel_set(ctx, v));
     v.downcast::<Tuple>()[TOPLEVEL_SET_MOD].get()
 }
 
-pub fn toplevel_set_name<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn toplevel_set_name<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_toplevel_set(ctx, v));
     v.downcast::<Tuple>()[TOPLEVEL_SET_NAME].get()
 }
 
-pub fn toplevel_set_value<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn toplevel_set_value<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_toplevel_set(ctx, v));
     v.downcast::<Tuple>()[TOPLEVEL_SET_VALUE].get()
 }
@@ -230,7 +230,7 @@ const TOPLEVEL_DEFINE_MOD: usize = TERM_SOURCEV + 1;
 const TOPLEVEL_DEFINE_NAME: usize = TERM_SOURCEV + 2;
 const TOPLEVEL_DEFINE_VALUE: usize = TERM_SOURCEV + 3;
 
-pub fn is_toplevel_define<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn is_toplevel_define<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(
         ctx,
         ctx.globals()
@@ -240,17 +240,17 @@ pub fn is_toplevel_define<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
     )
 }
 
-pub fn toplevel_define_mod<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn toplevel_define_mod<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_toplevel_define(ctx, v));
     v.downcast::<Tuple>()[TOPLEVEL_DEFINE_MOD].get()
 }
 
-pub fn toplevel_define_name<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn toplevel_define_name<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_toplevel_define(ctx, v));
     v.downcast::<Tuple>()[TOPLEVEL_DEFINE_NAME].get()
 }
 
-pub fn toplevel_define_value<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn toplevel_define_value<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_toplevel_define(ctx, v));
     v.downcast::<Tuple>()[TOPLEVEL_DEFINE_VALUE].get()
 }
@@ -259,21 +259,21 @@ const IF_COND: usize = TERM_SOURCEV + 1;
 const IF_THEN: usize = TERM_SOURCEV + 2;
 const IF_ELSE: usize = TERM_SOURCEV + 3;
 
-pub fn is_if<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn is_if<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(ctx, ctx.globals().loc_if_type().get().record_type_rtd(ctx))
 }
 
-pub fn if_cond<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn if_cond<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_if(ctx, v));
     v.downcast::<Tuple>()[IF_COND].get()
 }
 
-pub fn if_then<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn if_then<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_if(ctx, v));
     v.downcast::<Tuple>()[IF_THEN].get()
 }
 
-pub fn if_else<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn if_else<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_if(ctx, v));
     v.downcast::<Tuple>()[IF_ELSE].get()
 }
@@ -284,31 +284,31 @@ const LET_LHS: usize = TERM_SOURCEV + 3;
 const LET_RHS: usize = TERM_SOURCEV + 4;
 const LET_BODY: usize = TERM_SOURCEV + 5;
 
-pub fn is_let<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn is_let<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(ctx, ctx.globals().loc_let_type().get().record_type_rtd(ctx))
 }
 
-pub fn let_style<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn let_style<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_let(ctx, v));
     v.downcast::<Tuple>()[LET_STYLE].get()
 }
 
-pub fn let_ids<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn let_ids<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_let(ctx, v));
     v.downcast::<Tuple>()[LET_IDS].get()
 }
 
-pub fn let_lhs<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn let_lhs<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_let(ctx, v));
     v.downcast::<Tuple>()[LET_LHS].get()
 }
 
-pub fn let_rhs<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn let_rhs<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_let(ctx, v));
     v.downcast::<Tuple>()[LET_RHS].get()
 }
 
-pub fn let_body<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn let_body<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_let(ctx, v));
     v.downcast::<Tuple>()[LET_BODY].get()
 }
@@ -318,31 +318,31 @@ const FIX_LHS: usize = TERM_SOURCEV + 2;
 const FIX_RHS: usize = TERM_SOURCEV + 3;
 const FIX_BODY: usize = TERM_SOURCEV + 4;
 
-pub fn is_fix<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn is_fix<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(ctx, ctx.globals().loc_fix_type().get().record_type_rtd(ctx))
 }
 
-pub fn fix_ids<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn fix_ids<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_fix(ctx, v));
     v.downcast::<Tuple>()[FIX_IDS].get()
 }
 
-pub fn fix_lhs<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn fix_lhs<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_fix(ctx, v));
     v.downcast::<Tuple>()[FIX_LHS].get()
 }
 
-pub fn fix_rhs<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn fix_rhs<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_fix(ctx, v));
     v.downcast::<Tuple>()[FIX_RHS].get()
 }
 
-pub fn fix_body<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn fix_body<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_fix(ctx, v));
     v.downcast::<Tuple>()[FIX_BODY].get()
 }
 
-pub fn is_receive<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn is_receive<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(
         ctx,
         ctx.globals().loc_receive_type().get().record_type_rtd(ctx),
@@ -354,27 +354,27 @@ const RECEIVE_VARS: usize = TERM_SOURCEV + 2;
 const RECEIVE_PRODUCER: usize = TERM_SOURCEV + 3;
 const RECEIVE_CONSUMER: usize = TERM_SOURCEV + 4;
 
-pub fn receive_ids<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn receive_ids<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_receive(ctx, v));
     v.downcast::<Tuple>()[RECEIVE_IDS].get()
 }
 
-pub fn receive_vars<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn receive_vars<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_receive(ctx, v));
     v.downcast::<Tuple>()[RECEIVE_VARS].get()
 }
 
-pub fn receive_producer<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn receive_producer<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_receive(ctx, v));
     v.downcast::<Tuple>()[RECEIVE_PRODUCER].get()
 }
 
-pub fn receive_consumer<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn receive_consumer<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_receive(ctx, v));
     v.downcast::<Tuple>()[RECEIVE_CONSUMER].get()
 }
 
-pub fn is_application<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn is_application<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(
         ctx,
         ctx.globals()
@@ -387,17 +387,17 @@ pub fn is_application<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
 const APP_OPERATOR: usize = TERM_SOURCEV + 1;
 const APP_OPERANDS: usize = TERM_SOURCEV + 2;
 
-pub fn application_operator<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn application_operator<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_application(ctx, v));
     v.downcast::<Tuple>()[APP_OPERATOR].get()
 }
 
-pub fn application_operands<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn application_operands<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_application(ctx, v));
     v.downcast::<Tuple>()[APP_OPERANDS].get()
 }
 
-pub fn is_primcall<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn is_primcall<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(
         ctx,
         ctx.globals().loc_primcall_type().get().record_type_rtd(ctx),
@@ -407,17 +407,17 @@ pub fn is_primcall<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
 const PRIMCALL_PRIM: usize = TERM_SOURCEV + 1;
 const PRIMCALL_ARGS: usize = TERM_SOURCEV + 2;
 
-pub fn primcall_prim<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn primcall_prim<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_primcall(ctx, v));
     v.downcast::<Tuple>()[PRIMCALL_PRIM].get()
 }
 
-pub fn primcall_args<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn primcall_args<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_primcall(ctx, v));
     v.downcast::<Tuple>()[PRIMCALL_ARGS].get()
 }
 
-pub fn is_primref<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn is_primref<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(
         ctx,
         ctx.globals().loc_primref_type().get().record_type_rtd(ctx),
@@ -426,12 +426,12 @@ pub fn is_primref<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
 
 const PRIMREF_NAME: usize = TERM_SOURCEV + 1;
 
-pub fn primref_name<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn primref_name<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_primref(ctx, v));
     v.downcast::<Tuple>()[PRIMREF_NAME].get()
 }
 
-pub fn is_constant<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn is_constant<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(
         ctx,
         ctx.globals().loc_constant_type().get().record_type_rtd(ctx),
@@ -440,19 +440,19 @@ pub fn is_constant<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
 
 const CONSTANT_VALUE: usize = TERM_SOURCEV + 1;
 
-pub fn constant_value<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn constant_value<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_constant(ctx, v));
     v.downcast::<Tuple>()[CONSTANT_VALUE].get()
 }
 
-pub fn is_void<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn is_void<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(
         ctx,
         ctx.globals().loc_void_type().get().record_type_rtd(ctx),
     )
 }
 
-pub fn is_values<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn is_values<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(
         ctx,
         ctx.globals().loc_values_type().get().record_type_rtd(ctx),
@@ -460,7 +460,7 @@ pub fn is_values<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
 }
 
 const VALUES_VALUES: usize = TERM_SOURCEV + 1;
-pub fn values_values<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn values_values<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_values(ctx, v));
     v.downcast::<Tuple>()[VALUES_VALUES].get()
 }
@@ -470,29 +470,29 @@ const PROC_BODY: usize = TERM_SOURCEV + 2;
 const PROC_META: usize = TERM_SOURCEV + 3;
 const PROC_IDS: usize = TERM_SOURCEV + 4;
 
-pub fn is_proc<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn is_proc<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(
         ctx,
         ctx.globals().loc_proc_type().get().record_type_rtd(ctx),
     )
 }
 
-pub fn proc_args<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn proc_args<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_proc(ctx, v));
     v.downcast::<Tuple>()[PROC_ARGS].get()
 }
 
-pub fn proc_body<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn proc_body<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_proc(ctx, v));
     v.downcast::<Tuple>()[PROC_BODY].get()
 }
 
-pub fn proc_meta<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn proc_meta<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_proc(ctx, v));
     v.downcast::<Tuple>()[PROC_META].get()
 }
 
-pub fn proc_ids<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn proc_ids<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_proc(ctx, v));
 
     v.downcast::<Tuple>()[PROC_IDS].get()
@@ -501,19 +501,19 @@ pub fn proc_ids<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
 const SEQUENCE_HEAD: usize = TERM_SOURCEV + 1;
 const SEQUENCE_TAIL: usize = TERM_SOURCEV + 2;
 
-pub fn is_sequence<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn is_sequence<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(
         ctx,
         ctx.globals().loc_sequence_type().get().record_type_rtd(ctx),
     )
 }
 
-pub fn sequence_head<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn sequence_head<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_sequence(ctx, v));
     v.downcast::<Tuple>()[SEQUENCE_HEAD].get()
 }
 
-pub fn sequence_tail<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn sequence_tail<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_sequence(ctx, v));
     v.downcast::<Tuple>()[SEQUENCE_TAIL].get()
 }
@@ -522,36 +522,36 @@ pub const WCM_KEY: usize = TERM_SOURCEV + 1;
 pub const WCM_VALUE: usize = TERM_SOURCEV + 2;
 pub const WCM_BODY: usize = TERM_SOURCEV + 3;
 
-pub fn is_wcm<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn is_wcm<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(ctx, ctx.globals().loc_wcm_type().get().record_type_rtd(ctx))
 }
 
-pub fn wcm_key<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn wcm_key<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_wcm(ctx, v));
     v.downcast::<Tuple>()[WCM_KEY].get()
 }
 
-pub fn wcm_value<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn wcm_value<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_wcm(ctx, v));
     v.downcast::<Tuple>()[WCM_VALUE].get()
 }
 
-pub fn wcm_body<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn wcm_body<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_wcm(ctx, v));
     v.downcast::<Tuple>()[WCM_BODY].get()
 }
 
-pub fn init_expand<'gc>(ctx: Context<'gc>) {
+pub fn init_expand<'gc>(ctx: MutationContext<'gc>) {
     let _ = ctx;
 }
 
 pub(crate) struct TermConverter<'gc> {
-    pub ctx: Context<'gc>,
+    pub ctx: MutationContext<'gc>,
     pub lvars: HashMap<Value<'gc>, LVarRef<'gc>>,
 }
 
 impl<'gc> TermConverter<'gc> {
-    pub fn new(ctx: Context<'gc>) -> Self {
+    pub fn new(ctx: MutationContext<'gc>) -> Self {
         Self {
             ctx,
             lvars: HashMap::new(),

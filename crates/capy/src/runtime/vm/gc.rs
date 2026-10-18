@@ -86,7 +86,7 @@ unsafe impl<'gc> ClassTagged for Ephemeron<'gc> {
     const TYPE_NAME: &'static str = "#<ephemeron>";
 }
 
-fn runtime_stats_breakdown_token<'gc>(ctx: Context<'gc>, token: u64) -> Value<'gc> {
+fn runtime_stats_breakdown_token<'gc>(ctx: MutationContext<'gc>, token: u64) -> Value<'gc> {
     if token == 0 {
         Value::new(false)
     } else {
@@ -106,7 +106,7 @@ fn parse_runtime_stats_breakdown_token<'gc>(token: Value<'gc>) -> u64 {
 pub mod gc {
     #[scheme(name = "ephemeron?")]
     pub fn is_ephemeron(value: Value<'gc>) -> bool {
-        nctx.return_(value.is::<Ephemeron>())
+        value.is::<Ephemeron>()
     }
 
     /// Creates a new SRFI-124 Ephemeron pair. If `key` is not a heap-allocated object,
@@ -120,7 +120,7 @@ pub mod gc {
     #[scheme(name = "make-ephemeron")]
     pub fn make_ephemeron(key: Value<'gc>, value: Value<'gc>) -> Value<'gc> {
         if !key.is_cell() {
-            return nctx.raise_error(
+            return call.raise_error(
                 "make-ephemeron",
                 "ephemeron key must be a heap-allocated object",
                 &[key],
@@ -135,20 +135,20 @@ pub mod gc {
             ephemeron_header_word(),
         ));
 
-        nctx.return_(cell)
+        cell
     }
 
     /// Returns key of the ephemeron. If the key is not reachable, returns #f.
     #[scheme(name = "ephemeron-key")]
     pub fn ephemeron_key(ephemeron: Gc<'gc, Ephemeron<'gc>>) -> Value<'gc> {
         if !ephemeron.key.is_cell() {
-            return nctx.return_(Value::new(false));
+            return Value::new(false);
         }
-        // SAFETY: The value has been type-checked; `as_cell_raw` returns a valid GC object
+        // SAFETY: The value has been type-checked, `as_cell_raw` returns a valid GC object
         unsafe {
             ctx.raw_weak_reference_load(ephemeron.key.as_cell_raw());
         }
-        nctx.return_(ephemeron.key)
+        ephemeron.key
     }
 
     /// Returns value of the ephemeron. If the key is not reachable, returns #f.
@@ -156,14 +156,14 @@ pub mod gc {
     pub fn ephemeron_datum(ephemeron: Gc<'gc, Ephemeron<'gc>>) -> Value<'gc> {
         if !ephemeron.value.is_cell() {
             // return value, not #f because value can be anything
-            return nctx.return_(ephemeron.value);
+            return ephemeron.value;
         }
         // SAFETY: `value` is a cell and we need to perform weak reference load.
         unsafe {
             ctx.raw_weak_reference_load(ephemeron.value.as_cell_raw());
         }
 
-        nctx.return_(ephemeron.value)
+        ephemeron.value
     }
 
     /// A no-op function that is required by SRFI-124. We can't reliably
@@ -171,33 +171,33 @@ pub mod gc {
     /// between function calls or continuation jumps, so this function does nothing.
     #[scheme(name = "reference-barrier")]
     pub fn reference_barrier(_x: Value<'gc>) -> Value<'gc> {
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "gc-logging-enable!")]
     pub fn gc_logging_enable(enabled: bool) -> Value<'gc> {
         crate::heap::logging::set_gc_logging_enabled(enabled);
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "runtime-stats-enable!")]
     pub fn runtime_stats_enable(enabled: bool) -> Value<'gc> {
         set_runtime_stats_enabled(&ctx.state().stats, enabled);
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "runtime-stats-enabled?")]
     pub fn runtime_stats_enabled() -> bool {
-        nctx.return_(stats_enabled())
+        stats_enabled()
     }
 
     #[scheme(name = "runtime-stats-report")]
     pub fn runtime_stats_report() -> Value<'gc> {
         let Some(snapshot) = runtime_stats_snapshot(Some(&ctx.state().stats)) else {
-            return nctx.return_(Value::new(false));
+            return Value::new(false);
         };
         let report = Value::from(Str::new(ctx, snapshot.to_string(), true));
-        nctx.return_(report)
+        report
     }
 
     #[scheme(name = "gc-statistics")]
@@ -209,49 +209,49 @@ pub mod gc {
         let (collections, bytes, reclaimed, gc_cpu_ms, gc_real_ms) =
             crate::runtime::gc_stats::snapshot(used);
         let vector = crate::vector!(
-            nctx.ctx,
+            ctx,
             collections as u64,
             bytes as u64,
             reclaimed as u64,
             gc_cpu_ms,
             gc_real_ms
         );
-        nctx.return_(Value::from(vector))
+        Value::from(vector)
     }
 
     #[scheme(name = "%runtime-stats-begin-compilation")]
     pub fn runtime_stats_begin_compilation() -> Value<'gc> {
         ctx.stats.start_compilation();
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "%runtime-stats-end-compilation")]
     pub fn runtime_stats_end_compilation() -> Value<'gc> {
         ctx.stats.end_compilation();
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "%runtime-stats-begin-reader")]
     pub fn runtime_stats_begin_reader() -> Value<'gc> {
         let token = begin_compilation_breakdown(CompilationBreakdownPhase::Reader);
-        nctx.return_(runtime_stats_breakdown_token(ctx, token))
+        runtime_stats_breakdown_token(ctx, token)
     }
 
     #[scheme(name = "%runtime-stats-end-reader")]
     pub fn runtime_stats_end_reader(token: Value<'gc>) -> Value<'gc> {
         end_compilation_breakdown(parse_runtime_stats_breakdown_token(token));
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "%runtime-stats-begin-psyntax")]
     pub fn runtime_stats_begin_psyntax() -> Value<'gc> {
         let token = begin_compilation_breakdown(CompilationBreakdownPhase::Psyntax);
-        nctx.return_(runtime_stats_breakdown_token(ctx, token))
+        runtime_stats_breakdown_token(ctx, token)
     }
 
     #[scheme(name = "%runtime-stats-end-psyntax")]
     pub fn runtime_stats_end_psyntax(token: Value<'gc>) -> Value<'gc> {
         end_compilation_breakdown(parse_runtime_stats_breakdown_token(token));
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 }

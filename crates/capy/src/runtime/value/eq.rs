@@ -32,13 +32,24 @@ impl<'gc> Value<'gc> {
     }
 
     pub fn r5rs_equal(self, other: Self) -> bool {
+        self.r5rs_equal_visited(other, &mut Default::default())
+    }
+
+    fn r5rs_equal_visited(
+        self,
+        other: Self,
+        visited: &mut HashMap<Value<'gc>, Vec<Value<'gc>>>,
+    ) -> bool {
         if self.raw_i64() == other.raw_i64() {
             return true;
         }
 
         if self.is_pair() && other.is_pair() {
-            if self.car().r5rs_equal(other.car()) {
-                return self.cdr().r5rs_equal(other.cdr());
+            if Self::find_and_merge_opponent(visited, self, other) {
+                return true;
+            }
+            if self.car().r5rs_equal_visited(other.car(), visited) {
+                return self.cdr().r5rs_equal_visited(other.cdr(), visited);
             } else {
                 return false;
             }
@@ -51,9 +62,12 @@ impl<'gc> Value<'gc> {
             if a.len() != b.len() {
                 return false;
             }
+            if Self::find_and_merge_opponent(visited, self, other) {
+                return true;
+            }
 
             for i in 0..a.len() {
-                if !a[i].get().r5rs_equal(b[i].get()) {
+                if !a[i].get().r5rs_equal_visited(b[i].get(), visited) {
                     return false;
                 }
             }
@@ -85,14 +99,17 @@ impl<'gc> Value<'gc> {
             if a.len() != b.len() {
                 return false;
             }
+            if Self::find_and_merge_opponent(visited, self, other) {
+                return true;
+            }
 
             let kvs1 = a.iter().collect::<Vec<_>>();
             let kvs2 = b.iter().collect::<Vec<_>>();
             for (k1, v1) in kvs1.iter() {
                 let mut found = false;
                 for (k2, v2) in kvs2.iter() {
-                    if k1.r5rs_equal(*k2) {
-                        if !v1.r5rs_equal(*v2) {
+                    if k1.r5rs_equal_visited(*k2, visited) {
+                        if !v1.r5rs_equal_visited(*v2, visited) {
                             return false;
                         }
                         found = true;
@@ -115,6 +132,9 @@ impl<'gc> Value<'gc> {
                 return false;
             }
 
+            if Self::find_and_merge_opponent(visited, self, other) {
+                return true;
+            }
             let mut equal = true;
             a.fold(
                 |acc, key, value| {
@@ -122,7 +142,7 @@ impl<'gc> Value<'gc> {
                         return acc;
                     }
                     match b.get(key) {
-                        Some(other_value) if value.r5rs_equal(other_value) => acc,
+                        Some(other_value) if value.r5rs_equal_visited(other_value, visited) => acc,
                         _ => {
                             equal = false;
                             acc
@@ -162,20 +182,26 @@ impl<'gc> Value<'gc> {
             return self.downcast::<Str>().eq(&other.downcast::<Str>());
         }
         if self.is::<Boxed>() && other.is::<Boxed>() {
+            if Self::find_and_merge_opponent(visited, self, other) {
+                return true;
+            }
             return self
                 .downcast::<Boxed>()
                 .get()
-                .r5rs_equal(other.downcast::<Boxed>().get());
+                .r5rs_equal_visited(other.downcast::<Boxed>().get(), visited);
         }
 
         if self.is::<Syntax>() && other.is::<Syntax>() {
             let s1 = self.downcast::<Syntax>();
             let s2 = other.downcast::<Syntax>();
 
-            return s1.expr.r5rs_equal(s2.expr)
-                && s1.wrap.r5rs_equal(s2.wrap)
-                && s1.module.r5rs_equal(s2.module)
-                && s1.source.r5rs_equal(s2.source);
+            if Self::find_and_merge_opponent(visited, self, other) {
+                return true;
+            }
+            return s1.expr.r5rs_equal_visited(s2.expr, visited)
+                && s1.wrap.r5rs_equal_visited(s2.wrap, visited)
+                && s1.module.r5rs_equal_visited(s2.module, visited)
+                && s1.source.r5rs_equal_visited(s2.source, visited);
         }
 
         self.eqv(other)
@@ -276,7 +302,7 @@ impl<'gc> Value<'gc> {
         let c1 = self.is_terminal_list();
         if c1 != 0 {
             if c1 == other.is_terminal_list() {
-                return self.r5rs_equal(other);
+                return self.r5rs_equal_visited(other, visited);
             }
 
             return false;
@@ -335,7 +361,7 @@ impl<'gc> Value<'gc> {
                 return false;
             }
 
-            return lst1.r5rs_equal(lst2);
+            return lst1.r5rs_equal_visited(lst2, visited);
         }
     }
 }

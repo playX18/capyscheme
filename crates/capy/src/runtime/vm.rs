@@ -1,21 +1,24 @@
 //! Core virtual machine: call dispatch, stack management, and Scheme ↔ native transitions.
 
 use std::{
+    cell::Cell,
     io::ErrorKind,
-    marker::PhantomData,
     ops::{FromResidual, Try},
     sync::atomic::Ordering,
 };
 
 use crate::heap::{Trace, object::builtin_class_ids};
+use crate::runtime::interp::markers;
+use crate::runtime::interp::stack::{self, Slot};
 use crate::runtime::{
-    Context,
+    MutationContext,
     value::{
         Closure, ConversionError, NativeReturn, PROCEDURES, ReturnCode, Str, Symbol, TryIntoValues,
-        Value, Vector,
+        Value,
     },
-    vm::{io::IoOperation, trampolines::get_trampoline_into_scheme},
+    vm::io::IoOperation,
 };
+use std::mem::MaybeUninit;
 
 pub mod arith;
 pub mod base;
@@ -39,6 +42,7 @@ pub mod load;
 pub mod memoize;
 pub mod persistent_map;
 pub mod persistent_set;
+pub mod portio;
 pub mod records;
 pub mod setjmp;
 pub mod strings;
@@ -46,7 +50,6 @@ pub mod syntax;
 pub mod threading;
 pub mod throw;
 pub mod thunks;
-pub mod trampolines;
 pub mod vector;
 
 use setjmp::{JmpBuf, SchemeEntryFn, capy_longjmp, capy_with_setjmp};
@@ -58,78 +61,93 @@ fn is_procedure(value: Value<'_>) -> bool {
 }
 
 fn is_continuation(value: Value<'_>) -> bool {
-    value
-        .try_as::<Closure>()
-        .is_some_and(|closure| closure.is_continuation())
+    value.is_current_k()
+        || value.is::<stack::Continuation>()
+        || value
+            .try_as::<Closure>()
+            .is_some_and(|closure| closure.is_continuation())
 }
 
 /// Perform a nested call into Scheme for `rator` with `args`.
 ///
-/// Prefer CPS [`NativeCallContext::return_call`] from `#[scheme]` leaves when
+/// Prefer CPS [`Call::tail`] from `#[scheme]` leaves when
 /// possible (no nest). The **safe** nest API is [`crate::runtime::sni::call_function`].
 ///
 /// # Safety
 ///
 /// Increases [`State::nest_level`](crate::runtime::State::nest_level). While the
-/// nested Scheme activation runs, GC may occur at compiled yieldpoints. The
-/// caller must keep every live [`Value`] rooted across this call (e.g. via
-/// [`crate::runtime::sni::LocalFrame`]); stack/`register` copies alone are not
+/// nested Scheme activation runs, GC may occur at safepoints. The caller must
+/// keep every live [`Value`] rooted across this call (e.g. via
+/// [`crate::runtime::sni::LocalFrame`]), stack/`register` copies alone are not
 /// sufficient under a moving collector.
 pub unsafe fn call_scheme<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     rator: Value<'gc>,
     args: impl IntoIterator<Item = Value<'gc>>,
 ) -> ExecutionResult<'gc> {
-    let procs = PROCEDURES.fetch(ctx);
-
-    let retk = procs.register_static_cont_closure(ctx, default_retk, Value::null());
-
     // SAFETY: Caller upholds the same rooting contract as this function.
-    unsafe { call_scheme_with_k(ctx, retk.into(), rator, args) }
+    unsafe { call_scheme_with_k(ctx, Value::current_k(), rator, args) }
 }
 
 /// Call Scheme code with an explicit return continuation.
 ///
+/// `k` is either [`Value::current_k`], which returns the values to the
+/// Rust caller, or a native continuation closure, which receives them first.
+///
 /// # Safety
 ///
 /// Same rooting / nest-level contract as [`call_scheme`].
-pub unsafe extern "C" fn call_scheme_with_k<'gc>(
-    ctx: Context<'gc>,
-    retk: Value<'gc>,
+pub unsafe fn call_scheme_with_k<'gc>(
+    ctx: MutationContext<'gc>,
+    k: Value<'gc>,
     rator: Value<'gc>,
     args: impl IntoIterator<Item = Value<'gc>>,
 ) -> ExecutionResult<'gc> {
-    if !rator.is::<Closure>() {
+    if !is_procedure(rator) && !rator.is::<crate::runtime::class::GenericDescriptor>() {
         return ExecutionResult::Err(rator);
     }
-    // Pack and stage into State before nest++ so ABI roots are precise slots.
-    let old_runstack = ctx.state().runstack.get();
-    let (argc, regs) = ctx.prepare_scheme_call_args(args, Some(retk));
-    stage_call_abi(ctx, rator, argc, regs);
-
-    let guard = NestedSchemeCallGuard::enter(ctx, old_runstack);
-    let (rator, argc, regs) = load_call_abi(ctx);
-
-    let f = get_trampoline_into_scheme().to_ptr::<()>();
-
-    // SAFETY: Preconditions verified by the surrounding code
+    #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
+    if crate::runtime::codegen::template_image::runs_template(ctx) {
+        // Install the generated markers before any frame below uses them.
+        crate::runtime::codegen::template_image::ensure_loaded();
+    }
+    let args: smallvec::SmallVec<[Value<'gc>; 8]> = args.into_iter().collect();
+    // SAFETY: the activation record lives until `pop_activation` below, and
+    // the frames are built inside the room `push_activation` reserved.
     unsafe {
-        let f: extern "C-unwind" fn(
-            Context<'gc>,
-            Value<'gc>,
-            usize,
-            Value<'gc>,
-            Value<'gc>,
-            Value<'gc>,
-            Value<'gc>,
-        ) = std::mem::transmute(f);
+        let mut record = MaybeUninit::<stack::Activation<'gc>>::uninit();
+        let mut fp = stack::push_activation(ctx, record.as_mut_ptr(), args.len() + 16);
+        if !k.is_current_k() {
+            // The continuation gets a frame of its own, the callee returns
+            // to it through `subr_ret`.
+            *fp.add(1) = std::mem::transmute::<Value<'gc>, Value<'static>>(k);
+            fp = fp.add(2);
+            stack::set_return_address(fp, markers::subr_ret());
+        }
+        *fp.add(1) = std::mem::transmute::<Value<'gc>, Value<'static>>(rator);
+        std::ptr::copy_nonoverlapping(
+            args.as_ptr().cast::<Value<'static>>(),
+            fp.add(2),
+            args.len(),
+        );
+        let stack_state = &ctx.tc().stack;
+        stack_state.fp.set(fp);
+        stack_state.sp.set(fp.add(2 + args.len()));
 
-        let val = trampoline(ctx, rator, argc, regs[0], regs[1], regs[2], regs[3], f);
-        drop(guard);
+        let old_nest_level = ctx.state().nest_level.fetch_add(1, Ordering::Relaxed);
+        let val = run_activation(ctx, fp, args.len());
+        ctx.state()
+            .nest_level
+            .store(old_nest_level, Ordering::Relaxed);
+        stack::pop_activation(ctx, record.as_mut_ptr());
 
         match val.code {
             ReturnCode::Continue => unreachable!("cannot continue into native code"),
-            ReturnCode::Raise => unreachable!("Raise is handled inside trampoline"),
+            ReturnCode::Raise => unreachable!("Raise is handled inside the activation"),
+            ReturnCode::ResumeTemplate => unreachable!("ResumeTemplate never escapes the bail"),
+            // `ReturnOne` never escapes a native
+            ReturnCode::ReturnOne => unreachable!("ReturnOne escaped its native"),
+            ReturnCode::EnterBody => unreachable!("EnterBody escaped its native"),
             ReturnCode::ReturnErr => ExecutionResult::Err(val.value),
             ReturnCode::ReturnOk => ExecutionResult::Ok(val.value),
         }
@@ -140,9 +158,9 @@ pub unsafe extern "C" fn call_scheme_with_k<'gc>(
 ///
 /// # Safety
 ///
-/// Same contract as [`call_scheme`].
+/// Same as [`call_scheme`].
 pub unsafe fn call_scheme_with_prepared<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     rator: Value<'gc>,
     args: impl IntoIterator<Item = Value<'gc>>,
 ) -> ExecutionResult<'gc> {
@@ -156,119 +174,26 @@ pub unsafe fn call_scheme_with_prepared<'gc>(
 ///
 /// `ctx` must be an active runtime context, `cont` must be a live continuation
 /// value for that context, and `args` must contain values valid in `ctx`.
-// SAFETY: Invariants are upheld at this call site
-pub unsafe extern "C" fn continue_to<'gc>(
-    ctx: Context<'gc>,
+pub unsafe fn continue_to<'gc>(
+    ctx: MutationContext<'gc>,
     cont: Value<'gc>,
     args: impl IntoIterator<Item = Value<'gc>>,
 ) -> ExecutionResult<'gc> {
     if !cont.is::<Closure>() {
         return ExecutionResult::Err(cont);
     }
-    let old_runstack = ctx.state().runstack.get();
-    let (argc, regs) = ctx.prepare_scheme_call_args(args, None);
-    stage_call_abi(ctx, cont, argc, regs);
-
-    let guard = NestedSchemeCallGuard::enter(ctx, old_runstack);
-    let (cont, argc, regs) = load_call_abi(ctx);
-
-    let f = get_trampoline_into_scheme().to_ptr::<()>();
-
-    // SAFETY: Preconditions verified by the surrounding code
-    unsafe {
-        let f: extern "C-unwind" fn(
-            Context<'gc>,
-            Value<'gc>,
-            usize,
-            Value<'gc>,
-            Value<'gc>,
-            Value<'gc>,
-            Value<'gc>,
-        ) = std::mem::transmute(f);
-
-        let val = trampoline(ctx, cont, argc, regs[0], regs[1], regs[2], regs[3], f);
-        drop(guard);
-        match val.code {
-            ReturnCode::Continue => unreachable!("cannot continue into native code"),
-            ReturnCode::Raise => unreachable!("Raise is handled inside trampoline"),
-            ReturnCode::ReturnErr => ExecutionResult::Err(val.value),
-            ReturnCode::ReturnOk => ExecutionResult::Ok(val.value),
-        }
-    }
-}
-
-fn stage_call_abi<'gc>(
-    ctx: Context<'gc>,
-    rator: Value<'gc>,
-    argc: usize,
-    regs: [Value<'gc>; crate::runtime::thread::REGISTER_ARG_COUNT],
-) {
-    let state = ctx.state();
-    state.call_data.rator.set(rator);
-    state.call_data.argc.set(argc);
-    state.call_data.set_arg(0, regs[0]);
-    state.call_data.set_arg(1, regs[1]);
-    state.call_data.set_arg(2, regs[2]);
-    state.call_data.set_arg(3, regs[3]);
-}
-
-fn load_call_abi<'gc>(
-    ctx: Context<'gc>,
-) -> (
-    Value<'gc>,
-    usize,
-    [Value<'gc>; crate::runtime::thread::REGISTER_ARG_COUNT],
-) {
-    let state = ctx.state();
-    (
-        state.call_data.rator.get(),
-        state.call_data.argc.get(),
-        [
-            state.call_data.arg0.get(),
-            state.call_data.arg1.get(),
-            state.call_data.arg2.get(),
-            state.call_data.arg3.get(),
-        ],
-    )
-}
-
-struct NestedSchemeCallGuard<'gc> {
-    ctx: Context<'gc>,
-    old_runstack: mmtk::util::Address,
-    old_nest_level: usize,
-}
-
-impl<'gc> NestedSchemeCallGuard<'gc> {
-    fn enter(ctx: Context<'gc>, old_runstack: mmtk::util::Address) -> Self {
-        let old_nest_level = ctx.state().nest_level.fetch_add(1, Ordering::Relaxed);
-        Self {
-            ctx,
-            old_runstack,
-            old_nest_level,
-        }
-    }
-}
-
-impl Drop for NestedSchemeCallGuard<'_> {
-    fn drop(&mut self) {
-        self.ctx
-            .state()
-            .nest_level
-            .store(self.old_nest_level, Ordering::Relaxed);
-        self.ctx.state().runstack.set(self.old_runstack);
-    }
+    // A continuation closure is entered like a procedure, its stub hands it
+    // the values.
+    // SAFETY: Caller upholds the rooting contract.
+    unsafe { call_scheme_with_k(ctx, Value::current_k(), cont, args) }
 }
 
 #[repr(C)]
-struct SchemeEnterArgs {
+struct SchemeEnterArgs<'gc> {
     ctx: *const (),
-    rator: u64,
+    fp: stack::Slot<'gc>,
     argc: usize,
-    arg0: u64,
-    arg1: u64,
-    arg2: u64,
-    arg3: u64,
-    enter: *const (),
+    result: MaybeUninit<NativeReturn<'static>>,
 }
 
 /// C callback invoked under `setjmp` from [`capy_with_setjmp`].
@@ -277,51 +202,31 @@ struct SchemeEnterArgs {
 ///
 /// `data` must point at a live [`SchemeEnterArgs`] for the duration of the call.
 unsafe extern "C" fn scheme_enter_callback(data: *mut std::ffi::c_void) {
-    // SAFETY: `data` is the `SchemeEnterArgs` stacked in `trampoline`.
-    let args = unsafe { &*data.cast::<SchemeEnterArgs>() };
-    // SAFETY: `enter` was stored from a typed enter-trampoline pointer in `trampoline`.
-    let enter: extern "C-unwind" fn(
-        Context<'_>,
-        Value<'_>,
-        usize,
-        Value<'_>,
-        Value<'_>,
-        Value<'_>,
-        Value<'_>,
-    ) = unsafe { std::mem::transmute(args.enter) };
-    // SAFETY: pointer/bits were packed from live values in `trampoline`.
+    // SAFETY: `data` is the `SchemeEnterArgs` stacked in `run_activation`.
     unsafe {
-        enter(
-            Context::from_ptr(args.ctx),
-            Value::from_raw(args.rator),
-            args.argc,
-            Value::from_raw(args.arg0),
-            Value::from_raw(args.arg1),
-            Value::from_raw(args.arg2),
-            Value::from_raw(args.arg3),
-        );
+        let args = &mut *data.cast::<SchemeEnterArgs<'_>>();
+        let ctx = MutationContext::from_ptr(args.ctx);
+        #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
+        if crate::runtime::codegen::template_image::runs_template(ctx) {
+            args.result
+                .write(crate::runtime::codegen::template_image::run_template(
+                    ctx, args.fp, args.argc,
+                ));
+            return;
+        }
+        args.result.write(crate::runtime::interp::rust_interp::run(
+            ctx, args.fp, args.argc,
+        ));
     }
 }
 
+/// Run the interpreter on the frame at `fp` until the activation exits.
 #[inline(never)]
-extern "C" fn trampoline<'a>(
-    ctx: Context<'a>,
-    rator: Value<'a>,
+unsafe fn run_activation<'gc>(
+    ctx: MutationContext<'gc>,
+    fp: stack::Slot<'gc>,
     argc: usize,
-    arg0: Value<'a>,
-    arg1: Value<'a>,
-    arg2: Value<'a>,
-    arg3: Value<'a>,
-    f: extern "C-unwind" fn(
-        Context<'a>,
-        Value<'a>,
-        usize,
-        Value<'a>,
-        Value<'a>,
-        Value<'a>,
-        Value<'a>,
-    ),
-) -> NativeReturn<'a> {
+) -> NativeReturn<'gc> {
     let state = ctx.state();
     let mut buf = JmpBuf::uninit();
     let buf_ptr = buf.as_mut_ptr();
@@ -329,111 +234,92 @@ extern "C" fn trampoline<'a>(
 
     let mut args = SchemeEnterArgs {
         ctx: ctx.as_ptr(),
-        rator: rator.bits(),
+        fp,
         argc,
-        arg0: arg0.bits(),
-        arg1: arg1.bits(),
-        arg2: arg2.bits(),
-        arg3: arg3.bits(),
-        enter: f as *const (),
+        result: MaybeUninit::uninit(),
     };
-    // SAFETY: `buf` and `args` live for this call; `capy_with_setjmp` returns only
-    // after `scheme_longjmp` restores this buffer.
     let entry: SchemeEntryFn = scheme_enter_callback;
-    loop {
+    let result = loop {
+        // SAFETY: `buf` and `args` live for this call.
         let rc = unsafe { capy_with_setjmp(buf_ptr, entry, std::ptr::from_mut(&mut args).cast()) };
-        debug_assert_ne!(rc, 0, "scheme entry returned without longjmp");
+        if rc == 0 {
+            // SAFETY: the callback returned normally, so it wrote a result.
+            break unsafe {
+                std::mem::transmute::<NativeReturn<'static>, NativeReturn<'gc>>(
+                    args.result.assume_init_read(),
+                )
+            };
+        }
 
         match state.exit_code.get() {
             ReturnCode::Raise => {
-                let err = state.exit_value.get();
-                let retk = thunks::control::default_retk(ctx);
-                let handler = thunks::control::exception_handler(ctx);
-                let undef = Value::undefined().bits();
-                args.rator = handler.bits();
-                args.argc = 2;
-                args.arg0 = retk.bits();
-                args.arg1 = err.bits();
-                args.arg2 = undef;
-                args.arg3 = undef;
+                let err = state.exit_value.replace(Value::undefined());
+                // SAFETY: whoever raised left the stack state at the frame
+                // the error belongs to.
+                args.fp =
+                    unsafe { crate::runtime::interp::rust_interp::push_raise_frame(ctx, err) };
+                args.argc = 1;
             }
             code @ (ReturnCode::ReturnOk | ReturnCode::ReturnErr) => {
-                state.exit_jmp.set(prev);
-                return NativeReturn {
+                break NativeReturn {
                     code,
-                    value: state.exit_value.get(),
+                    value: state.exit_value.replace(Value::undefined()),
                 };
             }
-            ReturnCode::Continue => {
+            ReturnCode::Continue
+            | ReturnCode::ResumeTemplate
+            | ReturnCode::ReturnOne
+            | ReturnCode::EnterBody => {
                 unreachable!("cannot continue into native code")
             }
         }
-    }
+    };
+    state.exit_jmp.set(prev);
+    result
 }
 
-/// Stage an Ok/Err/Raise result on `State` and `longjmp` back to the active Scheme entry.
+/// Construct an Ok/Err/Raise result on `State` and `longjmp` back to the active Scheme entry.
 ///
 /// # Safety
 ///
 /// Must only be called while `state.exit_jmp` points at a live `setjmp` buffer installed
-/// by [`trampoline`].
-pub unsafe fn scheme_longjmp<'gc>(ctx: Context<'gc>, code: ReturnCode, value: Value<'gc>) -> ! {
+/// by [`run_activation`].
+pub unsafe fn scheme_longjmp<'gc>(
+    ctx: MutationContext<'gc>,
+    code: ReturnCode,
+    value: Value<'gc>,
+) -> ! {
     let state = ctx.state();
     state.exit_code.set(code);
     state.exit_value.set(value);
     let buf = state.exit_jmp.get();
-    debug_assert!(!buf.is_null(), "scheme_longjmp without active setjmp");
-    // SAFETY: `buf` is the live buffer from the enclosing `trampoline` setjmp.
+    assert!(
+        !buf.is_null(),
+        "error raised outside of any Scheme activation: {value}"
+    );
+    // SAFETY: `buf` is the live buffer from the enclosing `run_activation` setjmp.
     unsafe { capy_longjmp(buf, 1) }
 }
 
-/// Non-continuable raise from a compiled-code thunk: drop locals first, then longjmp.
-///
-/// The Scheme entry [`trampoline`] re-enters the exception handler with `default_retk`.
-pub fn thunk_raise<'gc>(ctx: Context<'gc>, err: Value<'gc>) -> ! {
+/// Non-continuable raise from runtime code: unwind to the active Scheme
+/// entry, which runs the exception handler above the faulting frame.
+pub fn thunk_raise<'gc>(ctx: MutationContext<'gc>, err: Value<'gc>) -> ! {
     // SAFETY: Thunks are only called while an active Scheme entry has installed `exit_jmp`.
     unsafe { scheme_longjmp(ctx, ReturnCode::Raise, err) }
 }
 
-pub(crate) extern "C-unwind" fn default_retk<'gc>(
-    ctx: Context<'gc>,
-    _rator: Value<'gc>,
-    rands: *const Value<'gc>,
-    num_rands: usize,
-) -> NativeReturn<'gc> {
-    let value = if num_rands == 0 {
-        Value::undefined()
-    } else if num_rands == 1 {
-        // SAFETY: Pointer is valid for the given element count
-        unsafe { *rands }
-    } else {
-        // SAFETY: Pointer is valid for the given element count
-        let args = unsafe { std::slice::from_raw_parts(rands, num_rands) };
-        Vector::from_slice(ctx, args).into()
-    };
-
-    NativeReturn {
-        code: ReturnCode::ReturnOk,
-        value,
-    }
-}
-
-pub(crate) extern "C-unwind" fn default_exception_handler<'gc>(
-    _ctx: Context<'gc>,
-    _rator: Value<'gc>,
-    rands: *const Value<'gc>,
-    num_rands: usize,
-    _retk: Value<'gc>,
-) -> NativeReturn<'gc> {
-    // SAFETY: Preconditions verified by the surrounding code
-    unsafe {
-        assert!(num_rands >= 1, "exception handler called with no arguments");
-        let exception = *rands;
-        NativeReturn {
-            code: ReturnCode::ReturnErr,
-            value: exception,
-        }
-    }
+pub(crate) extern "C" fn default_exception_handler<'gc>(
+    ctx: MutationContext<'gc>,
+    sfp: Slot<'gc>,
+) -> ReturnCode {
+    Call::invoke(ctx, sfp, |call| {
+        assert!(
+            !call.args.is_empty(),
+            "exception handler called with no arguments"
+        );
+        // The condition is already in place at `sfp[2]`.
+        ReturnCode::ReturnErr
+    })
 }
 
 /// A Scheme VM execution result.
@@ -473,101 +359,234 @@ impl<'gc> Try for ExecutionResult<'gc> {
     }
 }
 
-pub struct NativeCallContext<'a, 'gc, R: TryIntoValues<'gc> = Value<'gc>> {
-    pub ctx: Context<'gc>,
-    rator: Value<'gc>,
-    rands: &'a [Value<'gc>],
-
-    pub(crate) retk: Value<'gc>,
-
-    return_data: PhantomData<R>,
+/// What a running `#[scheme]` body staged through `&Call`, if anything.
+///
+/// Bodies return values directly, a body that must divert control instead
+/// stages the request here and returns an ignored [`Value::undefined`], and
+/// [`Call::run`] honors the flag over the returned value. The flag lives on the stack-local handle rather
+/// than in `Tc`, so a nested `call_scheme` activation cannot disturb it.
+#[derive(Debug, Clone, Copy)]
+enum Staged<'gc> {
+    Call,
+    /// The frame was rewritten into a call in place ([`ReturnCode::EnterBody`]).
+    Enter,
+    Err(Value<'gc>),
 }
 
-impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
-    /// Construct native call context from raw parts.
+/// An incoming native call, as seen by a `#[scheme]` body.
+///
+/// Bodies take `&Call` and return values directly. The few bodies that must
+/// divert control (tail calls, calls with an explicit continuation,
+/// continuation resumes, throws, errors, multi-value returns) use the
+/// staging methods, which record the request, set the staged flag, and
+/// return an ignored [`Value::undefined`].
+pub struct Call<'a, 'gc> {
+    pub ctx: MutationContext<'gc>,
+    pub rator: Value<'gc>,
+    pub args: &'a [Value<'gc>],
+    sfp: Slot<'gc>,
+    staged: Cell<Option<Staged<'gc>>>,
+}
+
+/// Report a native procedure's panic as a Scheme error raised above the
+/// native's frame.
+pub(crate) fn native_panic<'gc>(
+    ctx: MutationContext<'gc>,
+    payload: &Box<dyn std::any::Any + Send + 'static>,
+) {
+    let message = payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap_or_else(|| String::from("native procedure panicked"));
+    ctx.state().exit_value.set(thunks::make_assertion_violation(
+        ctx,
+        Value::new(false),
+        Str::new(ctx, &message, true).into(),
+        &[],
+    ));
+}
+
+impl<'a, 'gc> Call<'a, 'gc> {
+    /// A handle for the call on the frame `sfp`: the rator at `sfp[1]`,
+    /// the arguments at `sfp[2..]`, counted by `Tc::ac`.
     ///
     /// # Safety
     ///
-    /// Rands must be a valid pointer created by runtime, not arbitrary pointer.
-    // SAFETY: Caller must ensure preconditions are met (see fn docs)
-    pub unsafe fn from_raw(
-        ctx: Context<'gc>,
-        rator: Value<'gc>,
-        rands: *const Value<'gc>,
-        num_rands: usize,
-        retk: Value<'gc>,
-    ) -> Self {
-        Self {
-            ctx,
-            rator,
-            // SAFETY: Pointer is valid for the given element count
-            rands: unsafe { std::slice::from_raw_parts(rands, num_rands) },
-
-            retk,
-            return_data: PhantomData,
-        }
-    }
-
-    pub fn rands(&self) -> &[Value<'gc>] {
-        self.rands
-    }
-
-    pub fn rator(&self) -> Value<'gc> {
-        self.rator
-    }
-
-    pub fn is_continuation(&self) -> bool {
-        is_continuation(self.rator)
-    }
-
-    pub fn return_(self, values: R) -> NativeCallReturn<'gc> {
-        let values = match values.try_into_values(self.ctx) {
-            Ok(values) => values,
-            Err(err) => {
-                let handler = self.ctx.exception_handler().unwrap_or_else(|| {
-                    PROCEDURES
-                        .fetch(self.ctx)
-                        .register_static_closure(
-                            self.ctx,
-                            default_exception_handler as _,
-                            Value::new(false),
-                        )
-                        .into()
-                });
-                return NativeCallReturn {
-                    ret: self.ctx.return_call(handler, [err], Some(self.retk)),
-                };
+    /// `sfp` must be the call's live frame and `Tc::ac` its argument count,
+    /// both hold at every native entry (the machine stub spills the count,
+    /// the driver sets it).
+    pub(crate) unsafe fn from_sfp(ctx: MutationContext<'gc>, sfp: Slot<'gc>) -> Self {
+        // SAFETY: upheld by the caller (see above).
+        unsafe {
+            let argc = ctx.tc().ac.get() as usize;
+            Self {
+                ctx,
+                rator: *sfp.add(1),
+                args: std::slice::from_raw_parts(sfp.add(2), argc),
+                sfp,
+                staged: Cell::new(None),
             }
-        };
-        NativeCallReturn {
-            ret: self.ctx.return_call(self.retk, values, None),
         }
     }
 
-    pub fn return_many(self, values: &[Value<'gc>]) -> NativeCallReturn<'gc> {
-        NativeCallReturn {
-            ret: self
-                .ctx
-                .return_call(self.retk, values.iter().copied(), None),
+    /// Run a whole native invocation under the panic boundary: `f` covers
+    /// argument conversion and the body, and a panic anywhere becomes a
+    /// Scheme error raised above the native's frame (`Raise`, with the
+    /// condition in `exit_value`).
+    pub(crate) fn invoke<F>(ctx: MutationContext<'gc>, sfp: Slot<'gc>, f: F) -> ReturnCode
+    where
+        F: FnOnce(&Call<'a, 'gc>) -> ReturnCode,
+    {
+        // SAFETY: a `NativeFn` runs on its call's live frame with the count
+        // spilled (the `NativeFn` contract), `from_sfp` itself cannot panic.
+        let call = unsafe { Call::from_sfp(ctx, sfp) };
+
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&call)));
+        match caught {
+            Ok(code) => code,
+            Err(payload) => {
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    native_panic(ctx, &payload)
+                })) {
+                    Ok(()) => ReturnCode::Raise,
+                    Err(_) => std::process::abort(),
+                }
+            }
         }
     }
 
-    pub fn return_error(self, err: Value<'gc>) -> NativeCallReturn<'gc> {
-        NativeCallReturn {
-            ret: NativeReturn {
-                code: ReturnCode::ReturnErr,
-                value: err,
-            },
+    /// Run `body` for this call and lower its outcome to a [`ReturnCode`].
+    pub(crate) fn run<R, F>(&self, body: F) -> ReturnCode
+    where
+        R: TryIntoValues<'gc>,
+        F: FnOnce(&Call<'a, 'gc>) -> R,
+    {
+        let out = body(self);
+        match self.staged.get() {
+            Some(Staged::Call) => ReturnCode::Continue,
+            Some(Staged::Enter) => ReturnCode::EnterBody,
+            Some(Staged::Err(err)) => {
+                self.write_single(err);
+                ReturnCode::ReturnErr
+            }
+            None => {
+                let values = match out.try_into_values(self.ctx) {
+                    Ok(values) => values.collect::<smallvec::SmallVec<[Value<'gc>; 8]>>(),
+                    Err(err) => {
+                        let handler = self.ctx.exception_handler().unwrap_or_else(|| {
+                            PROCEDURES
+                                .fetch(self.ctx)
+                                .register_static_closure(
+                                    self.ctx,
+                                    default_exception_handler as _,
+                                    Value::new(false),
+                                )
+                                .into()
+                        });
+                        return self.ctx.stage_tail_call(handler, &[err]);
+                    }
+                };
+                if values.len() == 1 {
+                    self.write_single(values[0]);
+                    ReturnCode::ReturnOne
+                } else {
+                    self.ctx.stage_return_values(&values)
+                }
+            }
         }
     }
 
-    pub fn throw(self, key: Value<'gc>, args: Value<'gc>) -> NativeCallReturn<'gc> {
-        let throw = throw::throw(self.ctx, key, args, self.retk);
-
-        NativeCallReturn { ret: throw }
+    pub(crate) fn finish_flagged(&self) -> ReturnCode {
+        match self.staged.get() {
+            Some(Staged::Call) => ReturnCode::Continue,
+            Some(Staged::Enter) => ReturnCode::EnterBody,
+            Some(Staged::Err(err)) => {
+                self.write_single(err);
+                ReturnCode::ReturnErr
+            }
+            None => unreachable!("finish_flagged without a staged request"),
+        }
     }
 
-    pub fn return_call(self, proc: Value<'gc>, args: &[Value<'gc>]) -> NativeCallReturn<'gc> {
+    /// Tail-call `body` with `lead` (when present) in front of this call's
+    /// arguments, rewriting the frame in place. Returns [`ReturnCode::EnterBody`].
+    pub(crate) fn enter_in_place(&self, body: Value<'gc>, lead: Option<Value<'gc>>) -> ReturnCode {
+        use crate::runtime::interp::stack;
+        let ctx = self.ctx;
+        let argc = self.args.len();
+        let extra = lead.is_some() as usize;
+        // SAFETY: a native owns its top frame, `fp[2..2 + argc]` are the
+        // arguments. `reserve` may relocate the frame, so `fp` is reloaded
+        // from the stack state before any write.
+        unsafe {
+            stack::reserve(ctx, argc + extra + 8);
+            let stack_state = &ctx.tc().stack;
+            let fp = stack_state.fp.get();
+            if let Some(lead) = lead {
+                // Shift right by one first (`copy` tolerates the overlap):
+                // planting the lead first would destroy argument 0.
+                std::ptr::copy(fp.add(2), fp.add(3), argc);
+                *fp.add(2) = lead;
+            }
+            *fp.add(1) = body;
+            stack_state.sp.set(fp.add(2 + argc + extra));
+            ctx.tc().ac.set((argc + extra) as u64);
+        }
+        ReturnCode::EnterBody
+    }
+
+    /// Tail-call `body` with `lead` followed by `args`, which must not alias
+    /// this call's frame.
+    pub(crate) fn enter_with(
+        &self,
+        body: Value<'gc>,
+        lead: Value<'gc>,
+        args: &[Value<'gc>],
+    ) -> Value<'gc> {
+        use crate::runtime::interp::stack;
+        let ctx = self.ctx;
+        // SAFETY: as in `enter_in_place`; `args` lives on the heap, so the
+        // frame move in `reserve` leaves it intact.
+        unsafe {
+            stack::reserve(ctx, args.len() + 1 + 8);
+            let stack_state = &ctx.tc().stack;
+            let fp = stack_state.fp.get();
+            *fp.add(1) = body;
+            *fp.add(2) = lead;
+            std::ptr::copy_nonoverlapping(args.as_ptr(), fp.add(3), args.len());
+            stack_state.sp.set(fp.add(3 + args.len()));
+            ctx.tc().ac.set((args.len() + 1) as u64);
+        }
+        self.set_staged(Staged::Enter);
+        Value::undefined()
+    }
+
+    /// Return `value` from the native
+    pub(crate) fn return_one(&self, value: Value<'gc>) -> ReturnCode {
+        self.write_single(value);
+        ReturnCode::ReturnOne
+    }
+
+    /// Write a single result or error value in place at `sfp[2]`.
+    fn write_single(&self, value: Value<'gc>) {
+        // SAFETY: `sfp` is the call's live frame (`from_sfp` contract), so
+        // its value slot is writable for values of this call.
+        unsafe {
+            *(self.sfp as *mut Value<'gc>).add(2) = value;
+        }
+    }
+
+    fn set_staged(&self, staged: Staged<'gc>) {
+        debug_assert!(self.staged.get().is_none(), "native call staged twice");
+        self.staged.set(Some(staged));
+    }
+
+    /// Stage a tail call of `proc` with `args` from this call's frame.
+    ///
+    /// Returns an ignored [`Value::undefined`], the trampoline honors the
+    /// staged request over the body's returned value.
+    pub fn tail(&self, proc: Value<'gc>, args: &[Value<'gc>]) -> Value<'gc> {
         if !is_procedure(proc) {
             return self.wrong_argument_violation(
                 "apply",
@@ -578,62 +597,18 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                 &[],
             );
         }
-        NativeCallReturn {
-            ret: self
-                .ctx
-                .return_call(proc, args.iter().copied(), Some(self.retk)),
-        }
+        self.set_staged(Staged::Call);
+        let ret = self.ctx.stage_tail_call(proc, args);
+        debug_assert_eq!(ret, ReturnCode::Continue);
+        Value::undefined()
     }
 
-    /// Perform call into `proc` with `args`, using `retk` as return continuation.
+    /// Stage a call of `proc` with `args` that returns to the native
+    /// continuation `k` through `subr_ret`.
     ///
-    /// # Safety
-    ///
-    /// No type-checks are performed nor arity checks.
-    // SAFETY: Caller must ensure preconditions are met (see fn docs)
-    pub unsafe fn return_call_unsafe(
-        self,
-        retk: Value<'gc>,
-        proc: Value<'gc>,
-        args: &[Value<'gc>],
-    ) -> NativeCallReturn<'gc> {
-        NativeCallReturn {
-            ret: self.ctx.return_call(proc, args.iter().copied(), Some(retk)),
-        }
-    }
-
-    /// Continue to a continuation `cont` with `args`.
-    ///
-    /// # Safety
-    ///
-    /// This function is unsafe because continuations can be misused easily.
-    // SAFETY: Caller must ensure preconditions are met (see fn docs)
-    pub unsafe fn continue_to(
-        self,
-        cont: Value<'gc>,
-        args: &[Value<'gc>],
-    ) -> NativeCallReturn<'gc> {
-        if !is_continuation(cont) {
-            return self.wrong_argument_violation(
-                "@continue",
-                "attempt to call non continuation value",
-                Some(cont),
-                Some(0),
-                0,
-                &[],
-            );
-        }
-        NativeCallReturn {
-            ret: self.ctx.return_call(cont, args.iter().copied(), None),
-        }
-    }
-
-    pub fn call(
-        self,
-        proc: Value<'gc>,
-        args: &[Value<'gc>],
-        retk: Value<'gc>,
-    ) -> NativeCallReturn<'gc> {
+    /// Returns an ignored [`Value::undefined`], the trampoline honors the
+    /// staged request over the body's returned value.
+    pub fn call_with(&self, proc: Value<'gc>, args: &[Value<'gc>], k: Value<'gc>) -> Value<'gc> {
         if !is_procedure(proc) {
             crate::runtime::vm::debug::print_stacktraces_impl(self.ctx);
 
@@ -647,30 +622,89 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
             );
         }
 
-        if !is_continuation(retk) {
+        if !is_continuation(k) {
             return self.wrong_argument_violation(
                 "apply",
                 "expected continuation for return continuation",
-                Some(retk),
+                Some(k),
                 Some(0),
                 0,
                 &[],
             );
         }
 
-        NativeCallReturn {
-            ret: self.ctx.return_call(proc, args.iter().copied(), Some(retk)),
+        self.set_staged(Staged::Call);
+        let ret = self.ctx.stage_call_with(proc, args, k);
+        debug_assert_eq!(ret, ReturnCode::Continue);
+        Value::undefined()
+    }
+
+    /// Continue to a continuation `cont` with `args`.
+    ///
+    /// Returns an ignored [`Value::undefined`], the trampoline honors the
+    /// staged request over the body's returned value.
+    ///
+    /// # Safety
+    ///
+    /// This function is unsafe because continuations can be misused easily.
+    pub unsafe fn continue_to(&self, cont: Value<'gc>, args: &[Value<'gc>]) -> Value<'gc> {
+        if !is_continuation(cont) {
+            return self.wrong_argument_violation(
+                "@continue",
+                "attempt to call non continuation value",
+                Some(cont),
+                Some(0),
+                0,
+                &[],
+            );
         }
+        self.set_staged(Staged::Call);
+        let ret = self.ctx.stage_resume(cont, args);
+        debug_assert_eq!(ret, ReturnCode::Continue);
+        Value::undefined()
+    }
+
+    /// Throw to the `throw` handler with `key` and `args`.
+    ///
+    /// Returns an ignored [`Value::undefined`], the trampoline honors the
+    /// staged request over the body's returned value.
+    pub fn throw(&self, key: Value<'gc>, args: Value<'gc>) -> Value<'gc> {
+        self.set_staged(Staged::Call);
+        let ret = throw::throw(self.ctx, key, args);
+        debug_assert_eq!(ret, ReturnCode::Continue);
+        Value::undefined()
+    }
+
+    /// Fail this call with `err`, ending the activation with an error.
+    ///
+    /// Returns an ignored [`Value::undefined`], the trampoline honors the
+    /// staged request over the body's returned value.
+    pub fn err(&self, err: Value<'gc>) -> Value<'gc> {
+        self.set_staged(Staged::Err(err));
+        Value::undefined()
+    }
+
+    /// Return `vals` (any count) to this call's caller.
+    ///
+    /// Single values should be returned directly instead, this is for
+    /// dynamically-sized multi-value returns. Returns an ignored
+    /// [`Value::undefined`], the trampoline honors the staged request over
+    /// the body's returned value.
+    pub fn values(&self, vals: &[Value<'gc>]) -> Value<'gc> {
+        self.set_staged(Staged::Call);
+        let ret = self.ctx.stage_return_values(vals);
+        debug_assert_eq!(ret, ReturnCode::Continue);
+        Value::undefined()
     }
 
     pub fn wrong_number_of_arguments_violation(
-        self,
+        &self,
         who: &str,
         required_min: usize,
         required_max: Option<usize>,
         argc: usize,
         args: &[Value<'gc>],
-    ) -> NativeCallReturn<'gc> {
+    ) -> Value<'gc> {
         let plural = if argc < 2 { "" } else { "s" };
 
         let message = if let Some(max) = required_max
@@ -711,77 +745,12 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         }
     }
 
-    pub fn wrong_number_of_arguments_violation_proc(
-        self,
-        proc: Value<'gc>,
-        required_min: usize,
-        required_max: Option<usize>,
-        argc: usize,
-        args: &[Value<'gc>],
-    ) -> NativeCallReturn<'gc> {
-        if proc.is::<Closure>() && !proc.downcast::<Closure>().is_continuation() {
-            let closure = proc.downcast::<Closure>();
-            if closure.meta.get().is_pair() {
-                let name = Value::assq(
-                    closure.meta.get(),
-                    Symbol::from_str(self.ctx, "name").into(),
-                )
-                .unwrap_or(Value::new(false))
-                .to_string();
-                return self.wrong_number_of_arguments_violation(
-                    &name,
-                    required_min,
-                    required_max,
-                    argc,
-                    args,
-                );
-            }
-        }
-        let plural = if argc < 2 { "" } else { "s" };
-
-        let message = if let Some(max) = required_max
-            && max == required_min
-        {
-            format!(
-                "expected {}, but {} argument{} given",
-                required_min, argc, plural
-            )
-        } else if let Some(max) = required_max {
-            if max == required_min + 1 {
-                format!(
-                    "expected {} or {}, but {} argument{} given",
-                    required_min, max, argc, plural
-                )
-            } else {
-                format!(
-                    "expected between {} and {}, but {} argument{} given",
-                    required_min, max, argc, plural
-                )
-            }
-        } else {
-            format!(
-                "expected at least {}, but {} argument{} given",
-                required_min, argc, plural
-            )
-        };
-        let message = Str::new(self.ctx, message, true).into();
-        if argc == 0 {
-            self.raise_assertion_violation(Value::new(false), message, Value::null())
-        } else {
-            let mut irritants = Value::null();
-            for &arg in args.iter().rev() {
-                irritants = Value::cons(self.ctx, arg, irritants);
-            }
-            self.raise_assertion_violation(Value::new(false), message, irritants)
-        }
-    }
-
     pub fn raise_assertion_violation(
-        self,
+        &self,
         who: Value<'gc>,
         message: Value<'gc>,
         irritant: Value<'gc>,
-    ) -> NativeCallReturn<'gc> {
+    ) -> Value<'gc> {
         let assertion_violation = self
             .ctx
             .globals()
@@ -789,18 +758,18 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
             .get_str(self.ctx, "assertion-violation")
             .unwrap_or_else(|| panic!("pre boot error at {who}: {message} with {irritant}",));
         if irritant != Value::null() {
-            self.return_call(assertion_violation, &[who, message, irritant])
+            self.tail(assertion_violation, &[who, message, irritant])
         } else {
-            self.return_call(assertion_violation, &[who, message])
+            self.tail(assertion_violation, &[who, message])
         }
     }
 
     pub fn raise_undefined_violation(
-        self,
+        &self,
         who: &str,
         message: &str,
         irritants: &[Value<'gc>],
-    ) -> NativeCallReturn<'gc> {
+    ) -> Value<'gc> {
         let error = self
             .ctx
             .globals()
@@ -813,15 +782,15 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
             .chain(std::iter::once(message))
             .chain(irritants.iter().copied())
             .collect::<Vec<_>>();
-        self.return_call(error, &args)
+        self.tail(error, &args)
     }
 
     pub fn implementation_restriction_violation(
-        self,
+        &self,
         who: &str,
         message: &str,
         irritants: &[Value<'gc>],
-    ) -> NativeCallReturn<'gc> {
+    ) -> Value<'gc> {
         let error = self
             .ctx
             .globals()
@@ -834,15 +803,10 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
             .chain(std::iter::once(message))
             .chain(irritants.iter().copied())
             .collect::<Vec<_>>();
-        self.return_call(error, &args)
+        self.tail(error, &args)
     }
 
-    pub fn raise_error(
-        self,
-        who: &str,
-        message: &str,
-        irritants: &[Value<'gc>],
-    ) -> NativeCallReturn<'gc> {
+    pub fn raise_error(&self, who: &str, message: &str, irritants: &[Value<'gc>]) -> Value<'gc> {
         let error = self
             .ctx
             .globals()
@@ -855,17 +819,17 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
             .chain(std::iter::once(message))
             .chain(irritants.iter().copied())
             .collect::<Vec<_>>();
-        self.return_call(error, &args)
+        self.tail(error, &args)
     }
 
     pub fn raise_io_error(
-        self,
+        &self,
         err: std::io::Error,
         operation: IoOperation,
         who: &str,
         message: &str,
         filename: Value<'gc>,
-    ) -> NativeCallReturn<'gc> {
+    ) -> Value<'gc> {
         let message = if let Some(code) = err.raw_os_error() {
             Str::from_str(self.ctx, format!("{message} ({code})"))
         } else {
@@ -887,7 +851,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                         .root_module()
                         .get_str(self.ctx, "raise-i/o-file-does-not-exist-error")
                         .expect("pre boot error");
-                    self.return_call(error, &[who, message, filename])
+                    self.tail(error, &[who, message, filename])
                 }
 
                 Some(libc::EEXIST) => {
@@ -897,7 +861,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                         .root_module()
                         .get_str(self.ctx, "raise-i/o-file-already-exists-error")
                         .expect("pre boot error");
-                    self.return_call(error, &[who, message, filename])
+                    self.tail(error, &[who, message, filename])
                 }
 
                 Some(libc::EROFS) | Some(libc::EISDIR) | Some(libc::ETXTBSY) => {
@@ -907,7 +871,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                         .root_module()
                         .get_str(self.ctx, "raise-i/o-file-is-read-only-error")
                         .expect("pre boot error");
-                    self.return_call(error, &[who, message, filename])
+                    self.tail(error, &[who, message, filename])
                 }
                 Some(libc::EACCES) => {
                     let error = self
@@ -916,7 +880,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                         .root_module()
                         .get_str(self.ctx, "raise-i/o-file-protection-error")
                         .expect("pre boot error");
-                    self.return_call(error, &[who, message, filename])
+                    self.tail(error, &[who, message, filename])
                 }
 
                 _ => {
@@ -926,7 +890,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                         .root_module()
                         .get_str(self.ctx, "raise-i/o-error")
                         .expect("pre boot error");
-                    self.return_call(error, &[who, message, filename])
+                    self.tail(error, &[who, message, filename])
                 }
             },
 
@@ -937,7 +901,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                     .root_module()
                     .get_str(self.ctx, "raise-i/o-read-error")
                     .expect("pre boot error");
-                self.return_call(error, &[who, message, filename])
+                self.tail(error, &[who, message, filename])
             }
 
             IoOperation::Write => {
@@ -947,7 +911,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                     .root_module()
                     .get_str(self.ctx, "raise-i/o-write-error")
                     .expect("pre boot error");
-                self.return_call(error, &[who, message, filename])
+                self.tail(error, &[who, message, filename])
             }
 
             IoOperation::Seek => {
@@ -957,7 +921,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                     .root_module()
                     .get_str(self.ctx, "raise-i/o-seek-error")
                     .expect("pre boot error");
-                self.return_call(error, &[who, message, filename])
+                self.tail(error, &[who, message, filename])
             }
             _ => {
                 let error = self
@@ -966,19 +930,19 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                     .root_module()
                     .get_str(self.ctx, "raise-i/o-error")
                     .expect("pre boot error");
-                self.return_call(error, &[who, message, filename])
+                self.tail(error, &[who, message, filename])
             }
         }
     }
 
     pub fn raise_io_filesystem_error(
-        self,
+        &self,
         who: &str,
         message: &str,
         err: std::io::Error,
         old_filename: Value<'gc>,
         new_filename: Value<'gc>,
-    ) -> NativeCallReturn<'gc> {
+    ) -> Value<'gc> {
         let message = if let Some(code) = err.raw_os_error() {
             Str::from_str(self.ctx, format!("{message} ({code})"))
         } else {
@@ -999,7 +963,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                     .root_module()
                     .get_str(self.ctx, "raise-i/o-file-does-not-exist-error")
                     .expect("pre boot error");
-                self.return_call(error, &[who, message, old_filename])
+                self.tail(error, &[who, message, old_filename])
             }
 
             ErrorKind::AlreadyExists => {
@@ -1009,7 +973,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                     .root_module()
                     .get_str(self.ctx, "raise-i/o-file-already-exists-error")
                     .expect("pre boot error");
-                self.return_call(error, &[who, message, new_filename])
+                self.tail(error, &[who, message, new_filename])
             }
 
             _ => {
@@ -1019,20 +983,20 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                     .root_module()
                     .get_str(self.ctx, "raise-i/o-error")
                     .expect("pre boot error");
-                self.return_call(error, &[who, message, old_filename, new_filename])
+                self.tail(error, &[who, message, old_filename, new_filename])
             }
         }
     }
 
     pub fn wrong_argument_violation(
-        self,
+        &self,
         who: &str,
         description: &str,
         value: Option<Value<'gc>>,
         position: Option<usize>,
         argc: usize,
         args: &[Value<'gc>],
-    ) -> NativeCallReturn<'gc> {
+    ) -> Value<'gc> {
         let message = if let Some(value) = value {
             if let Some(position) = position {
                 format!("{description}, got {value}, as argument {}", position + 1)
@@ -1058,8 +1022,9 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         }
     }
 
-    pub fn conversion_error(self, who: &str, conv: ConversionError<'gc>) -> NativeCallReturn<'gc> {
-        let rands = self.rands.to_vec();
+    pub fn conversion_error(&self, who: &str, conv: ConversionError<'gc>) -> Value<'gc> {
+        // No flag of its own: the delegated violation below stages.
+        let args = self.args;
         match conv {
             ConversionError::TypeMismatch {
                 expected,
@@ -1073,8 +1038,8 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                     &description,
                     Some(found),
                     Some(pos),
-                    rands.len(),
-                    &rands,
+                    args.len(),
+                    args,
                 )
             }
             ConversionError::ArityMismatch {
@@ -1085,85 +1050,9 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                 who,
                 expected.min,
                 expected.max,
-                rands.len(),
-                &rands,
+                args.len(),
+                args,
             ),
         }
-    }
-}
-
-/// A native call return value. Just an opaque wrapper over [`NativeReturn`]
-/// to enforce proper usage in safe code.
-#[repr(transparent)]
-pub struct NativeCallReturn<'gc> {
-    ret: NativeReturn<'gc>,
-}
-
-impl<'gc> NativeCallReturn<'gc> {
-    pub fn into_inner(self) -> NativeReturn<'gc> {
-        self.ret
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::heap::mmtk::util::Address;
-    use crate::runtime::Scheme;
-    use crate::runtime::value::{CodeArity, CodeBlock};
-    use std::{mem::size_of, panic::AssertUnwindSafe};
-
-    extern "C-unwind" fn test_proc<'gc>(
-        _ctx: Context<'gc>,
-        _rator: Value<'gc>,
-        _rands: *const Value<'gc>,
-        _num_rands: usize,
-        _retk: Value<'gc>,
-    ) -> NativeReturn<'gc> {
-        NativeReturn {
-            code: ReturnCode::ReturnOk,
-            value: Value::undefined(),
-        }
-    }
-
-    #[test]
-    fn vm_procedure_checks_use_closure_class_ids() {
-        Scheme::new_uninit().enter(|ctx| {
-            let code_block = CodeBlock::new_aot(
-                ctx,
-                Address::from_ptr(test_proc as *const ()),
-                CodeArity::new(0),
-                false,
-                Value::null(),
-            );
-            let proc = Value::from(Closure::new(ctx, code_block, 0, false));
-            let cont = Value::from(Closure::new(ctx, code_block, 0, true));
-
-            assert!(is_procedure(proc));
-            assert!(is_procedure(cont));
-            assert!(!is_procedure(Value::null()));
-            assert!(is_continuation(cont));
-            assert!(!is_continuation(proc));
-            assert!(!is_continuation(Value::null()));
-        });
-    }
-
-    #[test]
-    fn nested_scheme_call_guard_restores_state_on_unwind() {
-        Scheme::new_uninit().enter(|ctx| {
-            let old_runstack = ctx.state().runstack.get();
-            assert_eq!(ctx.nest_level(), 0);
-
-            let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                let _guard = NestedSchemeCallGuard::enter(ctx, old_runstack);
-                ctx.state().runstack.set(old_runstack + size_of::<Value>());
-                assert_eq!(ctx.nest_level(), 1);
-                panic!("force unwind across nested Scheme call state");
-            }));
-
-            assert!(result.is_err());
-            assert_eq!(ctx.nest_level(), 0);
-            assert_eq!(ctx.state().runstack.get(), old_runstack);
-        });
     }
 }

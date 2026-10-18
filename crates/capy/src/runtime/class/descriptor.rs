@@ -8,7 +8,8 @@ use crate::heap::object::{AllocationHooksOf, ClassId, builtin_class_ids};
 use crate::heap::{Gc, Trace, Visitor, Weak, WeakProcessor};
 use crate::prelude::*;
 use crate::runtime::value::conversions::ClassTagged;
-use crate::runtime::{Context, value::Value};
+use crate::runtime::watchpoint::WatchpointSet;
+use crate::runtime::{MutationContext, value::Value};
 
 pub struct ClassDescriptor<'gc> {
     id: ClassId,
@@ -26,6 +27,36 @@ pub struct ClassDescriptor<'gc> {
     direct_subclasses: Lock<ArrayRef<'gc, Weak<'gc, ClassDescriptor<'gc>>>>,
     direct_methods: Lock<ArrayRef<'gc, Value<'gc>>>,
     initargs: ArrayRef<'gc, Value<'gc>>,
+    /// The assumption slot inline caches over this class rely on: its slot
+    /// protocol is the plain boot one. Fired (and replaced by a fresh set)
+    /// when that may have changed; see [`Self::renew_slot_protocol_wp`].
+    slot_protocol_wp: Lock<Gc<'gc, WatchpointSet<'gc>>>,
+    /// Identity of this descriptor's slot layout, unique among all
+    /// descriptors ever created (0 for classes that are never slot-cached:
+    /// builtin and primitive-layout ones). A `SlotStorage` carries the stamp
+    /// of the descriptor it was built for.
+    layout_stamp: u32,
+    /// Whether the stock method alone answers each slot protocol operation
+    /// (ref, set) for instances of this class: `PROTOCOL_*`, computed on the
+    /// first slot IC miss and reset whenever the set above fires.
+    protocol_state: [std::sync::atomic::AtomicU8; 4],
+    /// Slot definition objects handed to the slot protocol generics, as an
+    /// alist from slot name to definition. Slots never change on a
+    /// descriptor (redefinition makes a new one), so entries never go
+    /// stale; a racing writer may drop an entry, which is only recomputed.
+    slot_definitions: Lock<Value<'gc>>,
+}
+
+pub(crate) const PROTOCOL_UNKNOWN: u8 = 0;
+pub(crate) const PROTOCOL_PLAIN: u8 = 1;
+pub(crate) const PROTOCOL_CUSTOM: u8 = 2;
+
+static NEXT_LAYOUT_STAMP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+fn next_layout_stamp() -> u32 {
+    let stamp = NEXT_LAYOUT_STAMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    assert!(stamp != 0, "layout stamps exhausted");
+    stamp
 }
 
 pub(crate) struct ClassDescriptorInit<'a, 'gc> {
@@ -65,7 +96,7 @@ impl core::fmt::Debug for ClassDescriptor<'_> {
     }
 }
 
-// SAFETY: GC trace for `ClassDescriptor` — all reachable heap fields are visited
+// SAFETY: GC trace for `ClassDescriptor`, all reachable heap fields are visited
 unsafe impl Trace for ClassDescriptor<'_> {
     // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
@@ -82,6 +113,8 @@ unsafe impl Trace for ClassDescriptor<'_> {
             self.direct_subclasses.trace(visitor);
             self.direct_methods.trace(visitor);
             self.initargs.trace(visitor);
+            self.slot_protocol_wp.trace(visitor);
+            self.slot_definitions.trace(visitor);
         }
     }
 
@@ -100,6 +133,8 @@ unsafe impl Trace for ClassDescriptor<'_> {
             self.direct_subclasses.process_weak_refs(weak_processor);
             self.direct_methods.process_weak_refs(weak_processor);
             self.initargs.process_weak_refs(weak_processor);
+            self.slot_protocol_wp.process_weak_refs(weak_processor);
+            self.slot_definitions.process_weak_refs(weak_processor);
         }
     }
 }
@@ -111,12 +146,17 @@ unsafe impl<'gc> ClassTagged for ClassDescriptor<'gc> {
 }
 
 impl<'gc> ClassDescriptor<'gc> {
-    pub fn new(ctx: Context<'gc>, id: ClassId, name: &str, category: ClassCategory) -> Self {
+    pub fn new(
+        ctx: MutationContext<'gc>,
+        id: ClassId,
+        name: &str,
+        category: ClassCategory,
+    ) -> Self {
         Self::with_hierarchy(ctx, id, name, category, &[], &[id])
     }
 
     pub fn with_hierarchy(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         id: ClassId,
         name: &str,
         category: ClassCategory,
@@ -127,7 +167,7 @@ impl<'gc> ClassDescriptor<'gc> {
     }
 
     pub fn with_primitive_layout_hooks(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         id: ClassId,
         name: &str,
         category: ClassCategory,
@@ -154,7 +194,7 @@ impl<'gc> ClassDescriptor<'gc> {
         )
     }
 
-    pub(crate) fn from_init(ctx: Context<'gc>, init: ClassDescriptorInit<'_, 'gc>) -> Self {
+    pub(crate) fn from_init(ctx: MutationContext<'gc>, init: ClassDescriptorInit<'_, 'gc>) -> Self {
         let inherited_len = init.inherited_slots.len();
         let primitive_layout_hooks = init
             .primitive_layout_hooks
@@ -218,7 +258,95 @@ impl<'gc> ClassDescriptor<'gc> {
             ),
             direct_methods: Lock::new(init.direct_methods.unwrap_or_else(|| empty_metadata(ctx))),
             initargs,
+            slot_protocol_wp: Lock::new(WatchpointSet::new(ctx)),
+            protocol_state: Default::default(),
+            slot_definitions: Lock::new(Value::null()),
+            layout_stamp: if init.category == ClassCategory::Scheme {
+                next_layout_stamp()
+            } else {
+                0
+            },
         }
+    }
+
+    /// The layout stamp, see the field.
+    #[inline(always)]
+    pub fn layout_stamp(&self) -> u32 {
+        self.layout_stamp
+    }
+
+    /// The current slot-protocol set. A cache fill reads it before its
+    /// lookup and registers on it with [`WatchpointSet::add`].
+    pub fn slot_protocol_wp(&self) -> Gc<'gc, WatchpointSet<'gc>> {
+        self.slot_protocol_wp.get()
+    }
+
+    /// The slot protocol of `class` may have changed: install a fresh set
+    /// and fire the old one, clearing every cache that depended on it.
+    /// Callers mutate the protocol first and renew after, so a filler that
+    /// reads the fresh set already sees the change. Returns the number of
+    /// dependents cleared. The caller owes the grace period.
+    pub fn renew_slot_protocol_wp(ctx: MutationContext<'gc>, class: Gc<'gc, Self>) -> usize {
+        let old = class.slot_protocol_wp.get();
+        let fresh = WatchpointSet::new(ctx);
+        barrier::field!(Gc::write(ctx, class), ClassDescriptor, slot_protocol_wp)
+            .unlock()
+            .set(fresh);
+        let cleared = WatchpointSet::fire(old, ctx);
+        // After the fire: a stale computation that publishes later rechecks
+        // the (now invalid) set it read and resets its own state.
+        for state in &class.protocol_state {
+            state.store(PROTOCOL_UNKNOWN, std::sync::atomic::Ordering::Release);
+        }
+        cleared
+    }
+
+    /// The slot definition object for slot `name`, made once per descriptor.
+    pub(crate) fn slot_definition_for(
+        ctx: MutationContext<'gc>,
+        class: Gc<'gc, Self>,
+        name: &str,
+        key: Value<'gc>,
+    ) -> Option<Value<'gc>> {
+        let mut entries = class.slot_definitions.get();
+        while entries.is_pair() {
+            let entry = entries.car();
+            if entry.car().bits() == key.bits() {
+                return Some(entry.cdr());
+            }
+            entries = entries.cdr();
+        }
+        let accessor = class.accessor_named(name)?;
+        let slot = *class.slots().get(accessor.slot_index())?;
+        let definition: Value<'gc> =
+            super::slot::SlotDefinitionDescriptor::from_slot(ctx, slot).into();
+        let entry = Value::cons(ctx, key, definition);
+        let list = Value::cons(ctx, entry, class.slot_definitions.get());
+        barrier::field!(Gc::write(ctx, class), ClassDescriptor, slot_definitions)
+            .unlock()
+            .set(list);
+        Some(definition)
+    }
+
+    /// The computed protocol state of operation `op`, `PROTOCOL_*`.
+    #[inline]
+    pub(crate) fn protocol_state(&self, op: usize) -> u8 {
+        self.protocol_state[op].load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Publish a computed state if none is yet, returning the state now
+    /// held.
+    pub(crate) fn publish_protocol_state(&self, op: usize, state: u8) -> u8 {
+        use std::sync::atomic::Ordering::{AcqRel, Acquire};
+        match self.protocol_state[op].compare_exchange(PROTOCOL_UNKNOWN, state, AcqRel, Acquire) {
+            Ok(_) => state,
+            Err(current) => current,
+        }
+    }
+
+    /// Drop a published state (a computation found its set invalid).
+    pub(crate) fn reset_protocol_state(&self, op: usize) {
+        self.protocol_state[op].store(PROTOCOL_UNKNOWN, std::sync::atomic::Ordering::Release);
     }
 
     pub fn id(&self) -> ClassId {
@@ -265,7 +393,7 @@ impl<'gc> ClassDescriptor<'gc> {
 
     pub fn allocate_instance(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         class: Gc<'gc, ClassDescriptor<'gc>>,
         initargs: &[(Value<'gc>, Value<'gc>)],
     ) -> Option<Result<Value<'gc>, super::slot::SlotInitError<'gc>>> {
@@ -276,7 +404,7 @@ impl<'gc> ClassDescriptor<'gc> {
 
     pub fn slot_value_by_name(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         class: Gc<'gc, ClassDescriptor<'gc>>,
         receiver: Value<'gc>,
         name: &str,
@@ -301,7 +429,7 @@ impl<'gc> ClassDescriptor<'gc> {
 
     pub fn set_slot_value_by_name(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         class: Gc<'gc, ClassDescriptor<'gc>>,
         receiver: Value<'gc>,
         name: &str,
@@ -327,7 +455,7 @@ impl<'gc> ClassDescriptor<'gc> {
 
     pub fn slot_bound_by_name(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         class: Gc<'gc, ClassDescriptor<'gc>>,
         receiver: Value<'gc>,
         name: &str,
@@ -426,7 +554,7 @@ impl<'gc> ClassDescriptor<'gc> {
     }
 
     pub fn set_class_slot(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         class: Gc<'gc, ClassDescriptor<'gc>>,
         accessor: SlotAccessorDescriptor<'gc>,
         value: Value<'gc>,
@@ -458,7 +586,7 @@ impl<'gc> ClassDescriptor<'gc> {
     }
 
     pub(crate) fn add_direct_subclass(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         class: Gc<'gc, ClassDescriptor<'gc>>,
         subclass: Gc<'gc, ClassDescriptor<'gc>>,
     ) {
@@ -482,7 +610,7 @@ impl<'gc> ClassDescriptor<'gc> {
     }
 
     pub(crate) fn remove_direct_subclass(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         class: Gc<'gc, ClassDescriptor<'gc>>,
         subclass_id: ClassId,
     ) {
@@ -505,7 +633,7 @@ impl<'gc> ClassDescriptor<'gc> {
     }
 
     pub(crate) fn add_direct_method(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         class: Gc<'gc, ClassDescriptor<'gc>>,
         method: Value<'gc>,
     ) {
@@ -526,7 +654,7 @@ impl<'gc> ClassDescriptor<'gc> {
     }
 
     pub(crate) fn invalidate_direct_method_caches(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         class: Gc<'gc, ClassDescriptor<'gc>>,
     ) {
         for method in class.direct_methods().iter().copied() {
@@ -537,14 +665,14 @@ impl<'gc> ClassDescriptor<'gc> {
     }
 }
 
-fn empty_metadata<'gc>(ctx: Context<'gc>) -> ArrayRef<'gc, Value<'gc>> {
+fn empty_metadata<'gc>(ctx: MutationContext<'gc>) -> ArrayRef<'gc, Value<'gc>> {
     Array::with(ctx, 0, |_, _| {
         unreachable!("zero-length metadata arrays are never initialized")
     })
 }
 
 fn initarg_metadata<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     slots: &[SlotDescriptor<'gc>],
 ) -> ArrayRef<'gc, Value<'gc>> {
     let initargs = slots
@@ -559,7 +687,7 @@ fn initarg_metadata<'gc>(
 }
 
 pub(crate) fn class_id_list_to_class_objects<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     ids: &[ClassId],
 ) -> Value<'gc> {
     let classes = ids
@@ -569,7 +697,7 @@ pub(crate) fn class_id_list_to_class_objects<'gc>(
     Value::list_from_slice(ctx, &classes)
 }
 
-pub(crate) fn class_id_to_class_object<'gc>(ctx: Context<'gc>, id: ClassId) -> Value<'gc> {
+pub(crate) fn class_id_to_class_object<'gc>(ctx: MutationContext<'gc>, id: ClassId) -> Value<'gc> {
     super::table::class_table(ctx)
         .lookup(id)
         .map(Value::from)
@@ -577,7 +705,7 @@ pub(crate) fn class_id_to_class_object<'gc>(ctx: Context<'gc>, id: ClassId) -> V
 }
 
 pub(crate) fn slot_definition_list<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     slots: &[SlotDescriptor<'gc>],
 ) -> Value<'gc> {
     let definitions = slots
@@ -588,7 +716,7 @@ pub(crate) fn slot_definition_list<'gc>(
 }
 
 pub(crate) fn slot_accessor_list<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     accessors: &[SlotAccessorDescriptor<'gc>],
 ) -> Value<'gc> {
     let definitions = accessors
@@ -598,7 +726,9 @@ pub(crate) fn slot_accessor_list<'gc>(
     Value::list_from_slice(ctx, &definitions)
 }
 
-fn empty_weak_subclasses<'gc>(ctx: Context<'gc>) -> ArrayRef<'gc, Weak<'gc, ClassDescriptor<'gc>>> {
+fn empty_weak_subclasses<'gc>(
+    ctx: MutationContext<'gc>,
+) -> ArrayRef<'gc, Weak<'gc, ClassDescriptor<'gc>>> {
     Array::with(ctx, 0, |_, _| {
         unreachable!("zero-length weak subclass arrays are never initialized")
     })
@@ -635,7 +765,7 @@ fn default_primitive_operation_hooks(category: ClassCategory) -> PrimitiveOperat
 }
 
 pub(crate) fn call_scheme_slot_ref<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     receiver: Value<'gc>,
     proc: Value<'gc>,
 ) -> Result<Value<'gc>, SlotAccessError> {
@@ -646,7 +776,7 @@ pub(crate) fn call_scheme_slot_ref<'gc>(
 }
 
 pub(crate) fn call_scheme_slot_set<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     receiver: Value<'gc>,
     value: Value<'gc>,
     proc: Value<'gc>,
@@ -658,7 +788,7 @@ pub(crate) fn call_scheme_slot_set<'gc>(
 }
 
 pub(crate) fn call_scheme_slot_bound<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     receiver: Value<'gc>,
     proc: Value<'gc>,
 ) -> Result<bool, SlotAccessError> {

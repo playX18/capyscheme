@@ -4,7 +4,7 @@ use crate::heap::alloc::{Array, ArrayRef};
 use crate::heap::object::{ClassId, builtin_class_ids, class_header_word};
 use crate::heap::{Gc, Trace, Visitor, WeakProcessor};
 use crate::runtime::value::conversions::ClassTagged;
-use crate::runtime::{Context, value::Value};
+use crate::runtime::{MutationContext, value::Value};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Trace)]
 pub struct SlotFlags(u8);
@@ -184,7 +184,7 @@ pub struct SlotDescriptor<'gc> {
     pub(crate) flags: SlotFlags,
 }
 
-// SAFETY: GC trace for `SlotDescriptor` — all reachable heap fields are visited
+// SAFETY: GC trace for `SlotDescriptor`, all reachable heap fields are visited
 unsafe impl Trace for SlotDescriptor<'_> {
     // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
@@ -223,7 +223,7 @@ unsafe impl Trace for SlotDescriptor<'_> {
 
 impl<'gc> SlotDescriptor<'gc> {
     pub(crate) fn from_spec(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         owner: ClassId,
         index: usize,
         spec: SlotSpec<'_, 'gc>,
@@ -342,7 +342,7 @@ pub struct SlotAccessorDescriptor<'gc> {
     pub(crate) flags: SlotFlags,
 }
 
-// SAFETY: GC trace for `SlotAccessorDescriptor` — all reachable heap fields are visited
+// SAFETY: GC trace for `SlotAccessorDescriptor`, all reachable heap fields are visited
 unsafe impl Trace for SlotAccessorDescriptor<'_> {
     // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
@@ -398,7 +398,7 @@ pub enum SlotInitError<'gc> {
 }
 
 impl<'gc> SlotAccessorDescriptor<'gc> {
-    pub(crate) fn from_slot(ctx: Context<'gc>, slot: SlotDescriptor<'gc>) -> Self {
+    pub(crate) fn from_slot(ctx: MutationContext<'gc>, slot: SlotDescriptor<'gc>) -> Self {
         Self {
             name: Array::from_slice(ctx, slot.name.as_slice()),
             owner: slot.owner,
@@ -509,7 +509,7 @@ pub struct SlotDefinitionDescriptor<'gc> {
 }
 
 impl<'gc> SlotDefinitionDescriptor<'gc> {
-    pub(crate) fn from_slot(ctx: Context<'gc>, slot: SlotDescriptor<'gc>) -> Gc<'gc, Self> {
+    pub(crate) fn from_slot(ctx: MutationContext<'gc>, slot: SlotDescriptor<'gc>) -> Gc<'gc, Self> {
         Gc::new_with_header_word(
             ctx,
             Self {
@@ -616,7 +616,7 @@ pub struct SlotAccessorDefinition<'gc> {
 
 impl<'gc> SlotAccessorDefinition<'gc> {
     pub(crate) fn from_accessor(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         accessor: SlotAccessorDescriptor<'gc>,
     ) -> Gc<'gc, Self> {
         Gc::new_with_header_word(

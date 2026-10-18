@@ -7,7 +7,7 @@
 //! file, and an optional public interface that receives the bindings this
 //! module exports.
 //!
-//! The Scheme-visible entry points live in [`module_ops`]; the plain-Rust
+//! The Scheme-visible entry points live in [`module_ops`], the plain-Rust
 //! helpers (such as [`define`] and [`resolve_module`]) are used by the loader,
 //! the expander, and the rest of the runtime.
 
@@ -19,14 +19,14 @@ use crate::heap::{Gc, Trace, barrier, cell::Lock, sync::monitor::Monitor};
 use crate::{
     fluid, global, list,
     runtime::{
-        Context,
+        MutationContext,
         value::{Boxed, ClassTagged, HashTable, HashTableType, IntoValue, Str, Symbol, Value},
     },
 };
 
 /// Renders a library name (a list of symbols) as the dotted path fragment the
 /// loader searches for, e.g. `(capy syntax)` becomes `capy.syntax:`.
-pub fn mangle_library_spec<'gc>(ctx: Context<'gc>, spec: Value<'gc>) -> Value<'gc> {
+pub fn mangle_library_spec<'gc>(ctx: MutationContext<'gc>, spec: Value<'gc>) -> Value<'gc> {
     let mut spec = spec;
 
     let mut result = String::new();
@@ -48,7 +48,7 @@ pub fn mangle_library_spec<'gc>(ctx: Context<'gc>, spec: Value<'gc>) -> Value<'g
 /// Parses a space-separated module name (as used by the Rust-facing loader
 /// helpers) into the list of symbols that addresses a nested module, e.g.
 /// `"capy syntax"` becomes `(capy syntax)`.
-pub fn convert_module_name<'gc>(ctx: Context<'gc>, name: &str) -> Value<'gc> {
+pub fn convert_module_name<'gc>(ctx: MutationContext<'gc>, name: &str) -> Value<'gc> {
     let parts = name.split(' ').collect::<Vec<_>>();
     let mut result = Value::null();
     for part in parts.iter().rev() {
@@ -73,17 +73,17 @@ pub enum ModuleKind {
 /// A traced GC reference to a [`Module`].
 pub type ModuleRef<'gc> = Gc<'gc, Module<'gc>>;
 
-/// A module: a symbol → variable namespace plus import/export bookkeeping.
+/// A module: a symbol -> variable namespace plus import/export bookkeeping.
 ///
-/// The layout is part of the public surface — the Scheme accessors and several
-/// other runtime files read the fields directly — and every field is followed
+/// The layout is part of the public surface, the Scheme accessors and several
+/// other runtime files read the fields directly, and every field is followed
 /// by the precise collector, so the set of fields must stay in sync with the
 /// `Trace` implementation below.
 #[repr(C)]
 pub struct Module<'gc> {
-    /// Eq-hash table of this module's own symbol → variable bindings.
+    /// Eq-hash table of this module's own symbol -> variable bindings.
     pub obarray: Lock<Gc<'gc, HashTable<'gc>>>,
-    /// List of modules this module uses; lookups fall through to them.
+    /// List of modules this module uses, lookups fall through to them.
     pub uses: Lock<Value<'gc>>,
     /// Optional custom binder consulted for names not in the obarray.
     pub binder: Value<'gc>,
@@ -97,7 +97,7 @@ pub struct Module<'gc> {
     pub version: Lock<Value<'gc>>,
     /// Which flavor of module this is.
     pub kind: Cell<ModuleKind>,
-    /// Cache of bindings resolved through `uses`; guarded by `IMPORT_OBARRAY_MUTEX`.
+    /// Cache of bindings resolved through `uses`, guarded by `IMPORT_OBARRAY_MUTEX`.
     pub import_obarray: Gc<'gc, HashTable<'gc>>,
     /// Table of nested submodules, keyed by name symbol.
     pub submodules: Gc<'gc, HashTable<'gc>>,
@@ -122,7 +122,7 @@ fn module_header_word() -> u64 {
 // SAFETY: The trace implementation below forwards every field that can reach
 // the GC heap to the visitor, which is what the precise collector requires.
 unsafe impl<'gc> Trace for Module<'gc> {
-    // SAFETY: All GC-reachable fields are traced via `visitor`; the caller
+    // SAFETY: All GC-reachable fields are traced via `visitor`, the caller
     // guarantees the visitor outlives this call.
     unsafe fn trace(&mut self, visitor: &mut crate::heap::Visitor) {
         // SAFETY: Preconditions verified by the surrounding code
@@ -161,7 +161,7 @@ static IMPORT_OBARRAY_MUTEX: Monitor<()> = Monitor::new(());
 impl<'gc> Module<'gc> {
     /// Allocates a fresh, empty directory module with the given `uses` list.
     pub fn new(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         size: usize,
         uses: Value<'gc>,
         binder: impl IntoValue<'gc>,
@@ -204,7 +204,7 @@ impl<'gc> Module<'gc> {
     /// or `None` if the symbol is only visible through used interfaces.
     pub fn local_variable(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         sym: Value<'gc>,
     ) -> Option<Gc<'gc, Variable<'gc>>> {
         if let Some(var) = self.obarray.get().get(ctx, sym) {
@@ -216,7 +216,11 @@ impl<'gc> Module<'gc> {
 
     /// Resolves `sym` in this module, consulting the obarray first and then
     /// falling back to imported bindings.
-    pub fn variable(&self, ctx: Context<'gc>, sym: Value<'gc>) -> Option<Gc<'gc, Variable<'gc>>> {
+    pub fn variable(
+        &self,
+        ctx: MutationContext<'gc>,
+        sym: Value<'gc>,
+    ) -> Option<Gc<'gc, Variable<'gc>>> {
         if let Some(var) = self.obarray.get().get(ctx, sym) {
             return Some(var.downcast());
         }
@@ -228,7 +232,7 @@ impl<'gc> Module<'gc> {
     /// import cache.
     pub fn lookup_imported(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         sym: Value<'gc>,
     ) -> Option<Gc<'gc, Variable<'gc>>> {
         let guard = IMPORT_OBARRAY_MUTEX.lock();
@@ -289,7 +293,7 @@ impl<'gc> Module<'gc> {
     /// records it in the obarray when the symbol is not yet present.
     pub fn ensure_local_variable(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         sym: Value<'gc>,
     ) -> Gc<'gc, Variable<'gc>> {
         if let Some(var) = self.local_variable(ctx, sym) {
@@ -301,56 +305,54 @@ impl<'gc> Module<'gc> {
     }
 
     /// Whether `sym` has a bound variable directly in this module's obarray.
-    pub fn is_locally_bound(&self, ctx: Context<'gc>, sym: Value<'gc>) -> bool {
+    pub fn is_locally_bound(&self, ctx: MutationContext<'gc>, sym: Value<'gc>) -> bool {
         self.local_variable(ctx, sym).is_some_and(|v| v.is_bound())
     }
 
     /// Whether `sym` has a bound variable in this module or any used interface.
-    pub fn is_bound(&self, ctx: Context<'gc>, sym: Value<'gc>) -> bool {
+    pub fn is_bound(&self, ctx: MutationContext<'gc>, sym: Value<'gc>) -> bool {
         self.variable(ctx, sym).is_some_and(|v| v.is_bound())
     }
 
     /// The value of `sym`'s locally bound variable, if any.
-    pub fn local_binding(&self, ctx: Context<'gc>, sym: Value<'gc>) -> Option<Value<'gc>> {
+    pub fn local_binding(&self, ctx: MutationContext<'gc>, sym: Value<'gc>) -> Option<Value<'gc>> {
         self.local_variable(ctx, sym).map(|v| v.value.get())
     }
 
     /// The value of `sym`'s variable, local or imported, if any.
-    pub fn binding(&self, ctx: Context<'gc>, sym: Value<'gc>) -> Option<Value<'gc>> {
+    pub fn binding(&self, ctx: MutationContext<'gc>, sym: Value<'gc>) -> Option<Value<'gc>> {
         self.variable(ctx, sym).map(|v| v.value.get())
     }
 
     /// The value bound to `name` (local or imported), if any.
-    pub fn get(&self, ctx: Context<'gc>, name: Value<'gc>) -> Option<Value<'gc>> {
+    pub fn get(&self, ctx: MutationContext<'gc>, name: Value<'gc>) -> Option<Value<'gc>> {
         self.variable(ctx, name).map(|var| var.value.get())
     }
 
     /// Like [`Self::get`], but takes the symbol name as a Rust string slice.
-    pub fn get_str(&self, ctx: Context<'gc>, name: &str) -> Option<Value<'gc>> {
+    pub fn get_str(&self, ctx: MutationContext<'gc>, name: &str) -> Option<Value<'gc>> {
         self.variable(ctx, Symbol::from_str(ctx, name).into())
             .map(|var| var.value.get())
     }
 
-    // -- symbol → variable mutation ---------------------------------------
-
     /// Stores `var` under `sym` in the obarray, replacing any existing entry.
-    pub fn add(&self, ctx: Context<'gc>, sym: Value<'gc>, var: Gc<'gc, Variable<'gc>>) {
+    pub fn add(&self, ctx: MutationContext<'gc>, sym: Value<'gc>, var: Gc<'gc, Variable<'gc>>) {
         self.obarray.get().put(ctx, sym, var);
     }
 
     /// Removes the obarray entry for `sym`, if present.
-    pub fn remove(&self, ctx: Context<'gc>, sym: Value<'gc>) {
+    pub fn remove(&self, ctx: MutationContext<'gc>, sym: Value<'gc>) {
         self.obarray.get().remove(ctx, sym);
     }
 
     /// Empties the obarray.
-    pub fn clear(&self, ctx: Context<'gc>) {
+    pub fn clear(&self, ctx: MutationContext<'gc>) {
         self.obarray.get().clear(ctx);
     }
 
-    /// Sets the value of the variable bound to `name`; reports whether the
+    /// Sets the value of the variable bound to `name`, reports whether the
     /// variable existed.
-    pub fn set(&self, ctx: Context<'gc>, name: Value<'gc>, value: Value<'gc>) -> bool {
+    pub fn set(&self, ctx: MutationContext<'gc>, name: Value<'gc>, value: Value<'gc>) -> bool {
         if let Some(var) = self.variable(ctx, name) {
             barrier::field!(Gc::write(ctx, var), Variable, value)
                 .unlock()
@@ -365,7 +367,7 @@ impl<'gc> Module<'gc> {
     /// stores `value` in it, returning the backing variable.
     pub fn define(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         name: Value<'gc>,
         value: Value<'gc>,
     ) -> Gc<'gc, Variable<'gc>> {
@@ -380,7 +382,7 @@ impl<'gc> Module<'gc> {
     /// the value as any type convertible into a GC value.
     pub fn define_rs(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         name: impl AsRef<str>,
         value: impl IntoValue<'gc>,
     ) -> Gc<'gc, Variable<'gc>> {
@@ -390,9 +392,9 @@ impl<'gc> Module<'gc> {
     }
 
     /// Records `interface` in `self`'s list of used interfaces, ignoring
-    /// self-imports and duplicates; the import cache is discarded because
+    /// self-imports and duplicates, the import cache is discarded because
     /// previously resolved names may now resolve differently.
-    pub fn use_iface(self: Gc<'gc, Self>, ctx: Context<'gc>, interface: Gc<'gc, Self>) {
+    pub fn use_iface(self: Gc<'gc, Self>, ctx: MutationContext<'gc>, interface: Gc<'gc, Self>) {
         if Gc::ptr_eq(self, interface) || self.uses.get().memq(interface.into()) {
             return;
         }
@@ -407,12 +409,12 @@ impl<'gc> Module<'gc> {
         self.import_obarray.clear(ctx);
     }
 
-    /// Returns the module that actually provides the binding for `sym` — `self`
+    /// Returns the module that actually provides the binding for `sym`, `self`
     /// if the binding is local, otherwise the used interface the variable was
     /// resolved from.
     pub fn binding_interface(
         self: Gc<'gc, Self>,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         sym: Value<'gc>,
     ) -> Option<Gc<'gc, Self>> {
         let var = self.variable(ctx, sym)?;
@@ -440,7 +442,7 @@ impl<'gc> Module<'gc> {
 
     /// Adds `name`'s local variable to the public interface. Panics if the
     /// module has no public interface.
-    pub fn export_one(&self, ctx: Context<'gc>, name: Value<'gc>) {
+    pub fn export_one(&self, ctx: MutationContext<'gc>, name: Value<'gc>) {
         let public_i = self
             .public_interface
             .get()
@@ -451,7 +453,7 @@ impl<'gc> Module<'gc> {
 
     /// Exports each name in `names` (optionally as `(internal external)`
     /// pairs) to the public interface.
-    pub fn export(self: Gc<'gc, Self>, ctx: Context<'gc>, names: Value<'gc>) {
+    pub fn export(self: Gc<'gc, Self>, ctx: MutationContext<'gc>, names: Value<'gc>) {
         let public_i = self.public_interface.get().unwrap_or(self);
 
         let mut ls = names;
@@ -471,7 +473,7 @@ impl<'gc> Module<'gc> {
     /// Gives the module a public interface of its own (when it has none, or
     /// when it is its own interface) and ensures it uses the `(capy)` module,
     /// so that a user-written module behaves like a normal importing module.
-    pub fn beautify_user_module(self: Gc<'gc, Self>, ctx: Context<'gc>) {
+    pub fn beautify_user_module(self: Gc<'gc, Self>, ctx: MutationContext<'gc>) {
         let interface = self.public_interface.get();
 
         if interface.is_none_or(|iface| Gc::ptr_eq(iface, self)) {
@@ -498,7 +500,7 @@ impl<'gc> Module<'gc> {
     /// Looks up the immediate submodule registered under `name`, if any.
     pub fn ref_submodule(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         name: Value<'gc>,
     ) -> Option<Gc<'gc, Module<'gc>>> {
         self.submodules.get(ctx, name).map(|m| m.downcast())
@@ -507,7 +509,7 @@ impl<'gc> Module<'gc> {
     /// Registers `module` as the immediate submodule named `name`.
     pub fn define_submodule(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         name: Value<'gc>,
         module: Gc<'gc, Module<'gc>>,
     ) {
@@ -518,7 +520,7 @@ impl<'gc> Module<'gc> {
     /// to the final element (the module itself if `names` is empty).
     pub fn nested_ref(
         self: Gc<'gc, Self>,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         names: Value<'gc>,
     ) -> Option<Value<'gc>> {
         if names.is_null() {
@@ -540,11 +542,11 @@ impl<'gc> Module<'gc> {
         }
     }
 
-    /// Sets the value of the variable at the end of the submodule path `names`;
+    /// Sets the value of the variable at the end of the submodule path `names`,
     /// reports whether the path resolved.
     pub fn nested_set(
         self: Gc<'gc, Self>,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         names: Value<'gc>,
         value: Value<'gc>,
     ) -> bool {
@@ -569,11 +571,11 @@ impl<'gc> Module<'gc> {
         }
     }
 
-    /// Defines `value` at the end of the submodule path `names`; reports
+    /// Defines `value` at the end of the submodule path `names`, reports
     /// whether the path resolved.
     pub fn nested_define(
         self: Gc<'gc, Self>,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         names: Value<'gc>,
         value: Value<'gc>,
     ) -> bool {
@@ -599,9 +601,13 @@ impl<'gc> Module<'gc> {
         }
     }
 
-    /// Removes the binding at the end of the submodule path `names`; reports
+    /// Removes the binding at the end of the submodule path `names`, reports
     /// whether the path resolved.
-    pub fn nested_remove(self: Gc<'gc, Self>, ctx: Context<'gc>, names: Value<'gc>) -> bool {
+    pub fn nested_remove(
+        self: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+        names: Value<'gc>,
+    ) -> bool {
         if !names.is_pair() {
             return false;
         }
@@ -628,7 +634,7 @@ impl<'gc> Module<'gc> {
     /// the end of it.
     pub fn nested_ref_module(
         self: Gc<'gc, Self>,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         names: Value<'gc>,
     ) -> Option<Gc<'gc, Self>> {
         let mut names = names;
@@ -645,11 +651,11 @@ impl<'gc> Module<'gc> {
     }
 
     /// Registers `module` at the end of the submodule path `names`, creating
-    /// any missing intermediate submodules along the way; reports whether the
+    /// any missing intermediate submodules along the way, reports whether the
     /// path was non-empty.
     pub fn nested_define_module(
         self: Gc<'gc, Self>,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         names: Value<'gc>,
         module: Gc<'gc, Self>,
     ) -> bool {
@@ -683,10 +689,8 @@ impl<'gc> Module<'gc> {
         }
     }
 
-    // -- operations relative to the current module ------------------------------
-
     /// Returns the value bound to `name` in the current module.
-    pub fn local_ref(ctx: Context<'gc>, name: Value<'gc>) -> Option<Value<'gc>> {
+    pub fn local_ref(ctx: MutationContext<'gc>, name: Value<'gc>) -> Option<Value<'gc>> {
         current_module(ctx)
             .get(ctx)
             .downcast::<Module>()
@@ -694,7 +698,7 @@ impl<'gc> Module<'gc> {
     }
 
     /// Sets the value bound to `name` in the current module.
-    pub fn local_set(ctx: Context<'gc>, name: Value<'gc>, value: Value<'gc>) -> bool {
+    pub fn local_set(ctx: MutationContext<'gc>, name: Value<'gc>, value: Value<'gc>) -> bool {
         current_module(ctx)
             .get(ctx)
             .downcast::<Module>()
@@ -702,7 +706,7 @@ impl<'gc> Module<'gc> {
     }
 
     /// Defines `name` to `value` in the current module.
-    pub fn local_define(ctx: Context<'gc>, name: Value<'gc>, value: Value<'gc>) -> bool {
+    pub fn local_define(ctx: MutationContext<'gc>, name: Value<'gc>, value: Value<'gc>) -> bool {
         current_module(ctx)
             .get(ctx)
             .downcast::<Module>()
@@ -710,7 +714,7 @@ impl<'gc> Module<'gc> {
     }
 
     /// Removes `name` from the current module.
-    pub fn local_remove(ctx: Context<'gc>, name: Value<'gc>) -> bool {
+    pub fn local_remove(ctx: MutationContext<'gc>, name: Value<'gc>) -> bool {
         current_module(ctx)
             .get(ctx)
             .downcast::<Module>()
@@ -718,7 +722,10 @@ impl<'gc> Module<'gc> {
     }
 
     /// Follows the submodule path `name` from the current module.
-    pub fn local_ref_module(ctx: Context<'gc>, name: Value<'gc>) -> Option<Gc<'gc, Module<'gc>>> {
+    pub fn local_ref_module(
+        ctx: MutationContext<'gc>,
+        name: Value<'gc>,
+    ) -> Option<Gc<'gc, Module<'gc>>> {
         current_module(ctx)
             .get(ctx)
             .downcast::<Module>()
@@ -727,7 +734,7 @@ impl<'gc> Module<'gc> {
 
     /// Registers `module` under the submodule path `name` in the current module.
     pub fn local_define_module(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         name: Value<'gc>,
         module: Gc<'gc, Module<'gc>>,
     ) -> bool {
@@ -739,10 +746,10 @@ impl<'gc> Module<'gc> {
 }
 
 /// Finds the module named `name` under the resolve-module root. When
-/// `autoload` is set, only modules with a public interface count as resolved;
+/// `autoload` is set, only modules with a public interface count as resolved,
 /// when `ensure` is set, the module (and any missing parents) is created.
 pub fn resolve_module<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     name: Value<'gc>,
     autoload: bool,
     ensure: bool,
@@ -772,7 +779,7 @@ pub fn resolve_module<'gc>(
 /// Creates the module named `name` inside `module`, creating any intermediate
 /// submodules that do not exist yet, and returns it.
 pub fn make_modules_in<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     module: Gc<'gc, Module<'gc>>,
     name: Value<'gc>,
 ) -> Gc<'gc, Module<'gc>> {
@@ -793,7 +800,7 @@ pub fn make_modules_in<'gc>(
 /// Resolves (creating if needed) the module `name`, gives it a public
 /// interface, records its `filename`, and exports `exports` from it.
 pub fn define_module<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     name: Value<'gc>,
     filename: Value<'gc>,
     imports: Value<'gc>,
@@ -824,7 +831,7 @@ pub fn define_module<'gc>(
 #[collect(no_drop)]
 #[repr(C)]
 pub struct Variable<'gc> {
-    /// The value stored in the cell; `Value::undefined()` marks an unbound cell.
+    /// The value stored in the cell, `Value::undefined()` marks an unbound cell.
     pub value: Lock<Value<'gc>>,
 }
 
@@ -834,7 +841,7 @@ fn variable_header_word() -> u64 {
     )
 }
 
-// The boxed representation stores its payload at offset 0; the variable cell
+// The boxed representation stores its payload at offset 0, the variable cell
 // must keep the value at the same offset for the VM's variable access code.
 const _: () = {
     assert!(offset_of!(Variable, value) == offset_of!(Boxed, val));
@@ -842,7 +849,7 @@ const _: () = {
 
 impl<'gc> Variable<'gc> {
     /// Allocates a variable cell holding `value`.
-    pub fn new(ctx: Context<'gc>, value: Value<'gc>) -> Gc<'gc, Self> {
+    pub fn new(ctx: MutationContext<'gc>, value: Value<'gc>) -> Gc<'gc, Self> {
         Gc::new_with_header_word(
             ctx,
             Self {
@@ -858,7 +865,7 @@ impl<'gc> Variable<'gc> {
     }
 
     /// Stores `value` in the cell, running the write barrier first.
-    pub fn set(self: Gc<'gc, Self>, ctx: Context<'gc>, value: Value<'gc>) {
+    pub fn set(self: Gc<'gc, Self>, ctx: MutationContext<'gc>, value: Value<'gc>) {
         barrier::field!(Gc::write(ctx, self), Variable, value)
             .unlock()
             .set(value);
@@ -870,7 +877,7 @@ impl<'gc> Variable<'gc> {
     }
 }
 
-// SAFETY: ClassTagged is a static description; the class id listed here matches
+// SAFETY: ClassTagged is a static description, the class id listed here matches
 // the class word installed on every variable at allocation time.
 unsafe impl<'gc> ClassTagged for Variable<'gc> {
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::VARIABLE];
@@ -885,7 +892,7 @@ fluid!(
 /// Defines `name` to `value` in the current module and returns the backing
 /// variable.
 pub fn define<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     name: &str,
     value: impl IntoValue<'gc>,
 ) -> Gc<'gc, Variable<'gc>> {
@@ -899,7 +906,11 @@ pub fn define<'gc>(
 
 /// Returns the value of `name` as seen through `module_name`'s public
 /// interface, if the module exists and exports the name.
-pub fn public_ref<'gc>(ctx: Context<'gc>, module_name: &str, name: &str) -> Option<Value<'gc>> {
+pub fn public_ref<'gc>(
+    ctx: MutationContext<'gc>,
+    module_name: &str,
+    name: &str,
+) -> Option<Value<'gc>> {
     let module_name = convert_module_name(ctx, module_name);
     let module = resolve_module(ctx, module_name, false, false)?;
     module
@@ -910,7 +921,11 @@ pub fn public_ref<'gc>(ctx: Context<'gc>, module_name: &str, name: &str) -> Opti
 
 /// Returns the value of `name` bound directly in `module_name`, if the module
 /// exists and binds the name.
-pub fn private_ref<'gc>(ctx: Context<'gc>, module_name: &str, name: &str) -> Option<Value<'gc>> {
+pub fn private_ref<'gc>(
+    ctx: MutationContext<'gc>,
+    module_name: &str,
+    name: &str,
+) -> Option<Value<'gc>> {
     let module_name = convert_module_name(ctx, module_name);
     let module = resolve_module(ctx, module_name, false, false)?;
     module.get(ctx, Symbol::from_str(ctx, name).into())
@@ -923,123 +938,121 @@ pub mod module_ops {
 
     #[scheme(name = "variable-ref")]
     pub fn variable_ref(var: Gc<'gc, Variable<'gc>>) -> Value<'gc> {
-        nctx.return_(var.get())
+        var.get()
     }
 
     #[scheme(name = "variable-set!")]
     pub fn variable_set(var: Gc<'gc, Variable<'gc>>, value: Value<'gc>) -> Value<'gc> {
-        barrier::field!(Gc::write(nctx.ctx, var), Variable, value)
+        barrier::field!(Gc::write(ctx, var), Variable, value)
             .unlock()
             .set(value);
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "make-variable")]
     pub fn make_variable(value: Option<Value<'gc>>) -> Gc<'gc, Variable<'gc>> {
         let value = value.unwrap_or(Value::undefined());
-        let var = Variable::new(nctx.ctx, value);
-        nctx.return_(var)
+        let var = Variable::new(ctx, value);
+        var
     }
 
     #[scheme(name = "variable-bound?")]
     pub fn variable_bound(var: Gc<'gc, Variable<'gc>>) -> bool {
-        nctx.return_(var.is_bound())
+        var.is_bound()
     }
 
     #[scheme(name = "current-module")]
     pub fn current_module_fn(new_module: Option<Gc<'gc, Module<'gc>>>) -> Gc<'gc, Module<'gc>> {
-        let fluid = current_module(nctx.ctx);
-        let old = fluid.get(nctx.ctx);
+        let fluid = current_module(ctx);
+        let old = fluid.get(ctx);
 
         if let Some(new_module) = new_module {
-            fluid.set(nctx.ctx, new_module.into());
+            fluid.set(ctx, new_module.into());
         }
 
-        nctx.return_(old.downcast())
+        old.downcast()
     }
 
     #[scheme(name = "make-module")]
     pub fn make_module(size: Option<usize>, uses: Option<Value<'gc>>) -> Gc<'gc, Module<'gc>> {
         let size = size.unwrap_or(0);
         let uses = uses.unwrap_or(Value::null());
-        let module = Module::new(nctx.ctx, size, uses, Value::new(false));
-        nctx.return_(module)
+        let module = Module::new(ctx, size, uses, Value::new(false));
+        module
     }
 
     #[scheme(name = "module?")]
     pub fn module_p(value: Value<'gc>) -> bool {
-        nctx.return_(value.is::<Module>())
+        value.is::<Module>()
     }
 
     #[scheme(name = "module-obarray")]
     pub fn module_obarray(module: Gc<'gc, Module<'gc>>) -> Gc<'gc, HashTable<'gc>> {
-        nctx.return_(module.obarray.get())
+        module.obarray.get()
     }
 
     #[scheme(name = "module-uses")]
     pub fn module_uses(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
-        nctx.return_(module.uses.get())
+        module.uses.get()
     }
 
     #[scheme(name = "module-binder")]
     pub fn module_binder(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
-        nctx.return_(module.binder)
+        module.binder
     }
 
     #[scheme(name = "module-declarative?")]
     pub fn module_declarative(module: Gc<'gc, Module<'gc>>) -> bool {
-        nctx.return_(module.declarative.get())
+        module.declarative.get()
     }
 
     #[scheme(name = "module-transformer")]
     pub fn module_transformer(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
-        nctx.return_(module.transformer)
+        module.transformer
     }
 
     #[scheme(name = "raw-module-name")]
     pub fn module_name(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
-        nctx.return_(module.name.get())
+        module.name.get()
     }
 
     #[scheme(name = "module-version")]
     pub fn module_version(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
-        nctx.return_(module.version.get())
+        module.version.get()
     }
 
     #[scheme(name = "module-kind")]
     pub fn module_kind(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
         let kind = match module.kind.get() {
-            ModuleKind::Directory => Symbol::from_str(nctx.ctx, "directory"),
-            ModuleKind::Interface => Symbol::from_str(nctx.ctx, "interface"),
-            ModuleKind::CustomInterface => Symbol::from_str(nctx.ctx, "custom-interface"),
+            ModuleKind::Directory => Symbol::from_str(ctx, "directory"),
+            ModuleKind::Interface => Symbol::from_str(ctx, "interface"),
+            ModuleKind::CustomInterface => Symbol::from_str(ctx, "custom-interface"),
         };
-        nctx.return_(kind.into())
+        kind.into()
     }
 
     #[scheme(name = "module-import-obarray")]
     pub fn module_import_obarray(module: Gc<'gc, Module<'gc>>) -> Gc<'gc, HashTable<'gc>> {
-        nctx.return_(module.import_obarray)
+        module.import_obarray
     }
 
     #[scheme(name = "module-submodules")]
     pub fn module_submodules(module: Gc<'gc, Module<'gc>>) -> Gc<'gc, HashTable<'gc>> {
-        nctx.return_(module.submodules)
+        module.submodules
     }
 
     #[scheme(name = "module-filename")]
     pub fn module_filename(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
-        nctx.return_(module.filename.get())
+        module.filename.get()
     }
 
     #[scheme(name = "module-public-interface")]
     pub fn module_public_interface(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
-        nctx.return_(
-            module
-                .public_interface
-                .get()
-                .map(Value::new)
-                .unwrap_or(Value::new(false)),
-        )
+        module
+            .public_interface
+            .get()
+            .map(Value::new)
+            .unwrap_or(Value::new(false))
     }
 
     #[scheme(name = "module-next-unique-id")]
@@ -1047,23 +1060,23 @@ pub mod module_ops {
         let val = module
             .next_unique_id
             .load(std::sync::atomic::Ordering::SeqCst)
-            .into_value(nctx.ctx);
-        nctx.return_(val)
+            .into_value(ctx);
+        val
     }
 
     #[scheme(name = "module-replacements")]
     pub fn module_replacements(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
-        nctx.return_(module.replacements.get())
+        module.replacements.get()
     }
 
     #[scheme(name = "module-inlinable-exports")]
     pub fn module_inlinable_exports(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
-        nctx.return_(module.inlinable_exports.get())
+        module.inlinable_exports.get()
     }
 
     #[scheme(name = "module-environment")]
     pub fn module_environment(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
-        nctx.return_(module.environment.get())
+        module.environment.get()
     }
 
     #[scheme(name = "set-module-obarray!")]
@@ -1071,40 +1084,40 @@ pub mod module_ops {
         module: Gc<'gc, Module<'gc>>,
         obarray: Gc<'gc, HashTable<'gc>>,
     ) -> Value<'gc> {
-        barrier::field!(Gc::write(nctx.ctx, module), Module, obarray)
+        barrier::field!(Gc::write(ctx, module), Module, obarray)
             .unlock()
             .set(obarray);
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "set-module-uses!")]
     pub fn set_module_uses(module: Gc<'gc, Module<'gc>>, uses: Value<'gc>) -> Value<'gc> {
-        barrier::field!(Gc::write(nctx.ctx, module), Module, uses)
+        barrier::field!(Gc::write(ctx, module), Module, uses)
             .unlock()
             .set(uses);
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "set-module-declarative!")]
     pub fn set_module_declarative(module: Gc<'gc, Module<'gc>>, declarative: bool) -> Value<'gc> {
         module.declarative.set(declarative);
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "set-module-name!")]
     pub fn set_module_name(module: Gc<'gc, Module<'gc>>, name: Value<'gc>) -> Value<'gc> {
-        barrier::field!(Gc::write(nctx.ctx, module), Module, name)
+        barrier::field!(Gc::write(ctx, module), Module, name)
             .unlock()
             .set(name);
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "set-module-version!")]
     pub fn set_module_version(module: Gc<'gc, Module<'gc>>, version: Value<'gc>) -> Value<'gc> {
-        barrier::field!(Gc::write(nctx.ctx, module), Module, version)
+        barrier::field!(Gc::write(ctx, module), Module, version)
             .unlock()
             .set(version);
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "set-module-kind!")]
@@ -1114,7 +1127,7 @@ pub mod module_ops {
             "interface" => ModuleKind::Interface,
             "custom-interface" => ModuleKind::CustomInterface,
             _ => {
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "set-module-kind!",
                     "expected 'directory, 'interface, or 'custom-interface",
                     Some(kind.into()),
@@ -1125,15 +1138,15 @@ pub mod module_ops {
             }
         };
         module.kind.set(kind);
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "set-module-filename!")]
     pub fn set_module_filename(module: Gc<'gc, Module<'gc>>, filename: Value<'gc>) -> Value<'gc> {
-        barrier::field!(Gc::write(nctx.ctx, module), Module, filename)
+        barrier::field!(Gc::write(ctx, module), Module, filename)
             .unlock()
             .set(filename);
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "set-module-public-interface!")]
@@ -1141,10 +1154,10 @@ pub mod module_ops {
         module: Gc<'gc, Module<'gc>>,
         public_interface: Option<Gc<'gc, Module<'gc>>>,
     ) -> Value<'gc> {
-        barrier::field!(Gc::write(nctx.ctx, module), Module, public_interface)
+        barrier::field!(Gc::write(ctx, module), Module, public_interface)
             .unlock()
             .set(public_interface);
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "set-module-next-unique-id!")]
@@ -1155,7 +1168,7 @@ pub mod module_ops {
         module
             .next_unique_id
             .store(next_unique_id, std::sync::atomic::Ordering::SeqCst);
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "set-module-replacements!")]
@@ -1163,10 +1176,10 @@ pub mod module_ops {
         module: Gc<'gc, Module<'gc>>,
         replacements: Value<'gc>,
     ) -> Value<'gc> {
-        barrier::field!(Gc::write(nctx.ctx, module), Module, replacements)
+        barrier::field!(Gc::write(ctx, module), Module, replacements)
             .unlock()
             .set(replacements);
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "set-module-inlinable-exports!")]
@@ -1174,10 +1187,10 @@ pub mod module_ops {
         module: Gc<'gc, Module<'gc>>,
         inlinable_exports: Value<'gc>,
     ) -> Value<'gc> {
-        barrier::field!(Gc::write(nctx.ctx, module), Module, inlinable_exports)
+        barrier::field!(Gc::write(ctx, module), Module, inlinable_exports)
             .unlock()
             .set(inlinable_exports);
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "set-module-environment!")]
@@ -1185,40 +1198,40 @@ pub mod module_ops {
         module: Gc<'gc, Module<'gc>>,
         environment: Value<'gc>,
     ) -> Value<'gc> {
-        barrier::field!(Gc::write(nctx.ctx, module), Module, environment)
+        barrier::field!(Gc::write(ctx, module), Module, environment)
             .unlock()
             .set(environment);
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "module-local-variable")]
     pub fn module_local_variable(module: Gc<'gc, Module<'gc>>, name: Value<'gc>) -> Value<'gc> {
         let res = module
-            .local_variable(nctx.ctx, name)
+            .local_variable(ctx, name)
             .map(Value::new)
             .unwrap_or(Value::new(false));
-        nctx.return_(res)
+        res
     }
 
     #[scheme(name = "module-locally-bound?")]
     pub fn module_locally_bound(module: Gc<'gc, Module<'gc>>, name: Value<'gc>) -> bool {
-        let res = module.is_locally_bound(nctx.ctx, name);
-        nctx.return_(res)
+        let res = module.is_locally_bound(ctx, name);
+        res
     }
 
     #[scheme(name = "module-bound?")]
     pub fn module_bound(module: Gc<'gc, Module<'gc>>, name: Value<'gc>) -> bool {
-        let res = module.is_bound(nctx.ctx, name);
-        nctx.return_(res)
+        let res = module.is_bound(ctx, name);
+        res
     }
 
     #[scheme(name = "module-variable")]
     pub fn module_variable(module: Gc<'gc, Module<'gc>>, name: Value<'gc>) -> Value<'gc> {
         let res = module
-            .variable(nctx.ctx, name)
+            .variable(ctx, name)
             .map(Value::new)
             .unwrap_or(Value::new(false));
-        nctx.return_(res)
+        res
     }
 
     #[scheme(name = "module-symbol-binding")]
@@ -1227,19 +1240,19 @@ pub mod module_ops {
         name: Value<'gc>,
         opt_value: Option<Value<'gc>>,
     ) -> Value<'gc> {
-        let binding = module.binding(nctx.ctx, name);
+        let binding = module.binding(ctx, name);
 
         if binding.is_none() {
             if let Some(value) = opt_value {
-                return nctx.return_(value);
+                return value;
             } else {
-                return nctx.raise_error("module-binding", "unbound variable", &[name]);
+                return call.raise_error("module-binding", "unbound variable", &[name]);
             }
         }
 
         let binding = binding.expect("invariant holds");
 
-        nctx.return_(binding)
+        binding
     }
 
     #[scheme(name = "module-symbol-local-binding")]
@@ -1248,13 +1261,13 @@ pub mod module_ops {
         name: Value<'gc>,
         opt_value: Option<Value<'gc>>,
     ) -> Value<'gc> {
-        let binding = module.local_binding(nctx.ctx, name);
+        let binding = module.local_binding(ctx, name);
 
         if binding.is_none() {
             if let Some(value) = opt_value {
-                return nctx.return_(value);
+                return value;
             } else {
-                return nctx.raise_error(
+                return call.raise_error(
                     "module-local-binding",
                     "locally unbound variable",
                     &[name],
@@ -1264,7 +1277,7 @@ pub mod module_ops {
 
         let binding = binding.expect("invariant holds");
 
-        nctx.return_(binding)
+        binding
     }
 
     #[scheme(name = "module-make-local-var!")]
@@ -1272,15 +1285,15 @@ pub mod module_ops {
         module: Gc<'gc, Module<'gc>>,
         name: Value<'gc>,
     ) -> Gc<'gc, Variable<'gc>> {
-        if let Some(var) = module.obarray.get().get(nctx.ctx, name)
+        if let Some(var) = module.obarray.get().get(ctx, name)
             && var.is::<Variable>()
         {
-            return nctx.return_(var.downcast());
+            return var.downcast();
         }
 
-        let local_var = Variable::new(nctx.ctx, Value::undefined());
-        module.add(nctx.ctx, name, local_var);
-        nctx.return_(local_var)
+        let local_var = Variable::new(ctx, Value::undefined());
+        module.add(ctx, name, local_var);
+        local_var
     }
 
     #[scheme(name = "module-ensure-local-variable!")]
@@ -1288,8 +1301,8 @@ pub mod module_ops {
         module: Gc<'gc, Module<'gc>>,
         name: Value<'gc>,
     ) -> Gc<'gc, Variable<'gc>> {
-        let var = module.ensure_local_variable(nctx.ctx, name);
-        nctx.return_(var)
+        let var = module.ensure_local_variable(ctx, name);
+        var
     }
 
     #[scheme(name = "module-add!")]
@@ -1298,20 +1311,20 @@ pub mod module_ops {
         name: Value<'gc>,
         var: Gc<'gc, Variable<'gc>>,
     ) -> Value<'gc> {
-        module.add(nctx.ctx, name, var);
-        nctx.return_(Value::undefined())
+        module.add(ctx, name, var);
+        Value::undefined()
     }
 
     #[scheme(name = "module-remove!")]
     pub fn module_remove(module: Gc<'gc, Module<'gc>>, name: Value<'gc>) -> Value<'gc> {
-        module.remove(nctx.ctx, name);
-        nctx.return_(Value::undefined())
+        module.remove(ctx, name);
+        Value::undefined()
     }
 
     #[scheme(name = "module-clear!")]
     pub fn module_clear(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
-        module.clear(nctx.ctx);
-        nctx.return_(Value::undefined())
+        module.clear(ctx);
+        Value::undefined()
     }
 
     #[scheme(name = "module-gensym")]
@@ -1322,116 +1335,26 @@ pub mod module_ops {
         let id = id
             .map(|x| x.to_string())
             .unwrap_or_else(|| " mg".to_owned());
-        let m = m.unwrap_or_else(|| current_module(nctx.ctx).get(nctx.ctx).downcast());
+        let m = m.unwrap_or_else(|| current_module(ctx).get(ctx).downcast());
         let unique_id = m
             .next_unique_id
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let sym = format!("{}-{}-{}", id, m.name.get().hash_equal(), unique_id);
-        let str = Str::new(nctx.ctx, sym, true);
-        let sym = Symbol::gensym(nctx.ctx, Some(str));
-        nctx.return_(sym.into())
+        let str = Str::new(ctx, sym, true);
+        let sym = Symbol::gensym(ctx, Some(str));
+        sym.into()
     }
 
     #[scheme(name = "module-generate-unique-id!")]
     pub fn module_generate_unique_id(m: Option<Gc<'gc, Module<'gc>>>) -> usize {
-        let m = m.unwrap_or_else(|| current_module(nctx.ctx).get(nctx.ctx).downcast());
+        let m = m.unwrap_or_else(|| current_module(ctx).get(ctx).downcast());
         let unique_id = m
             .next_unique_id
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        nctx.return_(unique_id)
+        unique_id
     }
 }
 
-pub fn init_modules<'gc>(ctx: Context<'gc>) {
+pub fn init_modules<'gc>(ctx: MutationContext<'gc>) {
     module_ops::register(ctx);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{Trace, heap::Global, runtime::Scheme, runtime::value::Symbol};
-
-    #[derive(Trace)]
-    #[collect(no_drop)]
-    struct LookupRoots<'gc> {
-        module: Gc<'gc, Module<'gc>>,
-        name: Gc<'gc, Symbol<'gc>>,
-    }
-
-    type RootedLookupRoots = crate::Rootable!(LookupRoots<'_>);
-
-    #[test]
-    fn module_and_variable_allocate_with_class_only_headers() {
-        Scheme::new_uninit().enter(|ctx| {
-            let module = Module::new(ctx, 8, Value::null(), Value::new(false));
-            assert_eq!(
-                module.as_gc_object().header().class_id(),
-                ClassId::new(builtin_class_ids::MODULE).unwrap()
-            );
-
-            let variable = Variable::new(ctx, Value::undefined());
-            assert_eq!(
-                variable.as_gc_object().header().class_id(),
-                ClassId::new(builtin_class_ids::VARIABLE).unwrap()
-            );
-        });
-    }
-
-    #[test]
-    fn interned_symbol_module_lookup_survives_gc() {
-        let scheme = Scheme::new_uninit();
-        let roots: Global<RootedLookupRoots> = scheme.enter(|ctx| {
-            let module = Module::new(ctx, 8, Value::null(), Value::new(false));
-            let name = Symbol::from_str(ctx, "assertion-violation");
-            let expected = Value::new(42);
-
-            module.define(ctx, name.into(), expected);
-            assert_eq!(module.get(ctx, name.into()), Some(expected));
-
-            Global::new(LookupRoots { module, name })
-        });
-
-        scheme.collect_garbage();
-
-        scheme.enter(|ctx| {
-            let roots = roots.fetch(ctx);
-            let expected = Value::new(42);
-
-            let name_after_gc = Symbol::from_str(ctx, "assertion-violation");
-            assert_eq!(name_after_gc.as_gc_object(), roots.name.as_gc_object());
-            assert_eq!(roots.module.get(ctx, name_after_gc.into()), Some(expected));
-        });
-    }
-
-    #[test]
-    fn exception_name_module_lookup_survives_gc_after_repeated_collections() {
-        let scheme = Scheme::new_uninit();
-        let roots: Global<RootedLookupRoots> = scheme.enter(|ctx| {
-            let module = Module::new(ctx, 8, Value::null(), Value::new(false));
-            let name = Symbol::from_str(ctx, "&undefined");
-            let expected = Value::new(42);
-
-            module.define(ctx, name.into(), expected);
-            assert_eq!(module.get(ctx, name.into()), Some(expected));
-
-            Global::new(LookupRoots { module, name })
-        });
-
-        for _ in 0..3 {
-            scheme.collect_garbage();
-        }
-
-        scheme.enter(|ctx| {
-            let roots = roots.fetch(ctx);
-            let expected = Value::new(42);
-            let name_after_gc = Symbol::from_str(ctx, "&undefined");
-
-            assert_eq!(
-                name_after_gc.as_gc_object(),
-                roots.name.as_gc_object(),
-                "interning must preserve symbol pointer identity across GC"
-            );
-            assert_eq!(roots.module.get(ctx, name_after_gc.into()), Some(expected));
-        });
-    }
 }

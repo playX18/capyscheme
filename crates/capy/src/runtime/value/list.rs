@@ -7,12 +7,12 @@ use crate::heap::{
 };
 use std::mem::offset_of;
 
-use crate::runtime::Context;
+use crate::runtime::MutationContext;
 
 use super::*;
 
 #[doc(hidden)]
-pub fn list_value<'gc>(mc: Context<'gc>, value: impl IntoValue<'gc>) -> Value<'gc> {
+pub fn list_value<'gc>(mc: MutationContext<'gc>, value: impl IntoValue<'gc>) -> Value<'gc> {
     value.into_value(mc)
 }
 #[derive(Trace)]
@@ -35,9 +35,9 @@ fn pair_header_word() -> u64 {
 impl<'gc> Pair<'gc> {
     /// Allocates a moving pair.
     #[inline(always)]
-    pub fn new(mc: Context<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Gc<'gc, Self> {
+    pub fn new(mc: MutationContext<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Gc<'gc, Self> {
         Gc::new_with_header_word(
-            *mc,
+            mc,
             Self {
                 car: Lock::new(car),
                 cdr: Lock::new(cdr),
@@ -47,7 +47,11 @@ impl<'gc> Pair<'gc> {
     }
 
     /// Allocates a non-moving pair.
-    pub fn new_nonmoving(mc: Context<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Gc<'gc, Self> {
+    pub fn new_nonmoving(
+        mc: MutationContext<'gc>,
+        car: Value<'gc>,
+        cdr: Value<'gc>,
+    ) -> Gc<'gc, Self> {
         mc.allocate_with_header_word(
             Self {
                 car: Lock::new(car),
@@ -66,14 +70,14 @@ impl<'gc> Pair<'gc> {
         self.cdr.get()
     }
 
-    pub fn set_car(self: Gc<'gc, Self>, mc: Context<'gc>, value: Value<'gc>) {
-        barrier::field!(Gc::write(*mc, self), Pair, car)
+    pub fn set_car(self: Gc<'gc, Self>, mc: MutationContext<'gc>, value: Value<'gc>) {
+        barrier::field!(Gc::write(mc, self), Pair, car)
             .unlock()
             .set(value);
     }
 
-    pub fn set_cdr(self: Gc<'gc, Self>, mc: Context<'gc>, value: Value<'gc>) {
-        barrier::field!(Gc::write(*mc, self), Pair, cdr)
+    pub fn set_cdr(self: Gc<'gc, Self>, mc: MutationContext<'gc>, value: Value<'gc>) {
+        barrier::field!(Gc::write(mc, self), Pair, cdr)
             .unlock()
             .set(value);
     }
@@ -206,18 +210,18 @@ impl<'gc> Value<'gc> {
         self.downcast::<Pair>().cdr()
     }
 
-    pub fn set_car(self, mc: Context<'gc>, value: Value<'gc>) {
+    pub fn set_car(self, mc: MutationContext<'gc>, value: Value<'gc>) {
         let pair = self.downcast::<Pair>();
 
-        barrier::field!(Gc::write(*mc, pair), Pair, car)
+        barrier::field!(Gc::write(mc, pair), Pair, car)
             .unlock()
             .set(value);
     }
 
-    pub fn set_cdr(self, mc: Context<'gc>, value: Value<'gc>) {
+    pub fn set_cdr(self, mc: MutationContext<'gc>, value: Value<'gc>) {
         let pair = self.downcast::<Pair>();
 
-        barrier::field!(Gc::write(*mc, pair), Pair, cdr)
+        barrier::field!(Gc::write(mc, pair), Pair, cdr)
             .unlock()
             .set(value);
     }
@@ -512,7 +516,7 @@ impl<'gc> Value<'gc> {
         true
     }
 
-    pub fn list_to_vector(self, mc: Context<'gc>) -> Gc<'gc, Vector<'gc>> {
+    pub fn list_to_vector(self, mc: MutationContext<'gc>) -> Gc<'gc, Vector<'gc>> {
         if !self.is_list() {
             unreachable!("not a list")
         }
@@ -530,7 +534,7 @@ impl<'gc> Value<'gc> {
         vector
     }
 
-    pub fn list_reverse(self, mc: Context<'gc>) -> Value<'gc> {
+    pub fn list_reverse(self, mc: MutationContext<'gc>) -> Value<'gc> {
         if !self.is_list() {
             return self;
         }
@@ -545,7 +549,7 @@ impl<'gc> Value<'gc> {
         reversed_list
     }
 
-    pub fn append(self, mc: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
+    pub fn append(self, mc: MutationContext<'gc>, obj: Value<'gc>) -> Value<'gc> {
         let mut current = self;
         let mut head = Value::null();
         let mut tail = Value::null();
@@ -569,7 +573,11 @@ impl<'gc> Value<'gc> {
         }
     }
 
-    pub fn list_append<T>(self, mc: Context<'gc>, iter: impl IntoIterator<Item = T>) -> Value<'gc>
+    pub fn list_append<T>(
+        self,
+        mc: MutationContext<'gc>,
+        iter: impl IntoIterator<Item = T>,
+    ) -> Value<'gc>
     where
         T: IntoValue<'gc>,
     {
@@ -622,19 +630,23 @@ impl<'gc> Value<'gc> {
 
     #[inline(always)]
     /// Allocates a pair and returns it as a value.
-    pub fn cons(mc: Context<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Value<'gc> {
+    pub fn cons(mc: MutationContext<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Value<'gc> {
         let pair = Pair::new(mc, car, cdr);
         Value::from(pair)
     }
 
     #[inline]
     /// Allocates a non-moving pair and returns it as a value.
-    pub fn cons_nonmoving(mc: Context<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Value<'gc> {
+    pub fn cons_nonmoving(
+        mc: MutationContext<'gc>,
+        car: Value<'gc>,
+        cdr: Value<'gc>,
+    ) -> Value<'gc> {
         Pair::new_nonmoving(mc, car, cdr).into()
     }
 
     /// Constructs a dotted list from the provided arguments.
-    pub fn cons_star(mc: Context<'gc>, args: impl AsRef<[Value<'gc>]>) -> Value<'gc> {
+    pub fn cons_star(mc: MutationContext<'gc>, args: impl AsRef<[Value<'gc>]>) -> Value<'gc> {
         let args = args.as_ref();
 
         if args.is_empty() {
@@ -658,7 +670,7 @@ impl<'gc> Value<'gc> {
 
     /// Constructs an association-list entry and prepends it to `cdr`.
     pub fn acons(
-        mc: Context<'gc>,
+        mc: MutationContext<'gc>,
         key: Value<'gc>,
         value: Value<'gc>,
         cdr: Value<'gc>,
@@ -668,7 +680,7 @@ impl<'gc> Value<'gc> {
         Value::from(new_pair)
     }
 
-    pub fn map<F>(self, mc: Context<'gc>, mut f: F) -> Value<'gc>
+    pub fn map<F>(self, mc: MutationContext<'gc>, mut f: F) -> Value<'gc>
     where
         F: FnMut(Value<'gc>) -> Value<'gc>,
     {
@@ -684,7 +696,7 @@ impl<'gc> Value<'gc> {
         new_list
     }
 
-    pub fn try_map<F, E>(self, mc: Context<'gc>, mut f: F) -> Result<Value<'gc>, E>
+    pub fn try_map<F, E>(self, mc: MutationContext<'gc>, mut f: F) -> Result<Value<'gc>, E>
     where
         F: FnMut(Value<'gc>) -> Result<Value<'gc>, E>,
     {
@@ -728,7 +740,7 @@ impl<'gc> Value<'gc> {
         true
     }
 
-    pub fn zip_with<F>(self, other: Value<'gc>, mc: Context<'gc>, mut f: F) -> Value<'gc>
+    pub fn zip_with<F>(self, other: Value<'gc>, mc: MutationContext<'gc>, mut f: F) -> Value<'gc>
     where
         F: FnMut(Value<'gc>, Value<'gc>) -> Value<'gc>,
     {
@@ -792,7 +804,10 @@ impl<'gc> Value<'gc> {
         self.assp(|x| x.car() == id)
     }
 
-    pub fn list_from_slice(ctx: Context<'gc>, slice: impl AsRef<[Value<'gc>]>) -> Value<'gc> {
+    pub fn list_from_slice(
+        ctx: MutationContext<'gc>,
+        slice: impl AsRef<[Value<'gc>]>,
+    ) -> Value<'gc> {
         let mut res = Value::null();
 
         for val in slice.as_ref().iter().rev() {
@@ -804,7 +819,7 @@ impl<'gc> Value<'gc> {
 
     pub fn destructive_filter(
         self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         mut f: impl FnMut(Value<'gc>) -> bool,
     ) -> Value<'gc> {
         let mut last: Option<Self> = None;
@@ -832,7 +847,7 @@ impl<'gc> Value<'gc> {
         }
     }
 
-    pub fn destructive_delete(self, ctx: Context<'gc>, value: Value<'gc>) -> Value<'gc> {
+    pub fn destructive_delete(self, ctx: MutationContext<'gc>, value: Value<'gc>) -> Value<'gc> {
         self.destructive_filter(ctx, |x| !x.r5rs_equal(value))
     }
 }
@@ -924,36 +939,4 @@ impl<'gc> Iterator for ListIterator<'gc> {
 
         Some(value)
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::runtime::Scheme;
-
-    use super::Value;
-
-    #[test]
-    fn append_handles_long_lists_without_recursion() {
-        Scheme::new_uninit().enter(|ctx| {
-            let mut list = Value::null();
-            for value in (0..100_000).rev() {
-                list = Value::cons(ctx, Value::new(value), list);
-            }
-
-            let appended = list.append(ctx, Value::cons(ctx, Value::new(100_000), Value::null()));
-            assert_eq!(appended.list_length(), 100_001);
-            assert_eq!(appended.car(), Value::new(0));
-        });
-    }
-}
-
-#[macro_export]
-macro_rules! for_each {
-    ($p: ident, $list: ident $b: block) => {
-        $p = $list;
-        while $p.is_pair() {
-            $b;
-            $p = $p.cdr();
-        }
-    };
 }

@@ -1,7 +1,7 @@
 use super::make_assertion_violation;
 use crate::runtime::vm::thunk_raise;
 use crate::runtime::{
-    Context,
+    MutationContext,
     value::{Complex, Str, Symbol, Value},
 };
 
@@ -33,7 +33,7 @@ pub fn realp<'gc>(v: Value<'gc>) -> bool {
     v.is_number() && !v.is::<Complex>()
 }
 
-pub fn nanp<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn nanp<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     let Some(n) = v.number() else {
         thunk_raise(
             ctx,
@@ -49,11 +49,11 @@ pub fn nanp<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
     n.is_nan().into()
 }
 
-pub fn integerp<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+pub fn integerp<'gc>(_ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
     v.number().is_some_and(|n| n.is_integer())
 }
 
-pub fn exactp<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn exactp<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     let Some(n) = v.number() else {
         thunk_raise(
             ctx,
@@ -69,7 +69,7 @@ pub fn exactp<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
     n.is_exact().into()
 }
 
-pub fn inexactp<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn inexactp<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     let Some(n) = v.number() else {
         thunk_raise(
             ctx,
@@ -85,7 +85,7 @@ pub fn inexactp<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
     (!n.is_exact()).into()
 }
 
-pub fn exact_integerp<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn exact_integerp<'gc>(_ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     let Some(n) = v.number() else {
         return Value::new(false);
     };

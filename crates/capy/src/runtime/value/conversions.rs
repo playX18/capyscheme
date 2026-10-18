@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::heap::Gc;
-use crate::runtime::Context;
+use crate::runtime::MutationContext;
 
 /// An error produced while converting native-call arguments.
 pub enum ConversionError<'gc> {
@@ -144,11 +144,14 @@ pub unsafe trait ClassTagged {
 /// Converts a Rust value into a runtime [`Value`].
 pub trait IntoValue<'gc> {
     /// Convert `self` into a value allocated in `mc` when allocation is needed.
-    fn into_value(self, ctx: Context<'gc>) -> Value<'gc>;
+    fn into_value(self, ctx: MutationContext<'gc>) -> Value<'gc>;
 }
 
 impl<'gc> FromValue<'gc> for Value<'gc> {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+    fn try_from_value(
+        _ctx: MutationContext<'gc>,
+        value: Value<'gc>,
+    ) -> Result<Self, ConversionError<'gc>> {
         Ok(value)
     }
 }
@@ -156,7 +159,7 @@ impl<'gc> FromValue<'gc> for Value<'gc> {
 /// Converts a Rust value into either a runtime value or a runtime error value.
 pub trait TryIntoValue<'gc> {
     /// Convert `self`, returning `Err` when the conversion represents a throw.
-    fn try_into_value(self, ctx: Context<'gc>) -> Result<Value<'gc>, Value<'gc>>;
+    fn try_into_value(self, ctx: MutationContext<'gc>) -> Result<Value<'gc>, Value<'gc>>;
 }
 /*
 impl<'gc, T, E> TryIntoValue<'gc> for Result<T, E>
@@ -164,7 +167,7 @@ where
     T: TryIntoValue<'gc>,
     E: TryIntoValue<'gc>,
 {
-    fn try_into_value(self, mc: Context<'gc>) -> Result<Value<'gc>, Value<'gc>> {
+    fn try_into_value(self, mc: MutationContext<'gc>) -> Result<Value<'gc>, Value<'gc>> {
         match self {
             Ok(v) => v.try_into_value(mc),
             Err(e) => e.try_into_value(mc),
@@ -173,7 +176,7 @@ where
 }*/
 
 impl<'gc, T: IntoValue<'gc>> TryIntoValue<'gc> for T {
-    default fn try_into_value(self, _mc: Context<'gc>) -> Result<Value<'gc>, Value<'gc>> {
+    default fn try_into_value(self, _mc: MutationContext<'gc>) -> Result<Value<'gc>, Value<'gc>> {
         Ok(self.into_value(_mc))
     }
 }
@@ -182,7 +185,10 @@ impl<'gc, T: IntoValue<'gc>> TryIntoValue<'gc> for T {
 pub trait FromValue<'gc>: Sized {
     /// Try to convert `value` using `ctx` for conversions that need allocation
     /// or access to runtime state.
-    fn try_from_value(ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>>;
+    fn try_from_value(
+        ctx: MutationContext<'gc>,
+        value: Value<'gc>,
+    ) -> Result<Self, ConversionError<'gc>>;
 }
 
 /// Provides a human-readable name for values accepted by a converter.
@@ -242,7 +248,10 @@ impl<'gc, T: ClassTagged> ExpectedValueType for Gc<'gc, T> {
 }
 
 impl<'gc> FromValue<'gc> for char {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+    fn try_from_value(
+        _ctx: MutationContext<'gc>,
+        value: Value<'gc>,
+    ) -> Result<Self, ConversionError<'gc>> {
         if value.is_char() {
             Ok(value.char())
         } else {
@@ -252,7 +261,10 @@ impl<'gc> FromValue<'gc> for char {
 }
 
 impl<'gc> FromValue<'gc> for bool {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+    fn try_from_value(
+        _ctx: MutationContext<'gc>,
+        value: Value<'gc>,
+    ) -> Result<Self, ConversionError<'gc>> {
         Ok(value != Value::new(false))
     }
 }
@@ -260,7 +272,7 @@ impl<'gc> FromValue<'gc> for bool {
 macro_rules! impl_from_value_number {
     ($($ty:ty => $method:ident),* $(,)?) => { $(
         impl<'gc> FromValue<'gc> for $ty {
-            fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+            fn try_from_value(_ctx: MutationContext<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
                 let Some(n) = value.number() else {
                     return Err(ConversionError::type_mismatch(0, stringify!($ty), value));
                 };
@@ -285,7 +297,10 @@ impl_from_value_number!(
 );
 
 impl<'gc> FromValue<'gc> for i32 {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+    fn try_from_value(
+        _ctx: MutationContext<'gc>,
+        value: Value<'gc>,
+    ) -> Result<Self, ConversionError<'gc>> {
         if value.is_int32() {
             Ok(value.as_int32())
         } else {
@@ -300,7 +315,10 @@ impl<'gc> FromValue<'gc> for i32 {
 }
 
 impl<'gc> FromValue<'gc> for f32 {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+    fn try_from_value(
+        _ctx: MutationContext<'gc>,
+        value: Value<'gc>,
+    ) -> Result<Self, ConversionError<'gc>> {
         if let Some(n) = value.flonum() {
             Ok(n as f32)
         } else {
@@ -310,7 +328,10 @@ impl<'gc> FromValue<'gc> for f32 {
 }
 
 impl<'gc> FromValue<'gc> for f64 {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+    fn try_from_value(
+        _ctx: MutationContext<'gc>,
+        value: Value<'gc>,
+    ) -> Result<Self, ConversionError<'gc>> {
         if let Some(n) = value.flonum() {
             Ok(n)
         } else {
@@ -320,7 +341,10 @@ impl<'gc> FromValue<'gc> for f64 {
 }
 
 impl<'gc, T: ClassTagged> FromValue<'gc> for Gc<'gc, T> {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+    fn try_from_value(
+        _ctx: MutationContext<'gc>,
+        value: Value<'gc>,
+    ) -> Result<Self, ConversionError<'gc>> {
         if value.is::<T>() {
             Ok(value.downcast::<T>())
         } else {
@@ -330,7 +354,7 @@ impl<'gc, T: ClassTagged> FromValue<'gc> for Gc<'gc, T> {
 }
 
 impl<'gc> IntoValue<'gc> for Value<'gc> {
-    fn into_value(self, _mc: Context<'gc>) -> Value<'gc> {
+    fn into_value(self, _mc: MutationContext<'gc>) -> Value<'gc> {
         self
     }
 }
@@ -338,7 +362,7 @@ impl<'gc> IntoValue<'gc> for Value<'gc> {
 macro_rules! impl_into_value_number {
     ($($ty:ty => $method:ident),* $(,)?) => { $(
         impl<'gc> IntoValue<'gc> for $ty {
-            fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
+            fn into_value(self, mc: MutationContext<'gc>) -> Value<'gc> {
                 Number::$method(mc, self).into_value(mc)
             }
         }
@@ -348,7 +372,7 @@ macro_rules! impl_into_value_number {
 macro_rules! impl_into_value_number_nomc {
     ($($ty:ty => $method:ident),* $(,)?) => { $(
         impl<'gc> IntoValue<'gc> for $ty {
-            fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
+            fn into_value(self, mc: MutationContext<'gc>) -> Value<'gc> {
                 Number::$method(self).into_value(mc)
             }
         }
@@ -372,13 +396,13 @@ impl_into_value_number_nomc!(
 );
 
 impl<'gc> IntoValue<'gc> for () {
-    fn into_value(self, _mc: Context<'gc>) -> Value<'gc> {
+    fn into_value(self, _mc: MutationContext<'gc>) -> Value<'gc> {
         Value::undefined()
     }
 }
 
 impl<'gc> IntoValue<'gc> for f32 {
-    fn into_value(self, _mc: Context<'gc>) -> Value<'gc> {
+    fn into_value(self, _mc: MutationContext<'gc>) -> Value<'gc> {
         Value::new(self as f64)
     }
 }
@@ -414,39 +438,39 @@ impl<'gc> From<char> for Value<'gc> {
 }
 
 impl<'gc, T: ClassTagged> IntoValue<'gc> for Gc<'gc, T> {
-    fn into_value(self, _mc: Context<'gc>) -> Value<'gc> {
+    fn into_value(self, _mc: MutationContext<'gc>) -> Value<'gc> {
         Value::from_gc(self)
     }
 }
 
 impl<'gc> IntoValue<'gc> for i32 {
-    fn into_value(self, _mc: Context<'gc>) -> Value<'gc> {
+    fn into_value(self, _mc: MutationContext<'gc>) -> Value<'gc> {
         Value::from_i32(self)
     }
 }
 
 impl<'gc> IntoValue<'gc> for f64 {
-    fn into_value(self, _mc: Context<'gc>) -> Value<'gc> {
+    fn into_value(self, _mc: MutationContext<'gc>) -> Value<'gc> {
         Value::from_f64(self)
     }
 }
 
 impl<'gc> IntoValue<'gc> for bool {
-    fn into_value(self, _mc: Context<'gc>) -> Value<'gc> {
+    fn into_value(self, _mc: MutationContext<'gc>) -> Value<'gc> {
         Value::from_bool(self)
     }
 }
 
 impl<'gc> IntoValue<'gc> for &str {
-    fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
-        let string = Str::new(*mc, self, false);
+    fn into_value(self, mc: MutationContext<'gc>) -> Value<'gc> {
+        let string = Str::new(mc, self, false);
 
         Value::from_gc(string)
     }
 }
 
 impl<'gc> IntoValue<'gc> for char {
-    fn into_value(self, _mc: Context<'gc>) -> Value<'gc> {
+    fn into_value(self, _mc: MutationContext<'gc>) -> Value<'gc> {
         Value::from_char(self)
     }
 }
@@ -470,7 +494,7 @@ impl Arity {
 pub trait FromNativeArgs<'gc>: Sized {
     /// Build `Self` from all values in `values`.
     fn from_native_args(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         values: &[Value<'gc>],
     ) -> Result<Self, ConversionError<'gc>>;
 }
@@ -480,7 +504,7 @@ where
     T: for<'a> FromValues<'gc, 'a>,
 {
     fn from_native_args(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         values: &[Value<'gc>],
     ) -> Result<Self, ConversionError<'gc>> {
         if !T::ARITY.is_valid(values.len()) {
@@ -504,46 +528,6 @@ where
     }
 }
 
-/// Converts a Rust native procedure result into a runtime return record.
-pub trait IntoNativeReturn<'gc> {
-    /// Convert `self` into the return code and value expected by the VM.
-    fn into_native_return(self, ctx: Context<'gc>) -> NativeReturn<'gc>;
-}
-
-impl<'gc, T> IntoNativeReturn<'gc> for T
-where
-    T: TryIntoValue<'gc>,
-{
-    fn into_native_return(self, ctx: Context<'gc>) -> NativeReturn<'gc> {
-        match self.try_into_value(ctx) {
-            Ok(value) => NativeReturn {
-                code: ReturnCode::ReturnOk,
-                value,
-            },
-            Err(value) => NativeReturn {
-                code: ReturnCode::ReturnErr,
-                value,
-            },
-        }
-    }
-}
-
-impl<'gc, T, E> IntoNativeReturn<'gc> for Result<T, E>
-where
-    T: TryIntoValue<'gc>,
-    E: IntoValue<'gc>,
-{
-    fn into_native_return(self, ctx: Context<'gc>) -> NativeReturn<'gc> {
-        match self {
-            Ok(value) => value.into_native_return(ctx),
-            Err(err) => NativeReturn {
-                code: ReturnCode::ReturnErr,
-                value: err.into_value(ctx),
-            },
-        }
-    }
-}
-
 /// Converts zero or more runtime values into a Rust type.
 pub trait FromValues<'gc, 'a>: Sized {
     /// The number of input values consumed by this converter.
@@ -554,7 +538,7 @@ pub trait FromValues<'gc, 'a>: Sized {
 
     /// Convert values starting at `pos`, advancing `pos` past consumed values.
     fn from_values(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         pos: &mut usize,
         values: &'a [Value<'gc>],
     ) -> Result<Self, ConversionError<'gc>>;
@@ -562,7 +546,7 @@ pub trait FromValues<'gc, 'a>: Sized {
 
 impl<'gc, 'a, T: FromValue<'gc>> FromValues<'gc, 'a> for T {
     fn from_values(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         pos: &mut usize,
         values: &'a [Value<'gc>],
     ) -> Result<T, ConversionError<'gc>> {
@@ -585,7 +569,7 @@ impl<'gc, 'a, T: FromValue<'gc>> FromValues<'gc, 'a> for Option<T> {
         max: Some(1),
     };
     fn from_values(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         pos: &mut usize,
         values: &'a [Value<'gc>],
     ) -> Result<Self, ConversionError<'gc>> {
@@ -612,7 +596,7 @@ impl<'gc, 'a> FromValues<'gc, 'a> for () {
         max: Some(0),
     };
     fn from_values(
-        _ctx: Context<'gc>,
+        _ctx: MutationContext<'gc>,
         _pos: &mut usize,
         _values: &'a [Value<'gc>],
     ) -> Result<Self, ConversionError<'gc>> {
@@ -633,7 +617,7 @@ macro_rules! impl_tuple {
             $($rest: IntoValue<'gc>,)*
         {
             #[allow(non_snake_case)]
-            fn into_values(self, ctx: Context<'gc>) -> impl Iterator<Item = Value<'gc>> {
+            fn into_values(self, ctx: MutationContext<'gc>) -> impl Iterator<Item = Value<'gc>> {
                 let ($first, $($rest,)*) = self;
                 std::iter::once($first.into_value(ctx))
                     $(.chain(std::iter::once($rest.into_value(ctx))))*
@@ -648,7 +632,7 @@ macro_rules! impl_tuple {
             #[allow(non_snake_case)]
             fn try_into_values(
                 self,
-                ctx: Context<'gc>,
+                ctx: MutationContext<'gc>,
             ) -> Result<impl Iterator<Item = Value<'gc>>, Value<'gc>> {
                 let ($first, $($rest,)*) = self;
                 Ok(std::iter::once($first.try_into_value(ctx)?)
@@ -697,7 +681,7 @@ macro_rules! impl_tuple {
             };
 
 
-            fn from_values(ctx: Context<'gc>, pos: &mut usize, values: &'a [Value<'gc>]) -> Result<Self, ConversionError<'gc>> {
+            fn from_values(ctx: MutationContext<'gc>, pos: &mut usize, values: &'a [Value<'gc>]) -> Result<Self, ConversionError<'gc>> {
 
                 paste::paste! { let x = *pos;
                     let [<_ $first: lower>] = $first::from_values(ctx, pos, values)
@@ -724,7 +708,7 @@ macro_rules! impl_tuple {
 impl<'gc, 'a> FromValues<'gc, 'a> for &'a [Value<'gc>] {
     const ARITY: Arity = Arity { min: 0, max: None };
     fn from_values(
-        _ctx: Context<'gc>,
+        _ctx: MutationContext<'gc>,
         pos: &mut usize,
         values: &'a [Value<'gc>],
     ) -> Result<Self, ConversionError<'gc>> {
@@ -737,11 +721,11 @@ impl_tuple!(A B C D E F G H I J K L M N O P Q R S T U V W X Y Z AA AB AC AD AE A
 /// Converts a Rust return value into one or more runtime values.
 pub trait IntoValues<'gc> {
     /// Convert `self` into an iterator of returned values.
-    fn into_values(self, ctx: Context<'gc>) -> impl Iterator<Item = Value<'gc>>;
+    fn into_values(self, ctx: MutationContext<'gc>) -> impl Iterator<Item = Value<'gc>>;
 }
 
 impl<'gc, T: IntoValue<'gc>> IntoValues<'gc> for T {
-    fn into_values(self, ctx: Context<'gc>) -> impl Iterator<Item = Value<'gc>> {
+    fn into_values(self, ctx: MutationContext<'gc>) -> impl Iterator<Item = Value<'gc>> {
         std::iter::once(self.into_value(ctx))
     }
 }
@@ -751,14 +735,14 @@ pub trait TryIntoValues<'gc> {
     /// Convert `self`, returning `Err` when the conversion represents a throw.
     fn try_into_values(
         self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
     ) -> Result<impl Iterator<Item = Value<'gc>>, Value<'gc>>;
 }
 
 impl<'gc, T: TryIntoValue<'gc>> TryIntoValues<'gc> for T {
     fn try_into_values(
         self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
     ) -> Result<impl Iterator<Item = Value<'gc>>, Value<'gc>> {
         Ok(std::iter::once(self.try_into_value(ctx)?))
     }
@@ -767,7 +751,7 @@ impl<'gc, T: TryIntoValue<'gc>> TryIntoValues<'gc> for T {
 impl<'gc, T: TryIntoValues<'gc>, E: IntoValue<'gc>> TryIntoValues<'gc> for Result<T, E> {
     fn try_into_values(
         self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
     ) -> Result<impl Iterator<Item = Value<'gc>>, Value<'gc>> {
         match self {
             Ok(v) => v.try_into_values(ctx),
@@ -779,7 +763,7 @@ impl<'gc, T: TryIntoValues<'gc>, E: IntoValue<'gc>> TryIntoValues<'gc> for Resul
 impl<'gc> TryIntoValues<'gc> for &[Value<'gc>] {
     fn try_into_values(
         self,
-        _ctx: Context<'gc>,
+        _ctx: MutationContext<'gc>,
     ) -> Result<impl Iterator<Item = Value<'gc>>, Value<'gc>> {
         Ok(self.iter().copied())
     }
@@ -796,7 +780,7 @@ pub struct RestOf<'a, 'gc, T: FromValue<'gc>> {
 impl<'a, 'gc, T: FromValue<'gc>> FromValues<'gc, 'a> for RestOf<'a, 'gc, T> {
     const ARITY: Arity = Arity { min: 0, max: None };
     fn from_values(
-        _ctx: Context<'gc>,
+        _ctx: MutationContext<'gc>,
         pos: &mut usize,
         values: &'a [Value<'gc>],
     ) -> Result<Self, ConversionError<'gc>> {
@@ -811,7 +795,7 @@ impl<'a, 'gc, T: FromValue<'gc>> FromValues<'gc, 'a> for RestOf<'a, 'gc, T> {
 
 impl<'a, 'gc, T: FromValue<'gc>> RestOf<'a, 'gc, T> {
     /// Convert the remaining value at `index`.
-    pub fn at(&self, ctx: Context<'gc>, index: usize) -> Result<T, ConversionError<'gc>> {
+    pub fn at(&self, ctx: MutationContext<'gc>, index: usize) -> Result<T, ConversionError<'gc>> {
         if let Some(value) = self.rest.get(index) {
             T::try_from_value(ctx, *value).map_err(|e| e.with_appended_pos(index))
         } else {
@@ -826,7 +810,7 @@ impl<'a, 'gc, T: FromValue<'gc>> RestOf<'a, 'gc, T> {
     /// Iterate over the remaining values, converting each item on demand.
     pub fn iter(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
     ) -> impl Iterator<Item = Result<T, ConversionError<'gc>>> + '_ {
         self.rest
             .iter()
@@ -875,7 +859,10 @@ where
     L: FromValue<'gc>,
     R: FromValue<'gc>,
 {
-    fn try_from_value(ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+    fn try_from_value(
+        ctx: MutationContext<'gc>,
+        value: Value<'gc>,
+    ) -> Result<Self, ConversionError<'gc>> {
         match L::try_from_value(ctx, value) {
             Ok(l) => Ok(Either::Left(l)),
             Err(_) => {
@@ -891,7 +878,7 @@ where
     L: IntoValue<'gc>,
     R: IntoValue<'gc>,
 {
-    fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
+    fn into_value(self, mc: MutationContext<'gc>) -> Value<'gc> {
         match self {
             Either::Left(l) => l.into_value(mc),
             Either::Right(r) => r.into_value(mc),

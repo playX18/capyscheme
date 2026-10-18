@@ -1,17 +1,21 @@
 use std::fmt;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use smallvec::SmallVec;
 
 use super::descriptor::ClassDescriptor;
 use super::flags::{ClassCategory, ClassFlags};
 use super::generic::generic_assertion_violation;
 use super::slot::{SlotAccessError, SlotAccessorDescriptor, SlotInitError};
+use super::storage::SlotStorage;
 use super::table::class_table;
-use crate::heap::alloc::{Array, ArrayRef};
-use crate::heap::cell::Lock;
 use crate::heap::object::class_header_word;
 use crate::heap::{Gc, Trace};
 use crate::runtime::{
-    Context,
-    value::{Closure, NativeReturn, PROCEDURES, Value},
+    MutationContext,
+    interp::stack::Slot,
+    value::{Closure, PROCEDURES, ReturnCode, Value},
+    vm::Call,
 };
 
 #[derive(Trace)]
@@ -19,14 +23,13 @@ use crate::runtime::{
 #[repr(C)]
 pub struct SchemeInstance<'gc> {
     class: Gc<'gc, ClassDescriptor<'gc>>,
-    slots: ArrayRef<'gc, Lock<Value<'gc>>>,
+    storage: Gc<'gc, SlotStorage<'gc>>,
 }
 
 impl<'gc> SchemeInstance<'gc> {
-    pub fn new(
-        ctx: Context<'gc>,
+    pub fn allocate(
+        ctx: MutationContext<'gc>,
         class: Gc<'gc, ClassDescriptor<'gc>>,
-        slot_count: usize,
     ) -> Gc<'gc, Self> {
         debug_assert_eq!(class.category(), ClassCategory::Scheme);
         let header_word = class_header_word(class.id());
@@ -34,33 +37,23 @@ impl<'gc> SchemeInstance<'gc> {
             ctx,
             Self {
                 class,
-                slots: Array::with(ctx, slot_count, |_, _| Lock::new(Value::empty())),
-            },
-            header_word,
-        )
-    }
-
-    pub fn allocate(ctx: Context<'gc>, class: Gc<'gc, ClassDescriptor<'gc>>) -> Gc<'gc, Self> {
-        debug_assert_eq!(class.category(), ClassCategory::Scheme);
-        let header_word = class_header_word(class.id());
-        Gc::new_with_header_word(
-            ctx,
-            Self {
-                class,
-                slots: Array::with(ctx, class.slot_count(), |_, index| {
-                    Lock::new(class.slots()[index].init_value())
-                }),
+                storage: SlotStorage::with(
+                    ctx,
+                    class.layout_stamp(),
+                    class.slot_count(),
+                    |_, index| class.slots()[index].init_value(),
+                ),
             },
             header_word,
         )
     }
 
     pub fn allocate_with_initargs(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         class: Gc<'gc, ClassDescriptor<'gc>>,
         initargs: &[(Value<'gc>, Value<'gc>)],
     ) -> Result<Gc<'gc, Self>, SlotInitError<'gc>> {
-        let mut resolved_initargs = Vec::with_capacity(initargs.len());
+        let mut resolved_initargs: SmallVec<[(usize, Value<'gc>); 8]> = SmallVec::new();
         for &(keyword, value) in initargs {
             let slot = class
                 .slot_for_init_keyword(keyword)
@@ -72,19 +65,62 @@ impl<'gc> SchemeInstance<'gc> {
         }
 
         let instance = Self::allocate(ctx, class);
-        let mut explicit_slots = Vec::with_capacity(resolved_initargs.len());
+        let mut explicit_slots: SmallVec<[usize; 8]> = SmallVec::new();
         for &(slot_index, value) in &resolved_initargs {
-            Self::set_slot(ctx, instance, slot_index, value);
+            assert!(
+                slot_index < instance.storage.len(),
+                "scheme instance slot out of bounds"
+            );
+            // SAFETY: the storage is fresh (allocated above), so these
+            // init stores need no write barrier, matching the template
+            // allocators' raw init stores.
+            unsafe {
+                instance.storage.values()[slot_index].as_cell().set(value);
+            }
             explicit_slots.push(slot_index);
         }
 
-        for slot in class.slots() {
+        // Most classes have no init thunks: scan first and return without
+        // rooting a frame. Nothing above can collect, so the fresh
+        // instance cannot have moved.
+        let slot_count = class.slots().len();
+        let mut needs_thunks = false;
+        for index in 0..slot_count {
+            let slot = class.slots()[index];
+            if !slot.init_thunk().is_empty() && !explicit_slots.contains(&slot.index()) {
+                needs_thunks = true;
+                break;
+            }
+        }
+        if !needs_thunks {
+            return Ok(instance);
+        }
+
+        // An init thunk may collect: the instance and the class are rooted
+        // across each call and reloaded. The count is read once: `class`
+        // below is stale after the first call.
+        let mut frame = crate::runtime::sni::LocalFrame::push();
+        let instance_slot = frame.new_local_ref(instance.into()).as_ptr();
+        let class_slot = frame.new_local_ref(class.into()).as_ptr();
+        // SAFETY: the slots live until `frame` drops, and hold the instance
+        // and the class, updated by the collector.
+        let reload = |slot: *mut Value<'static>| unsafe {
+            std::mem::transmute::<Value<'static>, Value<'gc>>(*slot).as_cell_raw()
+        };
+        for index in 0..slot_count {
+            // SAFETY: see `reload`.
+            let class: Gc<'gc, ClassDescriptor<'gc>> =
+                unsafe { Gc::from_gc_object(reload(class_slot)) };
+            let slot = class.slots()[index];
             if slot.init_thunk().is_empty() || explicit_slots.contains(&slot.index()) {
                 continue;
             }
+            let slot_index = slot.index();
             match crate::runtime::sni::call_function(ctx, slot.init_thunk(), []) {
                 crate::runtime::vm::ExecutionResult::Ok(value) => {
-                    Self::set_slot(ctx, instance, slot.index(), value);
+                    // SAFETY: see `reload`.
+                    let instance = unsafe { Gc::from_gc_object(reload(instance_slot)) };
+                    Self::set_slot(ctx, instance, slot_index, value);
                 }
                 crate::runtime::vm::ExecutionResult::Err(error) => {
                     return Err(SlotInitError::InitThunkFailed(error));
@@ -92,43 +128,86 @@ impl<'gc> SchemeInstance<'gc> {
             }
         }
 
-        Ok(instance)
+        // SAFETY: see `reload`.
+        Ok(unsafe { Gc::from_gc_object(reload(instance_slot)) })
     }
 
     pub fn class(&self) -> Gc<'gc, ClassDescriptor<'gc>> {
         self.class
     }
 
+    /// The current slot storage. Migration replaces it with a Release store,
+    /// so every reader loads it once and works on that snapshot.
+    #[inline(always)]
+    pub fn storage(&self) -> Gc<'gc, SlotStorage<'gc>> {
+        // SAFETY: `storage` is a single non-null `Gc` word, written only at
+        // construction and by `migrate_to_class`'s atomic store.
+        unsafe {
+            let word = &*(&self.storage as *const _ as *const AtomicUsize);
+            Gc::from_ptr(word.load(Ordering::Acquire) as *const _)
+        }
+    }
+
+    /// Slot `index` if it is in bounds of the current storage.
+    #[inline(always)]
+    pub fn slot_checked(&self, index: usize) -> Option<Value<'gc>> {
+        self.storage().get(index)
+    }
+
+    /// Slot `index` without bounds or binding checks.
+    ///
+    /// # Safety
+    /// `index < self.slot_count()`.
+    #[inline(always)]
+    pub unsafe fn slot_unchecked(&self, index: usize) -> Value<'gc> {
+        let storage = self.storage();
+        debug_assert!(index < storage.len());
+        unsafe { storage.values().get_unchecked(index).get() }
+    }
+
     fn migrate_to_class(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         instance: Gc<'gc, Self>,
         old_class: Gc<'gc, ClassDescriptor<'gc>>,
         new_class: Gc<'gc, ClassDescriptor<'gc>>,
     ) {
-        let migrated_slots = Array::with(ctx, new_class.slot_count(), |_, index| {
-            let slot = new_class.slots()[index];
-            let value = old_class
-                .accessor_named(slot.name())
-                .and_then(|old_accessor| instance.slot(old_accessor.slot_index()))
-                .unwrap_or_else(|| slot.init_value());
-            Lock::new(value)
-        });
+        let migrated = SlotStorage::with(
+            ctx,
+            new_class.layout_stamp(),
+            new_class.slot_count(),
+            |_, index| {
+                let slot = new_class.slots()[index];
+                old_class
+                    .accessor_named(slot.name())
+                    .and_then(|old_accessor| instance.slot(old_accessor.slot_index()))
+                    .unwrap_or_else(|| slot.init_value())
+            },
+        );
 
         Gc::write(ctx, instance);
+        // Publish the class, then the storage (both Release); the storage
+        // store is the publish point, since cache hits read only it. The
+        // header id follows for `change-class`, which changes the identity
+        // id. A slot write racing this migration of the same instance may
+        // be lost.
+        // SAFETY: `class` and `storage` are single `Gc` words; this is the
+        // only writer, and readers load them atomically.
+        unsafe {
+            let instance_ptr = instance.as_gc_object().to_address().to_mut_ptr::<Self>();
+            let class = &*(&raw const (*instance_ptr).class as *const AtomicUsize);
+            class.store(new_class.as_ptr() as usize, Ordering::Release);
+            let storage = &*(&raw const (*instance_ptr).storage as *const AtomicUsize);
+            storage.store(migrated.as_ptr() as usize, Ordering::Release);
+        }
+        std::sync::atomic::fence(Ordering::Release);
         instance
             .as_gc_object()
             .header()
             .set_class_id(new_class.id());
-        // SAFETY: Preconditions verified by the surrounding code
-        unsafe {
-            let instance_mut = instance.as_gc_object().to_address().as_mut_ref::<Self>();
-            instance_mut.class = new_class;
-            instance_mut.slots = migrated_slots;
-        }
     }
 
     pub fn change_class(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         instance: Gc<'gc, Self>,
         new_class: Gc<'gc, ClassDescriptor<'gc>>,
     ) {
@@ -138,7 +217,7 @@ impl<'gc> SchemeInstance<'gc> {
     }
 
     pub fn touch_in_table(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         table: &super::table::ClassTable<'gc>,
         instance: Gc<'gc, Self>,
     ) -> bool {
@@ -146,23 +225,23 @@ impl<'gc> SchemeInstance<'gc> {
         let Some(current_class) = table.lookup(old_class.id()) else {
             return false;
         };
-        if current_class.as_gc_object() == old_class.as_gc_object() {
+        if current_class.layout_stamp() == instance.storage().stamp() {
             return false;
         }
         Self::migrate_to_class(ctx, instance, old_class, current_class);
         true
     }
 
-    pub fn touch(ctx: Context<'gc>, instance: Gc<'gc, Self>) -> bool {
+    pub fn touch(ctx: MutationContext<'gc>, instance: Gc<'gc, Self>) -> bool {
         Self::touch_in_table(ctx, class_table(ctx), instance)
     }
 
     pub fn slot_count(&self) -> usize {
-        self.slots.len()
+        self.storage().len()
     }
 
     pub fn slot(&self, index: usize) -> Option<Value<'gc>> {
-        self.slots.as_slice().get(index).map(Lock::get)
+        self.slot_checked(index)
     }
 
     pub fn slot_is_bound(&self, index: usize) -> bool {
@@ -178,16 +257,33 @@ impl<'gc> SchemeInstance<'gc> {
     }
 
     pub fn set_slot(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         instance: Gc<'gc, SchemeInstance<'gc>>,
         index: usize,
         value: Value<'gc>,
     ) {
-        assert!(
-            index < instance.slots.len(),
-            "scheme instance slot out of bounds"
-        );
-        Gc::write(ctx, instance.slots)[index].unlock().set(value);
+        // One snapshot for the check and the store: a migration between two
+        // loads of `storage` must not turn the check into a stale one.
+        let storage = instance.storage();
+        assert!(index < storage.len(), "scheme instance slot out of bounds");
+        Gc::write(ctx, storage)[index].unlock().set(value);
+    }
+
+    /// [`Self::set_slot`] that reports an out-of-bounds index instead of
+    /// panicking: cache hits that raced a migration fall back to the slow path.
+    #[inline]
+    pub fn set_slot_checked(
+        ctx: MutationContext<'gc>,
+        instance: Gc<'gc, Self>,
+        index: usize,
+        value: Value<'gc>,
+    ) -> bool {
+        let storage = instance.storage();
+        if index >= storage.len() {
+            return false;
+        }
+        Gc::write(ctx, storage)[index].unlock().set(value);
+        true
     }
 
     pub fn slot_by_accessor(
@@ -212,7 +308,7 @@ impl<'gc> SchemeInstance<'gc> {
         &self,
         accessor: SlotAccessorDescriptor<'gc>,
     ) -> Result<bool, SlotAccessError> {
-        if accessor.slot_index() >= self.slots.len() {
+        if accessor.slot_index() >= self.storage().len() {
             return Err(SlotAccessError::OutOfBounds);
         }
         Ok(self.slot_is_bound(accessor.slot_index()))
@@ -226,7 +322,7 @@ impl<'gc> SchemeInstance<'gc> {
     }
 
     pub fn set_slot_by_accessor(
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         instance: Gc<'gc, SchemeInstance<'gc>>,
         accessor: SlotAccessorDescriptor<'gc>,
         value: Value<'gc>,
@@ -234,7 +330,7 @@ impl<'gc> SchemeInstance<'gc> {
         if !accessor.flags().settable() {
             return Err(SlotAccessError::Immutable);
         }
-        if accessor.slot_index() >= instance.slots.len() {
+        if accessor.slot_index() >= instance.storage().len() {
             return Err(SlotAccessError::OutOfBounds);
         }
         Self::set_slot(ctx, instance, accessor.slot_index(), value);
@@ -249,7 +345,7 @@ impl<'gc> From<Gc<'gc, SchemeInstance<'gc>>> for Value<'gc> {
 }
 
 pub fn try_scheme_instance<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     value: Value<'gc>,
 ) -> Option<Gc<'gc, SchemeInstance<'gc>>> {
     let class = value.class(ctx)?;
@@ -310,7 +406,7 @@ fn scheme_instance_class_for_primitive_value<'gc>(
 }
 
 pub fn scheme_instance_allocate_hook<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     class: Gc<'gc, ClassDescriptor<'gc>>,
     initargs: &[(Value<'gc>, Value<'gc>)],
 ) -> Result<Value<'gc>, SlotInitError<'gc>> {
@@ -318,11 +414,13 @@ pub fn scheme_instance_allocate_hook<'gc>(
 }
 
 fn invocable_scheme_instance_allocate_hook<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     class: Gc<'gc, ClassDescriptor<'gc>>,
     initargs: &[(Value<'gc>, Value<'gc>)],
 ) -> Result<Value<'gc>, SlotInitError<'gc>> {
     let instance = SchemeInstance::allocate_with_initargs(ctx, class, initargs)?;
+    // Init thunks may have collected: take the class from the instance.
+    let class = instance.class();
     let Some(invoker) = class.accessor_named("procedure") else {
         return Err(SlotInitError::MissingInvokerSlot(class.into()));
     };
@@ -334,53 +432,47 @@ fn invocable_scheme_instance_allocate_hook<'gc>(
     Ok(invocable_instance_procedure(ctx, class, instance, target).into())
 }
 
-extern "C-unwind" fn invocable_instance_closure_proc<'gc>(
-    ctx: Context<'gc>,
-    rator: Value<'gc>,
-    rands: *const Value<'gc>,
-    num_rands: usize,
-    retk: Value<'gc>,
-) -> NativeReturn<'gc> {
-    if !rator.is::<Closure>() {
-        return generic_assertion_violation(
-            ctx,
-            retk,
-            "invocable-instance",
-            "invocable wrapper is not a closure",
-            rator,
-        );
-    }
-    let closure = rator.downcast::<Closure>();
-    if closure.nfree <= 2 {
-        return generic_assertion_violation(
-            ctx,
-            retk,
-            "invocable-instance",
-            "invocable wrapper is missing its target",
-            rator,
-        );
-    }
-    let instance = closure[1].get();
-    let target = closure[2].get();
-    if !target.is::<Closure>() {
-        return generic_assertion_violation(
-            ctx,
-            retk,
-            "invocable-instance",
-            "invocable target is not a procedure",
-            target,
-        );
-    }
-    // SAFETY: Pointer is valid for the given element count
-    let args = unsafe { std::slice::from_raw_parts(rands, num_rands) };
-    let mut forwarded = Vec::with_capacity(num_rands + 1);
-    forwarded.push(instance);
-    forwarded.extend_from_slice(args);
-    ctx.return_call(target, forwarded, Some(retk))
+extern "C" fn invocable_instance_closure_proc<'gc>(
+    ctx: MutationContext<'gc>,
+    sfp: Slot<'gc>,
+) -> ReturnCode {
+    Call::invoke(ctx, sfp, |call| {
+        if !call.rator.is::<Closure>() {
+            return generic_assertion_violation(
+                ctx,
+                "invocable-instance",
+                "invocable wrapper is not a closure",
+                call.rator,
+            );
+        }
+        let closure = call.rator.downcast::<Closure>();
+        if closure.nfree <= 2 {
+            return generic_assertion_violation(
+                ctx,
+                "invocable-instance",
+                "invocable wrapper is missing its target",
+                call.rator,
+            );
+        }
+        let instance = closure[1].get();
+        let target = closure[2].get();
+        if !target.is::<Closure>() {
+            return generic_assertion_violation(
+                ctx,
+                "invocable-instance",
+                "invocable target is not a procedure",
+                target,
+            );
+        }
+        let mut forwarded = Vec::with_capacity(call.args.len() + 1);
+        forwarded.push(instance);
+        forwarded.extend_from_slice(call.args);
+        ctx.stage_tail_call(target, &forwarded)
+    })
 }
 
 fn invocable_instance_procedure<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     class: Gc<'gc, ClassDescriptor<'gc>>,
     instance: Gc<'gc, SchemeInstance<'gc>>,
     target: Value<'gc>,
@@ -433,7 +525,7 @@ pub fn scheme_instance_hash_hook<'gc>(
 }
 
 pub fn scheme_instance_slot_ref_hook<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     class: Gc<'gc, ClassDescriptor<'gc>>,
     receiver: Value<'gc>,
     accessor: SlotAccessorDescriptor<'gc>,
@@ -448,7 +540,7 @@ pub fn scheme_instance_slot_ref_hook<'gc>(
 }
 
 pub fn scheme_instance_slot_set_hook<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     class: Gc<'gc, ClassDescriptor<'gc>>,
     receiver: Value<'gc>,
     accessor: SlotAccessorDescriptor<'gc>,
@@ -464,7 +556,7 @@ pub fn scheme_instance_slot_set_hook<'gc>(
 }
 
 pub fn scheme_instance_slot_bound_hook<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     class: Gc<'gc, ClassDescriptor<'gc>>,
     receiver: Value<'gc>,
     accessor: SlotAccessorDescriptor<'gc>,

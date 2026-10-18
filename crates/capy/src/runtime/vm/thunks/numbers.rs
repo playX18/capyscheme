@@ -2,13 +2,13 @@ use super::make_assertion_violation;
 use crate::runtime::value::{IntoValue, Number};
 use crate::runtime::vm::thunk_raise;
 use crate::runtime::{
-    Context,
+    MutationContext,
     value::{Str, Symbol, Value},
     vm::debug::print_stacktraces_impl,
 };
 use std::cmp::Ordering;
 
-pub fn is_zero<'gc>(ctx: Context<'gc>, value: Value<'gc>) -> Value<'gc> {
+pub fn is_zero<'gc>(ctx: MutationContext<'gc>, value: Value<'gc>) -> Value<'gc> {
     let Some(num) = value.number() else {
         thunk_raise(
             ctx,
@@ -23,7 +23,7 @@ pub fn is_zero<'gc>(ctx: Context<'gc>, value: Value<'gc>) -> Value<'gc> {
     num.is_zero().into()
 }
 
-pub fn negate<'gc>(ctx: Context<'gc>, value: Value<'gc>) -> Value<'gc> {
+pub fn negate<'gc>(ctx: MutationContext<'gc>, value: Value<'gc>) -> Value<'gc> {
     let Some(num) = value.number() else {
         thunk_raise(
             ctx,
@@ -39,7 +39,7 @@ pub fn negate<'gc>(ctx: Context<'gc>, value: Value<'gc>) -> Value<'gc> {
     num.negate(ctx).into_value(ctx)
 }
 
-pub fn memv<'gc>(ctx: Context<'gc>, key: Value<'gc>, list: Value<'gc>) -> Value<'gc> {
+pub fn memv<'gc>(ctx: MutationContext<'gc>, key: Value<'gc>, list: Value<'gc>) -> Value<'gc> {
     if !list.is_list() {
         thunk_raise(
             ctx,
@@ -63,7 +63,7 @@ pub fn memv<'gc>(ctx: Context<'gc>, key: Value<'gc>, list: Value<'gc>) -> Value<
     Value::new(false)
 }
 
-pub fn memq<'gc>(ctx: Context<'gc>, key: Value<'gc>, list: Value<'gc>) -> Value<'gc> {
+pub fn memq<'gc>(ctx: MutationContext<'gc>, key: Value<'gc>, list: Value<'gc>) -> Value<'gc> {
     if !list.is_list() {
         thunk_raise(
             ctx,
@@ -87,7 +87,7 @@ pub fn memq<'gc>(ctx: Context<'gc>, key: Value<'gc>, list: Value<'gc>) -> Value<
     Value::new(false)
 }
 
-pub fn number_eq<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
+pub fn number_eq<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
     let Some(a) = a.number() else {
         thunk_raise(
             ctx,
@@ -115,7 +115,7 @@ pub fn number_eq<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<
     (Number::equal(ctx, a, b)).into()
 }
 
-pub fn number_lt<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
+pub fn number_lt<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
     let Some(a) = a.number() else {
         thunk_raise(
             ctx,
@@ -143,7 +143,7 @@ pub fn number_lt<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<
     (Number::compare(ctx, a, b) == Some(Ordering::Less)).into()
 }
 
-pub fn number_gt<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
+pub fn number_gt<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
     let Some(a) = a.number() else {
         thunk_raise(
             ctx,
@@ -171,7 +171,7 @@ pub fn number_gt<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<
     (Number::compare(ctx, a, b) == Some(Ordering::Greater)).into()
 }
 
-pub fn number_le<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
+pub fn number_le<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
     let Some(a) = a.number() else {
         thunk_raise(
             ctx,
@@ -199,7 +199,7 @@ pub fn number_le<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<
     (Number::compare(ctx, a, b) != Some(Ordering::Greater)).into()
 }
 
-pub fn number_ge<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
+pub fn number_ge<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
     let Some(a) = a.number() else {
         thunk_raise(
             ctx,
@@ -227,7 +227,7 @@ pub fn number_ge<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<
     (Number::compare(ctx, a, b) != Some(Ordering::Less)).into()
 }
 
-pub fn number_plus<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
+pub fn number_plus<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
     let Some(a) = a.number() else {
         thunk_raise(
             ctx,
@@ -255,7 +255,7 @@ pub fn number_plus<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Valu
     Number::add(ctx, a, b).into_value(ctx)
 }
 
-pub fn number_minus<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
+pub fn number_minus<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
     let Some(a) = a.number() else {
         thunk_raise(
             ctx,
@@ -283,7 +283,7 @@ pub fn number_minus<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Val
     Number::sub(ctx, a, b).into_value(ctx)
 }
 
-pub fn number_times<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
+pub fn number_times<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
     let Some(a) = a.number() else {
         thunk_raise(
             ctx,
@@ -311,7 +311,7 @@ pub fn number_times<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Val
     Number::mul(ctx, a, b).into_value(ctx)
 }
 
-pub fn number_div<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
+pub fn number_div<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
     let Some(a) = a.number() else {
         thunk_raise(
             ctx,
@@ -336,7 +336,7 @@ pub fn number_div<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value
         );
     };
 
-    if b.is_zero() && b.is_exact() && a.is_exact() {
+    if b.is_zero() && b.is_exact() {
         thunk_raise(
             ctx,
             make_assertion_violation(
@@ -351,7 +351,7 @@ pub fn number_div<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value
     Number::div(ctx, a, b).into_value(ctx)
 }
 
-pub fn quotient<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
+pub fn quotient<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
     let Some(a) = a.number() else {
         thunk_raise(
             ctx,
@@ -376,7 +376,7 @@ pub fn quotient<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'
         );
     };
 
-    if b.is_zero() && b.is_exact() && a.is_exact() {
+    if b.is_zero() && b.is_exact() {
         thunk_raise(
             ctx,
             make_assertion_violation(
@@ -391,7 +391,7 @@ pub fn quotient<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'
     Number::quotient(ctx, a, b).into_value(ctx)
 }
 
-pub fn remainder<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
+pub fn remainder<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
     let Some(a) = a.number() else {
         thunk_raise(
             ctx,
@@ -416,7 +416,7 @@ pub fn remainder<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<
         );
     };
 
-    if b.is_zero() && b.is_exact() && a.is_exact() {
+    if b.is_zero() && b.is_exact() {
         thunk_raise(
             ctx,
             make_assertion_violation(
@@ -431,7 +431,7 @@ pub fn remainder<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<
     Number::remainder(ctx, a, b).into_value(ctx)
 }
 
-pub fn modulo<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
+pub fn modulo<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
     let Some(a) = a.number() else {
         thunk_raise(
             ctx,
@@ -471,7 +471,7 @@ pub fn modulo<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc
     Number::modulo(ctx, a, b).into_value(ctx)
 }
 
-pub fn exact2inexact<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
+pub fn exact2inexact<'gc>(ctx: MutationContext<'gc>, n: Value<'gc>) -> Value<'gc> {
     let Some(n) = n.number() else {
         thunk_raise(
             ctx,
@@ -487,7 +487,7 @@ pub fn exact2inexact<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
     n.to_inexact(ctx).into_value(ctx)
 }
 
-pub fn inexact_to_exact<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
+pub fn inexact_to_exact<'gc>(ctx: MutationContext<'gc>, n: Value<'gc>) -> Value<'gc> {
     let Some(n) = n.number() else {
         thunk_raise(
             ctx,
@@ -502,7 +502,7 @@ pub fn inexact_to_exact<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
     n.to_exact(ctx).into_value(ctx)
 }
 
-pub fn expt<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
+pub fn expt<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
     let Some(a) = a.number() else {
         thunk_raise(
             ctx,
@@ -530,7 +530,7 @@ pub fn expt<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> 
     Number::expt(ctx, a, b).into_value(ctx)
 }
 
-pub fn ash<'gc>(ctx: Context<'gc>, n: Value<'gc>, count: Value<'gc>) -> Value<'gc> {
+pub fn ash<'gc>(ctx: MutationContext<'gc>, n: Value<'gc>, count: Value<'gc>) -> Value<'gc> {
     let Some(n) = n.number() else {
         thunk_raise(
             ctx,
@@ -611,7 +611,7 @@ pub fn ash<'gc>(ctx: Context<'gc>, n: Value<'gc>, count: Value<'gc>) -> Value<'g
     }
 }
 
-pub fn logand<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
+pub fn logand<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
     let Some(a) = a.number() else {
         log::trace!("logand: {a} is not a number, b={b}");
         print_stacktraces_impl(ctx);
@@ -667,7 +667,7 @@ pub fn logand<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc
     a.logand(ctx, b).into_value(ctx)
 }
 
-pub fn logior<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
+pub fn logior<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
     let Some(a) = a.number() else {
         thunk_raise(
             ctx,
@@ -719,7 +719,7 @@ pub fn logior<'gc>(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc
     a.logior(ctx, b).into_value(ctx)
 }
 
-pub fn lognot<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
+pub fn lognot<'gc>(ctx: MutationContext<'gc>, n: Value<'gc>) -> Value<'gc> {
     let Some(n) = n.number() else {
         thunk_raise(
             ctx,
@@ -747,7 +747,7 @@ pub fn lognot<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
     n.lognot(ctx).into_value(ctx)
 }
 
-pub fn sqrt<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
+pub fn sqrt<'gc>(ctx: MutationContext<'gc>, n: Value<'gc>) -> Value<'gc> {
     let Some(n) = n.number() else {
         thunk_raise(
             ctx,
@@ -763,7 +763,7 @@ pub fn sqrt<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
     Number::sqrt(ctx, n).into_value(ctx)
 }
 
-pub fn abs<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
+pub fn abs<'gc>(ctx: MutationContext<'gc>, n: Value<'gc>) -> Value<'gc> {
     let Some(n) = n.number() else {
         thunk_raise(
             ctx,
@@ -779,7 +779,7 @@ pub fn abs<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
     n.abs(ctx).into_value(ctx)
 }
 
-pub fn floor<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
+pub fn floor<'gc>(ctx: MutationContext<'gc>, n: Value<'gc>) -> Value<'gc> {
     let Some(n) = n.number() else {
         thunk_raise(
             ctx,
@@ -795,7 +795,7 @@ pub fn floor<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
     n.floor(ctx).into_value(ctx)
 }
 
-pub fn ceiling<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
+pub fn ceiling<'gc>(ctx: MutationContext<'gc>, n: Value<'gc>) -> Value<'gc> {
     let Some(n) = n.number() else {
         thunk_raise(
             ctx,
@@ -811,7 +811,7 @@ pub fn ceiling<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
     n.ceiling(ctx).into_value(ctx)
 }
 
-pub fn truncate<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
+pub fn truncate<'gc>(ctx: MutationContext<'gc>, n: Value<'gc>) -> Value<'gc> {
     let Some(n) = n.number() else {
         thunk_raise(
             ctx,
@@ -827,7 +827,7 @@ pub fn truncate<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
     n.truncate(ctx).into_value(ctx)
 }
 
-pub fn sin<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
+pub fn sin<'gc>(ctx: MutationContext<'gc>, n: Value<'gc>) -> Value<'gc> {
     let Some(n) = n.number() else {
         thunk_raise(
             ctx,
@@ -843,7 +843,7 @@ pub fn sin<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
     Number::sin(ctx, n).into_value(ctx)
 }
 
-pub fn cos<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
+pub fn cos<'gc>(ctx: MutationContext<'gc>, n: Value<'gc>) -> Value<'gc> {
     let Some(n) = n.number() else {
         thunk_raise(
             ctx,
@@ -859,7 +859,7 @@ pub fn cos<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
     Number::cos(ctx, n).into_value(ctx)
 }
 
-pub fn tan<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
+pub fn tan<'gc>(ctx: MutationContext<'gc>, n: Value<'gc>) -> Value<'gc> {
     let Some(n) = n.number() else {
         thunk_raise(
             ctx,
@@ -875,7 +875,7 @@ pub fn tan<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
     Number::tan(ctx, n).into_value(ctx)
 }
 
-pub fn asin<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
+pub fn asin<'gc>(ctx: MutationContext<'gc>, n: Value<'gc>) -> Value<'gc> {
     let Some(n) = n.number() else {
         thunk_raise(
             ctx,
@@ -891,7 +891,7 @@ pub fn asin<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
     Number::asin(ctx, n).into_value(ctx)
 }
 
-pub fn acos<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
+pub fn acos<'gc>(ctx: MutationContext<'gc>, n: Value<'gc>) -> Value<'gc> {
     let Some(n) = n.number() else {
         thunk_raise(
             ctx,
@@ -907,7 +907,7 @@ pub fn acos<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
     Number::acos(ctx, n).into_value(ctx)
 }
 
-pub fn atan<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
+pub fn atan<'gc>(ctx: MutationContext<'gc>, n: Value<'gc>) -> Value<'gc> {
     let Some(n) = n.number() else {
         thunk_raise(
             ctx,
@@ -923,7 +923,7 @@ pub fn atan<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
     Number::atan(ctx, n).into_value(ctx)
 }
 
-pub fn exp<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
+pub fn exp<'gc>(ctx: MutationContext<'gc>, n: Value<'gc>) -> Value<'gc> {
     let Some(n) = n.number() else {
         thunk_raise(
             ctx,
@@ -939,7 +939,7 @@ pub fn exp<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
     Number::exp(ctx, n).into_value(ctx)
 }
 
-pub fn log<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
+pub fn log<'gc>(ctx: MutationContext<'gc>, n: Value<'gc>) -> Value<'gc> {
     let Some(n) = n.number() else {
         thunk_raise(
             ctx,
@@ -955,7 +955,7 @@ pub fn log<'gc>(ctx: Context<'gc>, n: Value<'gc>) -> Value<'gc> {
     Number::log(ctx, n).into_value(ctx)
 }
 
-pub fn atan2<'gc>(ctx: Context<'gc>, y: Value<'gc>, x: Value<'gc>) -> Value<'gc> {
+pub fn atan2<'gc>(ctx: MutationContext<'gc>, y: Value<'gc>, x: Value<'gc>) -> Value<'gc> {
     let Some(y) = y.number() else {
         thunk_raise(
             ctx,
@@ -983,7 +983,7 @@ pub fn atan2<'gc>(ctx: Context<'gc>, y: Value<'gc>, x: Value<'gc>) -> Value<'gc>
     Number::atan2(ctx, y, x).into_value(ctx)
 }
 
-pub fn evenp<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn evenp<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     let Some(n) = v.number() else {
         thunk_raise(
             ctx,
@@ -999,7 +999,7 @@ pub fn evenp<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
     n.is_even().into()
 }
 
-pub fn oddp<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn oddp<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     let Some(n) = v.number() else {
         thunk_raise(
             ctx,
@@ -1015,7 +1015,7 @@ pub fn oddp<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
     (!n.is_even()).into()
 }
 
-pub fn fxeq<'gc>(ctx: Context<'gc>, x: Value<'gc>, y: Value<'gc>) -> Value<'gc> {
+pub fn fxeq<'gc>(ctx: MutationContext<'gc>, x: Value<'gc>, y: Value<'gc>) -> Value<'gc> {
     if !x.is_int32() {
         thunk_raise(
             ctx,

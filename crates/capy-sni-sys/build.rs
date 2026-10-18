@@ -12,7 +12,7 @@ fn main() {
             let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").ok()?);
             let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".into());
             let target = env::var("TARGET").ok()?;
-            // crates/capy-sni-sys → workspace root
+            // crates/capy-sni-sys -> workspace root
             let root = manifest_dir.parent()?.parent()?;
             let candidate = root.join("target").join(&target).join(&profile);
             if candidate.join("libcapy.so").exists()

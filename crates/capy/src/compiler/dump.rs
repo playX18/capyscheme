@@ -149,13 +149,14 @@ impl DumpSink {
         // Dumps can also be enabled programmatically (Scheme log level,
         // dump selections), so the gate is known only when this fires.
         crate::heap::logging::ensure_max_level(log::LevelFilter::Info);
-        log::info!("{}: {kind} -> {}", self.family.tag(), path.display());
+        log::info!(target: crate::heap::logging::DUMP_LOG_TARGET, "{}: {kind} -> {}", self.family.tag(), path.display());
     }
 
     /// `{family}: failed to write {kind} dump to {path}` via the logger.
     pub fn warn_write(&self, kind: &str, path: &Path, err: &std::io::Error) {
         crate::heap::logging::ensure_max_level(log::LevelFilter::Info);
         log::warn!(
+            target: crate::heap::logging::DUMP_LOG_TARGET,
             "{}: failed to write {kind} dump to {}: {err}",
             self.family.tag(),
             path.display()

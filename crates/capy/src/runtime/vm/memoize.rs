@@ -1,5 +1,5 @@
-use crate::runtime::Context;
+use crate::runtime::MutationContext;
 
-pub(crate) fn init_memoize<'gc>(ctx: Context<'gc>) {
+pub(crate) fn init_memoize<'gc>(ctx: MutationContext<'gc>) {
     let _ = ctx;
 }

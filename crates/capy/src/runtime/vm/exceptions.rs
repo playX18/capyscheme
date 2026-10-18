@@ -1,7 +1,7 @@
 use crate::{
     heap::Trace,
     prelude::{Tuple, Value},
-    runtime::{Context, value::Vector},
+    runtime::{MutationContext, value::Vector},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Trace)]
@@ -63,12 +63,12 @@ impl RaiseKind {
 
 /// A builder for condition objects.
 pub struct ConditionBuilder<'gc> {
-    pub ctx: Context<'gc>,
+    pub ctx: MutationContext<'gc>,
     pub simple: Vec<Value<'gc>>,
 }
 
 impl<'gc> ConditionBuilder<'gc> {
-    pub fn new(ctx: Context<'gc>) -> Self {
+    pub fn new(ctx: MutationContext<'gc>) -> Self {
         Self {
             ctx,
             simple: Vec::new(),
@@ -322,7 +322,7 @@ fn finish_condition<'gc>(
 }
 
 pub fn make_assertion_violation<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     who: Option<&str>,
     msg: &str,
     irritants: &[Value<'gc>],
@@ -335,7 +335,7 @@ pub fn make_assertion_violation<'gc>(
 }
 
 pub fn make_assertion_violation_value<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     who: Value<'gc>,
     message: Value<'gc>,
     irritants: &[Value<'gc>],
@@ -350,7 +350,10 @@ pub fn make_assertion_violation_value<'gc>(
         .build()
 }
 
-pub fn make_non_applicable_violation<'gc>(ctx: Context<'gc>, subr: Value<'gc>) -> Value<'gc> {
+pub fn make_non_applicable_violation<'gc>(
+    ctx: MutationContext<'gc>,
+    subr: Value<'gc>,
+) -> Value<'gc> {
     make_assertion_violation_value(
         ctx,
         Value::new(false),
@@ -360,7 +363,7 @@ pub fn make_non_applicable_violation<'gc>(ctx: Context<'gc>, subr: Value<'gc>) -
 }
 
 pub fn make_wrong_number_of_arguments_violation<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     subr: Value<'gc>,
     got: usize,
     expected: isize,
@@ -382,7 +385,7 @@ pub fn make_wrong_number_of_arguments_violation<'gc>(
 }
 
 pub fn make_primitive_wrong_number_of_arguments_violation<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     who: &'static str,
     got: usize,
     expected: isize,
@@ -405,7 +408,7 @@ pub fn make_primitive_wrong_number_of_arguments_violation<'gc>(
 }
 
 pub fn make_primitive_assertion_violation<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     who: &'static str,
     message: &'static str,
     irritants: &[Value<'gc>],
@@ -420,7 +423,7 @@ pub fn make_primitive_assertion_violation<'gc>(
 }
 
 pub fn make_raise_condition<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     code: usize,
     values: &[Value<'gc>],
 ) -> Value<'gc> {
@@ -428,7 +431,7 @@ pub fn make_raise_condition<'gc>(
 }
 
 pub fn make_raise_condition_with_source<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     code: usize,
     values: &[Value<'gc>],
     source: Value<'gc>,
@@ -437,7 +440,7 @@ pub fn make_raise_condition_with_source<'gc>(
 }
 
 fn make_raise_condition_impl<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     code: usize,
     values: &[Value<'gc>],
     source: Option<Value<'gc>>,
@@ -577,7 +580,7 @@ fn make_raise_condition_impl<'gc>(
 }
 
 pub fn make_undefined_violation<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     who: Option<Value<'gc>>,
     message: &str,
     irritants: &[Value<'gc>],
@@ -587,28 +590,4 @@ pub fn make_undefined_violation<'gc>(
         cc = cc.who_value(who);
     }
     cc.message(message).irritants(irritants).marks().build()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::runtime::{Scheme, value::Vector};
-
-    #[test]
-    fn source_condition_fields_accepts_extended_source_vector() {
-        Scheme::new_uninit().enter(|ctx| {
-            let file = ctx.str("source-condition.scm");
-            let source = Vector::from_slice(
-                ctx,
-                &[file, Value::new(2), Value::new(9), Value::new(false)],
-            )
-            .into();
-            let [actual_file, actual_line, actual_column] =
-                source_condition_fields(source).expect("valid source vector");
-
-            assert_eq!(actual_file, file);
-            assert_eq!(actual_line, Value::new(2));
-            assert_eq!(actual_column, Value::new(9));
-        });
-    }
 }

@@ -1,6 +1,6 @@
 use crate::heap::Gc;
 use crate::{prelude::*, static_symbols};
-pub fn init_vectors<'gc>(ctx: Context<'gc>) {
+pub fn init_vectors<'gc>(ctx: MutationContext<'gc>) {
     vector_ops::register(ctx);
 }
 
@@ -17,7 +17,10 @@ static_symbols!(
 );
 
 impl<'gc> FromValue<'gc> for Endianness {
-    fn try_from_value(ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+    fn try_from_value(
+        ctx: MutationContext<'gc>,
+        value: Value<'gc>,
+    ) -> Result<Self, ConversionError<'gc>> {
         if value == sym_big(ctx).into() {
             Ok(Endianness::Big)
         } else if value == sym_little(ctx).into() {
@@ -29,7 +32,7 @@ impl<'gc> FromValue<'gc> for Endianness {
 }
 
 impl<'gc> IntoValue<'gc> for Endianness {
-    fn into_value(self, ctx: Context<'gc>) -> Value<'gc> {
+    fn into_value(self, ctx: MutationContext<'gc>) -> Value<'gc> {
         match self {
             Endianness::Big => sym_big(ctx).into(),
             Endianness::Little => sym_little(ctx).into(),
@@ -42,33 +45,33 @@ pub mod vector_ops {
 
     #[scheme(name = "vector")]
     pub fn vector(values: &'gc [Value<'gc>]) -> Value<'gc> {
-        let v = Vector::from_slice(nctx.ctx, values);
+        let v = Vector::from_slice(ctx, values);
 
-        nctx.return_(v.into())
+        v.into()
     }
 
     #[scheme(name = "make-vector")]
     pub fn make_vector(nelems: usize, init: Option<Value<'gc>>) -> Value<'gc> {
-        let v = Vector::new::<false>(nctx.ctx, nelems, init.unwrap_or(Value::new(false)));
+        let v = Vector::new::<false>(ctx, nelems, init.unwrap_or(Value::new(false)));
 
-        nctx.return_(v.into())
+        v.into()
     }
 
     #[scheme(name = "vector-length")]
     pub fn vector_length(vec: Gc<'gc, Vector<'gc>>) -> Value<'gc> {
-        let len = vec.len().into_value(nctx.ctx);
-        nctx.return_(len)
+        let len = vec.len().into_value(ctx);
+        len
     }
     #[scheme(name = "vector?")]
     pub fn vector_p(value: Value<'gc>) -> bool {
-        nctx.return_(value.is::<Vector>())
+        value.is::<Vector>()
     }
 
     #[scheme(name = "vector-ref")]
     pub fn vector_ref(vec: Gc<'gc, Vector<'gc>>, k: usize) -> Result<Value<'gc>, Value<'gc>> {
         if k >= vec.len() {
-            let k = k.into_value(nctx.ctx);
-            return nctx.wrong_argument_violation(
+            let k = k.into_value(ctx);
+            call.wrong_argument_violation(
                 "vector-ref",
                 "index out of bounds",
                 Some(k),
@@ -76,11 +79,12 @@ pub mod vector_ops {
                 2,
                 &[vec.into(), k],
             );
+            return Err(Value::undefined());
         }
 
         let v = vec[k].get();
 
-        nctx.return_(Ok(v))
+        Ok(v)
     }
 
     #[scheme(name = "vector-set!")]
@@ -90,8 +94,8 @@ pub mod vector_ops {
         value: Value<'gc>,
     ) -> Result<Value<'gc>, Value<'gc>> {
         if k >= vec.len() {
-            let k = k.into_value(nctx.ctx);
-            return nctx.wrong_argument_violation(
+            let k = k.into_value(ctx);
+            call.wrong_argument_violation(
                 "vector-set!",
                 "index out of bounds",
                 Some(k),
@@ -99,11 +103,12 @@ pub mod vector_ops {
                 3,
                 &[vec.into(), k, value],
             );
+            return Err(Value::undefined());
         }
 
-        let wvec = Gc::write(nctx.ctx, vec);
+        let wvec = Gc::write(ctx, vec);
         wvec[k].unlock().set(value);
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "vector-fill!")]
@@ -117,10 +122,9 @@ pub mod vector_ops {
         let end = end.unwrap_or(vec.len());
 
         if start > end {
-            let ctx = nctx.ctx;
             let start_value = start.into_value(ctx);
             let end_value = end.into_value(ctx);
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "vector-fill!",
                 "start < end",
                 Some(Value::cons(ctx, start_value, end_value)),
@@ -131,9 +135,8 @@ pub mod vector_ops {
         }
 
         if end > vec.len() {
-            let ctx = nctx.ctx;
             let end_value = end.into_value(ctx);
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "vector-fill!",
                 "end index out of bounds",
                 Some(end_value),
@@ -143,11 +146,11 @@ pub mod vector_ops {
             );
         }
 
-        let wvec = Gc::write(nctx.ctx, vec);
+        let wvec = Gc::write(ctx, vec);
         for i in start..end {
             wvec[i].unlock().set(value);
         }
-        nctx.return_(vec.into())
+        vec.into()
     }
 
     #[scheme(name = "vector-copy")]
@@ -155,14 +158,13 @@ pub mod vector_ops {
         vec: Gc<'gc, Vector<'gc>>,
         start: Option<usize>,
         end: Option<usize>,
-    ) -> Gc<'gc, Vector<'gc>> {
+    ) -> Value<'gc> {
         let start = start.unwrap_or(0);
         let end = end.unwrap_or(vec.len());
         if start > end || end > vec.len() {
-            let ctx = nctx.ctx;
             let start_value = start.into_value(ctx);
             let end_value = end.into_value(ctx);
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "vector-copy",
                 "invalid start or end indices",
                 Some(Value::cons(ctx, start_value, end_value)),
@@ -172,34 +174,33 @@ pub mod vector_ops {
             );
         }
         let slice = &vec.as_slice()[start..end];
-        let new_vec = Vector::from_slice(nctx.ctx, slice);
-        nctx.return_(new_vec)
+        let new_vec = Vector::from_slice(ctx, slice);
+        (new_vec).into()
     }
 
     #[scheme(name = "tuple")]
     pub fn tuple(values: &'gc [Value<'gc>]) -> Value<'gc> {
-        let v = Tuple::from_slice(nctx.ctx, values);
+        let v = Tuple::from_slice(ctx, values);
 
-        nctx.return_(v.into())
+        v.into()
     }
 
     #[scheme(name = "make-tuple")]
     pub fn make_tuple(nelems: usize, init: Option<Value<'gc>>) -> Value<'gc> {
-        let v = Tuple::new(nctx.ctx, nelems, init.unwrap_or(Value::new(false)));
+        let v = Tuple::new(ctx, nelems, init.unwrap_or(Value::new(false)));
 
-        nctx.return_(v.into())
+        v.into()
     }
 
     #[scheme(name = "make-bytevector")]
     pub fn make_bytevector(nelems: usize, init: Option<i16>) -> Value<'gc> {
-        let v = ByteVector::new::<false>(nctx.ctx, nelems, true);
+        let v = ByteVector::new::<false>(ctx, nelems, true);
         if let Some(init) = init {
             if init >= i8::MIN as i16 && init <= u8::MAX as i16 {
                 let byte = (init & 0xff) as u8;
                 v.fill(byte);
             } else {
-                let ctx = nctx.ctx;
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "make-bytevector",
                     "initial value out of range",
                     Some(init.into_value(ctx)),
@@ -209,36 +210,36 @@ pub mod vector_ops {
                 );
             }
         }
-        nctx.return_(v.into())
+        v.into()
     }
 
     #[scheme(name = "make-bytevector/nonmoving")]
     pub fn make_bytevector_nonmoving(nelems: usize, init: Option<u8>) -> Value<'gc> {
-        let v = ByteVector::new::<false>(nctx.ctx, nelems, false);
+        let v = ByteVector::new::<false>(ctx, nelems, false);
         if let Some(b) = init {
             v.fill(b);
         }
-        nctx.return_(v.into())
+        v.into()
     }
 
     #[scheme(name = "bytevector-length")]
     pub fn bytevector_length(bv: Gc<'gc, ByteVector>) -> Value<'gc> {
-        let len = bv.len().into_value(nctx.ctx);
-        nctx.return_(len)
+        let len = bv.len().into_value(ctx);
+        len
     }
 
     #[scheme(name = "bytevector->list")]
     pub fn bytevector_to_list(bv: Gc<'gc, ByteVector>) -> Value<'gc> {
         let mut lst = Value::null();
         for &b in bv.as_slice().iter().rev() {
-            lst = Value::cons(nctx.ctx, b.into_value(nctx.ctx), lst);
+            lst = Value::cons(ctx, b.into_value(ctx), lst);
         }
-        nctx.return_(lst)
+        lst
     }
 
     #[scheme(name = "bytevector?")]
     pub fn bytevector_p(value: Value<'gc>) -> bool {
-        nctx.return_(value.is::<ByteVector>())
+        value.is::<ByteVector>()
     }
 
     #[scheme(name = "bytevector-u8-ref")]
@@ -248,8 +249,7 @@ pub mod vector_ops {
         _endian: Option<Endianness>,
     ) -> Result<u8, Value<'gc>> {
         if k >= bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-u8-ref",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -257,11 +257,12 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let v = bv[k];
 
-        nctx.return_(Ok(v))
+        Ok(v)
     }
 
     #[scheme(name = "bytevector-ref")]
@@ -271,8 +272,7 @@ pub mod vector_ops {
         _endian: Option<Endianness>,
     ) -> Result<u8, Value<'gc>> {
         if k >= bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-u8-ref",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -280,11 +280,12 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let v = bv[k];
 
-        nctx.return_(Ok(v))
+        Ok(v)
     }
     #[scheme(name = "bytevector-u8-set!")]
     pub fn bytevector_u8_set(
@@ -294,8 +295,7 @@ pub mod vector_ops {
         _endian: Option<Endianness>,
     ) -> Result<u8, Value<'gc>> {
         if k >= bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-u8-set!",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -303,13 +303,14 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             bv.as_slice_mut_unchecked()[k] = value;
         }
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-set!")]
@@ -320,8 +321,7 @@ pub mod vector_ops {
         _endian: Option<Endianness>,
     ) -> Result<u8, Value<'gc>> {
         if k >= bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-u8-set!",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -329,13 +329,14 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             bv.as_slice_mut_unchecked()[k] = value;
         }
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-s8-ref")]
@@ -345,8 +346,7 @@ pub mod vector_ops {
         _endian: Option<Endianness>,
     ) -> Result<i8, Value<'gc>> {
         if k >= bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-s8-ref",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -354,11 +354,12 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let v = bv[k] as i8;
 
-        nctx.return_(Ok(v))
+        Ok(v)
     }
 
     #[scheme(name = "bytevector-s8-set!")]
@@ -369,8 +370,7 @@ pub mod vector_ops {
         _endian: Option<Endianness>,
     ) -> Result<i8, Value<'gc>> {
         if k >= bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-s8-set!",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -378,13 +378,14 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             bv.as_slice_mut_unchecked()[k] = value as u8;
         }
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-u16-ref")]
@@ -395,8 +396,7 @@ pub mod vector_ops {
     ) -> Result<u16, Value<'gc>> {
         let endian = endian.unwrap_or_default();
         if k + 2 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-u16-ref",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -404,6 +404,7 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = &bv.as_slice()[k..k + 2];
@@ -411,7 +412,7 @@ pub mod vector_ops {
             Endianness::Little => u16::from_le_bytes([bytes[0], bytes[1]]),
             Endianness::Big => u16::from_be_bytes([bytes[0], bytes[1]]),
         };
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-s16-ref")]
@@ -422,8 +423,7 @@ pub mod vector_ops {
     ) -> Result<i16, Value<'gc>> {
         let endian = endian.unwrap_or_default();
         if k + 2 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-s16-ref",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -431,6 +431,7 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = &bv.as_slice()[k..k + 2];
@@ -438,7 +439,7 @@ pub mod vector_ops {
             Endianness::Little => i16::from_le_bytes([bytes[0], bytes[1]]),
             Endianness::Big => i16::from_be_bytes([bytes[0], bytes[1]]),
         };
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-u16-set!")]
@@ -450,8 +451,7 @@ pub mod vector_ops {
     ) -> Result<u16, Value<'gc>> {
         let endian = endian.unwrap_or_default();
         if k + 2 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-u16-set!",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -459,6 +459,7 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = match endian {
@@ -471,7 +472,7 @@ pub mod vector_ops {
             slice[k] = bytes[0];
             slice[k + 1] = bytes[1];
         }
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-s16-set!")]
@@ -483,8 +484,7 @@ pub mod vector_ops {
     ) -> Result<i16, Value<'gc>> {
         let endian = endian.unwrap_or_default();
         if k + 2 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-s16-set!",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -492,6 +492,7 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = match endian {
@@ -504,7 +505,7 @@ pub mod vector_ops {
             slice[k] = bytes[0];
             slice[k + 1] = bytes[1];
         }
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-u32-ref")]
@@ -515,8 +516,7 @@ pub mod vector_ops {
     ) -> Result<u32, Value<'gc>> {
         let endian = endian.unwrap_or_default();
         if k + 4 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-u32-ref",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -524,6 +524,7 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = &bv.as_slice()[k..k + 4];
@@ -531,7 +532,7 @@ pub mod vector_ops {
             Endianness::Little => u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
             Endianness::Big => u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
         };
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-s32-ref")]
@@ -542,8 +543,7 @@ pub mod vector_ops {
     ) -> Result<i32, Value<'gc>> {
         let endian = endian.unwrap_or_default();
         if k + 4 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-s32-ref",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -551,6 +551,7 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = &bv.as_slice()[k..k + 4];
@@ -558,7 +559,7 @@ pub mod vector_ops {
             Endianness::Little => i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
             Endianness::Big => i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
         };
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-u32-set!")]
@@ -570,8 +571,7 @@ pub mod vector_ops {
     ) -> Result<u32, Value<'gc>> {
         let endian = endian.unwrap_or_default();
         if k + 4 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-u32-set!",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -579,6 +579,7 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = match endian {
@@ -593,7 +594,7 @@ pub mod vector_ops {
             slice[k + 2] = bytes[2];
             slice[k + 3] = bytes[3];
         }
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-s32-set!")]
@@ -605,8 +606,7 @@ pub mod vector_ops {
     ) -> Result<i32, Value<'gc>> {
         let endian = endian.unwrap_or_default();
         if k + 4 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-s32-set!",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -614,6 +614,7 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = match endian {
@@ -628,7 +629,7 @@ pub mod vector_ops {
             slice[k + 2] = bytes[2];
             slice[k + 3] = bytes[3];
         }
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-u64-ref")]
@@ -639,8 +640,7 @@ pub mod vector_ops {
     ) -> Result<u64, Value<'gc>> {
         let endian = endian.unwrap_or_default();
         if k + 8 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-u64-ref",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -648,6 +648,7 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = &bv.as_slice()[k..k + 8];
@@ -659,7 +660,7 @@ pub mod vector_ops {
                 bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
             ]),
         };
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-s64-ref")]
@@ -670,8 +671,7 @@ pub mod vector_ops {
     ) -> Result<i64, Value<'gc>> {
         let endian = endian.unwrap_or_default();
         if k + 8 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-s64-ref",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -679,6 +679,7 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = &bv.as_slice()[k..k + 8];
@@ -690,7 +691,7 @@ pub mod vector_ops {
                 bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
             ]),
         };
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-u64-set!")]
@@ -702,8 +703,7 @@ pub mod vector_ops {
     ) -> Result<u64, Value<'gc>> {
         let endian = endian.unwrap_or_default();
         if k + 8 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-u64-set!",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -711,6 +711,7 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = match endian {
@@ -729,7 +730,7 @@ pub mod vector_ops {
             slice[k + 6] = bytes[6];
             slice[k + 7] = bytes[7];
         }
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-s64-set!")]
@@ -741,8 +742,7 @@ pub mod vector_ops {
     ) -> Result<i64, Value<'gc>> {
         let endian = endian.unwrap_or_default();
         if k + 8 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-s64-set!",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -750,6 +750,7 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = match endian {
@@ -768,7 +769,7 @@ pub mod vector_ops {
             slice[k + 6] = bytes[6];
             slice[k + 7] = bytes[7];
         }
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-ieee-single-ref")]
@@ -779,8 +780,7 @@ pub mod vector_ops {
     ) -> Result<f32, Value<'gc>> {
         let endian = endian.unwrap_or_default();
         if k + 4 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-ieee-single-ref",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -788,6 +788,7 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = &bv.as_slice()[k..k + 4];
@@ -795,7 +796,7 @@ pub mod vector_ops {
             Endianness::Little => f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
             Endianness::Big => f32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
         };
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-ieee-single-set!")]
@@ -807,8 +808,7 @@ pub mod vector_ops {
     ) -> Result<f32, Value<'gc>> {
         let endian = endian.unwrap_or_default();
         if k + 4 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-ieee-single-set!",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -816,6 +816,7 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = match endian {
@@ -830,7 +831,7 @@ pub mod vector_ops {
             slice[k + 2] = bytes[2];
             slice[k + 3] = bytes[3];
         }
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-ieee-double-ref")]
@@ -841,8 +842,7 @@ pub mod vector_ops {
     ) -> Result<f64, Value<'gc>> {
         let endian = endian.unwrap_or_default();
         if k + 8 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-ieee-double-ref",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -850,6 +850,7 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = &bv.as_slice()[k..k + 8];
@@ -861,7 +862,7 @@ pub mod vector_ops {
                 bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
             ]),
         };
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-ieee-double-set!")]
@@ -873,8 +874,7 @@ pub mod vector_ops {
     ) -> Result<f64, Value<'gc>> {
         let endian = endian.unwrap_or_default();
         if k + 8 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-ieee-double-set!",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -882,6 +882,7 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = match endian {
@@ -900,7 +901,7 @@ pub mod vector_ops {
             slice[k + 6] = bytes[6];
             slice[k + 7] = bytes[7];
         }
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-ieee-single-native-ref")]
@@ -909,8 +910,7 @@ pub mod vector_ops {
         k: usize,
     ) -> Result<f32, Value<'gc>> {
         if k + 4 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-ieee-single-native-ref",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -918,11 +918,11 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         if (k + 4) & 0x3 != 0 {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-ieee-single-native-ref",
                 "unaligned access",
                 Some(k.into_value(ctx)),
@@ -930,11 +930,12 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = &bv.as_slice()[k..k + 4];
         let value = f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-ieee-single-native-set!")]
@@ -944,8 +945,7 @@ pub mod vector_ops {
         value: f32,
     ) -> Result<f32, Value<'gc>> {
         if k + 4 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-ieee-single-native-set!",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -953,11 +953,11 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         if (k + 4) & 0x3 != 0 {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-ieee-single-native-set!",
                 "unaligned access",
                 Some(k.into_value(ctx)),
@@ -965,6 +965,7 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = value.to_ne_bytes();
@@ -976,7 +977,7 @@ pub mod vector_ops {
             slice[k + 2] = bytes[2];
             slice[k + 3] = bytes[3];
         }
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-ieee-double-native-ref")]
@@ -985,8 +986,7 @@ pub mod vector_ops {
         k: usize,
     ) -> Result<f64, Value<'gc>> {
         if k + 8 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-ieee-double-native-ref",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -994,11 +994,11 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         if (k + 8) & 0x7 != 0 {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-ieee-double-native-ref",
                 "unaligned access",
                 Some(k.into_value(ctx)),
@@ -1006,13 +1006,14 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = &bv.as_slice()[k..k + 8];
         let value = f64::from_ne_bytes([
             bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
         ]);
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-ieee-double-native-set!")]
@@ -1022,8 +1023,7 @@ pub mod vector_ops {
         value: f64,
     ) -> Result<f64, Value<'gc>> {
         if k + 8 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-ieee-double-native-set!",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -1031,11 +1031,11 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         if (k + 8) & 0x7 != 0 {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-ieee-double-native-set!",
                 "unaligned access",
                 Some(k.into_value(ctx)),
@@ -1043,6 +1043,7 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = value.to_ne_bytes();
@@ -1058,14 +1059,13 @@ pub mod vector_ops {
             slice[k + 6] = bytes[6];
             slice[k + 7] = bytes[7];
         }
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-u8-native-ref")]
     pub fn bytevector_u8_native_ref(bv: Gc<'gc, ByteVector>, k: usize) -> Result<u8, Value<'gc>> {
         if k >= bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-u8-native-ref",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -1073,10 +1073,11 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let v = bv[k];
-        nctx.return_(Ok(v))
+        Ok(v)
     }
 
     #[scheme(name = "bytevector-u8-native-set!")]
@@ -1086,8 +1087,7 @@ pub mod vector_ops {
         value: u8,
     ) -> Result<u8, Value<'gc>> {
         if k >= bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-u8-native-set!",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -1095,20 +1095,20 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             bv.as_slice_mut_unchecked()[k] = value;
         }
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-s8-native-ref")]
     pub fn bytevector_s8_native_ref(bv: Gc<'gc, ByteVector>, k: usize) -> Result<i8, Value<'gc>> {
         if k >= bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-s8-native-ref",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -1116,10 +1116,11 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let v = bv[k] as i8;
-        nctx.return_(Ok(v))
+        Ok(v)
     }
 
     #[scheme(name = "bytevector-s8-native-set!")]
@@ -1129,8 +1130,7 @@ pub mod vector_ops {
         value: i8,
     ) -> Result<i8, Value<'gc>> {
         if k >= bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-s8-native-set!",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -1138,20 +1138,20 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             bv.as_slice_mut_unchecked()[k] = value as u8;
         }
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-u16-native-ref")]
     pub fn bytevector_u16_native_ref(bv: Gc<'gc, ByteVector>, k: usize) -> Result<u16, Value<'gc>> {
         if k + 2 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-u16-native-ref",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -1159,11 +1159,12 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = &bv.as_slice()[k..k + 2];
         let value = u16::from_ne_bytes([bytes[0], bytes[1]]);
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-u16-native-set!")]
@@ -1173,8 +1174,7 @@ pub mod vector_ops {
         value: u16,
     ) -> Result<u16, Value<'gc>> {
         if k + 2 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-u16-native-set!",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -1182,6 +1182,7 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = value.to_ne_bytes();
@@ -1191,14 +1192,13 @@ pub mod vector_ops {
             slice[k] = bytes[0];
             slice[k + 1] = bytes[1];
         }
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-s16-native-ref")]
     pub fn bytevector_s16_native_ref(bv: Gc<'gc, ByteVector>, k: usize) -> Result<i16, Value<'gc>> {
         if k + 2 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-s16-native-ref",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -1206,11 +1206,12 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = &bv.as_slice()[k..k + 2];
         let value = i16::from_ne_bytes([bytes[0], bytes[1]]);
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-s16-native-set!")]
@@ -1220,8 +1221,7 @@ pub mod vector_ops {
         value: i16,
     ) -> Result<i16, Value<'gc>> {
         if k + 2 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-s16-native-set!",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -1229,6 +1229,7 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = value.to_ne_bytes();
@@ -1238,14 +1239,13 @@ pub mod vector_ops {
             slice[k] = bytes[0];
             slice[k + 1] = bytes[1];
         }
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-u32-native-ref")]
     pub fn bytevector_u32_native_ref(bv: Gc<'gc, ByteVector>, k: usize) -> Result<u32, Value<'gc>> {
         if k + 4 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-u32-native-ref",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -1253,11 +1253,12 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = &bv.as_slice()[k..k + 4];
         let value = u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-u32-native-set!")]
@@ -1267,8 +1268,7 @@ pub mod vector_ops {
         value: u32,
     ) -> Result<u32, Value<'gc>> {
         if k + 4 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-u32-native-set!",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -1276,6 +1276,7 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = value.to_ne_bytes();
@@ -1287,14 +1288,13 @@ pub mod vector_ops {
             slice[k + 2] = bytes[2];
             slice[k + 3] = bytes[3];
         }
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-s32-native-ref")]
     pub fn bytevector_s32_native_ref(bv: Gc<'gc, ByteVector>, k: usize) -> Result<i32, Value<'gc>> {
         if k + 4 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-s32-native-ref",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -1302,11 +1302,12 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = &bv.as_slice()[k..k + 4];
         let value = i32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-s32-native-set!")]
@@ -1316,8 +1317,7 @@ pub mod vector_ops {
         value: i32,
     ) -> Result<i32, Value<'gc>> {
         if k + 4 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-s32-native-set!",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -1325,6 +1325,7 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = value.to_ne_bytes();
@@ -1336,14 +1337,13 @@ pub mod vector_ops {
             slice[k + 2] = bytes[2];
             slice[k + 3] = bytes[3];
         }
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-u64-native-ref")]
     pub fn bytevector_u64_native_ref(bv: Gc<'gc, ByteVector>, k: usize) -> Result<u64, Value<'gc>> {
         if k + 8 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-u64-native-ref",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -1351,13 +1351,14 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = &bv.as_slice()[k..k + 8];
         let value = u64::from_ne_bytes([
             bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
         ]);
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-u64-native-set!")]
@@ -1367,8 +1368,7 @@ pub mod vector_ops {
         value: u64,
     ) -> Result<u64, Value<'gc>> {
         if k + 8 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-u64-native-set!",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -1376,6 +1376,7 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = value.to_ne_bytes();
@@ -1391,14 +1392,13 @@ pub mod vector_ops {
             slice[k + 6] = bytes[6];
             slice[k + 7] = bytes[7];
         }
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-s64-native-ref")]
     pub fn bytevector_s64_native_ref(bv: Gc<'gc, ByteVector>, k: usize) -> Result<i64, Value<'gc>> {
         if k + 8 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-s64-native-ref",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -1406,13 +1406,14 @@ pub mod vector_ops {
                 2,
                 &[bv.into(), k.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = &bv.as_slice()[k..k + 8];
         let value = i64::from_ne_bytes([
             bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
         ]);
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector-s64-native-set!")]
@@ -1422,8 +1423,7 @@ pub mod vector_ops {
         value: i64,
     ) -> Result<i64, Value<'gc>> {
         if k + 8 > bv.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "bytevector-s64-native-set!",
                 "index out of bounds",
                 Some(k.into_value(ctx)),
@@ -1431,6 +1431,7 @@ pub mod vector_ops {
                 3,
                 &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
             );
+            return Err(Value::undefined());
         }
 
         let bytes = value.to_ne_bytes();
@@ -1446,12 +1447,12 @@ pub mod vector_ops {
             slice[k + 6] = bytes[6];
             slice[k + 7] = bytes[7];
         }
-        nctx.return_(Ok(value))
+        Ok(value)
     }
 
     #[scheme(name = "bytevector=?")]
     pub fn bytevector_eq_p(bv1: Gc<'gc, ByteVector>, bv2: Gc<'gc, ByteVector>) -> bool {
-        nctx.return_(bv1.as_slice() == bv2.as_slice())
+        bv1.as_slice() == bv2.as_slice()
     }
 
     #[scheme(name = "bytevector-fill!")]
@@ -1459,8 +1460,8 @@ pub mod vector_ops {
         let byte = if value >= i8::MIN as i16 && value <= u8::MAX as i16 {
             value as u8
         } else {
-            let value = value.into_value(nctx.ctx);
-            return nctx.wrong_argument_violation(
+            let value = value.into_value(ctx);
+            return call.wrong_argument_violation(
                 "bytevector-fill!",
                 "value out of range",
                 Some(value),
@@ -1470,16 +1471,69 @@ pub mod vector_ops {
             );
         };
         bv.fill(byte);
-        nctx.return_(bv.into())
+        bv.into()
+    }
+
+    /// `(r6rs:bytevector-copy! source source-start target target-start count)`
+    ///
+    /// Overlap-safe (memmove semantics).
+    #[scheme(name = "r6rs:bytevector-copy!")]
+    pub fn r6rs_bytevector_copy(
+        source: Gc<'gc, ByteVector>,
+        source_start: usize,
+        target: Gc<'gc, ByteVector>,
+        target_start: usize,
+        count: usize,
+    ) -> Value<'gc> {
+        let src_ok = source_start
+            .checked_add(count)
+            .is_some_and(|end| end <= source.len());
+        let dst_ok = target_start
+            .checked_add(count)
+            .is_some_and(|end| end <= target.len());
+        if !src_ok || !dst_ok {
+            return call.wrong_argument_violation(
+                "bytevector-copy!",
+                "range out of bounds",
+                None,
+                None,
+                5,
+                &[
+                    source.into(),
+                    source_start.into_value(ctx),
+                    target.into(),
+                    target_start.into_value(ctx),
+                    count.into_value(ctx),
+                ],
+            );
+        }
+        if target.is_immutable() {
+            return call.wrong_argument_violation(
+                "bytevector-copy!",
+                "target bytevector is immutable",
+                Some(target.into()),
+                Some(2),
+                3,
+                &[target.into()],
+            );
+        }
+        if count != 0 {
+            // SAFETY: bounds checked above; ptr::copy handles overlap.
+            unsafe {
+                let src = source.contents().to_ptr::<u8>().add(source_start);
+                let dst = target.contents().to_mut_ptr::<u8>().add(target_start);
+                std::ptr::copy(src, dst, count);
+            }
+        }
+        Value::unspecified()
     }
 
     #[scheme(name = "u8-list->bytevector")]
     pub fn u8_list_to_bytevector(lst: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
         let mut bytes = Vec::new();
         let mut current = lst;
-        let ctx = nctx.ctx;
         if !current.is_list() {
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "u8-list->bytevector",
                 "not a proper list",
                 Some(lst),
@@ -1487,13 +1541,14 @@ pub mod vector_ops {
                 1,
                 &[lst],
             );
+            return Err(Value::undefined());
         }
 
         while current.is_pair() {
             let n = match u8::try_from_value(ctx, current.car()) {
                 Ok(n) => n,
                 Err(_) => {
-                    return nctx.wrong_argument_violation(
+                    call.wrong_argument_violation(
                         "u8-list->bytevector",
                         "not a u8",
                         Some(current.car()),
@@ -1501,22 +1556,22 @@ pub mod vector_ops {
                         1,
                         &[lst],
                     );
+                    return Err(Value::undefined());
                 }
             };
             bytes.push(n);
             current = current.cdr();
         }
-        let bv = ByteVector::from_slice(nctx.ctx, &bytes, true);
-        nctx.return_(Ok(bv.into()))
+        let bv = ByteVector::from_slice(ctx, &bytes, true);
+        Ok(bv.into())
     }
 
     #[scheme(name = "u8-list->bytevector/nonmoving")]
     pub fn u8_list_to_bytevector_nonmoving(lst: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
         let mut bytes = Vec::new();
         let mut current = lst;
-        let ctx = nctx.ctx;
         if !current.is_list() {
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "u8-list->bytevector",
                 "not a proper list",
                 Some(lst),
@@ -1524,13 +1579,14 @@ pub mod vector_ops {
                 1,
                 &[lst],
             );
+            return Err(Value::undefined());
         }
 
         while current.is_pair() {
             let n = match u8::try_from_value(ctx, current.car()) {
                 Ok(n) => n,
                 Err(_) => {
-                    return nctx.wrong_argument_violation(
+                    call.wrong_argument_violation(
                         "u8-list->bytevector",
                         "not a u8",
                         Some(current.car()),
@@ -1538,17 +1594,18 @@ pub mod vector_ops {
                         1,
                         &[lst],
                     );
+                    return Err(Value::undefined());
                 }
             };
             bytes.push(n);
             current = current.cdr();
         }
-        let bv = ByteVector::from_slice(nctx.ctx, &bytes, false);
-        nctx.return_(Ok(bv.into()))
+        let bv = ByteVector::from_slice(ctx, &bytes, false);
+        Ok(bv.into())
     }
 
     #[scheme(name = "bytevector-mapping?")]
     pub fn bytevector_mapping_p(bv: Gc<'gc, ByteVector>) -> bool {
-        nctx.return_(bv.is_mapping())
+        bv.is_mapping()
     }
 }

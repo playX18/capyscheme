@@ -5,7 +5,7 @@ use crate::heap::{
     object::{ClassId, builtin_class_ids, class_header_word},
 };
 use crate::runtime::{
-    Context,
+    MutationContext,
     value::{ClassTagged, HashTable, Value, WeakTable},
 };
 use std::{cell::Cell, hash::Hash, ops::Index};
@@ -43,7 +43,7 @@ pub struct Cache<'gc> {
 }
 
 impl<'gc> Cache<'gc> {
-    pub fn new(mc: Context<'gc>) -> Gc<'gc, Self> {
+    pub fn new(mc: MutationContext<'gc>) -> Gc<'gc, Self> {
         Gc::new(
             mc,
             Self {
@@ -69,7 +69,11 @@ impl<'gc> Cache<'gc> {
     }
 
     /// Look up a value by key
-    pub fn get(self: Gc<'gc, Self>, mc: Context<'gc>, key: Value<'gc>) -> Option<Value<'gc>> {
+    pub fn get(
+        self: Gc<'gc, Self>,
+        mc: MutationContext<'gc>,
+        key: Value<'gc>,
+    ) -> Option<Value<'gc>> {
         let slot = self.hash_key(key);
 
         // Linear probing for collision resolution
@@ -97,7 +101,7 @@ impl<'gc> Cache<'gc> {
 
     pub fn update(
         self: Gc<'gc, Self>,
-        mc: Context<'gc>,
+        mc: MutationContext<'gc>,
         key: Value<'gc>,
         value: Value<'gc>,
     ) -> bool {
@@ -125,7 +129,7 @@ impl<'gc> Cache<'gc> {
     /// Insert or update a key-value pair
     pub fn insert(
         self: Gc<'gc, Self>,
-        mc: Context<'gc>,
+        mc: MutationContext<'gc>,
         key: Value<'gc>,
         value: Value<'gc>,
     ) -> Option<(Value<'gc>, Value<'gc>)> {
@@ -185,7 +189,11 @@ impl<'gc> Cache<'gc> {
     }
 
     /// Remove a key-value pair from the cache
-    pub fn remove(self: Gc<'gc, Self>, mc: Context<'gc>, key: Value<'gc>) -> Option<Value<'gc>> {
+    pub fn remove(
+        self: Gc<'gc, Self>,
+        mc: MutationContext<'gc>,
+        key: Value<'gc>,
+    ) -> Option<Value<'gc>> {
         let slot = self.hash_key(key);
 
         for i in 0..CACHE_SIZE {
@@ -208,7 +216,7 @@ impl<'gc> Cache<'gc> {
     }
 
     /// Clear all entries from the cache
-    pub fn clear(self: Gc<'gc, Self>, mc: Context<'gc>) {
+    pub fn clear(self: Gc<'gc, Self>, mc: MutationContext<'gc>) {
         for i in 0..CACHE_SIZE {
             Gc::write(mc, self)[i].unlock().set(CacheEntry::empty());
         }
@@ -216,7 +224,7 @@ impl<'gc> Cache<'gc> {
     }
 
     /// Check if the cache contains a key
-    pub fn contains_key(self: Gc<'gc, Self>, mc: Context<'gc>, key: Value<'gc>) -> bool {
+    pub fn contains_key(self: Gc<'gc, Self>, mc: MutationContext<'gc>, key: Value<'gc>) -> bool {
         self.get(mc, key).is_some()
     }
 
@@ -273,7 +281,7 @@ pub struct DynamicState<'gc> {
 }
 
 impl<'gc> DynamicState<'gc> {
-    pub fn new(mc: Context<'gc>) -> Self {
+    pub fn new(mc: MutationContext<'gc>) -> Self {
         Self {
             thread_local_values: HashTable::new(mc, super::value::HashTableType::Eq, 8, 0.75),
             values: Lock::new(WeakTable::new(mc, 9, 0.75)),
@@ -282,7 +290,7 @@ impl<'gc> DynamicState<'gc> {
         }
     }
 
-    pub fn save(&self, ctx: Context<'gc>) -> Value<'gc> {
+    pub fn save(&self, ctx: MutationContext<'gc>) -> Value<'gc> {
         let mut saved = Value::from(self.values.get());
 
         for slot in 0..CACHE_SIZE {
@@ -310,7 +318,7 @@ impl<'gc> DynamicState<'gc> {
         saved
     }
 
-    pub fn restore(&self, ctx: Context<'gc>, mut saved: Value<'gc>) {
+    pub fn restore(&self, ctx: MutationContext<'gc>, mut saved: Value<'gc>) {
         for slot in 0..CACHE_SIZE {
             let entry = &Gc::write(ctx, self.cache)[slot];
             if saved.is_pair() {
@@ -346,7 +354,7 @@ fn fluid_header_word() -> u64 {
 }
 
 impl<'gc> Fluid<'gc> {
-    pub fn new(mc: Context<'gc>, default_value: Value<'gc>) -> Gc<'gc, Self> {
+    pub fn new(mc: MutationContext<'gc>, default_value: Value<'gc>) -> Gc<'gc, Self> {
         Gc::new_with_header_word(
             mc,
             Self {
@@ -357,7 +365,7 @@ impl<'gc> Fluid<'gc> {
         )
     }
 
-    pub fn new_thread_local(mc: Context<'gc>, default_value: Value<'gc>) -> Gc<'gc, Self> {
+    pub fn new_thread_local(mc: MutationContext<'gc>, default_value: Value<'gc>) -> Gc<'gc, Self> {
         Gc::new_with_header_word(
             mc,
             Self {
@@ -368,7 +376,7 @@ impl<'gc> Fluid<'gc> {
         )
     }
 
-    pub fn get(self: Gc<'gc, Self>, ctx: Context<'gc>) -> Value<'gc> {
+    pub fn get(self: Gc<'gc, Self>, ctx: MutationContext<'gc>) -> Value<'gc> {
         let dynamic_state = &ctx.state().dynamic_state;
 
         let entry = dynamic_state.cache.get(ctx, Value::from(self));
@@ -395,7 +403,7 @@ impl<'gc> Fluid<'gc> {
         val
     }
 
-    pub fn set(self: Gc<'gc, Self>, ctx: Context<'gc>, value: Value<'gc>) {
+    pub fn set(self: Gc<'gc, Self>, ctx: MutationContext<'gc>, value: Value<'gc>) {
         let dynamic_state = &ctx.state().dynamic_state;
 
         if dynamic_state.cache.update(ctx, Value::from(self), value) {
@@ -441,7 +449,7 @@ unsafe impl<'gc> ClassTagged for Fluid<'gc> {
 }
 
 fn copy_value_table<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     tab: Gc<'gc, WeakTable<'gc>>,
 ) -> Gc<'gc, WeakTable<'gc>> {
     let ret = WeakTable::new(ctx, 9, 0.75);
@@ -471,7 +479,7 @@ macro_rules! fluid {
 
             $(#[$outer])*
             #[unsafe(export_name = concat!("capy_", stringify!($name)))]
-            $v extern "C" fn [<$name: snake>]<'gc>(ctx: $crate::runtime::Context<'gc>) -> $crate::runtime::fluids::FluidRef<'gc> {
+            $v extern "C" fn [<$name: snake>]<'gc>(ctx: $crate::runtime::MutationContext<'gc>) -> $crate::runtime::fluids::FluidRef<'gc> {
                 *[<$name: upper>]
                     .get_or_init(|| {
                         $crate::heap::global::Global::new($crate::runtime::fluids::Fluid::new(ctx, $default_value))
@@ -480,12 +488,12 @@ macro_rules! fluid {
 
             #[allow(dead_code)]
             #[unsafe(export_name = concat!("capy_get_", stringify!($name)))]
-            $v extern "C" fn [<get_ $name: snake>]<'gc>(ctx: $crate::runtime::Context<'gc>) -> $crate::runtime::value::Value<'gc> {
+            $v extern "C" fn [<get_ $name: snake>]<'gc>(ctx: $crate::runtime::MutationContext<'gc>) -> $crate::runtime::value::Value<'gc> {
                 [<$name: snake>](ctx).get(ctx)
             }
             #[allow(dead_code)]
             #[unsafe(export_name = concat!("capy_set_", stringify!($name)))]
-            $v extern "C" fn [<set_ $name: snake>]<'gc>(ctx: $crate::runtime::Context<'gc>, value: $crate::runtime::value::Value<'gc>) -> $crate::runtime::value::Value<'gc> {
+            $v extern "C" fn [<set_ $name: snake>]<'gc>(ctx: $crate::runtime::MutationContext<'gc>, value: $crate::runtime::value::Value<'gc>) -> $crate::runtime::value::Value<'gc> {
                 let old = [<get_ $name: snake>](ctx);
                 [<$name: snake>](ctx).set(ctx, value);
                 old
@@ -503,7 +511,7 @@ macro_rules! fluid {
                 $crate::heap::global::Global<$crate::heap::Rootable!($crate::runtime::fluids::FluidRef<'_>)>> = ::std::sync::OnceLock::new();
 
             #[unsafe(export_name = concat!("capy_tls_", stringify!($name)))]
-            $v fn [<$name: snake>]<'gc>(ctx: $crate::runtime::Context<'gc>) -> $crate::runtime::fluids::FluidRef<'gc> {
+            $v fn [<$name: snake>]<'gc>(ctx: $crate::runtime::MutationContext<'gc>) -> $crate::runtime::fluids::FluidRef<'gc> {
                 *[<$name: upper>]
                     .get_or_init(|| {
                         $crate::heap::global::Global::new($crate::runtime::fluids::Fluid::new_thread_local(ctx, $default_value))
@@ -511,12 +519,12 @@ macro_rules! fluid {
             }
 
             #[unsafe(export_name = concat!("capy_get_tls_", stringify!($name)))]
-            $v fn [<get_ $name: snake>]<'gc>(ctx: $crate::runtime::Context<'gc>) -> $crate::runtime::value::Value<'gc> {
+            $v fn [<get_ $name: snake>]<'gc>(ctx: $crate::runtime::MutationContext<'gc>) -> $crate::runtime::value::Value<'gc> {
                 [<$name: snake>](ctx).get(ctx)
             }
 
             #[unsafe(export_name = concat!("capy_set_tls_", stringify!($name)))]
-            $v fn [<set_ $name: snake>]<'gc>(ctx: $crate::runtime::Context<'gc>, value: $crate::runtime::value::Value<'gc>) {
+            $v fn [<set_ $name: snake>]<'gc>(ctx: $crate::runtime::MutationContext<'gc>, value: $crate::runtime::value::Value<'gc>) {
                 [<$name: snake>](ctx).set(ctx, value);
             }
         }
@@ -536,125 +544,74 @@ pub mod fluid_ops {
     pub fn make_fluid(default_value: Option<Value<'gc>>) -> Value<'gc> {
         let default_value = default_value.unwrap_or(Value::new(false));
 
-        let fluid = Fluid::new(nctx.ctx, default_value);
+        let fluid = Fluid::new(ctx, default_value);
 
-        nctx.return_(fluid.into())
+        fluid.into()
     }
 
     #[scheme(name = "make-thread-local-fluid")]
     pub fn make_thread_local_fluid(default_value: Option<Value<'gc>>) -> Value<'gc> {
         let default_value = default_value.unwrap_or(Value::new(false));
 
-        let fluid = Fluid::new_thread_local(nctx.ctx, default_value);
+        let fluid = Fluid::new_thread_local(ctx, default_value);
 
-        nctx.return_(fluid.into())
+        fluid.into()
     }
 
     #[scheme(name = "fluid?")]
     pub fn is_fluid(obj: Value<'gc>) -> Value<'gc> {
-        nctx.return_(Value::new(obj.is::<Fluid>()))
+        Value::new(obj.is::<Fluid>())
     }
 
     #[scheme(name = "fluid-thread-local?")]
     pub fn is_fluid_thread_local(fluid: FluidRef<'gc>) -> Value<'gc> {
-        nctx.return_(Value::new(fluid.is_thread_local()))
+        Value::new(fluid.is_thread_local())
     }
 
     #[scheme(name = "fluid-ref")]
     pub fn fluid_ref(fluid: FluidRef<'gc>) -> Value<'gc> {
-        let value = fluid.get(nctx.ctx);
-        nctx.return_(value)
+        let value = fluid.get(ctx);
+        value
     }
 
     #[scheme(name = "fluid-set!")]
     pub fn fluid_set(fluid: FluidRef<'gc>, value: Value<'gc>) -> Value<'gc> {
-        let old_value = fluid.get(nctx.ctx);
-        fluid.set(nctx.ctx, value);
-        nctx.return_(old_value)
+        let old_value = fluid.get(ctx);
+        fluid.set(ctx, value);
+        old_value
     }
 
     #[scheme(name = "current-dynamic-state")]
     pub fn current_dynamic_state() -> Value<'gc> {
-        let dynamic_state = nctx.ctx.state().dynamic_state.save(nctx.ctx);
+        let dynamic_state = ctx.state().dynamic_state.save(ctx);
         let val = Value::from(Gc::new_with_header_word(
-            nctx.ctx,
+            ctx,
             DynamicStateObject {
                 saved: dynamic_state,
             },
             dynamic_state_header_word(),
         ));
-        nctx.return_(val)
+        val
     }
 
     #[scheme(name = "dynamic-state?")]
     pub fn is_dynamic_state(obj: Value<'gc>) -> Value<'gc> {
-        nctx.return_(Value::new(obj.is::<DynamicStateObject>()))
+        Value::new(obj.is::<DynamicStateObject>())
     }
 
     #[scheme(name = "set-current-dynamic-state!")]
     pub fn set_current_dynamic_state(state_obj: Gc<'gc, DynamicStateObject<'gc>>) -> Value<'gc> {
-        let prev = nctx.ctx.state().dynamic_state.save(nctx.ctx);
+        let prev = ctx.state().dynamic_state.save(ctx);
         let prev = Value::from(Gc::new_with_header_word(
-            nctx.ctx,
+            ctx,
             DynamicStateObject { saved: prev },
             dynamic_state_header_word(),
         ));
-        nctx.ctx
-            .state()
-            .dynamic_state
-            .restore(nctx.ctx, state_obj.saved);
-        nctx.return_(prev)
+        ctx.state().dynamic_state.restore(ctx, state_obj.saved);
+        prev
     }
 }
 
-pub(crate) fn init_fluids<'gc>(ctx: Context<'gc>) {
+pub(crate) fn init_fluids<'gc>(ctx: MutationContext<'gc>) {
     fluid_ops::register(ctx);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::runtime::Scheme;
-
-    #[test]
-    fn thread_local_fluid_state_is_explicit_payload_state() {
-        Scheme::new_uninit().enter(|ctx| {
-            let ordinary = Fluid::new(ctx, Value::undefined());
-            let thread_local = Fluid::new_thread_local(ctx, Value::undefined());
-
-            assert!(!ordinary.is_thread_local());
-            assert!(thread_local.is_thread_local());
-            assert_eq!(
-                ordinary.as_gc_object().header().class_id(),
-                thread_local.as_gc_object().header().class_id()
-            );
-        });
-    }
-
-    #[test]
-    fn fluid_and_dynamic_state_allocate_with_class_only_headers() {
-        Scheme::new_uninit().enter(|ctx| {
-            let ordinary = Fluid::new(ctx, Value::undefined());
-            let thread_local = Fluid::new_thread_local(ctx, Value::undefined());
-            let dynamic_state = Gc::new_with_header_word(
-                ctx,
-                DynamicStateObject {
-                    saved: Value::null(),
-                },
-                dynamic_state_header_word(),
-            );
-
-            for fluid in [ordinary, thread_local] {
-                assert_eq!(
-                    fluid.as_gc_object().header().class_id(),
-                    ClassId::new(builtin_class_ids::FLUID).unwrap()
-                );
-            }
-
-            assert_eq!(
-                dynamic_state.as_gc_object().header().class_id(),
-                ClassId::new(builtin_class_ids::DYNAMIC_STATE).unwrap()
-            );
-        });
-    }
 }

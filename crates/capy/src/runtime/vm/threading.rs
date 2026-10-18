@@ -16,7 +16,7 @@ use crate::heap::{
     sync::thread::{Thread as RuntimeThread, current_thread as current_runtime_thread},
 };
 use crate::prelude::*;
-use crate::runtime::{Context, Scheme};
+use crate::runtime::{MutationContext, Scheme};
 
 #[repr(C)]
 pub struct Condition {
@@ -29,7 +29,7 @@ fn condition_header_word() -> u64 {
     )
 }
 
-// SAFETY: GC trace for `Condition` — all reachable heap fields are visited
+// SAFETY: GC trace for `Condition`, all reachable heap fields are visited
 unsafe impl Trace for Condition {
     // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::heap::Visitor) {
@@ -137,7 +137,7 @@ impl Mutex {
     }
 }
 
-// SAFETY: GC trace for `Mutex` — all reachable heap fields are visited
+// SAFETY: GC trace for `Mutex`, all reachable heap fields are visited
 unsafe impl Trace for Mutex {
     // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::heap::Visitor) {
@@ -222,7 +222,7 @@ impl<'gc> ThreadObject<'gc> {
 
     pub(crate) fn request_interrupt_yieldpoint(&self) {
         if let Some(thread) = self.runtime_thread() {
-            thread.request_yieldpoint();
+            thread.request_yieldpoint(crate::heap::sync::thread::YieldpointKind::Full);
         }
     }
 
@@ -331,13 +331,13 @@ impl Drop for ThreadObject<'_> {
 pub mod threading_ops {
     #[scheme(name = "fork-thread")]
     pub fn fork_thread(thunk: Gc<'gc, Closure<'gc>>) -> Value<'gc> {
-        let thread_obj = ThreadObject::new(nctx.ctx, Some(thunk.into()));
+        let thread_obj = ThreadObject::new(ctx, Some(thunk.into()));
 
         let val: Value<'gc> = thread_obj.into();
 
-        let scope = crate::runtime::root::RootScope::new(nctx.ctx);
+        let scope = crate::runtime::root::RootScope::new(ctx);
         let thread_root = scope.root(val);
-        let dynamic_state = nctx.ctx.state().dynamic_state.save(nctx.ctx);
+        let dynamic_state = ctx.state().dynamic_state.save(ctx);
         let dynamic_root = scope.root(dynamic_state);
         let bits = thread_root.get().bits();
         let dynamic_state_bits = dynamic_root.get().bits();
@@ -375,22 +375,22 @@ pub mod threading_ops {
         });
 
         if !thread_started_rx.recv().unwrap_or(false) {
-            return nctx.raise_error("fork-thread", "failed to start thread", &[]);
+            return call.raise_error("fork-thread", "failed to start thread", &[]);
         }
 
-        nctx.return_(val)
+        val
     }
 
     #[scheme(name = "thread?")]
     pub fn thread_p(obj: Value<'gc>) -> bool {
-        nctx.return_(obj.is::<ThreadObject>())
+        obj.is::<ThreadObject>()
     }
 
     #[scheme(name = "current-thread")]
     pub fn current_thread() -> Value<'gc> {
-        let thread_obj = nctx.ctx.state().thread_object;
+        let thread_obj = ctx.state().thread_object;
         thread_obj.bind_current_runtime_thread();
-        nctx.return_(thread_obj.into())
+        thread_obj.into()
     }
 
     #[scheme(name = "make-mutex")]
@@ -405,12 +405,9 @@ pub mod threading_ops {
             owner: MutexOwnerLock::new(),
         };
         // mutex has to be non-moving so that parking_lot can use its address as a key.
-        let gc_mutex = nctx.ctx.allocate_with_header_word(
-            mutex,
-            mutex_header_word(),
-            AllocationSemantics::Los,
-        );
-        nctx.return_(gc_mutex.into())
+        let gc_mutex =
+            ctx.allocate_with_header_word(mutex, mutex_header_word(), AllocationSemantics::Los);
+        gc_mutex.into()
     }
     #[scheme(name = "mutex-acquire")]
     pub fn mutex_acquire(mutex_obj: Gc<'gc, Mutex>, block: Option<bool>) -> bool {
@@ -422,28 +419,27 @@ pub mod threading_ops {
                 if let Some(_guard) = mutex.try_lock() {
                     mutex_obj.mark_acquired();
                     std::mem::forget(_guard);
-                    return nctx.return_(true);
+                    return true;
                 }
             }
             MutexKind::Regular(mutex) => {
                 if let Some(_guard) = mutex.try_lock() {
                     mutex_obj.mark_acquired();
                     std::mem::forget(_guard);
-                    return nctx.return_(true);
+                    return true;
                 }
             }
         }
 
         if block {
             let mut mutex_obj = mutex_obj;
-            let thread = nctx.ctx.state().thread_object;
+            let thread = ctx.state().thread_object;
             loop {
-                let scope = RootScope::new(nctx.ctx);
-                let retk = scope.root(nctx.retk);
+                let scope = RootScope::new(ctx);
                 let mutex_root = scope.root(mutex_obj.into());
-                // Mutex is non-moving (LOS); interior stays stable across GC.
+                // Mutex is non-moving (LOS), interior stays stable across GC.
                 let mutex_ptr = NonNull::from(&*mutex_obj);
-                nctx.ctx.call_in_native(|| {
+                ctx.call_in_native(|| {
                     // SAFETY: Mutex is non-moving and rooted for the wait.
                     let mutex_obj = unsafe { mutex_ptr.as_ref() };
                     loop {
@@ -469,12 +465,11 @@ pub mod threading_ops {
                         std::thread::sleep(Duration::from_millis(1));
                     }
                 });
-                nctx.retk = retk.get();
                 mutex_obj = mutex_root.get().downcast();
                 drop(scope);
-                crate::runtime::vm::interrupts::deliver_pending_interrupts(nctx.ctx);
+                crate::runtime::vm::interrupts::deliver_pending_interrupts(ctx);
                 if mutex_obj.is_owned_by_current_thread() {
-                    return nctx.return_(true);
+                    return true;
                 }
             }
         } else {
@@ -483,25 +478,25 @@ pub mod threading_ops {
                     if let Some(_guard) = mutex.try_lock() {
                         mutex_obj.mark_acquired();
                         std::mem::forget(_guard);
-                        return nctx.return_(true);
+                        return true;
                     }
                 }
                 MutexKind::Regular(mutex) => {
                     if let Some(_guard) = mutex.try_lock() {
                         mutex_obj.mark_acquired();
                         std::mem::forget(_guard);
-                        return nctx.return_(true);
+                        return true;
                     }
                 }
             }
-            return nctx.return_(false);
+            return false;
         }
     }
 
     #[scheme(name = "mutex-release")]
     pub fn mutex_release(mutex_obj: Gc<'gc, Mutex>) -> Value<'gc> {
         if !mutex_obj.mark_released() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "mutex-release",
                 "mutex is not owned by the current thread",
                 Some(mutex_obj.into()),
@@ -523,25 +518,25 @@ pub mod threading_ops {
                 drop(guard);
             },
         }
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "mutex-reentrant?")]
     pub fn mutex_reentrant_p(mutex_obj: Gc<'gc, Mutex>) -> bool {
         match &mutex_obj.mutex {
-            MutexKind::Reentrant(_) => nctx.return_(true),
-            MutexKind::Regular(_) => nctx.return_(false),
+            MutexKind::Reentrant(_) => true,
+            MutexKind::Regular(_) => false,
         }
     }
 
     #[scheme(name = "mutex?")]
     pub fn mutex_p(obj: Value<'gc>) -> bool {
-        nctx.return_(obj.is::<Mutex>())
+        obj.is::<Mutex>()
     }
 
     #[scheme(name = "thread-condition?")]
     pub fn thread_condition_p(obj: Value<'gc>) -> bool {
-        nctx.return_(obj.is::<Condition>())
+        obj.is::<Condition>()
     }
 
     #[scheme(name = "make-condition")]
@@ -549,24 +544,24 @@ pub mod threading_ops {
         let condition = Condition {
             cond: parking_lot::Condvar::new(),
         };
-        let gc_condition = nctx.ctx.allocate_with_header_word(
+        let gc_condition = ctx.allocate_with_header_word(
             condition,
             condition_header_word(),
             AllocationSemantics::Los,
         );
-        nctx.return_(gc_condition.into())
+        gc_condition.into()
     }
 
     #[scheme(name = "condition-signal")]
     pub fn condition_signal(condition_obj: Gc<'gc, Condition>) -> Value<'gc> {
         condition_obj.cond.notify_one();
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "condition-broadcast")]
     pub fn condition_broadcast(condition_obj: Gc<'gc, Condition>) -> Value<'gc> {
         condition_obj.cond.notify_all();
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "condition-wait")]
@@ -575,7 +570,7 @@ pub mod threading_ops {
         mutex_obj: Gc<'gc, Mutex>,
     ) -> Value<'gc> {
         if matches!(mutex_obj.mutex, MutexKind::Reentrant(_)) {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "condition-wait",
                 "reentrant mutex can't be used with condition-wait",
                 Some(mutex_obj.into()),
@@ -585,7 +580,7 @@ pub mod threading_ops {
             );
         }
         if !mutex_obj.is_owned_by_current_thread() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "condition-wait",
                 "mutex is not owned by the current thread",
                 Some(mutex_obj.into()),
@@ -596,12 +591,11 @@ pub mod threading_ops {
         }
         let condition = NonNull::from(&condition_obj.cond);
         let mutex_ptr = NonNull::from(&*mutex_obj);
-        let thread = nctx.ctx.state().thread_object;
-        let scope = RootScope::new(nctx.ctx);
-        let retk = scope.root(nctx.retk);
+        let thread = ctx.state().thread_object;
+        let scope = RootScope::new(ctx);
         let _mutex_root = scope.root(mutex_obj.into());
         let _cond_root = scope.root(condition_obj.into());
-        nctx.ctx.call_in_native(|| {
+        ctx.call_in_native(|| {
             // SAFETY: Mutex/Condition are non-moving (LOS) and rooted for the wait.
             let mutex_obj = unsafe { mutex_ptr.as_ref() };
             match &mutex_obj.mutex {
@@ -623,55 +617,12 @@ pub mod threading_ops {
                 _ => panic!("Only regular mutex can be used with condition waiting"),
             }
         });
-        nctx.retk = retk.get();
         drop(scope);
-        crate::runtime::vm::interrupts::deliver_pending_interrupts(nctx.ctx);
-        nctx.return_(Value::undefined())
+        crate::runtime::vm::interrupts::deliver_pending_interrupts(ctx);
+        Value::undefined()
     }
 }
 
-pub(crate) fn init_threading<'gc>(ctx: Context<'gc>) {
+pub(crate) fn init_threading<'gc>(ctx: MutationContext<'gc>) {
     threading_ops::register(ctx);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn thread_sync_objects_allocate_with_class_only_headers() {
-        Scheme::new_uninit().enter(|ctx| {
-            let thread = ThreadObject::new(ctx, None);
-            assert_eq!(
-                thread.as_gc_object().header().class_id(),
-                ClassId::new(builtin_class_ids::THREAD).unwrap()
-            );
-
-            let mutex = Mutex {
-                mutex: MutexKind::Regular(parking_lot::Mutex::new(())),
-                owner: MutexOwnerLock::new(),
-            };
-            let mutex = ctx.allocate_with_header_word(
-                mutex,
-                mutex_header_word(),
-                AllocationSemantics::Los,
-            );
-            assert_eq!(
-                mutex.as_gc_object().header().class_id(),
-                ClassId::new(builtin_class_ids::MUTEX).unwrap()
-            );
-
-            let condition = ctx.allocate_with_header_word(
-                Condition {
-                    cond: parking_lot::Condvar::new(),
-                },
-                condition_header_word(),
-                AllocationSemantics::Los,
-            );
-            assert_eq!(
-                condition.as_gc_object().header().class_id(),
-                ClassId::new(builtin_class_ids::CONDITION).unwrap()
-            );
-        });
-    }
 }

@@ -2,15 +2,15 @@ use super::make_assertion_violation;
 use crate::runtime::value::{IntoValue, Number};
 use crate::runtime::vm::thunk_raise;
 use crate::runtime::{
-    Context,
+    MutationContext,
     value::{Str, Symbol, Value},
 };
 
-pub fn reverse<'gc>(ctx: Context<'gc>, list: Value<'gc>) -> Value<'gc> {
+pub fn reverse<'gc>(ctx: MutationContext<'gc>, list: Value<'gc>) -> Value<'gc> {
     list.list_reverse(ctx)
 }
 
-pub fn append<'gc>(ctx: Context<'gc>, m1: Value<'gc>, m2: Value<'gc>) -> Value<'gc> {
+pub fn append<'gc>(ctx: MutationContext<'gc>, m1: Value<'gc>, m2: Value<'gc>) -> Value<'gc> {
     if !m1.is_list() {
         thunk_raise(
             ctx,
@@ -26,7 +26,7 @@ pub fn append<'gc>(ctx: Context<'gc>, m1: Value<'gc>, m2: Value<'gc>) -> Value<'
     m1.append(ctx, m2)
 }
 
-pub fn length<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+pub fn length<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     if !v.is_list() {
         thunk_raise(
             ctx,

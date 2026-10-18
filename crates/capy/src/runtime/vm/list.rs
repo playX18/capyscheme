@@ -1,7 +1,7 @@
 use crate::heap::Gc;
 use crate::prelude::*;
 use crate::runtime::prelude::*;
-pub fn init_lists<'gc>(ctx: Context<'gc>) {
+pub fn init_lists<'gc>(ctx: MutationContext<'gc>) {
     list_ops::register(ctx);
 }
 
@@ -9,18 +9,18 @@ pub fn init_lists<'gc>(ctx: Context<'gc>) {
 pub mod list_ops {
     #[scheme(name = "pair?")]
     pub fn pairp(value: Value<'gc>) -> Result<bool, Value<'gc>> {
-        nctx.return_(Ok(value.is_pair()))
+        Ok(value.is_pair())
     }
 
     #[scheme(name = "list?")]
     pub fn listp(value: Value<'gc>) -> bool {
-        nctx.return_(value.is_list())
+        value.is_list()
     }
 
     #[scheme(name = "length")]
-    pub fn length(ls: Value<'gc>) -> usize {
+    pub fn length(ls: Value<'gc>) -> Value<'gc> {
         if !ls.is_list() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "length",
                 "expected a list",
                 Some(ls),
@@ -30,13 +30,13 @@ pub mod list_ops {
             );
         }
 
-        nctx.return_(ls.list_length())
+        (ls.list_length()).into_value(ctx)
     }
 
     #[scheme(name = "reverse")]
     pub fn reverse(ls: Value<'gc>) -> Value<'gc> {
         if !ls.is_list() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "reverse",
                 "expected a list",
                 Some(ls),
@@ -45,14 +45,14 @@ pub mod list_ops {
                 &[ls],
             );
         }
-        let res = ls.list_reverse(nctx.ctx);
-        nctx.return_(res)
+        let res = ls.list_reverse(ctx);
+        res
     }
 
     #[scheme(name = "list->vector")]
     pub fn list_to_vector(ls: Value<'gc>) -> Value<'gc> {
         if !ls.is_list() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "list->vector",
                 "expected a list",
                 Some(ls),
@@ -61,8 +61,8 @@ pub mod list_ops {
                 &[ls],
             );
         }
-        let res = ls.list_to_vector(nctx.ctx);
-        nctx.return_(res.into())
+        let res = ls.list_to_vector(ctx);
+        res.into()
     }
 
     #[scheme(name = "vector->list")]
@@ -70,16 +70,16 @@ pub mod list_ops {
         let mut ls = Value::null();
 
         for i in (0..vec.len()).rev() {
-            ls = Value::cons(nctx.ctx, vec[i].get(), ls);
+            ls = Value::cons(ctx, vec[i].get(), ls);
         }
 
-        nctx.return_(Ok(ls))
+        Ok(ls)
     }
 
     #[scheme(name = "cdr")]
     pub fn cdr(pair: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
         if !pair.is_pair() {
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "cdr",
                 "expected a pair",
                 Some(pair),
@@ -87,14 +87,15 @@ pub mod list_ops {
                 1,
                 &[pair],
             );
+            return Err(Value::undefined());
         }
-        nctx.return_(Ok(pair.cdr()))
+        Ok(pair.cdr())
     }
 
     #[scheme(name = "car")]
     pub fn car(pair: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
         if !pair.is_pair() {
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "car",
                 "expected a pair",
                 Some(pair),
@@ -102,14 +103,15 @@ pub mod list_ops {
                 1,
                 &[pair],
             );
+            return Err(Value::undefined());
         }
-        nctx.return_(Ok(pair.car()))
+        Ok(pair.car())
     }
 
     #[scheme(name = "set-car!")]
     pub fn set_car(pair: Value<'gc>, value: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
         if !pair.is_pair() {
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "set-car!",
                 "expected a pair",
                 Some(pair),
@@ -117,15 +119,16 @@ pub mod list_ops {
                 1,
                 &[pair],
             );
+            return Err(Value::undefined());
         }
-        pair.set_car(nctx.ctx, value);
-        nctx.return_(Ok(Value::undefined()))
+        pair.set_car(ctx, value);
+        Ok(Value::undefined())
     }
 
     #[scheme(name = "set-cdr!")]
     pub fn set_cdr(pair: Value<'gc>, value: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
         if !pair.is_pair() {
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "set-cdr!",
                 "expected a pair",
                 Some(pair),
@@ -133,9 +136,10 @@ pub mod list_ops {
                 1,
                 &[pair],
             );
+            return Err(Value::undefined());
         }
-        pair.set_cdr(nctx.ctx, value);
-        nctx.return_(Ok(Value::undefined()))
+        pair.set_cdr(ctx, value);
+        Ok(Value::undefined())
     }
 
     #[scheme(name = "list-ref")]
@@ -143,7 +147,7 @@ pub mod list_ops {
         let mut current = ls;
         for _ in 0..index {
             if !current.is_pair() {
-                return nctx.wrong_argument_violation(
+                call.wrong_argument_violation(
                     "list-ref",
                     "expected a pair",
                     Some(current),
@@ -151,11 +155,12 @@ pub mod list_ops {
                     1,
                     &[current],
                 );
+                return Err(Value::undefined());
             }
             current = current.cdr();
         }
         if !current.is_pair() {
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "list-ref",
                 "expected a pair",
                 Some(current),
@@ -163,28 +168,23 @@ pub mod list_ops {
                 1,
                 &[current],
             );
+            return Err(Value::undefined());
         }
-        nctx.return_(Ok(current.car()))
+        Ok(current.car())
     }
 
     #[scheme(name = "take")]
     pub fn take(ls: Value<'gc>, n: usize) -> Result<Value<'gc>, Value<'gc>> {
         if !ls.is_list() {
-            return nctx.wrong_argument_violation(
-                "take",
-                "expected a list",
-                Some(ls),
-                Some(1),
-                1,
-                &[ls],
-            );
+            call.wrong_argument_violation("take", "expected a list", Some(ls), Some(1), 1, &[ls]);
+            return Err(Value::undefined());
         }
         let mut current = ls;
         let mut res = Value::null();
         let mut count = 0;
         while !current.is_null() && count < n {
             if !current.is_pair() {
-                return nctx.wrong_argument_violation(
+                call.wrong_argument_violation(
                     "take",
                     "expected a pair",
                     Some(current),
@@ -192,32 +192,27 @@ pub mod list_ops {
                     1,
                     &[current],
                 );
+                return Err(Value::undefined());
             }
-            res = Value::cons(nctx.ctx, current.car(), res);
+            res = Value::cons(ctx, current.car(), res);
             current = current.cdr();
             count += 1;
         }
-        res = res.list_reverse(nctx.ctx);
-        nctx.return_(Ok(res))
+        res = res.list_reverse(ctx);
+        Ok(res)
     }
 
     #[scheme(name = "drop")]
     pub fn drop(ls: Value<'gc>, n: usize) -> Result<Value<'gc>, Value<'gc>> {
         if !ls.is_list() {
-            return nctx.wrong_argument_violation(
-                "drop",
-                "expected a list",
-                Some(ls),
-                Some(1),
-                1,
-                &[ls],
-            );
+            call.wrong_argument_violation("drop", "expected a list", Some(ls), Some(1), 1, &[ls]);
+            return Err(Value::undefined());
         }
         let mut current = ls;
         let mut count = 0;
         while !current.is_null() && count < n {
             if !current.is_pair() {
-                return nctx.wrong_argument_violation(
+                call.wrong_argument_violation(
                     "drop",
                     "expected a pair",
                     Some(current),
@@ -225,23 +220,24 @@ pub mod list_ops {
                     1,
                     &[current],
                 );
+                return Err(Value::undefined());
             }
             current = current.cdr();
             count += 1;
         }
-        nctx.return_(Ok(current))
+        Ok(current)
     }
 
     #[scheme(name = "append")]
     pub fn append(args: &'gc [Value<'gc>]) -> Result<Value<'gc>, Value<'gc>> {
         if args.is_empty() {
-            return nctx.return_(Ok(Value::null()));
+            return Ok(Value::null());
         }
 
         let mut res = args[args.len() - 1];
         for arg in args[..args.len() - 1].iter().rev() {
             if !arg.is_list() {
-                return nctx.wrong_argument_violation(
+                call.wrong_argument_violation(
                     "append",
                     "expected a list",
                     Some(*arg),
@@ -249,11 +245,12 @@ pub mod list_ops {
                     1,
                     &[*arg],
                 );
+                return Err(Value::undefined());
             }
-            match append_impl(nctx.ctx, *arg, res) {
+            match append_impl(ctx, *arg, res) {
                 Some(v) => res = v,
                 None => {
-                    return nctx.wrong_argument_violation(
+                    call.wrong_argument_violation(
                         "append",
                         "expected a list",
                         Some(*arg),
@@ -261,11 +258,12 @@ pub mod list_ops {
                         1,
                         &[*arg],
                     );
+                    return Err(Value::undefined());
                 }
             }
         }
 
-        nctx.return_(Ok(res))
+        Ok(res)
     }
 
     #[scheme(name = "acons")]
@@ -274,47 +272,47 @@ pub mod list_ops {
         datum: Value<'gc>,
         alist: Value<'gc>,
     ) -> Result<Value<'gc>, Value<'gc>> {
-        let pair = Value::cons(nctx.ctx, key, datum);
-        let res = Value::cons(nctx.ctx, pair, alist);
-        nctx.return_(Ok(res))
+        let pair = Value::cons(ctx, key, datum);
+        let res = Value::cons(ctx, pair, alist);
+        Ok(res)
     }
 
     #[scheme(name = "cons")]
     pub fn cons(car: Value<'gc>, cdr: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
-        let pair = Value::cons(nctx.ctx, car, cdr);
-        nctx.return_(Ok(pair))
+        let pair = Value::cons(ctx, car, cdr);
+        Ok(pair)
     }
 
     #[scheme(name = "cons*")]
     pub fn cons_star(first: Value<'gc>, args: &'gc [Value<'gc>]) -> Result<Value<'gc>, Value<'gc>> {
         if args.is_empty() {
-            return nctx.return_(Ok(first));
+            return Ok(first);
         }
 
         let mut result = args[args.len() - 1];
         for value in args[..args.len() - 1].iter().rev() {
-            result = Value::cons(nctx.ctx, *value, result);
+            result = Value::cons(ctx, *value, result);
         }
-        result = Value::cons(nctx.ctx, first, result);
-        nctx.return_(Ok(result))
+        result = Value::cons(ctx, first, result);
+        Ok(result)
     }
 
     #[scheme(name = "list")]
     pub fn list(args: &'gc [Value<'gc>]) -> Result<Value<'gc>, Value<'gc>> {
         let mut ls = Value::null();
         for v in args.iter().rev() {
-            ls = Value::cons(nctx.ctx, *v, ls);
+            ls = Value::cons(ctx, *v, ls);
         }
-        nctx.return_(Ok(ls))
+        Ok(ls)
     }
 
     #[scheme(name = "list-head")]
     pub fn list_head(lst: Value<'gc>, n: usize) -> Value<'gc> {
         if n == 0 {
-            return nctx.return_(Value::null());
+            return Value::null();
         }
         if !lst.is_pair() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "list-head",
                 "expected a list",
                 Some(lst),
@@ -323,19 +321,19 @@ pub mod list_ops {
                 &[lst, Value::new(n as i32)],
             );
         }
-        let obj = Value::cons(nctx.ctx, lst.car(), Value::null());
+        let obj = Value::cons(ctx, lst.car(), Value::null());
         let mut tail = obj;
         let mut lst = lst;
         lst = lst.cdr();
 
         for _ in 2..=n {
             if lst.is_pair() {
-                let e = Value::cons(nctx.ctx, lst.car(), Value::null());
-                tail.set_cdr(nctx.ctx, e);
+                let e = Value::cons(ctx, lst.car(), Value::null());
+                tail.set_cdr(ctx, e);
                 tail = e;
                 lst = lst.cdr();
             } else {
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "list-head",
                     "list too short",
                     Some(lst),
@@ -346,8 +344,8 @@ pub mod list_ops {
             }
         }
 
-        tail.set_cdr(nctx.ctx, Value::null());
-        nctx.return_(obj)
+        tail.set_cdr(ctx, Value::null());
+        obj
     }
 
     #[scheme(name = "list-tail")]
@@ -361,7 +359,7 @@ pub mod list_ops {
         }
 
         if count < n {
-            return nctx.wrong_argument_violation(
+            call.wrong_argument_violation(
                 "list-tail",
                 "list too short",
                 Some(lst),
@@ -369,15 +367,16 @@ pub mod list_ops {
                 2,
                 &[lst, Value::new(n as i32)],
             );
+            return Err(Value::undefined());
         }
 
-        nctx.return_(Ok(walk))
+        Ok(walk)
     }
 
     #[scheme(name = "list-transpose")]
     pub fn list_transpose(lists: &'gc [Value<'gc>]) -> Value<'gc> {
         if lists.is_empty() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "list-transpose",
                 "expected at least one list",
                 None,
@@ -388,7 +387,7 @@ pub mod list_ops {
         }
 
         if !lists[0].is_list() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "list-transpose",
                 "expected a list",
                 Some(lists[0]),
@@ -400,7 +399,7 @@ pub mod list_ops {
         let len = lists[0].list_length();
         for (i, lst) in lists.iter().copied().enumerate().skip(1) {
             if !lst.is_list() {
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "list-transpose",
                     "expected a list",
                     Some(lst),
@@ -410,7 +409,7 @@ pub mod list_ops {
                 );
             }
             if lst.list_length() != len {
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "list-transpose",
                     "lists should have different lengths",
                     Some(lst),
@@ -421,30 +420,30 @@ pub mod list_ops {
             }
         }
 
-        let result = transpose_impl(nctx.ctx, len, lists);
-        nctx.return_(result)
+        let result = transpose_impl(ctx, len, lists);
+        result
     }
 
     #[scheme(name = "list-transpose+")]
     pub fn list_transpose_plus(lists: &'gc [Value<'gc>]) -> Value<'gc> {
         if lists.is_empty() {
-            return nctx.wrong_number_of_arguments_violation("list-transpose+", 1, None, 0, &[]);
+            return call.wrong_number_of_arguments_violation("list-transpose+", 1, None, 0, &[]);
         }
         if !lists[0].is_list() {
-            return nctx.return_(Value::new(false));
+            return Value::new(false);
         }
         let len = lists[0].list_length();
         for lst in lists.iter().copied().skip(1) {
             if !lst.is_list() {
-                return nctx.return_(Value::new(false));
+                return Value::new(false);
             }
             if lst.list_length() != len {
-                return nctx.return_(Value::new(false));
+                return Value::new(false);
             }
         }
 
-        let result = transpose_impl(nctx.ctx, len, lists);
-        nctx.return_(result)
+        let result = transpose_impl(ctx, len, lists);
+        result
     }
 
     #[scheme(name = "list-transpose*")]
@@ -453,7 +452,7 @@ pub mod list_ops {
         let mut each_len = usize::MAX;
         for i in 0..lists.len() {
             if !lists[i].is_list() {
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "list-transpose*",
                     "expected a list",
                     Some(lists[i]),
@@ -470,10 +469,10 @@ pub mod list_ops {
         }
 
         if finite {
-            let result = transpose_impl(nctx.ctx, each_len, lists);
-            return nctx.return_(result);
+            let result = transpose_impl(ctx, each_len, lists);
+            return result;
         } else {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "list-transpose*",
                 "all lists must be finite",
                 Some(lists[0]),
@@ -494,17 +493,17 @@ pub mod list_ops {
             fast = fast.cdr().cdr();
 
             if slow == fast {
-                return nctx.return_(true);
+                return true;
             }
         }
 
-        nctx.return_(false)
+        false
     }
 
     #[scheme(name = "list-copy")]
     pub fn list_copy(lst: Value<'gc>) -> Value<'gc> {
         if !lst.is_list() {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "list-copy",
                 "expected a list",
                 Some(lst),
@@ -515,26 +514,30 @@ pub mod list_ops {
         }
         if lst.is_pair() {
             let mut lst = lst;
-            let obj = Value::cons(nctx.ctx, lst.car(), Value::null());
+            let obj = Value::cons(ctx, lst.car(), Value::null());
             let mut tail = obj;
 
             lst = lst.cdr();
 
             while lst.is_pair() {
-                let e = Value::cons(nctx.ctx, lst.car(), Value::null());
-                tail.set_cdr(nctx.ctx, e);
+                let e = Value::cons(ctx, lst.car(), Value::null());
+                tail.set_cdr(ctx, e);
                 tail = e;
                 lst = lst.cdr();
             }
-            tail.set_cdr(nctx.ctx, lst);
-            return nctx.return_(obj);
+            tail.set_cdr(ctx, lst);
+            return obj;
         }
 
-        nctx.return_(lst)
+        lst
     }
 }
 
-fn append_impl<'gc>(ctx: Context<'gc>, mut ls1: Value<'gc>, ls2: Value<'gc>) -> Option<Value<'gc>> {
+fn append_impl<'gc>(
+    ctx: MutationContext<'gc>,
+    mut ls1: Value<'gc>,
+    ls2: Value<'gc>,
+) -> Option<Value<'gc>> {
     let mut first = Value::null();
     let mut last = Value::null();
 
@@ -563,7 +566,11 @@ fn append_impl<'gc>(ctx: Context<'gc>, mut ls1: Value<'gc>, ls2: Value<'gc>) -> 
     Some(first)
 }
 
-fn transpose_impl<'gc>(ctx: Context<'gc>, each_len: usize, args: &[Value<'gc>]) -> Value<'gc> {
+fn transpose_impl<'gc>(
+    ctx: MutationContext<'gc>,
+    each_len: usize,
+    args: &[Value<'gc>],
+) -> Value<'gc> {
     let mut args = args.to_vec();
     let mut ans = Value::null();
     let mut ans_tail = Value::null();

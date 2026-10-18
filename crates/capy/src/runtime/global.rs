@@ -10,7 +10,7 @@ use crate::{
         VariableRef,
     },
     runtime::{
-        Context,
+        MutationContext,
         modules::{ModuleKind, define},
     },
 };
@@ -83,7 +83,7 @@ pub fn globals() -> &'static crate::heap::Global<RootedGlobalTable> {
 /// While this function is not unsafe per-se, it can lead to wrong program
 /// behaviour if it sets existing globals to incorrect indices.
 // SAFETY: Caller must ensure preconditions are met (see fn docs)
-pub unsafe fn globals_from_vec<'gc>(_ctx: impl AsRef<Context<'gc>>, vec: Vec<Value<'gc>>) {
+pub unsafe fn globals_from_vec<'gc>(_ctx: impl AsRef<MutationContext<'gc>>, vec: Vec<Value<'gc>>) {
     GLOBALS
         .set(crate::heap::Global::new(GlobalTable {
             globals: Monitor::new(vec),
@@ -91,7 +91,7 @@ pub unsafe fn globals_from_vec<'gc>(_ctx: impl AsRef<Context<'gc>>, vec: Vec<Val
         .unwrap_or_else(|_| panic!("globals have already been initialized"));
 }
 
-pub fn for_each_global<'gc, F>(ctx: impl AsRef<Context<'gc>>, mut f: F)
+pub fn for_each_global<'gc, F>(ctx: impl AsRef<MutationContext<'gc>>, mut f: F)
 where
     F: FnMut(usize, Value<'gc>),
 {
@@ -109,11 +109,11 @@ where
     for<'a> Root<'a, R>: Sized + Trace,
 {
     /// Create a new global variable initialized to `initial`.
-    pub fn new<'gc>(ctx: Context<'gc>, initial: Root<'gc, R>) -> Self
+    pub fn new<'gc>(ctx: MutationContext<'gc>, initial: Root<'gc, R>) -> Self
     where
         Root<'gc, R>: IntoValue<'gc>,
     {
-        let globals = globals().fetch(*ctx);
+        let globals = globals().fetch(ctx);
         let mut guard = globals.globals.lock();
         let index = GlobalIndex(guard.len());
         guard.push(initial.into_value(ctx));
@@ -124,22 +124,22 @@ where
     }
 
     /// Get the value of the global variable.
-    pub fn fetch<'gc>(&self, ctx: Context<'gc>) -> Root<'gc, R>
+    pub fn fetch<'gc>(&self, ctx: MutationContext<'gc>) -> Root<'gc, R>
     where
         for<'a> Root<'a, R>: FromValue<'a>,
     {
-        let globals = globals().fetch(*ctx);
+        let globals = globals().fetch(ctx);
         let guard = globals.globals.lock();
         let value = guard[self.index.0];
         Root::<R>::try_from_value(ctx, value).expect("global variable has wrong type")
     }
 
     /// Set the value of the global variable.
-    pub fn set<'gc>(&self, ctx: Context<'gc>, value: Root<'gc, R>)
+    pub fn set<'gc>(&self, ctx: MutationContext<'gc>, value: Root<'gc, R>)
     where
         Root<'gc, R>: IntoValue<'gc>,
     {
-        let globals = globals().fetch(*ctx);
+        let globals = globals().fetch(ctx);
         let mut guard = globals.globals.lock();
         guard[self.index.0] = value.into_value(ctx);
     }
@@ -180,13 +180,11 @@ macro_rules! global {
     ($($v: vis $name: ident <$l: lifetime>: $t: ty = ($ctx: ident) $init: expr;)*) => {
         $(
             paste::paste!{
-                #[allow(unused)]
                 #[unsafe(export_name = concat!("CAPY_GLOBAL_", stringify!($name)))]
                 $v static [<$name: upper>]: std::sync::OnceLock<$crate::prelude::Global<$crate::Rootable!($l => $t)>> = std::sync::OnceLock::new();
 
-                #[allow(unused)]
                 #[unsafe(export_name = concat!("capy_global_", stringify!($name)))]
-                $v fn [<$name: lower>]<$l>($ctx: $crate::runtime::Context<$l>) -> $t {
+                $v fn [<$name: lower>]<$l>($ctx: $crate::runtime::MutationContext<$l>) -> $t {
                    [<$name: upper>]
                         .get_or_init(|| {
                             let init: $t = $init;
@@ -195,7 +193,6 @@ macro_rules! global {
                 }
 
 
-                #[allow(unused)]
                 #[doc(hidden)]
 // SAFETY: Caller must ensure preconditions are met (see fn docs)
                 pub unsafe fn [<$name: lower _from_index>](index: usize) -> $crate::prelude::Global<$crate::Rootable!($l => $t)> {
@@ -262,6 +259,9 @@ pub struct Globals<'gc> {
     pub loc_sequence_type: Cell<Value<'gc>>,
     pub loc_proc_type: Cell<Value<'gc>>,
     pub loc_wcm_type: Cell<Value<'gc>>,
+
+    /// Tier-up jobs waiting for a JIT worker.
+    pub jit_jobs: crate::runtime::codegen::jit::JobQueue<'gc>,
 }
 
 impl<'gc> Globals<'gc> {
@@ -460,6 +460,8 @@ impl<'gc> Globals<'gc> {
             loc_sequence_type,
             loc_proc_type,
             loc_wcm_type,
+            // Traced by its own `Trace` impl, not a value cell.
+            jit_jobs: _,
         } = self;
 
         f(capy_module_name);
@@ -507,7 +509,7 @@ impl<'gc> Globals<'gc> {
 }
 
 impl<'gc> Globals<'gc> {
-    pub fn new(ctx: Context<'gc>) -> Self {
+    pub fn new(ctx: MutationContext<'gc>) -> Self {
         let capy_module_name = crate::list!(ctx, ctx.intern("capy"));
         let empty_wrap = crate::list!(ctx, Value::null());
 
@@ -645,6 +647,7 @@ impl<'gc> Globals<'gc> {
             loc_sequence_type: Cell::new(loc_sequence_type.into()),
             loc_proc_type: Cell::new(loc_proc_type.into()),
             loc_wcm_type: Cell::new(loc_wcm_type.into()),
+            jit_jobs: Default::default(),
         }
     }
 
@@ -691,6 +694,7 @@ impl<'gc> Globals<'gc> {
             loc_sequence_type: Cell::new(Value::undefined()),
             loc_proc_type: Cell::new(Value::undefined()),
             loc_wcm_type: Cell::new(Value::undefined()),
+            jit_jobs: Default::default(),
         }
     }
 }

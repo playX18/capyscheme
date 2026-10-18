@@ -21,24 +21,47 @@ use crate::{
 
 const GC_LOG_FILTER: &str = "capy::gc=trace";
 const GC_TRACE_LOG_FILTER: &str = "mmtk=trace,capy::gc=trace";
-const JIT_LOG_TARGET: &str = "capy::runtime::codegen";
+/// Target of the JIT decision log (`CAPY_JIT_LOG*`).
+pub(crate) const JIT_LOG_TARGET: &str = "capy::jit";
+/// Target of the per-resume trace; a child of [`JIT_LOG_TARGET`] so
+/// `CAPY_JIT_LOG_RESUME` can raise it alone.
+pub(crate) const JIT_RESUME_LOG_TARGET: &str = "capy::jit::resume";
+/// Target of inline-cache invalidation logging (`CAPY_IC_LOG`).
+pub(crate) const IC_LOG_TARGET: &str = "capy::ic";
+/// Target of closure-sharing decisions (`CAPY_SHARE_DUMP`).
+pub(crate) const SHARE_LOG_TARGET: &str = "capy::share";
+/// Target of dump-file confirmations; always on at `Info`.
+pub(crate) const DUMP_LOG_TARGET: &str = "capy::dump";
+/// Target of fatal boot errors; always on at `Error`.
+pub(crate) const BOOT_LOG_TARGET: &str = "capy::boot";
 /// Target of the GC narrative lines (summaries, trigger decisions).
 pub(crate) const GC_LOG_TARGET: &str = "capy::gc";
 /// Target of the `*_STATS` exit reporters, which span several modules.
 pub(crate) const STATS_LOG_TARGET: &str = "capy::stats";
 
-/// The log level the `CAPY_JIT_LOG*` flags ask of the codegen modules, if any.
-/// They stand in for `RUST_LOG` so the flags keep working on their own.
-fn jit_log_level() -> Option<log::LevelFilter> {
+/// Directives the flags ask for, as `(target, level)`. They stand in for
+/// `RUST_LOG` so the flags keep working on their own.
+fn flag_directives() -> Vec<(&'static str, log::LevelFilter)> {
+    let mut out = Vec::new();
     if flags::jit_log_resume() {
-        Some(log::LevelFilter::Trace)
-    } else if flags::jit_log_verbose() {
-        Some(log::LevelFilter::Debug)
-    } else if flags::jit_log() {
-        Some(log::LevelFilter::Info)
-    } else {
-        None
+        out.push((JIT_LOG_TARGET, log::LevelFilter::Info));
+        out.push((JIT_RESUME_LOG_TARGET, log::LevelFilter::Trace));
     }
+    if flags::jit_log_verbose() {
+        out.push((JIT_LOG_TARGET, log::LevelFilter::Debug));
+    } else if flags::jit_log() {
+        out.push((JIT_LOG_TARGET, log::LevelFilter::Info));
+    }
+    if flags::ic_log() {
+        out.push((IC_LOG_TARGET, log::LevelFilter::Info));
+    }
+    if flags::share_dump() {
+        out.push((SHARE_LOG_TARGET, log::LevelFilter::Trace));
+    }
+    if stats_logging_requested() {
+        out.push((STATS_LOG_TARGET, log::LevelFilter::Info));
+    }
+    out
 }
 
 /// Any `*_STATS` exit report requested.
@@ -106,9 +129,8 @@ fn parse_log_filters(builder: &mut env_logger::Builder) {
     // for the same module wins; a blanket level never overrides them.
     builder.filter_module(GC_LOG_TARGET, log::LevelFilter::Trace);
     builder.filter_module("capy::heap::logging", log::LevelFilter::Info);
-    builder.filter_module("capy::compiler::dump", log::LevelFilter::Info);
-    builder.filter_module("capy::compiler::cps::optimize", log::LevelFilter::Info);
-    builder.filter_module("capy::runtime::thread", log::LevelFilter::Error);
+    builder.filter_module(DUMP_LOG_TARGET, log::LevelFilter::Info);
+    builder.filter_module(BOOT_LOG_TARGET, log::LevelFilter::Error);
 
     let gc_trace = process_args_request_gc_logging();
     if gc_trace {
@@ -131,22 +153,13 @@ fn parse_log_filters(builder: &mut env_logger::Builder) {
         }
     } else {
         builder.parse_filters(GC_LOG_FILTER);
-        if let Some(level) = jit_log_level() {
-            builder.filter_module(JIT_LOG_TARGET, level);
-        }
     }
 
-    // Flag-gated diagnostics last: an explicitly enabled `CAPY_*` report
-    // stays visible even under a restrictive `RUST_LOG`, as when these
-    // wrote to stderr directly.
-    if stats_logging_requested() {
-        builder.filter_module(STATS_LOG_TARGET, log::LevelFilter::Info);
-    }
-    if flags::ic_log() {
-        builder.filter_module("capy::runtime::class::generic", log::LevelFilter::Info);
-    }
-    if flags::profile_out().is_some() {
-        builder.filter_module("capy::runtime::profile", log::LevelFilter::Warn);
+    // An explicit `RUST_LOG` replaces the flag-driven directives.
+    if !flags::is_set(FlagId::rust_log) {
+        for (target, level) in flag_directives() {
+            builder.filter_module(target, level);
+        }
     }
 }
 
@@ -182,9 +195,7 @@ pub(crate) fn init_rust_logger() {
         && !rust_log_is_set
         && !gc_logging_enabled()
         && !gc_trace
-        && jit_log_level().is_none()
-        && !stats_logging_requested()
-        && !flags::ic_log()
+        && flag_directives().is_empty()
         && flags::profile_out().is_none()
         && flags::parse_errors().is_empty()
     {

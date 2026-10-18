@@ -365,8 +365,8 @@ pub mod __cps {
     ) -> *mut sys::SniContinuation {
         // SAFETY: the result root is live while `c` is.
         let result = unsafe { Ref::from_raw(c.result()) };
-        let value = R::try_from_scm(env, result)
-            .unwrap_or_else(|err| panic!("#[cps] tail result: {err}"));
+        let value =
+            R::try_from_scm(env, result).unwrap_or_else(|err| panic!("#[cps] tail result: {err}"));
         finish::<R>(c, value)
     }
 

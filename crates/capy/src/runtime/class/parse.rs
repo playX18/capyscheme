@@ -1,7 +1,7 @@
 use super::descriptor::ClassDescriptor;
 use super::slot::SlotSpec;
 use super::table::{ClassListError, SchemeClassSpecError};
-use crate::runtime::{Context, value::Value};
+use crate::runtime::{MutationContext, value::Value};
 
 pub(crate) struct ParsedSlotSpec<'gc> {
     pub(crate) name: String,
@@ -21,7 +21,7 @@ pub(crate) struct ParsedSlotSpec<'gc> {
 }
 
 impl<'gc> ParsedSlotSpec<'gc> {
-    fn mutable(ctx: Context<'gc>, name: String) -> Self {
+    fn mutable(ctx: MutationContext<'gc>, name: String) -> Self {
         let keyword = crate::runtime::value::Symbol::from_str(ctx, &name).into();
         Self {
             name,
@@ -70,7 +70,7 @@ impl<'gc> ParsedSlotSpec<'gc> {
 }
 
 pub(crate) fn parse_slot_spec_list<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     values: Value<'gc>,
 ) -> Result<Vec<ParsedSlotSpec<'gc>>, SchemeClassSpecError<'gc>> {
     let mut cursor = values;
@@ -86,7 +86,7 @@ pub(crate) fn parse_slot_spec_list<'gc>(
 }
 
 fn parse_slot_spec<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     value: Value<'gc>,
 ) -> Result<ParsedSlotSpec<'gc>, SchemeClassSpecError<'gc>> {
     if let Some(symbol) = value.try_as::<crate::runtime::value::Symbol>() {
@@ -183,7 +183,7 @@ pub(crate) fn parse_class_list<'gc>(
 }
 
 pub(crate) fn parse_scheme_class_shape<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     name: Gc<'gc, crate::runtime::value::Symbol<'gc>>,
     slot_specs: Value<'gc>,
     direct_supers: Value<'gc>,

@@ -1,4 +1,4 @@
-//! SNI (Scheme Native Interface) — nest API for calling Scheme from native code.
+//! SNI (Scheme Native Interface), nest API for calling Scheme from native code.
 //!
 //! Safe re-entry into Scheme (increasing [`State::nest_level`](super::State::nest_level))
 //! must go through this module. Raw [`call_scheme`](super::vm::call_scheme) is `unsafe`
@@ -7,13 +7,13 @@
 //! Local references live in process-wide OopStorage (`sni_locals`) and are released
 //! when a [`LocalFrame`] drops. Global references live in `sni_globals` until
 //! explicitly deleted. Pack into `call_data` / runstack happens after roots
-//! are established; prefer reloading from [`OopHandle`] after any nest.
+//! are established, prefer reloading from [`OopHandle`] after any nest.
 
 use std::cell::RefCell;
 
 use crate::heap::oop_storage::{HandleScope, OopHandle, OopStorage, OopStorageSet};
 use crate::runtime::{
-    Context,
+    MutationContext,
     value::Value,
     vm::{ExecutionResult, call_scheme},
 };
@@ -33,7 +33,7 @@ thread_local! {
     static PENDING_EXCEPTION: RefCell<Option<OopHandle>> = const { RefCell::new(None) };
 }
 
-/// A local-reference frame; local refs in the frame are released on drop.
+/// A local-reference frame, local refs in the frame are released on drop.
 pub struct LocalFrame<'a> {
     scope: HandleScope<'a>,
 }
@@ -126,6 +126,9 @@ pub mod exception {
     }
 
     /// Describe the pending exception to stderr (best-effort print).
+    /// Stays on stderr directly: this is an explicit print API
+    /// (`sni_exception_describe`), not a diagnostic, so it must not
+    /// depend on log configuration.
     pub fn describe() {
         if let Some(v) = occurred::<'_>() {
             eprintln!("SNI pending exception: {v}");
@@ -135,11 +138,11 @@ pub mod exception {
 
 /// Environment for safe nested Scheme calls with local roots.
 pub struct SniEnv<'gc> {
-    pub ctx: Context<'gc>,
+    pub ctx: MutationContext<'gc>,
 }
 
 impl<'gc> SniEnv<'gc> {
-    pub fn new(ctx: Context<'gc>) -> Self {
+    pub fn new(ctx: MutationContext<'gc>) -> Self {
         Self { ctx }
     }
 
@@ -177,7 +180,7 @@ impl<'gc> SniEnv<'gc> {
 
 /// Convenience wrapper around [`SniEnv::call_function`].
 pub fn call_function<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     rator: Value<'gc>,
     args: impl IntoIterator<Item = Value<'gc>>,
 ) -> ExecutionResult<'gc> {

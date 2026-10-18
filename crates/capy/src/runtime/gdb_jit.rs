@@ -1,16 +1,15 @@
 //! GDB JIT interface support.
 //!
 //! GDB discovers JITed code by watching `__jit_debug_register_code` and reading
-//! `__jit_debug_descriptor`. Object generation is wired separately; this module
-//! owns the process-global registration list and entry lifetime.
+//! `__jit_debug_descriptor`. This module owns the process-global registration
+//! list and entry lifetime, plus the in-memory ELF symfile builder used for
+//! generated code with `object::write`. Registration is opt-in per image
+//! (`CAPY_JIT_GDB=1`).
 
 use std::{
-    collections::HashMap,
-    io, ptr,
+    ptr,
     sync::{LazyLock, Mutex},
 };
-
-use object::elf;
 
 const JIT_NOACTION: u32 = 0;
 const JIT_REGISTER_FN: u32 = 1;
@@ -149,441 +148,120 @@ pub fn register_permanent_object(object: Vec<u8>) {
     }
 }
 
-pub(crate) fn patch_capy_jit_symbol_addresses(
-    object: &mut [u8],
-    addresses: &HashMap<u32, usize>,
-) -> io::Result<usize> {
-    if object.len() < 64 || &object[0..4] != b"\x7fELF" {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "GDB JIT object is not an ELF64 file",
-        ));
-    }
-    if object[4] != elf::ELFCLASS64 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "GDB JIT object is not ELF64",
-        ));
-    }
-
-    let endian = ElfEndian::from_ident(object[5])?;
-    let shoff = endian.read_u64(object, 0x28)? as usize;
-    let shentsize = endian.read_u16(object, 0x3a)? as usize;
-    let shnum = endian.read_u16(object, 0x3c)? as usize;
-    let shstrndx = endian.read_u16(object, 0x3e)? as usize;
-    if shentsize < 64 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "GDB JIT object has invalid ELF64 section header size",
-        ));
-    }
-
-    let shstr = section_header(object, endian, shoff, shentsize, shnum, shstrndx)?;
-    let shstr_offset = endian.read_u64(object, shstr + 24)? as usize;
-    let shstr_size = endian.read_u64(object, shstr + 32)? as usize;
-
-    let mut patched = 0;
-    let mut patched_sections = HashMap::new();
-    for section_index in 0..shnum {
-        let section = section_header(object, endian, shoff, shentsize, shnum, section_index)?;
-        let name_offset = endian.read_u32(object, section)? as usize;
-        let Some(symbol_id) =
-            synthetic_section_symbol_index(object, shstr_offset, shstr_size, name_offset)?
-        else {
-            continue;
-        };
-        let Some(address) = addresses.get(&symbol_id).copied() else {
-            continue;
-        };
-        endian.write_u64(object, section + 16, address as u64)?;
-        patched_sections.insert(section_index, symbol_id);
-    }
-
-    for section_index in 0..shnum {
-        let section = checked_add(
-            shoff,
-            section_index.checked_mul(shentsize).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "GDB JIT object section table offset overflow",
-                )
-            })?,
-        )?;
-        checked_range(object, section, 64)?;
-        if endian.read_u32(object, section + 4)? != elf::SHT_SYMTAB {
-            continue;
-        }
-
-        let symtab_offset = endian.read_u64(object, section + 24)? as usize;
-        let symtab_size = endian.read_u64(object, section + 32)? as usize;
-        let linked_string_section = endian.read_u32(object, section + 40)? as usize;
-        let symtab_entry_size = endian.read_u64(object, section + 56)? as usize;
-        if symtab_entry_size < 24 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "GDB JIT object has invalid ELF64 symbol size",
-            ));
-        }
-        let strtab = section_header(
-            object,
-            endian,
-            shoff,
-            shentsize,
-            shnum,
-            linked_string_section,
-        )?;
-        let strtab_offset = endian.read_u64(object, strtab + 24)? as usize;
-        let strtab_size = endian.read_u64(object, strtab + 32)? as usize;
-        checked_range(object, strtab_offset, strtab_size)?;
-        checked_range(object, symtab_offset, symtab_size)?;
-
-        let symbol_count = symtab_size / symtab_entry_size;
-        for symbol_index in 0..symbol_count {
-            let symbol = checked_add(
-                symtab_offset,
-                symbol_index.checked_mul(symtab_entry_size).ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "GDB JIT object symbol table offset overflow",
-                    )
-                })?,
-            )?;
-            checked_range(object, symbol, 24)?;
-            let symbol_section = endian.read_u16(object, symbol + 6)? as usize;
-            let name_offset = endian.read_u32(object, symbol)? as usize;
-            let synthetic_symbol =
-                synthetic_symbol_index(object, strtab_offset, strtab_size, name_offset)?;
-            if patched_sections.contains_key(&symbol_section) {
-                if synthetic_symbol.is_some() {
-                    patched += 1;
-                }
-                continue;
-            }
-
-            let Some(symbol_id) = synthetic_symbol else {
-                continue;
-            };
-            let Some(address) = addresses.get(&symbol_id).copied() else {
-                continue;
-            };
-            endian.write_u16(object, symbol + 6, elf::SHN_ABS)?;
-            endian.write_u64(object, symbol + 8, address as u64)?;
-            patched += 1;
-        }
-    }
-
-    Ok(patched)
-}
-
-#[derive(Clone, Copy)]
-enum ElfEndian {
-    Little,
-    Big,
-}
-
-impl ElfEndian {
-    fn from_ident(data: u8) -> io::Result<Self> {
-        match data {
-            elf::ELFDATA2LSB => Ok(Self::Little),
-            elf::ELFDATA2MSB => Ok(Self::Big),
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "GDB JIT object has invalid ELF data encoding",
-            )),
-        }
-    }
-
-    fn read_u16(self, bytes: &[u8], offset: usize) -> io::Result<u16> {
-        let data = read_array::<2>(bytes, offset)?;
-        Ok(match self {
-            Self::Little => u16::from_le_bytes(data),
-            Self::Big => u16::from_be_bytes(data),
-        })
-    }
-
-    fn read_u32(self, bytes: &[u8], offset: usize) -> io::Result<u32> {
-        let data = read_array::<4>(bytes, offset)?;
-        Ok(match self {
-            Self::Little => u32::from_le_bytes(data),
-            Self::Big => u32::from_be_bytes(data),
-        })
-    }
-
-    fn read_u64(self, bytes: &[u8], offset: usize) -> io::Result<u64> {
-        let data = read_array::<8>(bytes, offset)?;
-        Ok(match self {
-            Self::Little => u64::from_le_bytes(data),
-            Self::Big => u64::from_be_bytes(data),
-        })
-    }
-
-    fn write_u16(self, bytes: &mut [u8], offset: usize, value: u16) -> io::Result<()> {
-        let data = match self {
-            Self::Little => value.to_le_bytes(),
-            Self::Big => value.to_be_bytes(),
-        };
-        write_array(bytes, offset, &data)
-    }
-
-    fn write_u64(self, bytes: &mut [u8], offset: usize, value: u64) -> io::Result<()> {
-        let data = match self {
-            Self::Little => value.to_le_bytes(),
-            Self::Big => value.to_be_bytes(),
-        };
-        write_array(bytes, offset, &data)
-    }
-}
-
-fn read_array<const N: usize>(bytes: &[u8], offset: usize) -> io::Result<[u8; N]> {
-    checked_range(bytes, offset, N)?;
-    let mut data = [0; N];
-    data.copy_from_slice(&bytes[offset..offset + N]);
-    Ok(data)
-}
-
-fn write_array(bytes: &mut [u8], offset: usize, data: &[u8]) -> io::Result<()> {
-    checked_range(bytes, offset, data.len())?;
-    bytes[offset..offset + data.len()].copy_from_slice(data);
-    Ok(())
-}
-
-fn checked_add(lhs: usize, rhs: usize) -> io::Result<usize> {
-    lhs.checked_add(rhs)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "GDB JIT object offset overflow"))
-}
-
-fn checked_range(bytes: &[u8], offset: usize, len: usize) -> io::Result<()> {
-    let end = checked_add(offset, len)?;
-    if end > bytes.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "GDB JIT object table is out of bounds",
-        ));
-    }
-    Ok(())
-}
-
-fn section_header(
-    bytes: &[u8],
-    _endian: ElfEndian,
-    shoff: usize,
-    shentsize: usize,
-    shnum: usize,
-    index: usize,
-) -> io::Result<usize> {
-    if index >= shnum {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "GDB JIT object section link is out of bounds",
-        ));
-    }
-    let offset = checked_add(
-        shoff,
-        index.checked_mul(shentsize).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "GDB JIT object section link offset overflow",
-            )
-        })?,
-    )?;
-    checked_range(bytes, offset, 64)?;
-    Ok(offset)
-}
-
-fn synthetic_symbol_index(
-    bytes: &[u8],
-    strtab_offset: usize,
-    strtab_size: usize,
-    name_offset: usize,
-) -> io::Result<Option<u32>> {
-    let name = string_table_name(bytes, strtab_offset, strtab_size, name_offset)?;
-    Ok(name
-        .strip_prefix("capy_jit_fn_")
-        .and_then(|suffix| suffix.parse::<u32>().ok()))
-}
-
-fn synthetic_section_symbol_index(
-    bytes: &[u8],
-    strtab_offset: usize,
-    strtab_size: usize,
-    name_offset: usize,
-) -> io::Result<Option<u32>> {
-    let name = string_table_name(bytes, strtab_offset, strtab_size, name_offset)?;
-    Ok(name
-        .strip_prefix(".text.capy_jit_fn_")
-        .and_then(|suffix| suffix.parse::<u32>().ok()))
-}
-
-fn string_table_name(
-    bytes: &[u8],
-    strtab_offset: usize,
-    strtab_size: usize,
-    name_offset: usize,
-) -> io::Result<&str> {
-    if name_offset >= strtab_size {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "GDB JIT object symbol name is out of bounds",
-        ));
-    }
-    let start = checked_add(strtab_offset, name_offset)?;
-    let end_limit = checked_add(strtab_offset, strtab_size)?;
-    let nul = bytes[start..end_limit]
-        .iter()
-        .position(|byte| *byte == 0)
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "GDB JIT object symbol name is unterminated",
-            )
-        })?;
-    std::str::from_utf8(&bytes[start..start + nul]).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "GDB JIT object symbol name is not UTF-8",
-        )
-    })
-}
-
+/// Copies of every symfile currently linked in the descriptor, for tests. The
+/// bytes are copied under the JIT lock: entries owned by other threads may be
+/// unregistered and freed at any time.
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use object::{Object, ObjectSection, ObjectSymbol};
-
-    static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
-    fn reset_descriptor_for_test() {
-        PERMANENT_REGISTRATIONS
-            .lock()
-            .expect("GDB JIT registration list poisoned")
-            .clear();
-        let _guard = JIT_LOCK.lock().expect("GDB JIT lock poisoned");
-        // SAFETY: Invariants are upheld by the surrounding context
-        unsafe {
-            let descriptor = ptr::addr_of_mut!(__jit_debug_descriptor);
-            (*descriptor).action_flag = JIT_NOACTION;
-            (*descriptor).relevant_entry = ptr::null_mut();
-            (*descriptor).first_entry = ptr::null_mut();
+pub fn symfiles_for_test() -> Vec<Vec<u8>> {
+    let _guard = JIT_LOCK.lock().expect("GDB JIT lock poisoned");
+    // SAFETY: Invariants are upheld by the surrounding context
+    unsafe {
+        let descriptor = ptr::addr_of!(__jit_debug_descriptor);
+        let mut out = Vec::new();
+        let mut entry = (*descriptor).first_entry;
+        while !entry.is_null() {
+            let bytes =
+                std::slice::from_raw_parts((*entry).symfile_addr, (*entry).symfile_size as usize);
+            out.push(bytes.to_vec());
+            entry = (*entry).next_entry;
         }
+        out
     }
+}
 
-    #[test]
-    fn registration_links_and_unlinks_descriptor_entry() {
-        let _test_guard = TEST_LOCK.lock().expect("GDB JIT test lock poisoned");
-        reset_descriptor_for_test();
+/// One symbol in a [`build_symfile`] symfile: its name and absolute runtime
+/// address range.
+pub struct JitSymbol<'a> {
+    pub name: &'a str,
+    pub address: usize,
+    pub size: usize,
+}
 
-        let mut registration =
-            GdbJitRegistration::register(vec![0x7f, b'E', b'L', b'F']).expect("register object");
-        assert_eq!(registration.object_len(), 4);
-
-        // SAFETY: Invariants are upheld by the surrounding context
-        unsafe {
-            let descriptor = ptr::addr_of!(__jit_debug_descriptor);
-            assert!(!(*descriptor).first_entry.is_null());
-            assert_eq!((*(*descriptor).first_entry).symfile_size, 4);
+/// Builds an in-memory ELF symfile for generated code: one `.text` section
+/// holding a copy of `code` plus one function symbol per entry in `symbols`.
+///
+/// `base` is the address `code[0]` runs at. The file is `ET_EXEC` with
+/// `.text` at its real load address and absolute `st_value`s, the way LLVM's
+/// and JSC's JIT symfiles look. GDB reads either form, but lldb's JIT loader
+/// only resolves addresses through sections: `SHN_ABS` symbols unwind fine
+/// yet never get names.
+pub fn build_symfile(
+    base: usize,
+    code: &[u8],
+    symbols: &[JitSymbol],
+    eh_frame: Option<&[u8]>,
+) -> Vec<u8> {
+    let arch = {
+        #[cfg(target_arch = "x86_64")]
+        {
+            object::Architecture::X86_64
         }
-
-        registration.unregister();
-
-        // SAFETY: Invariants are upheld by the surrounding context
-        unsafe {
-            let descriptor = ptr::addr_of!(__jit_debug_descriptor);
-            assert!((*descriptor).first_entry.is_null());
-            assert!((*descriptor).relevant_entry.is_null());
-            assert_eq!((*descriptor).action_flag, JIT_NOACTION);
+        #[cfg(target_arch = "aarch64")]
+        {
+            object::Architecture::Aarch64
         }
-    }
-
-    #[test]
-    fn empty_object_is_not_registered() {
-        let _test_guard = TEST_LOCK.lock().expect("GDB JIT test lock poisoned");
-        reset_descriptor_for_test();
-
-        assert!(GdbJitRegistration::register(Vec::new()).is_none());
-        // SAFETY: Invariants are upheld by the surrounding context
-        unsafe {
-            let descriptor = ptr::addr_of!(__jit_debug_descriptor);
-            assert!((*descriptor).first_entry.is_null());
-        }
-    }
-
-    #[test]
-    fn patch_capy_jit_symbol_addresses_patches_synthetic_text_section() {
-        let _test_guard = TEST_LOCK.lock().expect("GDB JIT test lock poisoned");
-        let mut object = object::write::Object::new(
-            object::BinaryFormat::Elf,
-            object::Architecture::X86_64,
-            object::Endianness::Little,
-        );
-        let text = object.add_section(
+    };
+    let mut object =
+        object::write::Object::new(object::BinaryFormat::Elf, arch, object::Endianness::Little);
+    let text = object.add_section(Vec::new(), b".text".to_vec(), object::SectionKind::Text);
+    object.section_mut(text).set_data(code, 16);
+    if let Some(eh_frame) = eh_frame {
+        // Unwind info for debuggers that read the symfile (lldb): a plain
+        // unloaded section found by name, with absolute FDE addresses.
+        let unwind = object.add_section(
             Vec::new(),
-            b".text.capy_jit_fn_7".to_vec(),
-            object::SectionKind::Text,
+            b".eh_frame".to_vec(),
+            object::SectionKind::Other,
         );
-        object.section_mut(text).set_data(vec![0xcc; 4], 1);
-        object.add_symbol(object::write::Symbol {
-            name: b"capy_jit_fn_7".to_vec(),
-            value: 0,
-            size: 4,
-            kind: object::SymbolKind::Text,
-            scope: object::SymbolScope::Linkage,
-            weak: false,
-            section: object::write::SymbolSection::Section(text),
-            flags: object::SymbolFlags::None,
-        });
-        object.add_symbol(object::write::Symbol {
-            name: b"unrelated".to_vec(),
-            value: 0,
-            size: 4,
-            kind: object::SymbolKind::Text,
-            scope: object::SymbolScope::Linkage,
-            weak: false,
-            section: object::write::SymbolSection::Section(text),
-            flags: object::SymbolFlags::None,
-        });
-        let mut bytes = object.write().expect("write ELF object");
-        let addresses = HashMap::from([(7, 0x1234_5678usize)]);
-
-        let patched =
-            patch_capy_jit_symbol_addresses(&mut bytes, &addresses).expect("patch symbols");
-
-        assert_eq!(patched, 1);
-        let parsed = object::File::parse(bytes.as_slice()).expect("parse patched object");
-        let symbol = parsed
-            .symbols()
-            .find(|symbol| symbol.name() == Ok("capy_jit_fn_7"))
-            .expect("synthetic symbol");
-        assert_eq!(symbol.address(), 0);
-        assert_ne!(symbol.section(), object::SymbolSection::Absolute);
-        let section = parsed
-            .sections()
-            .find(|section| section.name() == Ok(".text.capy_jit_fn_7"))
-            .expect("synthetic section");
-        assert_eq!(section.address(), 0x1234_5678);
-        let unrelated = parsed
-            .symbols()
-            .find(|symbol| symbol.name() == Ok("unrelated"))
-            .expect("unrelated symbol");
-        assert_ne!(unrelated.section(), object::SymbolSection::Absolute);
+        object.section_mut(unwind).set_data(eh_frame, 8);
     }
+    for symbol in symbols {
+        object.add_symbol(object::write::Symbol {
+            name: symbol.name.as_bytes().to_vec(),
+            value: symbol.address as u64,
+            size: symbol.size as u64,
+            kind: object::SymbolKind::Text,
+            scope: object::SymbolScope::Dynamic,
+            weak: false,
+            section: object::write::SymbolSection::Section(text),
+            flags: object::SymbolFlags::None,
+        });
+    }
+    let mut bytes = object
+        .write()
+        .expect("object writer failed on a plain symbol table");
+    retarget_text(&mut bytes, base as u64);
+    bytes
+}
 
-    #[test]
-    fn permanent_registration_keeps_descriptor_entry_linked() {
-        let _test_guard = TEST_LOCK.lock().expect("GDB JIT test lock poisoned");
-        reset_descriptor_for_test();
+/// Patches the writer's relocatable output into a load-addressed `ET_EXEC`.
+/// `object::write` always emits `ET_REL` with `sh_addr == 0` and no program
+/// headers, lldb's `ObjectFileELF` takes section load addresses from
+/// `sh_addr`, so the type and the address are all it needs.
+fn retarget_text(bytes: &mut [u8], base: u64) {
+    assert_eq!(&bytes[..4], &[0x7f, b'E', b'L', b'F']);
+    assert_eq!(bytes[4], 2); // 64-bit
+    assert_eq!(bytes[5], 1); // little-endian
+    bytes[16..18].copy_from_slice(&object::elf::ET_EXEC.to_le_bytes());
 
-        register_permanent_object(vec![0x7f, b'E', b'L', b'F']);
-
-        // SAFETY: Invariants are upheld by the surrounding context
-        unsafe {
-            let descriptor = ptr::addr_of!(__jit_debug_descriptor);
-            assert!(!(*descriptor).first_entry.is_null());
-            assert_eq!((*(*descriptor).first_entry).symfile_size, 4);
+    let u16le = |at: usize| u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+    let u64le = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+    let shoff = u64le(0x28) as usize;
+    let shentsize = u16le(0x3a) as usize;
+    let shnum = u16le(0x3c) as usize;
+    let shstrndx = u16le(0x3e) as usize;
+    let str_off = u64le(shoff + shstrndx * shentsize + 24) as usize;
+    for i in 1..shnum {
+        let hdr = shoff + i * shentsize;
+        let name = u32::from_le_bytes(bytes[hdr..hdr + 4].try_into().unwrap()) as usize;
+        let mut end = str_off + name;
+        while bytes[end] != 0 {
+            end += 1;
         }
-
-        PERMANENT_REGISTRATIONS
-            .lock()
-            .expect("GDB JIT registration list poisoned")
-            .clear();
+        if &bytes[str_off + name..end] == b".text" {
+            bytes[hdr + 16..hdr + 24].copy_from_slice(&base.to_le_bytes());
+            return;
+        }
     }
+    panic!("symfile lost its .text section");
 }

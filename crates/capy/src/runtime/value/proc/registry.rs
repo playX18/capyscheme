@@ -1,22 +1,36 @@
 //! Registry and builders for native closures.
 
 use super::*;
+use crate::utils::flags;
 
 type StaticClosureMap<'gc> = HashMap<Address, Gc<'gc, Closure<'gc>>>;
 type RootedProcedureRegistry = crate::Rootable!(ProcedureRegistry<'_>);
+
+#[derive(Clone, Copy)]
+struct CachedNativeSite<'gc> {
+    /// The registered proc wrapper, as the value for free slot 0.
+    proc: Value<'gc>,
+    code_block: Gc<'gc, CodeBlock<'gc>>,
+    /// Metadata the cached block was built with, a hit requires identity.
+    meta: Value<'gc>,
+}
 
 /// Caches native procedure wrappers and static native closures.
 pub struct ProcedureRegistry<'gc> {
     registered: Monitor<HashMap<Address, Gc<'gc, NativeProc>>>,
     static_closures: Monitor<StaticClosureMap<'gc>>,
+    native_sites: Monitor<HashMap<Address, CachedNativeSite<'gc>>>,
 }
 
 /// Native callable ABI variants supported by Scheme closures.
+///
+/// Both take `(ctx, sfp)`, the kind only selects the `CodeBlock` flag the
+/// driver and `is_continuation` checks read.
 pub enum NativeClosureKind<'gc> {
-    /// A native procedure that receives a return continuation.
+    /// A native procedure.
     Procedure(NativeFn<'gc>),
-    /// A native continuation that returns directly to the VM trampoline.
-    Continuation(NativeContinuation<'gc>),
+    /// A native continuation, entered through `subr_ret`.
+    Continuation(NativeFn<'gc>),
 }
 
 impl<'gc> NativeClosureKind<'gc> {
@@ -30,18 +44,11 @@ impl<'gc> NativeClosureKind<'gc> {
     fn is_continuation(&self) -> bool {
         matches!(self, Self::Continuation(_))
     }
-
-    fn trampoline(&self) -> Address {
-        match self {
-            Self::Procedure(_) => get_trampoline_from_scheme(),
-            Self::Continuation(_) => get_cont_trampoline_from_scheme(),
-        }
-    }
 }
 
 /// Builder for a native closure.
 ///
-/// The built closure always stores the `NativeProc` wrapper in free slot `0`;
+/// The built closure always stores the `NativeProc` wrapper in free slot `0`,
 /// any extra free variables are appended after it.
 pub struct NativeClosureBuilder<'a, 'gc> {
     registry: &'a ProcedureRegistry<'gc>,
@@ -71,7 +78,7 @@ impl<'a, 'gc> NativeClosureBuilder<'a, 'gc> {
     }
 
     /// Allocates or returns the requested native closure.
-    pub fn build(self, ctx: Context<'gc>) -> Gc<'gc, Closure<'gc>> {
+    pub fn build(self, ctx: MutationContext<'gc>) -> Gc<'gc, Closure<'gc>> {
         self.registry.build_native_closure(ctx, self)
     }
 }
@@ -93,14 +100,14 @@ impl<'gc> ProcedureRegistry<'gc> {
     }
 
     /// Starts building a native continuation closure.
-    pub fn continuation(&self, f: NativeContinuation<'gc>) -> NativeClosureBuilder<'_, 'gc> {
+    pub fn continuation(&self, f: NativeFn<'gc>) -> NativeClosureBuilder<'_, 'gc> {
         self.builder(NativeClosureKind::Continuation(f))
     }
 
     pub fn register_continuation(
         &self,
-        ctx: Context<'gc>,
-        f: NativeContinuation<'gc>,
+        ctx: MutationContext<'gc>,
+        f: NativeFn<'gc>,
     ) -> Gc<'gc, NativeProc> {
         let mut registered = self.registered.lock();
 
@@ -115,7 +122,11 @@ impl<'gc> ProcedureRegistry<'gc> {
         proc
     }
 
-    pub fn register_procedure(&self, ctx: Context<'gc>, f: NativeFn<'gc>) -> Gc<'gc, NativeProc> {
+    pub fn register_procedure(
+        &self,
+        ctx: MutationContext<'gc>,
+        f: NativeFn<'gc>,
+    ) -> Gc<'gc, NativeProc> {
         let mut registered = self.registered.lock();
         let addr = Address::from_ptr(f as *const ());
         if let Some(&registered) = registered.get(&addr) {
@@ -130,7 +141,7 @@ impl<'gc> ProcedureRegistry<'gc> {
 
     pub fn register_static_closure(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         f: NativeFn<'gc>,
         meta: Value<'gc>,
     ) -> Gc<'gc, Closure<'gc>> {
@@ -139,8 +150,8 @@ impl<'gc> ProcedureRegistry<'gc> {
 
     pub fn register_static_cont_closure(
         &self,
-        ctx: Context<'gc>,
-        f: NativeContinuation<'gc>,
+        ctx: MutationContext<'gc>,
+        f: NativeFn<'gc>,
         meta: Value<'gc>,
     ) -> Gc<'gc, Closure<'gc>> {
         self.continuation(f)
@@ -151,7 +162,7 @@ impl<'gc> ProcedureRegistry<'gc> {
 
     pub fn make_closure(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         f: NativeFn<'gc>,
         free_vars: impl IntoIterator<Item = Value<'gc>>,
         meta: Value<'gc>,
@@ -164,8 +175,8 @@ impl<'gc> ProcedureRegistry<'gc> {
 
     pub fn make_cont_closure(
         &self,
-        ctx: Context<'gc>,
-        f: NativeContinuation<'gc>,
+        ctx: MutationContext<'gc>,
+        f: NativeFn<'gc>,
         free_vars: impl IntoIterator<Item = Value<'gc>>,
         meta: Value<'gc>,
     ) -> Gc<'gc, Closure<'gc>> {
@@ -175,14 +186,53 @@ impl<'gc> ProcedureRegistry<'gc> {
             .build(ctx)
     }
 
+    /// Builds a native procedure closure with exactly three free variables,
+    /// reusing a cached proc wrapper and code block.
+    ///
+    /// The cache is keyed by function address and guarded by metadata
+    /// identity: a caller passing a different metadata value for the same
+    /// address falls back to [`ProcedureRegistry::make_closure`]
+    pub fn make_cached_closure(
+        &self,
+        ctx: MutationContext<'gc>,
+        f: NativeFn<'gc>,
+        captured: [Value<'gc>; 3],
+        meta: Value<'gc>,
+    ) -> Gc<'gc, Closure<'gc>> {
+        if !flags::native_closure_cache() {
+            return self.make_closure(ctx, f, captured, meta);
+        }
+        let kind = NativeClosureKind::Procedure(f);
+        let addr = kind.addr();
+        let cached = {
+            let sites = self.native_sites.lock();
+            sites.get(&addr).filter(|site| site.meta == meta).copied()
+        };
+        if let Some(site) = cached {
+            let free = [site.proc, captured[0], captured[1], captured[2]];
+            return Closure::new_native(ctx, site.code_block, &free, kind.is_continuation());
+        }
+        // Miss (or metadata mismatch): build through the shared slow path
+        // so validation and layout stay identical, then memoize the fresh
+        // closure's site data for the next capture. First writer wins, a
+        // mismatch keeps missing and keeps taking the slow path.
+        let closure = self.make_closure(ctx, f, captured, meta);
+        let mut sites = self.native_sites.lock();
+        sites.entry(addr).or_insert_with(|| CachedNativeSite {
+            proc: closure[0].get(),
+            code_block: closure.code_block,
+            meta,
+        });
+        closure
+    }
+
     fn build_native_closure(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         builder: NativeClosureBuilder<'_, 'gc>,
     ) -> Gc<'gc, Closure<'gc>> {
         let addr = builder.kind.addr();
         let is_cont = builder.kind.is_continuation();
-        let trampoline = builder.kind.trampoline();
 
         if builder.cached_static {
             if !builder.free_vars.is_empty() {
@@ -193,15 +243,14 @@ impl<'gc> ProcedureRegistry<'gc> {
                 return closure;
             }
             let proc = self.register_native_proc(ctx, builder.kind).into();
-            let code_block = CodeBlock::new_native(
-                ctx,
-                trampoline,
-                CodeArity::variadic(0),
-                is_cont,
-                builder.meta,
-            );
+            let code_block =
+                CodeBlock::new_native(ctx, CodeArity::variadic(0), is_cont, builder.meta);
             let closure = Closure::new_native(ctx, code_block, &[proc], is_cont);
             closures.insert(addr, closure);
+            crate::runtime::profile::maps::note_native_closure(
+                Value::from(closure).bits(),
+                native_closure_name(ctx, builder.meta),
+            );
             return closure;
         }
 
@@ -214,19 +263,13 @@ impl<'gc> ProcedureRegistry<'gc> {
         fv.push(proc);
         fv.extend(builder.free_vars);
 
-        let code_block = CodeBlock::new_native(
-            ctx,
-            trampoline,
-            CodeArity::variadic(0),
-            is_cont,
-            builder.meta,
-        );
+        let code_block = CodeBlock::new_native(ctx, CodeArity::variadic(0), is_cont, builder.meta);
         Closure::new_native(ctx, code_block, &fv, is_cont)
     }
 
     fn register_native_proc(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         kind: NativeClosureKind<'gc>,
     ) -> Gc<'gc, NativeProc> {
         match kind {
@@ -248,6 +291,12 @@ unsafe impl<'gc> Trace for ProcedureRegistry<'gc> {
         for clos in self.static_closures.get_mut().values_mut() {
             visitor.trace(clos);
         }
+
+        for site in self.native_sites.get_mut().values_mut() {
+            visitor.trace(&mut site.proc);
+            visitor.trace(&mut site.code_block);
+            visitor.trace(&mut site.meta);
+        }
     }
 
     // SAFETY: Weak refs are processed through the given weak_processor
@@ -256,10 +305,27 @@ unsafe impl<'gc> Trace for ProcedureRegistry<'gc> {
     }
 }
 
+/// Procedure name from native metadata, for profiler labels.
+fn native_closure_name<'gc>(ctx: MutationContext<'gc>, meta: Value<'gc>) -> String {
+    if meta.is_pair() {
+        if let Some(pair) = meta.assq(ctx.intern("name")) {
+            let value = pair.cdr();
+            if value.is::<Symbol>() {
+                return value.downcast::<Symbol>().as_str().into_owned();
+            }
+            if value.is::<Str>() {
+                return value.downcast::<Str>().to_string();
+            }
+        }
+    }
+    String::from("native")
+}
+
 #[unsafe(export_name = "CAPY_PROCEDURES")]
 pub static PROCEDURES: LazyLock<Global<RootedProcedureRegistry>> = LazyLock::new(|| {
     Global::new(ProcedureRegistry {
         registered: Monitor::new(HashMap::new()),
         static_closures: Monitor::new(HashMap::new()),
+        native_sites: Monitor::new(HashMap::new()),
     })
 });

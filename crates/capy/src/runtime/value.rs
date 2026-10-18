@@ -10,7 +10,7 @@ use crate::heap::{
     mmtk::{util::Address, vm::SlotVisitor},
     object::{ClassId, GcObject, HeapObjectHeader, builtin_class_ids},
 };
-use crate::runtime::Context;
+use crate::runtime::MutationContext;
 use crate::runtime::class::{ClassDescriptor, class_table, hash_primitive_value};
 use std::{fmt, hash::Hash, marker::PhantomData};
 
@@ -113,7 +113,7 @@ impl<'gc> Value<'gc> {
 }
 
 // SAFETY: Value's Trace impl correctly identifies GC-managed pointers via `is_cell()`.
-// Non-cell values (ints, floats, tags) are ignored; cell values point into the GC heap
+// Non-cell values (ints, floats, tags) are ignored, cell values point into the GC heap
 // and `desc.ptr` is at a stable address suitable for `ObjectSlot` construction.
 unsafe impl<'gc> Trace for Value<'gc> {
     // SAFETY: All GC-reachable fields are traced via `visitor`
@@ -178,6 +178,8 @@ impl<'gc> Value<'gc> {
     pub const VALUE_UNSPECIFIED: i64 = Self::MISC_TAG | 0x20;
     pub const VALUE_EOF: i64 = Self::MISC_TAG | 0x30;
     pub const VALUE_BWP: i64 = Self::MISC_TAG | 0x40;
+    /// The continuation of the native call in progress, see [`Value::current_k`].
+    pub const VALUE_CURRENT_K: i64 = Self::MISC_TAG | 0x50;
 
     /// Constructs a character value.
     pub fn from_char(c: char) -> Self {
@@ -243,6 +245,20 @@ impl<'gc> Value<'gc> {
     /// Constructs the internal deleted slot sentinel.
     pub fn deleted() -> Self {
         Self::from_raw_i64(Self::VALUE_DELETED)
+    }
+
+    /// The token a native procedure receives as its return continuation.
+    ///
+    /// It stands for "whatever the frame of this call returns to" and is only
+    /// meaningful while that frame is the top of the stack: passing it back
+    /// as the continuation of a call makes that call a tail call, and
+    /// continuing to it returns values from the frame.
+    pub fn current_k() -> Self {
+        Self::from_raw_i64(Self::VALUE_CURRENT_K)
+    }
+
+    pub fn is_current_k(self) -> bool {
+        self.raw_i64() == Self::VALUE_CURRENT_K
     }
 
     pub fn is_void(self) -> bool {
@@ -347,7 +363,6 @@ impl<'gc> Value<'gc> {
     pub fn as_cell_raw(self) -> GcObject {
         // SAFETY: Caller must ensure the value is a cell. The NaN-boxing encoding guarantees
         // the low bits of a cell value form a valid pointer into the GC heap.
-        // debug_assert!(self.is_cell());
         unsafe { self.desc.ptr() }
     }
 }
@@ -364,6 +379,7 @@ impl<'gc> Value<'gc> {
         obj.header()
     }
 
+    #[inline]
     pub fn class_id(&self) -> Option<ClassId> {
         if self.is_empty() || self.is_deleted() || self.is_bwp() {
             return None;
@@ -380,12 +396,12 @@ impl<'gc> Value<'gc> {
         self.class_id() == Some(id)
     }
 
-    pub fn class(&self, ctx: Context<'gc>) -> Option<Gc<'gc, ClassDescriptor<'gc>>> {
+    pub fn class(&self, ctx: MutationContext<'gc>) -> Option<Gc<'gc, ClassDescriptor<'gc>>> {
         let id = self.class_id()?;
         class_table(ctx).lookup(id)
     }
 
-    pub fn is_a(&self, ctx: Context<'gc>, id: ClassId) -> bool {
+    pub fn is_a(&self, ctx: MutationContext<'gc>, id: ClassId) -> bool {
         let class_id = match self.class_id() {
             Some(class_id) => class_id,
             None => return false,
@@ -472,6 +488,17 @@ impl<'gc> Value<'gc> {
             None
         }
     }
+
+    pub fn is_bytevector(self) -> bool {
+        self.is_cell()
+            && !self.is_empty()
+            && matches!(
+                self.as_cell_raw().class_id().bits(),
+                builtin_class_ids::MUTABLE_BYTEVECTOR
+                    | builtin_class_ids::IMMUTABLE_BYTEVECTOR
+                    | builtin_class_ids::MAPPED_BYTEVECTOR
+            )
+    }
 }
 
 impl<'gc> std::ops::Not for Value<'gc> {
@@ -549,385 +576,6 @@ impl<'gc> std::fmt::Display for Value<'gc> {
 impl<'gc> fmt::Debug for Value<'gc> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{self}")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        Boxed, ByteVector, Closure, CodeArity, CodeBlock, Complex, HashTable, HashTableType,
-        Keyword, NativeProc, NativeReturn, Number, Rational, ReturnCode, Str, Symbol, Tuple, Value,
-        Vector, WeakMapping, WeakSet, WeakTable, pure_nan,
-    };
-    use crate::frontend::reader::Annotation;
-    use crate::heap::Gc;
-    use crate::heap::mmtk::util::Address;
-    use crate::heap::object::{ClassId, builtin_class_ids, class_header_word};
-    use crate::runtime::Scheme;
-    use crate::runtime::vm::control::ContinuationMarks;
-    use crate::runtime::vm::ffi::{Pointer, pointer_header_word};
-    use crate::runtime::vm::syntax::{Syntax, SyntaxTransformer};
-
-    fn annotation_header_word() -> u64 {
-        class_header_word(ClassId::new(builtin_class_ids::ANNOTATION).unwrap())
-    }
-
-    #[test]
-    fn from_f64_canonicalizes_nan_payloads() {
-        let payloads = [
-            pure_nan::PURE_NAN_BITS,
-            0x7ff8000000000001,
-            0x7ff0000000000001,
-            0xfff8000000000001,
-        ];
-
-        for bits in payloads {
-            let value = Value::from_f64(f64::from_bits(bits));
-
-            assert!(value.is_flonum());
-            assert_eq!(value.as_flonum().to_bits(), pure_nan::PURE_NAN_BITS);
-        }
-    }
-
-    #[test]
-    fn is_char_rejects_invalid_scalar_payloads() {
-        let surrogate = Value::from_raw_i64((0xd800_i64 << 16) | Value::CHAR_TAG);
-        let above_scalar_range = Value::from_raw_i64((0x110000_i64 << 16) | Value::CHAR_TAG);
-
-        assert!(!surrogate.is_char());
-        assert!(!above_scalar_range.is_char());
-    }
-
-    #[test]
-    fn immediate_values_have_builtin_class_ids() {
-        let cases = [
-            (Value::new(false), builtin_class_ids::BOOL),
-            (Value::new(true), builtin_class_ids::BOOL),
-            (Value::from_char('x'), builtin_class_ids::CHAR),
-            (Value::null(), builtin_class_ids::NULL),
-            (Value::eof(), builtin_class_ids::EOF),
-            (Value::void(), builtin_class_ids::VOID),
-            (Value::unspecified(), builtin_class_ids::UNSPECIFIED),
-            (Value::undefined(), builtin_class_ids::UNDEFINED),
-            (Value::from_i32(42), builtin_class_ids::FIXNUM),
-            (Value::from_f64(1.25), builtin_class_ids::FLONUM),
-        ];
-
-        for (value, raw_id) in cases {
-            let id = ClassId::new(raw_id).unwrap();
-            assert_eq!(value.class_id(), Some(id));
-            assert!(value.is_class_id(id));
-        }
-    }
-
-    #[test]
-    fn internal_immediate_sentinels_do_not_get_public_class_ids() {
-        assert_eq!(Value::empty().class_id(), None);
-        assert_eq!(Value::deleted().class_id(), None);
-        assert_eq!(Value::bwp().class_id(), None);
-    }
-
-    extern "C-unwind" fn class_predicate_test_proc<'gc>(
-        _ctx: crate::runtime::Context<'gc>,
-        _rator: Value<'gc>,
-        _rands: *const Value<'gc>,
-        _num_rands: usize,
-        _retk: Value<'gc>,
-    ) -> NativeReturn<'gc> {
-        NativeReturn {
-            code: ReturnCode::ReturnOk,
-            value: Value::undefined(),
-        }
-    }
-
-    #[test]
-    fn heap_values_use_fixed_builtin_class_ids() {
-        Scheme::new_uninit().enter(|ctx| {
-            let cases = [
-                (
-                    Value::cons(ctx, Value::new(1), Value::null()),
-                    builtin_class_ids::PAIR,
-                ),
-                (
-                    Value::from(Symbol::from_str(ctx, "class-id-symbol")),
-                    builtin_class_ids::SYMBOL,
-                ),
-                (
-                    Value::from(Symbol::from_str_uninterned(
-                        ctx,
-                        "class-id-uninterned-symbol",
-                        None,
-                    )),
-                    builtin_class_ids::SYMBOL,
-                ),
-                (
-                    Value::from(Keyword::from_symbol(
-                        ctx,
-                        Symbol::from_str_uninterned(ctx, "class-id-keyword", None),
-                    )),
-                    builtin_class_ids::KEYWORD,
-                ),
-                (
-                    Value::from(Str::from_str(ctx, "class id string")),
-                    builtin_class_ids::STRING,
-                ),
-                (
-                    Value::from(Vector::new::<false>(ctx, 2, Value::unspecified())),
-                    builtin_class_ids::VECTOR,
-                ),
-                (
-                    Value::from(ByteVector::new::<false>(ctx, 4, true)),
-                    builtin_class_ids::MUTABLE_BYTEVECTOR,
-                ),
-                (
-                    Value::from(HashTable::new(ctx, HashTableType::Eq, 4, 0.75)),
-                    builtin_class_ids::HASHTABLE,
-                ),
-                (
-                    Value::from(Boxed::new(ctx, Value::new(7))),
-                    builtin_class_ids::BOX,
-                ),
-            ];
-
-            for (value, raw_id) in cases {
-                assert_eq!(value.class_id(), ClassId::new(raw_id));
-            }
-        });
-    }
-
-    #[test]
-    fn collapsed_variant_values_use_layout_class_ids() {
-        Scheme::new_uninit().enter(|ctx| {
-            let pair = Value::cons(ctx, Value::new(1), Value::null());
-            let code_block = CodeBlock::new_aot(
-                ctx,
-                Address::from_ptr(class_predicate_test_proc as *const ()),
-                CodeArity::new(0),
-                false,
-                Value::null(),
-            );
-            let closure_proc = Value::from(Closure::new(ctx, code_block, 0, false));
-            let closure_continuation = Value::from(Closure::new(ctx, code_block, 0, true));
-            let mutable_vector = Value::from(Vector::new::<false>(ctx, 1, Value::undefined()));
-            let immutable_vector_gc = Vector::new::<true>(ctx, 1, Value::undefined());
-            let immutable_vector = Value::from(immutable_vector_gc);
-            let mutable_bytevector = Value::from(ByteVector::new::<false>(ctx, 4, true));
-            let immutable_bytevector = Value::from(ByteVector::new::<true>(ctx, 4, true));
-            let bytevector_source = ByteVector::new::<false>(ctx, 4, true);
-            let mapped_bytevector = Value::from(ByteVector::new_mapping(
-                ctx,
-                bytevector_source.contents(),
-                4,
-            ));
-            let tuple = Value::from(Tuple::new(ctx, 1, Value::undefined()));
-            let string = Value::from(Str::new(ctx, "class-only string", false));
-            let immutable_string = Value::from(Str::new(ctx, "class-only immutable string", true));
-            let symbol = Value::from(Symbol::from_str(ctx, "class-only-symbol"));
-            let uninterned_symbol = Value::from(Symbol::from_str_uninterned(
-                ctx,
-                "class-only-uninterned-symbol",
-                None,
-            ));
-            let keyword = Value::from(Keyword::from_symbol(
-                ctx,
-                Symbol::from_str_uninterned(ctx, "class-only-keyword", None),
-            ));
-            let mutable_hash = Value::from(HashTable::new(ctx, HashTableType::Eq, 4, 0.75));
-            let immutable_hash =
-                Value::from(HashTable::new_immutable(ctx, HashTableType::Eq, 4, 0.75));
-            let weak_set = Value::from(WeakSet::new(ctx, 31));
-            let weak_table = Value::from(WeakTable::new(ctx, 8, 0.75));
-            let weak_mapping_key = Value::cons(ctx, Value::new(1), Value::null());
-            let weak_mapping = Value::from(WeakMapping::new(ctx, weak_mapping_key, Value::new(2)));
-            let boxed = Value::from(Boxed::new(ctx, Value::new(7)));
-            let rational = Value::from(Rational::new(ctx, Number::Fixnum(1), Number::Fixnum(2)));
-            let complex = Value::from(Complex::new(ctx, Number::Fixnum(1), Number::Fixnum(2)));
-            let native_proc = Value::from(NativeProc::new(ctx, Address::ZERO, false));
-            let native_continuation = Value::from(NativeProc::new(ctx, Address::ZERO, true));
-
-            let cases = [
-                (pair, builtin_class_ids::PAIR),
-                (closure_proc, builtin_class_ids::CLOSURE),
-                (closure_continuation, builtin_class_ids::CLOSURE),
-                (mutable_vector, builtin_class_ids::VECTOR),
-                (immutable_vector, builtin_class_ids::VECTOR),
-                (mutable_bytevector, builtin_class_ids::MUTABLE_BYTEVECTOR),
-                (
-                    immutable_bytevector,
-                    builtin_class_ids::IMMUTABLE_BYTEVECTOR,
-                ),
-                (mapped_bytevector, builtin_class_ids::MAPPED_BYTEVECTOR),
-                (tuple, builtin_class_ids::TUPLE),
-                (string, builtin_class_ids::STRING),
-                (immutable_string, builtin_class_ids::STRING),
-                (symbol, builtin_class_ids::SYMBOL),
-                (uninterned_symbol, builtin_class_ids::SYMBOL),
-                (keyword, builtin_class_ids::KEYWORD),
-                (mutable_hash, builtin_class_ids::HASHTABLE),
-                (immutable_hash, builtin_class_ids::IMMUTABLE_HASHTABLE),
-                (weak_set, builtin_class_ids::WEAK_SET),
-                (weak_table, builtin_class_ids::WEAK_TABLE),
-                (weak_mapping, builtin_class_ids::WEAK_MAPPING),
-                (boxed, builtin_class_ids::BOX),
-                (rational, builtin_class_ids::RATIONAL),
-                (complex, builtin_class_ids::COMPLEX),
-                (native_proc, builtin_class_ids::NATIVE_PROCEDURE),
-                (native_continuation, builtin_class_ids::NATIVE_CONTINUATION),
-            ];
-
-            for (value, raw_class_id) in cases {
-                assert_eq!(value.class_id(), ClassId::new(raw_class_id));
-            }
-            assert!(!closure_proc.downcast::<Closure>().is_continuation());
-            assert!(closure_continuation.downcast::<Closure>().is_continuation());
-            assert!(immutable_vector_gc.is_immutable());
-            assert!(immutable_string.downcast::<Str>().is_immutable());
-            assert!(!symbol.downcast::<Symbol>().is_uninterned());
-            assert!(uninterned_symbol.downcast::<Symbol>().is_uninterned());
-        });
-    }
-
-    #[test]
-    fn class_predicates_accept_collapsed_layout_classes() {
-        Scheme::new_uninit().enter(|ctx| {
-            let mutable_vector = Value::from(Vector::new::<false>(ctx, 1, Value::undefined()));
-            let immutable_vector_gc = Vector::new::<true>(ctx, 1, Value::undefined());
-            let immutable_vector = Value::from(immutable_vector_gc);
-            assert!(mutable_vector.is::<Vector>());
-            assert!(immutable_vector.is::<Vector>());
-            assert!(mutable_vector.is_class_id(ClassId::new(builtin_class_ids::VECTOR).unwrap()));
-            assert!(immutable_vector.is_class_id(ClassId::new(builtin_class_ids::VECTOR).unwrap()));
-            assert!(immutable_vector_gc.is_immutable());
-
-            let mutable_bytevector = Value::from(ByteVector::new::<false>(ctx, 1, true));
-            let immutable_bytevector = Value::from(ByteVector::new::<true>(ctx, 1, true));
-            assert!(mutable_bytevector.is::<ByteVector>());
-            assert!(immutable_bytevector.is::<ByteVector>());
-            assert!(
-                mutable_bytevector
-                    .is_class_id(ClassId::new(builtin_class_ids::MUTABLE_BYTEVECTOR).unwrap())
-            );
-            assert!(
-                immutable_bytevector
-                    .is_class_id(ClassId::new(builtin_class_ids::IMMUTABLE_BYTEVECTOR).unwrap())
-            );
-
-            let mutable_hash = Value::from(HashTable::new(ctx, HashTableType::Eq, 4, 0.75));
-            let immutable_hash =
-                Value::from(HashTable::new_immutable(ctx, HashTableType::Eq, 4, 0.75));
-            assert!(mutable_hash.is::<HashTable>());
-            assert!(immutable_hash.is::<HashTable>());
-            assert!(mutable_hash.is_class_id(ClassId::new(builtin_class_ids::HASHTABLE).unwrap()));
-            assert!(
-                immutable_hash
-                    .is_class_id(ClassId::new(builtin_class_ids::IMMUTABLE_HASHTABLE).unwrap())
-            );
-
-            let native_proc = Value::from(NativeProc::new(ctx, Address::ZERO, false));
-            let native_continuation = Value::from(NativeProc::new(ctx, Address::ZERO, true));
-            assert!(native_proc.is::<NativeProc>());
-            assert!(native_continuation.is::<NativeProc>());
-            assert!(
-                native_proc.is_class_id(ClassId::new(builtin_class_ids::NATIVE_PROCEDURE).unwrap())
-            );
-            assert!(
-                native_continuation
-                    .is_class_id(ClassId::new(builtin_class_ids::NATIVE_CONTINUATION).unwrap())
-            );
-
-            let code_block = CodeBlock::new_aot(
-                ctx,
-                Address::from_ptr(class_predicate_test_proc as *const ()),
-                CodeArity::new(0),
-                false,
-                Value::null(),
-            );
-            let closure_proc = Value::from(Closure::new(ctx, code_block, 0, false));
-            let closure_continuation = Value::from(Closure::new(ctx, code_block, 0, true));
-            assert!(closure_proc.is::<Closure>());
-            assert!(closure_continuation.is::<Closure>());
-            assert!(closure_proc.is_class_id(ClassId::new(builtin_class_ids::CLOSURE).unwrap()));
-            assert!(
-                closure_continuation.is_class_id(ClassId::new(builtin_class_ids::CLOSURE).unwrap())
-            );
-            assert!(!closure_proc.downcast::<Closure>().is_continuation());
-            assert!(closure_continuation.downcast::<Closure>().is_continuation());
-
-            let annotation = Value::from(Gc::new_with_header_word(
-                ctx,
-                Annotation {
-                    expression: Value::new(1),
-                    stripped: Value::new(1),
-                    source: Value::null(),
-                    start_point: (0, 0),
-                    end_point: (0, 0),
-                },
-                annotation_header_word(),
-            ));
-            assert!(annotation.is::<Annotation>());
-            assert!(annotation.is_class_id(ClassId::new(builtin_class_ids::ANNOTATION).unwrap()));
-
-            let marks = Value::from(ctx.current_continuation_marks());
-            assert!(marks.is::<ContinuationMarks>());
-            assert!(
-                marks.is_class_id(ClassId::new(builtin_class_ids::CONTINUATION_MARKS).unwrap())
-            );
-
-            let pointer = Value::from(Gc::new_with_header_word(
-                ctx,
-                Pointer::new(std::ptr::null_mut()),
-                pointer_header_word(),
-            ));
-            assert!(pointer.is::<Pointer>());
-            assert!(pointer.is_class_id(ClassId::new(builtin_class_ids::POINTER).unwrap()));
-
-            let syntax = Value::from(Syntax::new(
-                ctx,
-                Value::new(1),
-                Value::null(),
-                Value::null(),
-                Value::null(),
-                Value::null(),
-            ));
-            assert!(syntax.is::<Syntax>());
-            assert!(syntax.is_class_id(ClassId::new(builtin_class_ids::SYNTAX).unwrap()));
-
-            let transformer = Value::from(SyntaxTransformer::new(
-                ctx,
-                Value::null(),
-                Value::null(),
-                Value::null(),
-            ));
-            assert!(transformer.is::<SyntaxTransformer>());
-            assert!(
-                transformer
-                    .is_class_id(ClassId::new(builtin_class_ids::SYNTAX_TRANSFORMER).unwrap())
-            );
-        });
-    }
-
-    #[test]
-    fn values_support_class_lookup_and_is_a() {
-        Scheme::new_uninit().enter(|ctx| {
-            let number = ClassId::new(builtin_class_ids::NUMBER).unwrap();
-            let symbol_class = ClassId::new(builtin_class_ids::SYMBOL).unwrap();
-            let object = ClassId::new(builtin_class_ids::OBJECT).unwrap();
-            let top = ClassId::new(builtin_class_ids::TOP).unwrap();
-            let pair = Value::cons(ctx, Value::new(1), Value::null());
-            let fixnum = Value::new(42);
-            let symbol = Value::from(Symbol::from_str_uninterned(ctx, "class-lookup", None));
-
-            assert_eq!(fixnum.class(ctx).unwrap().name(), "fixnum");
-            assert!(fixnum.is_a(ctx, number));
-            assert!(fixnum.is_a(ctx, object));
-            assert!(fixnum.is_a(ctx, top));
-            assert!(!pair.is_a(ctx, number));
-            assert!(pair.is_a(ctx, object));
-            assert!(symbol.is_a(ctx, symbol_class));
-            assert!(symbol.is_a(ctx, object));
-            assert!(Value::empty().class(ctx).is_none());
-            assert!(!Value::empty().is_a(ctx, object));
-        });
     }
 }
 

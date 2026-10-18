@@ -44,7 +44,7 @@ mod dl_ops {
             // SAFETY: FFI: arguments follow POSIX dlopen requirements
             unsafe { libc::dlopen(cstr.as_ptr(), flags) }
         } else {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "dlopen",
                 "expected string or false",
                 None,
@@ -65,7 +65,7 @@ mod dl_ops {
                     cstr.to_string_lossy().into_owned()
                 }
             };
-            return nctx.raise_error(
+            return call.raise_error(
                 "dlopen",
                 &format!("file: {name}, error: {dlerror}"),
                 &[name, flags.into()],
@@ -83,9 +83,8 @@ mod dl_ops {
                 flags,
             },
         );
-        let ptr =
-            Gc::new_with_header_word(nctx.ctx, Pointer::new(handle as _), pointer_header_word());
-        nctx.return_(ptr.into())
+        let ptr = Gc::new_with_header_word(ctx, Pointer::new(handle as _), pointer_header_word());
+        ptr.into()
     }
     #[scheme(name = "dlclose")]
     pub fn dlclose(handle: Gc<'gc, Pointer>) -> Value<'gc> {
@@ -104,7 +103,7 @@ mod dl_ops {
                     cstr.to_string_lossy().into_owned()
                 }
             };
-            return nctx.raise_error(
+            return call.raise_error(
                 "dlclose",
                 &format!("handle: {handle:p}, error: {dlerror}"),
                 &[handle.into()],
@@ -115,7 +114,7 @@ mod dl_ops {
             .lock()
             .remove(&Address::from_ptr(handle_ptr as _));
 
-        nctx.return_(Value::new(true))
+        Value::new(true)
     }
 
     #[scheme(name = "dlsym")]
@@ -126,7 +125,7 @@ mod dl_ops {
             let s = symbol.downcast::<Str>().to_string();
             std::ffi::CString::new(s).expect("invariant holds")
         } else {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "dlsym",
                 "expected string",
                 None,
@@ -149,7 +148,7 @@ mod dl_ops {
                     cstr.to_string_lossy().into_owned()
                 }
             };
-            return nctx.raise_error(
+            return call.raise_error(
                 "dlsym",
                 &format!(
                     "handle: {handle:p}, symbol: {}, error: {dlerror}",
@@ -159,9 +158,8 @@ mod dl_ops {
             );
         }
 
-        let ptr =
-            Gc::new_with_header_word(nctx.ctx, Pointer::new(sym_ptr as _), pointer_header_word());
-        nctx.return_(ptr.into())
+        let ptr = Gc::new_with_header_word(ctx, Pointer::new(sym_ptr as _), pointer_header_word());
+        ptr.into()
     }
 
     #[scheme(name = "load-native-extension")]
@@ -186,13 +184,14 @@ mod dl_ops {
                     cstr.to_string_lossy().into_owned()
                 }
             };
-            return nctx.raise_error(
+            call.raise_error(
                 "load-native-extension",
                 &format!("failed to load {}: {}", path, dlerror),
                 &[path.into()],
             );
+            return Err(Value::undefined());
         }
-        // Prefer C SNI_OnLoad(SniEnv*, void*) → int; fall back to legacy Rust ABI.
+        // Prefer C SNI_OnLoad(SniEnv*, void*) -> int
         // SAFETY: handle is valid.
         let sni_onload = unsafe { libc::dlsym(handle, c"SNI_OnLoad".as_ptr() as _) };
         if !sni_onload.is_null() {
@@ -202,26 +201,27 @@ mod dl_ops {
             ) -> libc::c_int;
             // SAFETY: symbol resolved from the extension.
             let init: OnLoad = unsafe { std::mem::transmute(sni_onload) };
-            let mut env = crate::api::SniEnv::new(nctx.ctx);
+            let mut env = crate::api::SniEnv::new(ctx);
             let env_ptr = env.as_ptr();
             // SAFETY: extension OnLoad contract.
             let rc = unsafe { init(env_ptr, std::ptr::null_mut()) };
             if rc != 0 {
-                return nctx.raise_error(
+                call.raise_error(
                     "load-native-extension",
                     &format!("SNI_OnLoad failed with code {rc} in {path}"),
                     &[path.into()],
                 );
+                return Err(Value::undefined());
             }
             LOADED_EXTENSIONS.lock().push(Extension {
                 path: PathBuf::from(path.to_string()),
                 handle: Address::from_ptr(handle),
             });
-            return nctx.return_(Ok(Value::new(true)));
+            return Ok(Value::new(true));
         }
 
         // SAFETY: FFI: handle is valid, symbol name is NUL-terminated
-        let init: extern "C-unwind" fn(Context<'gc>) -> ExecutionResult<'gc> = unsafe {
+        let init: extern "C-unwind" fn(MutationContext<'gc>) -> ExecutionResult<'gc> = unsafe {
             let symbol = libc::dlsym(handle, c"capy_register_extension".as_ptr() as _);
             if symbol.is_null() {
                 let dlerror = {
@@ -233,30 +233,31 @@ mod dl_ops {
                         cstr.to_string_lossy().into_owned()
                     }
                 };
-                return nctx.raise_error(
+                call.raise_error(
                     "load-native-extension",
                     &format!(
                         "failed to find SNI_OnLoad or capy_register_extension in {path}: {dlerror}"
                     ),
                     &[path.into()],
                 );
+                return Err(Value::undefined());
             }
             std::mem::transmute(symbol)
         };
 
-        let result = init(nctx.ctx);
+        let result = init(ctx);
         match result {
             ExecutionResult::Ok(v) => {
                 LOADED_EXTENSIONS.lock().push(Extension {
                     path: PathBuf::from(path.to_string()),
                     handle: Address::from_ptr(handle),
                 });
-                nctx.return_(Ok(v))
+                Ok(v)
             }
-            ExecutionResult::Err(e) => nctx.return_(Err(e)),
+            ExecutionResult::Err(e) => Err(e),
         }
     }
 }
-pub(crate) fn init_dl<'gc>(ctx: Context<'gc>) {
+pub(crate) fn init_dl<'gc>(ctx: MutationContext<'gc>) {
     dl_ops::register(ctx);
 }

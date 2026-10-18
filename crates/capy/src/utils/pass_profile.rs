@@ -55,6 +55,10 @@ impl ProfileScope {
             return;
         };
 
+        // Stays on stderr directly: the `;; PERF (capy)` line shape is
+        // shared with the Scheme emitter (`%profile-phase` in
+        // lib/boot/compiler.scm), and a logger prefix would break the
+        // uniform machine-readable format.
         eprintln!(
             "{}",
             format_line(

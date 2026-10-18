@@ -16,12 +16,17 @@ pub struct FlagDef {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FlagKind {
     Bool,
-    Usize { min: usize, max: Option<usize> },
+    Usize {
+        min: usize,
+        max: Option<usize>,
+    },
     F64,
     Size,
     Enum(&'static [&'static str]),
     List(&'static [&'static str]),
     Path,
+    /// Free-form string; empty means unset.
+    Text,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -32,6 +37,7 @@ pub enum Value {
     Word(&'static str),
     Words(Vec<&'static str>),
     Path(Option<PathBuf>),
+    Text(Option<String>),
 }
 
 #[derive(Debug)]
@@ -48,16 +54,12 @@ pub struct Flags {
 
 impl Flags {
     fn parse() -> Self {
-        let flags = Self::parse_from(&|name| std::env::var(name).ok(), &|name| {
+        // Pure: warnings stay buffered in `errors` (see `parse_errors`),
+        // the logger emits them once it is up. Parsing runs before any
+        // logging exists, so nothing here may write to stderr itself.
+        Self::parse_from(&|name| std::env::var(name).ok(), &|name| {
             std::env::var_os(name)
-        });
-        for error in &flags.errors {
-            eprintln!(";; WARN  (capy)@flags: {error}");
-        }
-        if !flags.errors.is_empty() {
-            eprintln!(";; hint: run `capy --help-flags` to list all flags");
-        }
-        flags
+        })
     }
 
     /// Parse every flag from the given readers (the environment in
@@ -196,6 +198,7 @@ fn parse_value(def: &FlagDef, raw: &str) -> (Value, Option<String>) {
             let path = (!raw.is_empty()).then(|| PathBuf::from(raw));
             Value::Path(path)
         }
+        FlagKind::Text => Value::Text((!raw.is_empty()).then(|| raw.to_string())),
     };
     (value, None)
 }
@@ -240,6 +243,7 @@ macro_rules! __flags_kind {
     (Enum($($word:literal),+ $(,)?)) => { FlagKind::Enum(&[$($word),+]) };
     (List($($word:literal),+ $(,)?)) => { FlagKind::List(&[$($word),+]) };
     (Path) => { FlagKind::Path };
+    (Text) => { FlagKind::Text };
 }
 
 macro_rules! __flags_accessor {
@@ -299,6 +303,14 @@ macro_rules! __flags_accessor {
             }
         }
     };
+    ($name:ident, Text) => {
+        pub fn $name() -> Option<&'static str> {
+            match &value(FlagId::$name).value {
+                Value::Text(t) => t.as_deref(),
+                _ => unreachable!("flag `{}` is not text", stringify!($name)),
+            }
+        }
+    };
 }
 
 macro_rules! define_flags {
@@ -355,10 +367,16 @@ define_flags! {
         "Restore the FCO stage-ordering gate for closure-sharing reuse sites.";
 
     share_dump: Bool, "CAPY_SHARE_DUMP", Some("--share-dump"), "0", "compiler",
-        "Print per-site closure-sharing decisions (allocate/reuse, record size, members) and flow stats.";
+        "Print per-site closure-sharing decisions (allocate/reuse, record size, members) and flow stats. Toggles log target `capy::share`.";
 
     closure_sharing: Bool, "CAPY_CLOSURE_SHARING", Some("--closure-sharing"), "1", "compiler",
         "Enable shared closure environments (EnvRecord). Set to 0 for the no-sharing baseline.";
+
+    fold_arith_immediate: Bool, "CAPY_FOLD_ARITH_IMM", Some("--fold-arith-imm"), "1", "compiler",
+        "Fold var-bound integer constants into add-immediate in bytecode lowering. Set to 0 for the load_immediate+add/sub baseline.";
+
+    fuse_branch_cond: Bool, "CAPY_FUSE_BRANCH_COND", Some("--fuse-branch-cond"), "1", "compiler",
+        "Fuse branch tests through `not` and same-block var definitions in bytecode lowering. Set to 0 for the materialize-and-test baseline.";
 
     gcps_contify: Enum("0", "off", "none", "false", "scc", "legacy", "both", "dom+scc", "dom-then-scc", "dom", "dominator", "dominators"), "CAPY_GCPS_CONTIFY", Some("--gcps-contify"), "dom", "compiler",
         "Contification strategy: off (or 0), scc, dom, or both (dom+scc).";
@@ -366,8 +384,11 @@ define_flags! {
     profile_passes: Bool, "CAPY_PROFILE_PASSES", Some("--profile-passes"), "0", "compiler",
         "Emit `;; PERF (capy)` phase timing lines to stderr.";
 
-    compile_dump: List("ir", "graph", "gcps", "ssa", "clif", "cranelift", "asm", "disassembly", "noopt", "all", "1"), "CAPY_COMPILE_DUMP", Some("--dump-compile"), "", "dump",
-        "Per-compilation artifact dumps (comma-separated): ir, gcps, ssa, clif, asm, noopt, or all.";
+    strip_spans: Bool, "CAPY_STRIP_SPANS", Some("--strip-spans"), "0", "compiler",
+        "Omit bytecode source maps from emitted FASLs (backtraces fall back to procedure metadata).";
+
+    compile_dump: List("ir", "graph", "gcps", "ssa", "bytecode", "bc", "asm", "disassembly", "noopt", "all", "1"), "CAPY_COMPILE_DUMP", Some("--dump-compile"), "", "dump",
+        "Per-compilation artifact dumps (comma-separated): ir, gcps, ssa, bytecode, noopt, or all.";
 
     compile_dump_noopt: Bool, "CAPY_COMPILE_DUMP_NOOPT", None, "0", "dump",
         "Also dump the unoptimized (pre-lowering) IR.";
@@ -377,18 +398,6 @@ define_flags! {
 
     compile_dump_limit: Usize(0, None), "CAPY_COMPILE_DUMP_LIMIT", None, "max", "dump",
         "Cap the number of compilations that dump artifacts (max = unlimited).";
-
-    sbbv_dump: List("1", "all", "pre", "expand", "specialize", "pre-expand", "post-expand", "post-specialize", "post-finish"), "CAPY_SBBV_DUMP", Some("--dump-sbbv"), "", "dump",
-        "SBBV CFG stage dumps: 1 or all for every stage, else a comma-separated stage list (pre, expand, specialize, pre-expand, post-expand, post-specialize, post-finish).";
-
-    sbbv_dump_dir: Path, "CAPY_SBBV_DUMP_DIR", None, "", "dump",
-        "Directory for CAPY_SBBV_DUMP dumps (fallback: CAPY_DUMP_DIR or ./capy-dumps).";
-
-    sbbv_dump_limit: Usize(0, None), "CAPY_SBBV_DUMP_LIMIT", None, "max", "dump",
-        "Cap the number of SBBV stage dumps (max = unlimited).";
-
-    sbbv_version_limit: Usize(0, None), "CAPY_SBBV_VERSION_LIMIT", None, "2", "compiler",
-        "SBBV specialization version limit; 0 disables SBBV.";
 
     gcps_dump_contify: List("0", "off", "none", "false", "1", "on", "true", "all", "scc", "legacy", "dom", "dominator", "dominators"), "CAPY_GCPS_DUMP_CONTIFY", Some("--dump-gcps-contify"), "", "dump",
         "GCPS contification dumps: off/0, scc, dom, or all/1 for both sources.";
@@ -441,8 +450,117 @@ define_flags! {
     gc_guaranteed_interval_ms: Usize(0, None), "CAPY_GC_GUARANTEED_INTERVAL_MS", Some("--gc-guaranteed-interval-ms"), "300000", "gc",
         "Force a GC at least this often; 0 = off.";
 
+    gc_plan: Text, "MMTK_PLAN", Some("--gc-plan"), "", "gc",
+        "MMTk GC plan (e.g. GenImmix); consumed by MMTk itself.";
+
+    mmtk_gc_trigger: Text, "MMTK_GC_TRIGGER", Some("--gc-trigger"), "", "gc",
+        "MMTk GC trigger override; also read by MMTk itself, capy uses it for the default max heap.";
+
     barrier_kind: Enum("nobarrier", "objbarrier", "satbbarrier", "fieldbarrier"), "CAPY_BARRIER_KIND", Some("--barrier-kind"), "", "gc",
         "Compile-time barrier kind override (unset = the live GC plan's barrier).";
+
+    native_closure_cache: Bool, "CAPY_NATIVE_CLOSURE_CACHE", Some("--native-closure-cache"), "1", "gc",
+        "Reuse the code block and proc wrapper across native closures of one site (the call/cc family). Set to 0 for the rebuild-every-capture baseline.";
+
+    engine: Enum("rust", "template"), "CAPY_ENGINE", Some("--engine"), "", "engine",
+        "Execution engine: rust, template, or unset for the build default.";
+
+    jit: Bool, "CAPY_JIT", Some("--jit"), "1", "jit",
+        "Enable Just In Time compilation.";
+
+    jit_threshold: Usize(0, None), "CAPY_JIT_THRESHOLD", Some("--jit-threshold"), "10", "jit",
+        "Entries or back-edges before a procedure compiles.";
+
+    jit_max_code: Usize(0, None), "CAPY_JIT_MAX_CODE", Some("--jit-max-code"), "max", "jit",
+        "Total live compiled code in bytes past which tier-up stops (max = unlimited).";
+
+    jit_max_code_per_block: Usize(0, None), "CAPY_JIT_MAX_CODE_PER_BLOCK", Some("--jit-max-code-per-block"), "max", "jit",
+        "Largest single compiled code block in bytes; larger procedures stay interpreted (max = unlimited).";
+
+    jit_limit: Usize(0, None), "CAPY_JIT_LIMIT", Some("--jit-limit"), "max", "jit",
+        "Compile only the first n procedures, to bisect a miscompile (max = unlimited).";
+
+    jit_log: Bool, "CAPY_JIT_LOG", Some("--jit-log"), "0", "jit",
+        "Report compiles and returns to compiled code.";
+
+    jit_log_verbose: Bool, "CAPY_JIT_LOG_VERBOSE", Some("--jit-log-verbose"), "0", "jit",
+        "Add bulky per-procedure detail (bytecode dump, address maps, control-flow trace) to the JIT log.";
+
+    jit_log_resume: Bool, "CAPY_JIT_LOG_RESUME", Some("--jit-log-resume"), "0", "jit",
+        "Report every resume into compiled code (very verbose).";
+
+    jit_stats: Bool, "CAPY_JIT_STATS", Some("--jit-stats"), "0", "jit",
+        "Report compile, resume and slow-path counts at exit.";
+
+    jit_dump_dir: Path, "CAPY_JIT_DUMP_DIR", Some("--jit-dump-dir"), "", "jit",
+        "Write each compiled procedure's listing and ELF to this directory.";
+
+    jit_workers: Usize(0, None), "CAPY_JIT_WORKERS", None, "1", "jit",
+        "Tier-up worker threads; 0 compiles synchronously on the requesting thread.";
+
+    jit_tiers: Text, "CAPY_JIT_TIERS", None, "", "jit",
+        "Comma-separated tiers allowed to compile (default: baseline).";
+
+    jit_gdb: Bool, "CAPY_JIT_GDB", None, "0", "jit",
+        "Register every loaded image with GDB's JIT interface (copies all image code).";
+
+    jit_filter: Text, "CAPY_JIT_FILTER", None, "", "jit",
+        "Compile only procedures whose metadata contains this text, to bisect a miscompile.";
+
+    perf_map: Bool, "CAPY_PERF_MAP", None, "0", "jit",
+        "Append loaded image symbols to /tmp/perf-<pid>.map for perf.";
+
+    template_alloc_stats: Bool, "CAPY_TEMPLATE_ALLOC_STATS", None, "0", "engine",
+        "Count generated-code allocations (fast path vs capy_op_alloc) and report at exit.";
+
+    template_bail_stats: Bool, "CAPY_TEMPLATE_BAIL_STATS", None, "0", "engine",
+        "Report bailed-opcode counts of the template interpreter at exit.";
+
+    template_bail_oneway: Bool, "CAPY_TEMPLATE_BAIL_ONEWAY", None, "0", "engine",
+        "Make capy_bail one-way: stay in the Rust engine after the first bail.";
+
+    template_op_stats: Bool, "CAPY_TEMPLATE_OP_STATS", None, "0", "engine",
+        "Count executed opcodes in the template interpreter (emitted at generation time) and report at exit.";
+
+    template_bail: Text, "CAPY_TEMPLATE_BAIL", None, "", "engine",
+        "Comma-separated opcode names forced to bail to the Rust engine.";
+
+    prim_stats: Bool, "CAPY_PRIM_STATS", None, "0", "engine",
+        "Count primitive calls and report at exit.";
+
+    fasl_debug: Bool, "CAPY_FASL_DEBUG", None, "0", "engine",
+        "Load FASL files with debug entries.";
+
+    profile_out: Path, "CAPY_PROFILE_OUT", None, "", "engine",
+        "Arm the SIGPROF profiler at startup and write folded stacks to this file.";
+
+    load_path: Text, "CAPY_LOAD_PATH", None, "", "engine",
+        "Colon-separated directories prepended to the Scheme load path.";
+
+    load_compiled_path: Text, "CAPY_LOAD_COMPILED_PATH", None, "", "engine",
+        "Colon-separated directories prepended to the compiled-file load path.";
+
+    ic_log: Bool, "CAPY_IC_LOG", None, "0", "engine",
+        "Log generic-dispatch slot-protocol fires (inline-cache invalidations). Toggles log target `capy::ic`.";
+
+    rust_log: Text, "RUST_LOG", None, "", "engine",
+        "Log filter in env_logger syntax (e.g. info, capy=debug); mmtk stays silent unless named.";
+}
+
+pub fn xdg_cache_home() -> Option<String> {
+    std::env::var("XDG_CACHE_HOME").ok()
+}
+
+pub fn home_dir() -> Option<String> {
+    std::env::var("HOME").ok()
+}
+
+pub fn local_app_data() -> Option<String> {
+    std::env::var("LOCALAPPDATA").ok()
+}
+
+pub fn app_data() -> Option<String> {
+    std::env::var("APPDATA").ok()
 }
 
 fn render_value(value: &Value) -> String {
@@ -458,10 +576,11 @@ fn render_value(value: &Value) -> String {
         Value::Words(w) => w.join(","),
         Value::Path(None) => "(unset)".to_string(),
         Value::Path(Some(p)) => p.display().to_string(),
+        Value::Text(None) => "(unset)".to_string(),
+        Value::Text(Some(t)) => t.clone(),
     }
 }
 
-/// Render a byte size back to the `K|M|G` shorthand for help output.
 fn render_size(bytes: usize) -> String {
     for (suffix, multiplier) in [
         ("G", 1024usize.pow(3)),
@@ -476,18 +595,24 @@ fn render_size(bytes: usize) -> String {
 }
 
 pub fn help_text() -> String {
-    let mut out =
-        String::from(";; Capy flags (env vars or CLI flags: --flag=value or --flag value).\n");
+    let mut out = String::from(
+        ";; Capy flags (env vars or CLI flags: --flag=value or --flag value;\n\
+         ;; boolean flags also accept bare --flag and --no-flag).\n",
+    );
     let mut previous_category: Option<&'static str> = None;
     for (index, def) in FLAG_DEFS.iter().enumerate() {
         if previous_category != Some(def.category) {
             out.push_str(&format!("\n;; [{}]\n", def.category));
             previous_category = Some(def.category);
         }
-        let alias = def
-            .cli
-            .map(|cli| format!(" (alias {cli})"))
-            .unwrap_or_default();
+        let alias = match def.cli {
+            Some(cli) if def.kind == FlagKind::Bool => {
+                let bare = cli.strip_prefix("--").unwrap_or(cli);
+                format!(" (alias {cli}, --no-{bare})")
+            }
+            Some(cli) => format!(" (alias {cli})"),
+            None => String::new(),
+        };
         let current = match &FLAGS.values[index].value {
             Value::Usize(bytes) if def.kind == FlagKind::Size => render_size(*bytes),
             value => render_value(value),
@@ -500,17 +625,27 @@ pub fn help_text() -> String {
     out
 }
 
-/// Warnings produced by invalid environment values (once per process).
 pub fn parse_errors() -> &'static [String] {
     FLAGS.errors.as_slice()
 }
 
-/// `(cli_flag, env_var)` pairs feeding the pre-boot CLI flag table.
-pub fn cli_aliases() -> &'static [(&'static str, &'static str)] {
-    static ALIASES: LazyLock<Vec<(&'static str, &'static str)>> = LazyLock::new(|| {
+pub struct CliAlias {
+    pub cli: &'static str,
+    pub env: &'static str,
+    pub is_bool: bool,
+}
+
+pub fn cli_aliases() -> &'static [CliAlias] {
+    static ALIASES: LazyLock<Vec<CliAlias>> = LazyLock::new(|| {
         FLAG_DEFS
             .iter()
-            .filter_map(|def| def.cli.map(|cli| (cli, def.env)))
+            .filter_map(|def| {
+                def.cli.map(|cli| CliAlias {
+                    cli,
+                    env: def.env,
+                    is_bool: def.kind == FlagKind::Bool,
+                })
+            })
             .collect()
     });
     ALIASES.as_slice()

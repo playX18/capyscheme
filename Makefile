@@ -53,29 +53,48 @@ LIBCAPY := libcapy.so
 endif
 COMPILED_SCM_EXT := fasl
 
+FASL_VERSION := $(shell sed -n 's/^pub const FASL_VERSION: u32 = \([0-9][0-9]*\);$$/\1/p' crates/capy/src/runtime/fasl/mod.rs)
+
+define check-fasl-stamp
+@if [ -z "$(FASL_VERSION)" ]; then \
+  echo "warning: could not determine FASL_VERSION; skipping version check for $(1)"; \
+else \
+  if [ -f $(1)/.fasl-version ] && [ "$$(cat $(1)/.fasl-version)" != "$(FASL_VERSION)" ]; then \
+    echo "FASL version changed ($$(cat $(1)/.fasl-version) -> $(FASL_VERSION)); rebuilding $(1)"; \
+    rm -rf $(1); \
+  fi; \
+  mkdir -p $(1); \
+  echo $(FASL_VERSION) > $(1)/.fasl-version; \
+fi
+endef
+
 ARCH := $(shell rustc -vV | awk '/^host:/ {print $$2}' | cut -d- -f1)
 
-# Use cross when target differs.
+
 ifeq ($(HOST_TARGET),$(TARGET))
 CARGO_BIN := cargo
 else
+ifneq ($(findstring apple-darwin,$(HOST_TARGET)),)
+ifneq ($(findstring apple-darwin,$(TARGET)),)
+CARGO_BIN := cargo
+else
 CARGO_BIN := cross
+endif
+else
+CARGO_BIN := cross
+endif
 endif
 
 PORTABLE ?= 1
 
 # Environment used when invoking capy/capyc.
 # Optional dump flags (pass on the make command line), e.g.:
-#   make PROFILE=release stage-0 CAPY_SBBV_DUMP=1 CAPY_SBBV_DUMP_DIR=capy-dumps/sbbv
+#   make PROFILE=release stage-0 CAPY_COMPILE_DUMP=bytecode CAPY_COMPILE_DUMP_DIR=capy-dumps/bytecode
 MMTK_PLAN ?= GenImmix
 XDG_CACHE_HOME = stage-0/cache
 CAPY_LOAD_PATH ?= ./lib
 CAPY_GC_MAX_HEAP ?= 2G
 RUST_MIN_STACK ?= 134217728
-CAPY_SBBV_DUMP ?=
-CAPY_SBBV_DUMP_DIR ?=
-CAPY_SBBV_DUMP_LIMIT ?=
-CAPY_SBBV_VERSION_LIMIT ?=
 CAPY_COMPILE_DUMP ?=
 CAPY_COMPILE_DUMP_DIR ?=
 CAPY_DUMP_DIR ?=
@@ -86,10 +105,6 @@ CAPY_ENV = \
 	CAPY_LOAD_PATH="$(CAPY_LOAD_PATH)" \
 	CAPY_GC_MAX_HEAP="$(CAPY_GC_MAX_HEAP)" \
 	RUST_MIN_STACK="$(RUST_MIN_STACK)" \
-	$(if $(CAPY_SBBV_DUMP),CAPY_SBBV_DUMP="$(CAPY_SBBV_DUMP)") \
-	$(if $(CAPY_SBBV_DUMP_DIR),CAPY_SBBV_DUMP_DIR="$(CAPY_SBBV_DUMP_DIR)") \
-	$(if $(CAPY_SBBV_DUMP_LIMIT),CAPY_SBBV_DUMP_LIMIT="$(CAPY_SBBV_DUMP_LIMIT)") \
-	$(if $(CAPY_SBBV_VERSION_LIMIT),CAPY_SBBV_VERSION_LIMIT="$(CAPY_SBBV_VERSION_LIMIT)") \
 	$(if $(CAPY_COMPILE_DUMP),CAPY_COMPILE_DUMP="$(CAPY_COMPILE_DUMP)") \
 	$(if $(CAPY_COMPILE_DUMP_DIR),CAPY_COMPILE_DUMP_DIR="$(CAPY_COMPILE_DUMP_DIR)") \
 	$(if $(CAPY_DUMP_DIR),CAPY_DUMP_DIR="$(CAPY_DUMP_DIR)") \
@@ -98,13 +113,6 @@ CAPY_ENV = \
 # Per-load timing during bootstrap stages (Chez-style `time` in load/compile).
 # Override with `make TIME_ENV= stage-0` to disable.
 TIME_ENV ?= CAPY_TIME_LOADS=1
-
-SBBV_BENCH_RUNS ?= 7
-SBBV_BENCH_LIMITS ?= 0,1,2,3,4
-SBBV_BENCH_DEPTH ?= 16
-SBBV_BENCH_BRAINFUCK_REPETITIONS ?= 10000
-SBBV_BENCH_EVAL_REPETITIONS ?= 250000
-SBBV_BENCH_LUA_REPETITIONS ?= 100000
 
 R7RS_BENCH_RUNS ?= 5
 R7RS_BENCHMARKS ?=
@@ -178,6 +186,7 @@ CORE_SRCS := \
 	lib/core/conditions.scm \
 	lib/core/bytevector-transcoders.scm \
 	lib/core/hashtables.scm \
+	lib/core/kw.scm \
 	lib/core/enums.scm \
 	lib/core/struct.scm \
 	lib/core/unicode.scm \
@@ -235,6 +244,10 @@ CAPY_SRCS := \
 	lib/capy/generator.scm \
 	lib/capy/future.scm \
 	lib/capy/binary-heap.scm \
+	lib/capy/brunch.scm \
+	lib/capy/brunch/bench.scm \
+	lib/capy/brunch/math.scm \
+	lib/capy/brunch/stats.scm \
 	lib/capy/intrusive/dlist.scm \
 	lib/capy/intrusive/slist.scm \
 	lib/capy/compiler/tree-il/terms.scm 	 \
@@ -341,6 +354,7 @@ SRFI_OUTS  = $(patsubst lib/srfi/%.scm,$(OUT)/srfi/%.$(COMPILED_SCM_EXT),$(SRFI_
 R7RS_OUTS  = $(patsubst lib/scheme/%.scm,$(OUT)/scheme/%.$(COMPILED_SCM_EXT),$(R7RS_SRCS))
 COMMON_OUTS = $(patsubst lib/common/%.scm,$(OUT)/common/%.$(COMPILED_SCM_EXT),$(COMMON_SRCS))
 CAPY_ARGS_OUTS = $(patsubst lib/capy/%.scm,$(OUT)/capy/%.$(COMPILED_SCM_EXT),$(CAPY_ARGS_SRCS))
+LIB_FILE_COUNT = $(words $(sort $(BOOT_OUTS) $(CORE_OUTS) $(RNRS_OUTS) $(CAPY_OUTS) $(SRFI_OUTS) $(R7RS_OUTS) $(COMMON_OUTS) $(CAPY_ARGS_OUTS)))
 
 .PHONY: all help build build-runtime build-runtime-fhs build-runtime-portable install-scm test stage-0 stage-1 stage-2 \
 	compile-cli compile-boot compile-core compile-rnrs compile-capy compile-capy-args compile-srfi compile-r7rs compile-common\
@@ -371,7 +385,7 @@ build-runtime-bootstrap:
 
 
 # Aggregate build: runtime + full bootstrap chain.
-build: 
+build:
 	$(MAKE) PREFIX=$(PREFIX) stage-0
 	$(MAKE) PREFIX=$(PREFIX) build-runtime
 	$(MAKE) PREFIX=$(PREFIX) stage-1
@@ -382,7 +396,7 @@ build-runtime:
 	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable --no-default-features
 	CAPY_LIB_DIR=$(TARGET_PATH) $(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy-cli
 
-build-runtime-fhs: 
+build-runtime-fhs:
 	CAPY_SYSROOT=$(PREFIX) $(CARGO_BIN) build --no-default-features --profile $(PROFILE) --target $(TARGET) -p capy
 	CAPY_LIB_DIR=$(TARGET_PATH) CAPY_SYSROOT=$(PREFIX) $(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy-cli
 
@@ -395,6 +409,15 @@ install-scm:
 	rsync --checksum -r lib $(PREFIX)/capy/$(VERSION)
 
 CAPY ?= stage-0/capy
+
+
+TEST_TIMEOUT ?= 300
+TIMEOUT_BIN := $(shell command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || echo "")
+ifeq ($(TIMEOUT_BIN),)
+TIMEOUT =
+else
+TIMEOUT = $(TIMEOUT_BIN) $(TEST_TIMEOUT)
+endif
 
 test:
 	@set -euo pipefail; \
@@ -412,7 +435,7 @@ test:
 		count=$$((count + 1)); \
 		log=$$(mktemp); \
 		echo "Running $$test"; \
-		if ! $(CAPY_ENV) $(CAPY) -L lib --fresh-auto-compile -s "$$test" > "$$log" 2>&1; then \
+		if ! $(CAPY_ENV) $(TIMEOUT) $(CAPY) -L lib --fresh-auto-compile -s "$$test" > "$$log" 2>&1; then \
 			status=1; \
 		fi; \
 		cat "$$log"; \
@@ -423,7 +446,7 @@ test:
 	done; \
 	echo "Running R6RS tests"; \
 	log=$$(mktemp); \
-	if ! $(CAPY_ENV) $(CAPY) -L lib -L . --fresh-auto-compile --r6rs -s tests/r6rs/run-via-eval.sps > "$$log" 2>&1; then \
+	if ! $(CAPY_ENV) $(TIMEOUT) $(CAPY) -L lib -L . --fresh-auto-compile --r6rs -s tests/r6rs/run-via-eval.sps > "$$log" 2>&1; then \
 		status=1; \
 	fi; \
 	cat "$$log"; \
@@ -444,9 +467,11 @@ compile-psyntax:
 stage-0: build-runtime-bootstrap
 	@echo "Creating stage-0 CapyScheme"
 	mkdir -p stage-0
-	cp $(TARGET_PATH)/capy stage-0/capy
-	cp $(TARGET_PATH)/capyc stage-0/capyc
-	cp $(TARGET_PATH)/$(LIBCAPY) stage-0/$(LIBCAPY) 2>/dev/null || true
+	# Remove before copying: overwriting a binary in place keeps macOS's
+	# cached code signature, and the kernel kills the new bytes (SIGKILL).
+	rm -f stage-0/capy && cp $(TARGET_PATH)/capy stage-0/capy
+	rm -f stage-0/capyc && cp $(TARGET_PATH)/capyc stage-0/capyc
+	rm -f stage-0/$(LIBCAPY) && cp $(TARGET_PATH)/$(LIBCAPY) stage-0/$(LIBCAPY) 2>/dev/null || true
 	chmod +x stage-0/capy stage-0/capyc
 	
 	$(TIME_ENV) $(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c 42
@@ -465,23 +490,23 @@ endif
 
 compile-all: compile-boot compile-core compile-rnrs compile-srfi compile-r7rs compile-capy-args compile-cli compile-capy compile-common
 
-stage-1: 
+stage-1:
+	$(call check-fasl-stamp,stage-1/compiled)
 	$(MAKE) $(foreach n,0 1 2 3 4 5 6 7 8 9,$(filter -j$n%,$(MAKEFLAGS))) compile-all COMPILER=stage-0/capyc OUT=stage-1/compiled 
 	@echo "Creating stage-1 CapyScheme"
 	mkdir -p stage-1
-	cp stage-0/capy stage-1/capy
-	cp stage-0/capyc stage-1/capyc
-	cp stage-0/$(LIBCAPY) stage-1/$(LIBCAPY) 2>/dev/null || true
+	rm -f stage-1/capy && cp stage-0/capy stage-1/capy
+	rm -f stage-1/capyc && cp stage-0/capyc stage-1/capyc
+	rm -f stage-1/$(LIBCAPY) && cp stage-0/$(LIBCAPY) stage-1/$(LIBCAPY) 2>/dev/null || true
 
 stage-2:
 	@echo "Creating stage-2 CapyScheme"
 	mkdir -p stage-2
-	$(MAKE) $(foreach n,0 1 2 3 4 5 6 7 8 9,$(filter -j$n%,$(MAKEFLAGS))) compile-all COMPILER=stage-1/capyc OUT=stage-2/compiled/objbarrier CAPY_BARRIER_KIND=objbarrier
-	$(MAKE) $(foreach n,0 1 2 3 4 5 6 7 8 9,$(filter -j$n%,$(MAKEFLAGS))) compile-all COMPILER=stage-1/capyc OUT=stage-2/compiled/nobarrier CAPY_BARRIER_KIND=nobarrier
-	$(MAKE) $(foreach n,0 1 2 3 4 5 6 7 8 9,$(filter -j$n%,$(MAKEFLAGS))) compile-all COMPILER=stage-1/capyc OUT=stage-2/compiled/satbbarrier CAPY_BARRIER_KIND=satbbarrier
-	cp stage-1/capy stage-2/capy
-	cp stage-1/capyc stage-2/capyc
-	cp stage-1/$(LIBCAPY) stage-2/$(LIBCAPY) 2>/dev/null || true
+	$(call check-fasl-stamp,stage-2/compiled)
+	$(MAKE) $(foreach n,0 1 2 3 4 5 6 7 8 9,$(filter -j$n%,$(MAKEFLAGS))) compile-all COMPILER=stage-1/capyc OUT=stage-2/compiled
+	rm -f stage-2/capy && cp stage-1/capy stage-2/capy
+	rm -f stage-2/capyc && cp stage-1/capyc stage-2/capyc
+	rm -f stage-2/$(LIBCAPY) && cp stage-1/$(LIBCAPY) stage-2/$(LIBCAPY) 2>/dev/null || true
 
 # -------------------------
 # Per-file compilation rules
@@ -618,10 +643,10 @@ install-portable: build build-runtime-portable
 	@echo "Installing CapyScheme to $(PREFIX)/capy/$(VERSION)"
 	mkdir -p $(PREFIX)/capy/$(VERSION)/extensions
 	rsync --checksum -r lib $(PREFIX)/capy/$(VERSION)
-	cp $(TARGET_PATH)/capy $(PREFIX)/capy/$(VERSION)/capy
-	cp $(TARGET_PATH)/capyc $(PREFIX)/capy/$(VERSION)/capyc
+	rm -f $(PREFIX)/capy/$(VERSION)/capy && cp $(TARGET_PATH)/capy $(PREFIX)/capy/$(VERSION)/capy
+	rm -f $(PREFIX)/capy/$(VERSION)/capyc && cp $(TARGET_PATH)/capyc $(PREFIX)/capy/$(VERSION)/capyc
 	chmod +x $(PREFIX)/capy/$(VERSION)/capy $(PREFIX)/capy/$(VERSION)/capyc
-	cp $(TARGET_PATH)/$(LIBCAPY) $(PREFIX)/capy/$(VERSION)/$(LIBCAPY) 2>/dev/null || true
+	rm -f $(PREFIX)/capy/$(VERSION)/$(LIBCAPY) && cp $(TARGET_PATH)/$(LIBCAPY) $(PREFIX)/capy/$(VERSION)/$(LIBCAPY) 2>/dev/null || true
 	cp c/capy.h $(PREFIX)/capy/$(VERSION)/capy.h
 	ln -sf $(PREFIX)/capy/$(VERSION)/capy $(PREFIX)/capy/$(VERSION)/capy-$(VERSION)
 	cp -r stage-2/compiled $(PREFIX)/capy/$(VERSION)/
@@ -657,8 +682,10 @@ dist-portable: build build-runtime-portable
 	echo "Wrote $$outdir/$$archive_name"
 
 install: build
-	$(MAKE) PREFIX=$(PREFIX) build-runtime-fhs 
+	$(MAKE) PREFIX=$(PREFIX) build-runtime-fhs
 	@echo "Installing CapyScheme (FHS) to $(PREFIX)"
+	if [ -z "$(PREFIX)" ] || [ "$(PREFIX)" = "/" ]; then echo "error: refusing to install to empty or root PREFIX"; exit 1; fi; \
+	rm -rf "$(PREFIX)/lib/capy/compiled" "$(PREFIX)/share/capy/lib"; \
 	mkdir -p "$(PREFIX)/bin"; \
 	mkdir -p "$(PREFIX)/lib"; \
 	mkdir -p "$(PREFIX)/include"; \

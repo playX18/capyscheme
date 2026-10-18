@@ -16,7 +16,7 @@ use crate::heap::object::{
 };
 use crate::heap::sync::monitor::ReentrantMonitor;
 use crate::heap::{Gc, Global as GcGlobal, Trace, Visitor, WeakProcessor};
-use crate::runtime::Context;
+use crate::runtime::MutationContext;
 use crate::runtime::value::Value;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -55,7 +55,7 @@ enum ClassSlot<'gc> {
     Class(Gc<'gc, ClassDescriptor<'gc>>),
 }
 
-// SAFETY: GC trace for `ClassSlot` — all reachable heap fields are visited
+// SAFETY: GC trace for `ClassSlot`, all reachable heap fields are visited
 unsafe impl Trace for ClassSlot<'_> {
     // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
@@ -80,7 +80,7 @@ struct ClassPage<'gc> {
 }
 
 impl<'gc> ClassPage<'gc> {
-    fn new(ctx: Context<'gc>) -> Self {
+    fn new(ctx: MutationContext<'gc>) -> Self {
         Self {
             slots: Array::with(ctx, super::builtin::CLASS_TABLE_PAGE_SIZE, |_, _| {
                 Lock::new(ClassSlot::Empty)
@@ -89,7 +89,7 @@ impl<'gc> ClassPage<'gc> {
     }
 }
 
-// SAFETY: GC trace for `ClassPage` — all reachable heap fields are visited
+// SAFETY: GC trace for `ClassPage`, all reachable heap fields are visited
 unsafe impl Trace for ClassPage<'_> {
     // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
@@ -114,7 +114,7 @@ struct ClassRedefinitionState {
     epoch: Cell<u64>,
 }
 
-// SAFETY: GC trace for `ClassTableInner` — all reachable heap fields are visited
+// SAFETY: GC trace for `ClassTableInner`, all reachable heap fields are visited
 unsafe impl Trace for ClassTableInner<'_> {
     // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
@@ -145,7 +145,7 @@ struct DynamicClassRedefinition<'a> {
     category: ClassCategory,
 }
 
-// SAFETY: GC trace for `ClassTable` — all reachable heap fields are visited
+// SAFETY: GC trace for `ClassTable`, all reachable heap fields are visited
 unsafe impl Trace for ClassTable<'_> {
     // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
@@ -181,7 +181,7 @@ pub(crate) fn is_type_class_registered(id: ClassId) -> bool {
     unsafe { table.fetch_unchecked().lookup(id).is_some() }
 }
 
-pub fn init_builtin_classes<'gc>(ctx: Context<'gc>) -> &'gc ClassTable<'gc> {
+pub fn init_builtin_classes<'gc>(ctx: MutationContext<'gc>) -> &'gc ClassTable<'gc> {
     CLASS_TABLE
         .get_or_init(|| {
             let table: GcGlobal<RootedClassTable> = GcGlobal::new(ClassTable::new(ctx));
@@ -197,12 +197,12 @@ pub fn init_builtin_classes<'gc>(ctx: Context<'gc>) -> &'gc ClassTable<'gc> {
         .fetch(ctx)
 }
 
-pub fn class_table<'gc>(ctx: Context<'gc>) -> &'gc ClassTable<'gc> {
+pub fn class_table<'gc>(ctx: MutationContext<'gc>) -> &'gc ClassTable<'gc> {
     init_builtin_classes(ctx)
 }
 
 pub(crate) fn register_internal_type_class_if_ready<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     id: ClassId,
     hooks: AllocationHooks,
 ) {
@@ -214,7 +214,10 @@ pub(crate) fn register_internal_type_class_if_ready<'gc>(
     register_internal_type_class(ctx, table, id, hooks);
 }
 
-pub(crate) fn register_pending_type_classes<'gc>(ctx: Context<'gc>, table: &ClassTable<'gc>) {
+pub(crate) fn register_pending_type_classes<'gc>(
+    ctx: MutationContext<'gc>,
+    table: &ClassTable<'gc>,
+) {
     use crate::heap::object::{TypeClassRegistrationGuard, record_pending_type_class};
     loop {
         let pending = drain_pending_type_classes();
@@ -235,7 +238,7 @@ pub(crate) fn register_pending_type_classes<'gc>(ctx: Context<'gc>, table: &Clas
 }
 
 pub(crate) fn register_internal_type_class<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     table: &ClassTable<'gc>,
     id: ClassId,
     hooks: AllocationHooks,
@@ -303,11 +306,11 @@ fn collect_dynamic_hierarchy<'gc>(
 }
 
 impl<'gc> ClassTable<'gc> {
-    pub fn new(ctx: Context<'gc>) -> Self {
+    pub fn new(ctx: MutationContext<'gc>) -> Self {
         Self::with_max_id(ctx, MAX_CLASS_ID)
     }
 
-    pub(crate) fn with_max_id(ctx: Context<'gc>, max_id: u32) -> Self {
+    pub(crate) fn with_max_id(ctx: MutationContext<'gc>, max_id: u32) -> Self {
         let page_count = (max_id >> super::builtin::CLASS_TABLE_PAGE_BITS) as usize + 1;
         let pages = Array::with(ctx, page_count, |_, _| Lock::new(None));
         Self {
@@ -323,7 +326,7 @@ impl<'gc> ClassTable<'gc> {
 
     pub fn register_builtin(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         descriptor: ClassDescriptor<'gc>,
     ) -> Result<(), ClassTableError> {
         let descriptor = Gc::new_with_header_word(
@@ -341,7 +344,7 @@ impl<'gc> ClassTable<'gc> {
 
     pub(crate) fn register_internal_type_class(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         id: ClassId,
         name: &str,
         hooks: PrimitiveLayoutHooks,
@@ -384,7 +387,7 @@ impl<'gc> ClassTable<'gc> {
 
     pub fn register_dynamic(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         name: &str,
         category: ClassCategory,
     ) -> Result<Gc<'gc, ClassDescriptor<'gc>>, ClassTableError> {
@@ -393,7 +396,7 @@ impl<'gc> ClassTable<'gc> {
 
     pub fn register_dynamic_with_slots(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         name: &str,
         category: ClassCategory,
         direct_supers: &[ClassId],
@@ -414,7 +417,7 @@ impl<'gc> ClassTable<'gc> {
 
     fn register_dynamic_with_slots_and_hooks(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         name: &str,
         category: ClassCategory,
         options: DynamicClassOptions,
@@ -458,7 +461,7 @@ impl<'gc> ClassTable<'gc> {
 
     pub fn redefine_dynamic_with_slots(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         id: ClassId,
         name: &str,
         category: ClassCategory,
@@ -479,7 +482,7 @@ impl<'gc> ClassTable<'gc> {
 
     fn redefine_dynamic_with_slots_and_hooks(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         spec: DynamicClassRedefinition<'_>,
         options: DynamicClassOptions,
         direct_supers: &[ClassId],
@@ -540,12 +543,18 @@ impl<'gc> ClassTable<'gc> {
         self.link_direct_subclasses(ctx, descriptor);
         ClassDescriptor::invalidate_direct_method_caches(ctx, descriptor);
         redefinition.epoch.set(redefinition.epoch.get() + 1);
+        // The descriptor keeps its class id, so slot caches keyed on the old
+        // layout would still hit an obsolete instance (which carries the old
+        // stamp): clear only this class's caches so it misses, touches and
+        // migrates. Other classes keep theirs. (The caller owes the grace
+        // period.)
+        super::generic::fire_class_slot_protocol(ctx, old);
         Ok(descriptor)
     }
 
     pub fn register_scheme_class_from_slot_list(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         name: Gc<'gc, crate::runtime::value::Symbol<'gc>>,
         slot_names: Value<'gc>,
         direct_supers: Value<'gc>,
@@ -568,7 +577,7 @@ impl<'gc> ClassTable<'gc> {
 
     pub fn register_invocable_scheme_class_from_slot_list(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         name: Gc<'gc, crate::runtime::value::Symbol<'gc>>,
         slot_names: Value<'gc>,
         direct_supers: Value<'gc>,
@@ -597,7 +606,7 @@ impl<'gc> ClassTable<'gc> {
 
     pub fn redefine_scheme_class_from_slot_list(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         class: Gc<'gc, ClassDescriptor<'gc>>,
         name: Gc<'gc, crate::runtime::value::Symbol<'gc>>,
         slot_names: Value<'gc>,
@@ -622,7 +631,7 @@ impl<'gc> ClassTable<'gc> {
 
     pub fn redefine_invocable_scheme_class_from_slot_list(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         class: Gc<'gc, ClassDescriptor<'gc>>,
         name: Gc<'gc, crate::runtime::value::Symbol<'gc>>,
         slot_names: Value<'gc>,
@@ -657,6 +666,53 @@ impl<'gc> ClassTable<'gc> {
         self.inner.lock().lookup(id)
     }
 
+    /// Reset the computed protocol state `op` of every class `applies` holds
+    /// for (the next use recomputes it).
+    pub(crate) fn reset_protocol_state_matching(
+        &self,
+        op: usize,
+        mut applies: impl FnMut(Gc<'gc, ClassDescriptor<'gc>>) -> bool,
+    ) {
+        let inner = self.inner.lock();
+        inner.for_each_class(|class| {
+            if applies(class) {
+                class.reset_protocol_state(op);
+            }
+        });
+    }
+
+    /// Fire and renew the slot-protocol watchpoint of every class for which
+    /// `applies(class, metaclass)` holds. Returns how many dependents were
+    /// cleared.
+    pub(crate) fn fire_matching_slot_protocol(
+        &self,
+        ctx: MutationContext<'gc>,
+        mut applies: impl FnMut(Gc<'gc, ClassDescriptor<'gc>>, Gc<'gc, ClassDescriptor<'gc>>) -> bool,
+    ) -> usize {
+        let inner = self.inner.lock();
+        let mut cleared = 0;
+        inner.for_each_class(|class| {
+            let Some(meta) = Value::from(class).class(ctx) else {
+                return;
+            };
+            if applies(class, meta) {
+                cleared += ClassDescriptor::renew_slot_protocol_wp(ctx, class);
+            }
+        });
+        cleared
+    }
+
+    /// Fire and renew the slot-protocol watchpoint of every class. Returns
+    /// how many dependents were cleared.
+    pub(crate) fn fire_all_slot_protocol(&self, ctx: MutationContext<'gc>) -> usize {
+        let inner = self.inner.lock();
+        let mut cleared = 0;
+        inner.for_each_class(|class| {
+            cleared += ClassDescriptor::renew_slot_protocol_wp(ctx, class);
+        });
+        cleared
+    }
+
     pub fn allocated_page_count(&self) -> usize {
         self.inner.lock().allocated_page_count()
     }
@@ -665,7 +721,11 @@ impl<'gc> ClassTable<'gc> {
         self.inner.lock().is_subclass(class_id, superclass_id)
     }
 
-    fn link_direct_subclasses(&self, ctx: Context<'gc>, descriptor: Gc<'gc, ClassDescriptor<'gc>>) {
+    fn link_direct_subclasses(
+        &self,
+        ctx: MutationContext<'gc>,
+        descriptor: Gc<'gc, ClassDescriptor<'gc>>,
+    ) {
         let (direct_supers, existing_subclasses) = {
             let inner = self.inner.lock();
             let direct_supers = descriptor
@@ -695,7 +755,7 @@ impl<'gc> ClassTable<'gc> {
 impl<'gc> ClassTableInner<'gc> {
     fn register_builtin(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         descriptor: Gc<'gc, ClassDescriptor<'gc>>,
     ) -> Result<(), ClassTableError> {
         self.register(ctx, descriptor)
@@ -703,7 +763,7 @@ impl<'gc> ClassTableInner<'gc> {
 
     fn register(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         descriptor: Gc<'gc, ClassDescriptor<'gc>>,
     ) -> Result<(), ClassTableError> {
         let (page, slot_index) = self.empty_slot(ctx, descriptor.id())?;
@@ -725,7 +785,7 @@ impl<'gc> ClassTableInner<'gc> {
 
     fn register_dynamic(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         descriptor: Gc<'gc, ClassDescriptor<'gc>>,
     ) -> Result<(), ClassTableError> {
         self.register(ctx, descriptor)
@@ -733,7 +793,7 @@ impl<'gc> ClassTableInner<'gc> {
 
     fn redefine_dynamic(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         descriptor: Gc<'gc, ClassDescriptor<'gc>>,
     ) -> Result<Gc<'gc, ClassDescriptor<'gc>>, ClassTableError> {
         let old = self
@@ -775,7 +835,7 @@ impl<'gc> ClassTableInner<'gc> {
 
     fn empty_slot(
         &self,
-        ctx: Context<'gc>,
+        ctx: MutationContext<'gc>,
         id: ClassId,
     ) -> Result<(ClassPage<'gc>, usize), ClassTableError> {
         if id.bits() > self.max_id {

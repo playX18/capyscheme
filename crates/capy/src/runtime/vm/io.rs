@@ -24,15 +24,15 @@ extern "C" fn term_sigwinch_handler(_: libc::c_int) {
     TERM_SIGWINCH_VERSION.fetch_add(1, Ordering::Relaxed);
 }
 
-fn term_io_error<'gc, R: TryIntoValues<'gc>>(
-    nctx: NativeCallContext<'_, 'gc, R>,
+fn term_io_error<'gc>(
+    call: &Call<'_, 'gc>,
     operation: IoOperation,
     who: &'static str,
     irritant: Value<'gc>,
-) -> NativeCallReturn<'gc> {
+) -> Value<'gc> {
     let err = std::io::Error::last_os_error();
     let msg = err.to_string();
-    nctx.raise_io_error(err, operation, who, &msg, irritant)
+    call.raise_io_error(err, operation, who, &msg, irritant)
 }
 
 // SAFETY: Caller must ensure preconditions are met (see fn docs)
@@ -63,18 +63,17 @@ pub mod io_ops {
     #[scheme(name = "usleep")]
     pub fn usleep(microseconds: u64) -> bool {
         std::thread::sleep(std::time::Duration::from_micros(microseconds));
-        nctx.return_(true)
+        true
     }
 
     #[scheme(name = "home-directory")]
-    pub fn home_directory() -> Gc<'gc, Str<'gc>> {
+    pub fn home_directory() -> Value<'gc> {
         match std::env::home_dir() {
             Some(buf) => {
                 let s = buf.to_string_lossy();
-                let ctx = nctx.ctx;
-                nctx.return_(Str::new(ctx, &s, true))
+                Str::new(ctx, &s, true).into()
             }
-            None => nctx.raise_io_error(
+            None => call.raise_io_error(
                 std::io::Error::new(std::io::ErrorKind::NotFound, "home directory not found"),
                 IoOperation::Open,
                 "home-directory",
@@ -85,16 +84,15 @@ pub mod io_ops {
     }
 
     #[scheme(name = "gethostname")]
-    pub fn gethostname() -> Gc<'gc, Str<'gc>> {
+    pub fn gethostname() -> Value<'gc> {
         match hostname::get() {
             Ok(name_osstr) => {
                 let name_str = name_osstr.to_string_lossy();
-                let ctx = nctx.ctx;
-                nctx.return_(Str::new(ctx, &name_str, true))
+                Str::new(ctx, &name_str, true).into()
             }
             Err(err) => {
                 let error = err.to_string();
-                nctx.raise_io_error(
+                call.raise_io_error(
                     err,
                     IoOperation::Open,
                     "gethostname",
@@ -110,25 +108,20 @@ pub mod io_ops {
         let p = std::path::PathBuf::from(path.to_string());
         let dir = p.parent().unwrap_or_else(|| std::path::Path::new(""));
         let s = dir.to_string_lossy();
-        let ctx = nctx.ctx;
-        nctx.return_(Str::new(ctx, &s, true))
+        Str::new(ctx, &s, true)
     }
 
     #[scheme(name = "getenv")]
     pub fn getenv(var: Gc<'gc, Str<'gc>>) -> Value<'gc> {
         match std::env::var(var.to_string()) {
-            Ok(s) => {
-                let ctx = nctx.ctx;
-                nctx.return_(Str::new(ctx, &s, true).into())
-            }
-            Err(_) => nctx.return_(Value::new(false)),
+            Ok(s) => Str::new(ctx, &s, true).into(),
+            Err(_) => Value::new(false),
         }
     }
 
     #[scheme(name = "directory-list")]
     pub fn directory_list(path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
         let p = std::path::PathBuf::from(path.to_string());
-        let ctx = nctx.ctx;
 
         match std::fs::read_dir(p) {
             Ok(entries) => {
@@ -138,11 +131,11 @@ pub mod io_ops {
                     ls = Value::cons(ctx, Str::new(ctx, &name, true).into(), ls);
                 }
                 ls = ls.list_reverse(ctx);
-                nctx.return_(ls)
+                ls
             }
             Err(err) => {
                 let error = err.to_string();
-                nctx.raise_io_error(
+                call.raise_io_error(
                     err,
                     IoOperation::Open,
                     "directory-list",
@@ -154,16 +147,13 @@ pub mod io_ops {
     }
 
     #[scheme(name = "current-directory")]
-    pub fn current_directory(path: Option<Gc<'gc, Str<'gc>>>) -> Gc<'gc, Str<'gc>> {
+    pub fn current_directory(path: Option<Gc<'gc, Str<'gc>>>) -> Value<'gc> {
         match path {
             Some(path) => match std::env::set_current_dir(path.to_string()) {
-                Ok(()) => {
-                    let ctx = nctx.ctx;
-                    nctx.return_(Str::new(ctx, path.to_string(), true))
-                }
+                Ok(()) => Str::new(ctx, path.to_string(), true).into(),
                 Err(err) => {
                     let error = err.to_string();
-                    nctx.raise_io_error(
+                    call.raise_io_error(
                         err,
                         IoOperation::Open,
                         "current-directory",
@@ -176,12 +166,11 @@ pub mod io_ops {
             None => match std::env::current_dir() {
                 Ok(buf) => {
                     let s = buf.to_string_lossy();
-                    let ctx = nctx.ctx;
-                    nctx.return_(Str::new(ctx, &s, true))
+                    Str::new(ctx, &s, true).into()
                 }
                 Err(err) => {
                     let error = err.to_string();
-                    nctx.raise_io_error(
+                    call.raise_io_error(
                         err,
                         IoOperation::Open,
                         "current-directory",
@@ -194,12 +183,12 @@ pub mod io_ops {
     }
 
     #[scheme(name = "create-directory")]
-    pub fn create_directory(path: Gc<'gc, Str<'gc>>) -> bool {
+    pub fn create_directory(path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
         match std::fs::create_dir(path.to_string()) {
-            Ok(()) => nctx.return_(true),
+            Ok(()) => Value::new(true),
             Err(err) => {
                 let error = err.to_string();
-                nctx.raise_io_error(
+                call.raise_io_error(
                     err,
                     IoOperation::Open,
                     "create-directory",
@@ -211,12 +200,12 @@ pub mod io_ops {
     }
 
     #[scheme(name = "create-directory*")]
-    pub fn create_directory_all(path: Gc<'gc, Str<'gc>>) -> bool {
+    pub fn create_directory_all(path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
         match std::fs::create_dir_all(path.to_string()) {
-            Ok(()) => nctx.return_(true),
+            Ok(()) => Value::new(true),
             Err(err) => {
                 let error = err.to_string();
-                nctx.raise_io_error(
+                call.raise_io_error(
                     err,
                     IoOperation::Open,
                     "create-directory*",
@@ -228,23 +217,23 @@ pub mod io_ops {
     }
 
     #[scheme(name = "delete-file")]
-    pub fn delete_file(path: Gc<'gc, Str<'gc>>) -> bool {
+    pub fn delete_file(path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
         match std::fs::remove_file(path.to_string()) {
-            Ok(()) => nctx.return_(true),
+            Ok(()) => Value::new(true),
             Err(err) => {
                 let error = err.to_string();
-                nctx.raise_io_error(err, IoOperation::Open, "delete-file", &error, path.into())
+                call.raise_io_error(err, IoOperation::Open, "delete-file", &error, path.into())
             }
         }
     }
 
     #[scheme(name = "file-size-in-bytes")]
-    pub fn file_size_in_bytes(path: Gc<'gc, Str<'gc>>) -> i64 {
+    pub fn file_size_in_bytes(path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
         match std::fs::metadata(path.to_string()) {
-            Ok(metadata) => nctx.return_(metadata.len() as i64),
+            Ok(metadata) => (metadata.len() as i64).into_value(ctx),
             Err(err) => {
                 let error = err.to_string();
-                nctx.raise_io_error(
+                call.raise_io_error(
                     err,
                     IoOperation::Open,
                     "file-size-in-bytes",
@@ -256,23 +245,23 @@ pub mod io_ops {
     }
 
     #[scheme(name = "file-regular?")]
-    pub fn file_regular(path: Gc<'gc, Str<'gc>>) -> bool {
+    pub fn file_regular(path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
         match std::fs::metadata(path.to_string()) {
-            Ok(metadata) => nctx.return_(metadata.is_file()),
+            Ok(metadata) => Value::new(metadata.is_file()),
             Err(err) => {
                 let error = err.to_string();
-                nctx.raise_io_error(err, IoOperation::Open, "file-regular?", &error, path.into())
+                call.raise_io_error(err, IoOperation::Open, "file-regular?", &error, path.into())
             }
         }
     }
 
     #[scheme(name = "file-directory?")]
-    pub fn file_directory(path: Gc<'gc, Str<'gc>>) -> bool {
+    pub fn file_directory(path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
         match std::fs::metadata(path.to_string()) {
-            Ok(metadata) => nctx.return_(metadata.is_dir()),
+            Ok(metadata) => Value::new(metadata.is_dir()),
             Err(err) => {
                 let error = err.to_string();
-                nctx.raise_io_error(
+                call.raise_io_error(
                     err,
                     IoOperation::Open,
                     "file-directory?",
@@ -284,12 +273,12 @@ pub mod io_ops {
     }
 
     #[scheme(name = "file-symbolic-link?")]
-    pub fn file_symbolic_link(path: Gc<'gc, Str<'gc>>) -> bool {
+    pub fn file_symbolic_link(path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
         match std::fs::symlink_metadata(path.to_string()) {
-            Ok(metadata) => nctx.return_(metadata.file_type().is_symlink()),
+            Ok(metadata) => Value::new(metadata.file_type().is_symlink()),
             Err(err) => {
                 let error = err.to_string();
-                nctx.raise_io_error(
+                call.raise_io_error(
                     err,
                     IoOperation::Open,
                     "file-symbolic-link?",
@@ -302,23 +291,23 @@ pub mod io_ops {
 
     #[scheme(name = "file-readable?")]
     pub fn file_readable(path: Gc<'gc, Str<'gc>>) -> bool {
-        nctx.return_(rustix::fs::access(path.to_string(), rustix::fs::Access::READ_OK).is_ok())
+        rustix::fs::access(path.to_string(), rustix::fs::Access::READ_OK).is_ok()
     }
 
     #[scheme(name = "file-writable?")]
     pub fn file_writable(path: Gc<'gc, Str<'gc>>) -> bool {
-        nctx.return_(rustix::fs::access(path.to_string(), rustix::fs::Access::WRITE_OK).is_ok())
+        rustix::fs::access(path.to_string(), rustix::fs::Access::WRITE_OK).is_ok()
     }
 
     #[scheme(name = "file-executable?")]
     pub fn file_executable(path: Gc<'gc, Str<'gc>>) -> bool {
-        nctx.return_(rustix::fs::access(path.to_string(), rustix::fs::Access::EXEC_OK).is_ok())
+        rustix::fs::access(path.to_string(), rustix::fs::Access::EXEC_OK).is_ok()
     }
 
     #[scheme(name = "change-file-mode")]
-    pub fn change_file_mode(path: Gc<'gc, Str<'gc>>, mode: i32) -> bool {
+    pub fn change_file_mode(path: Gc<'gc, Str<'gc>>, mode: i32) -> Value<'gc> {
         let Some(mode) = rustix::fs::Mode::from_bits(mode as _) else {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "change-file-mode",
                 "invalid mode bits",
                 Some(mode.into()),
@@ -328,8 +317,8 @@ pub mod io_ops {
             );
         };
         match rustix::fs::chmod(path.to_string(), mode) {
-            Ok(()) => nctx.return_(true),
-            Err(err) => nctx.raise_io_error(
+            Ok(()) => Value::new(true),
+            Err(err) => call.raise_io_error(
                 std::io::Error::new(err.kind(), "failed to change mode"),
                 IoOperation::Open,
                 "change-file-mode",
@@ -340,12 +329,12 @@ pub mod io_ops {
     }
 
     #[scheme(name = "rename-file")]
-    pub fn rename_file(old_path: Gc<'gc, Str<'gc>>, new_path: Gc<'gc, Str<'gc>>) -> bool {
+    pub fn rename_file(old_path: Gc<'gc, Str<'gc>>, new_path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
         match std::fs::rename(old_path.to_string(), new_path.to_string()) {
-            Ok(()) => nctx.return_(true),
+            Ok(()) => Value::new(true),
             Err(err) => {
                 let error = err.to_string();
-                nctx.raise_io_filesystem_error(
+                call.raise_io_filesystem_error(
                     "rename-file",
                     &error,
                     err,
@@ -357,16 +346,15 @@ pub mod io_ops {
     }
 
     #[scheme(name = "canonicalize-path-string")]
-    pub fn canonicalize_path(path: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
+    pub fn canonicalize_path(path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
         match std::fs::canonicalize(path.to_string()) {
             Ok(buf) => {
                 let s = buf.to_string_lossy();
-                let ctx = nctx.ctx;
-                nctx.return_(Str::new(ctx, &s, true))
+                Str::new(ctx, &s, true).into()
             }
             Err(err) => {
                 let error = err.to_string();
-                nctx.raise_io_error(
+                call.raise_io_error(
                     err,
                     IoOperation::Open,
                     "canonicalize-path",
@@ -378,12 +366,15 @@ pub mod io_ops {
     }
 
     #[scheme(name = "create-symbolic-link")]
-    pub fn create_symbolic_link(original: Gc<'gc, Str<'gc>>, link: Gc<'gc, Str<'gc>>) -> bool {
+    pub fn create_symbolic_link(
+        original: Gc<'gc, Str<'gc>>,
+        link: Gc<'gc, Str<'gc>>,
+    ) -> Value<'gc> {
         match std::os::unix::fs::symlink(original.to_string(), link.to_string()) {
-            Ok(()) => nctx.return_(true),
+            Ok(()) => Value::new(true),
             Err(err) => {
                 let error = err.to_string();
-                nctx.raise_io_error(
+                call.raise_io_error(
                     err,
                     IoOperation::Open,
                     "create-symbolic-link",
@@ -395,12 +386,12 @@ pub mod io_ops {
     }
 
     #[scheme(name = "create-hard-link")]
-    pub fn create_hard_link(original: Gc<'gc, Str<'gc>>, link: Gc<'gc, Str<'gc>>) -> bool {
+    pub fn create_hard_link(original: Gc<'gc, Str<'gc>>, link: Gc<'gc, Str<'gc>>) -> Value<'gc> {
         match std::fs::hard_link(original.to_string(), link.to_string()) {
-            Ok(()) => nctx.return_(true),
+            Ok(()) => Value::new(true),
             Err(err) => {
                 let error = err.to_string();
-                nctx.raise_io_error(
+                call.raise_io_error(
                     err,
                     IoOperation::Open,
                     "create-hard-link",
@@ -412,18 +403,18 @@ pub mod io_ops {
     }
 
     #[scheme(name = "file-stat-atime")]
-    pub fn file_stat_atime(path: Gc<'gc, Str<'gc>>) -> i64 {
+    pub fn file_stat_atime(path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
         match std::fs::metadata(path.to_string()) {
             Ok(metadata) => match metadata.accessed() {
                 Ok(time) => match time.duration_since(std::time::UNIX_EPOCH) {
-                    Ok(dur) => nctx.return_(dur.as_secs() as i64),
-                    Err(_) => nctx.return_(-1),
+                    Ok(dur) => (dur.as_secs() as i64).into_value(ctx),
+                    Err(_) => (-1i64).into_value(ctx),
                 },
-                Err(_) => nctx.return_(-1),
+                Err(_) => (-1i64).into_value(ctx),
             },
             Err(err) => {
                 let error = err.to_string();
-                nctx.raise_io_error(
+                call.raise_io_error(
                     err,
                     IoOperation::Open,
                     "file-stat-atime",
@@ -435,18 +426,18 @@ pub mod io_ops {
     }
 
     #[scheme(name = "file-stat-mtime")]
-    pub fn file_stat_mtime(path: Gc<'gc, Str<'gc>>) -> i64 {
+    pub fn file_stat_mtime(path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
         match std::fs::metadata(path.to_string()) {
             Ok(metadata) => match metadata.modified() {
                 Ok(time) => match time.duration_since(std::time::UNIX_EPOCH) {
-                    Ok(dur) => nctx.return_(dur.as_secs() as i64),
-                    Err(_) => nctx.return_(-1),
+                    Ok(dur) => (dur.as_secs() as i64).into_value(ctx),
+                    Err(_) => (-1i64).into_value(ctx),
                 },
-                Err(_) => nctx.return_(-1),
+                Err(_) => (-1i64).into_value(ctx),
             },
             Err(err) => {
                 let error = err.to_string();
-                nctx.raise_io_error(
+                call.raise_io_error(
                     err,
                     IoOperation::Open,
                     "file-stat-mtime",
@@ -458,18 +449,18 @@ pub mod io_ops {
     }
 
     #[scheme(name = "file-stat-ctime")]
-    pub fn file_stat_ctime(path: Gc<'gc, Str<'gc>>) -> i64 {
+    pub fn file_stat_ctime(path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
         match std::fs::metadata(path.to_string()) {
             Ok(metadata) => match metadata.created() {
                 Ok(time) => match time.duration_since(std::time::UNIX_EPOCH) {
-                    Ok(dur) => nctx.return_(dur.as_secs() as i64),
-                    Err(_) => nctx.return_(-1),
+                    Ok(dur) => (dur.as_secs() as i64).into_value(ctx),
+                    Err(_) => (-1i64).into_value(ctx),
                 },
-                Err(_) => nctx.return_(-1),
+                Err(_) => (-1i64).into_value(ctx),
             },
             Err(err) => {
                 let error = err.to_string();
-                nctx.raise_io_error(
+                call.raise_io_error(
                     err,
                     IoOperation::Open,
                     "file-stat-ctime",
@@ -484,21 +475,19 @@ pub mod io_ops {
     pub fn getcwd() -> Gc<'gc, Str<'gc>> {
         let buf = std::env::current_dir().unwrap_or_default();
         let s = buf.to_string_lossy();
-        let ctx = nctx.ctx;
-        nctx.return_(Str::new(ctx, &s, true))
+        Str::new(ctx, &s, true)
     }
 
     #[scheme(name = "file-canonicalize")]
-    pub fn file_canonicalize(path: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
+    pub fn file_canonicalize(path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
         match std::fs::canonicalize(path.to_string()) {
             Ok(buf) => {
                 let s = buf.to_string_lossy();
-                let ctx = nctx.ctx;
-                nctx.return_(Str::new(ctx, &s, true))
+                (Str::new(ctx, &s, true)).into()
             }
             Err(err) => {
                 let error = err.to_string();
-                nctx.raise_io_error(
+                call.raise_io_error(
                     err,
                     IoOperation::Open,
                     "file-canonicalize",
@@ -512,7 +501,7 @@ pub mod io_ops {
     #[scheme(name = "file-exists?")]
     pub fn file_exists(path: Gc<'gc, Str<'gc>>) -> bool {
         let metadata = std::path::Path::new(&path.to_string()).exists();
-        nctx.return_(metadata)
+        metadata
     }
 
     #[scheme(name = "file-name-separator?")]
@@ -521,16 +510,15 @@ pub mod io_ops {
         match s {
             Either::Left(s) => {
                 let s_str = s.to_string();
-                nctx.return_(
-                    s_str.len() == 1
-                        && s_str
-                            .chars()
-                            .next()
-                            .expect("non-empty string should have first char")
-                            == sep,
-                )
+
+                s_str.len() == 1
+                    && s_str
+                        .chars()
+                        .next()
+                        .expect("non-empty string should have first char")
+                        == sep
             }
-            Either::Right(c) => nctx.return_(c == sep),
+            Either::Right(c) => c == sep,
         }
     }
 
@@ -542,18 +530,18 @@ pub mod io_ops {
         }
 
         let sym = if cfg!(windows) {
-            sym_windows(nctx.ctx)
+            sym_windows(ctx)
         } else {
-            sym_unix(nctx.ctx)
+            sym_unix(ctx)
         };
 
-        nctx.return_(sym)
+        sym
     }
 
     #[scheme(name = "absolute-path-string?")]
     pub fn is_absolute_path_string(path: Gc<'gc, Str<'gc>>) -> bool {
         let p = std::path::PathBuf::from(path.to_string());
-        nctx.return_(p.is_absolute())
+        p.is_absolute()
     }
 
     #[scheme(name = "io/open")]
@@ -563,18 +551,18 @@ pub mod io_ops {
         // SAFETY: FFI: path is a valid NUL-terminated string with valid flags
         unsafe {
             let cpath = std::ffi::CString::new(path).expect("path should not contain null bytes");
-            nctx.return_(libc::open(cpath.as_ptr(), oflag, pmode))
+            libc::open(cpath.as_ptr(), oflag, pmode)
         }
     }
 
     #[scheme(name = "term/isatty?")]
     pub fn term_isatty(fd: i32) -> bool {
         // SAFETY: FFI: fd is a valid open file descriptor
-        unsafe { nctx.return_(libc::isatty(fd) == 1) }
+        unsafe { libc::isatty(fd) == 1 }
     }
 
     #[scheme(name = "term/open-tty")]
-    pub fn term_open_tty(readable: bool, writable: bool) -> i32 {
+    pub fn term_open_tty(readable: bool, writable: bool) -> Value<'gc> {
         let flags = if readable && writable {
             libc::O_RDWR
         } else if writable {
@@ -590,7 +578,7 @@ pub mod io_ops {
             if ret < 0 {
                 let err = std::io::Error::last_os_error();
                 let msg = err.to_string();
-                return nctx.raise_io_error(
+                return call.raise_io_error(
                     err,
                     IoOperation::Open,
                     "term/open-tty",
@@ -598,19 +586,19 @@ pub mod io_ops {
                     Value::new(false),
                 );
             }
-            nctx.return_(ret)
+            (ret).into()
         }
     }
 
     #[scheme(name = "term/close-fd")]
-    pub fn term_close_fd(fd: i32) -> i32 {
+    pub fn term_close_fd(fd: i32) -> Value<'gc> {
         // SAFETY: FFI: fd is a valid open file descriptor
         unsafe {
             let ret = libc::close(fd);
             if ret < 0 {
                 let err = std::io::Error::last_os_error();
                 let msg = err.to_string();
-                return nctx.raise_io_error(
+                return call.raise_io_error(
                     err,
                     IoOperation::Close,
                     "term/close-fd",
@@ -618,7 +606,7 @@ pub mod io_ops {
                     fd.into(),
                 );
             }
-            nctx.return_(ret)
+            (ret).into()
         }
     }
 
@@ -631,7 +619,7 @@ pub mod io_ops {
             if ret < 0 {
                 let err = std::io::Error::last_os_error();
                 let msg = err.to_string();
-                return nctx.raise_io_error(
+                return call.raise_io_error(
                     err,
                     IoOperation::Open,
                     "term/pipe",
@@ -640,25 +628,24 @@ pub mod io_ops {
                 );
             }
 
-            let ctx = nctx.ctx;
             let list = Value::cons(
                 ctx,
                 fds[0].into(),
                 Value::cons(ctx, fds[1].into(), Value::null()),
             );
-            nctx.return_(list)
+            list
         }
     }
 
     #[scheme(name = "term/get-flags")]
-    pub fn term_get_flags(fd: i32) -> i32 {
+    pub fn term_get_flags(fd: i32) -> Value<'gc> {
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let ret = libc::fcntl(fd, libc::F_GETFL);
             if ret < 0 {
                 let err = std::io::Error::last_os_error();
                 let msg = err.to_string();
-                return nctx.raise_io_error(
+                return call.raise_io_error(
                     err,
                     IoOperation::Stat,
                     "term/get-flags",
@@ -666,19 +653,19 @@ pub mod io_ops {
                     fd.into(),
                 );
             }
-            nctx.return_(ret)
+            (ret).into()
         }
     }
 
     #[scheme(name = "term/set-flags!")]
-    pub fn term_set_flags(fd: i32, flags: i32) -> i32 {
+    pub fn term_set_flags(fd: i32, flags: i32) -> Value<'gc> {
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let ret = libc::fcntl(fd, libc::F_SETFL, flags);
             if ret < 0 {
                 let err = std::io::Error::last_os_error();
                 let msg = err.to_string();
-                return nctx.raise_io_error(
+                return call.raise_io_error(
                     err,
                     IoOperation::Stat,
                     "term/set-flags!",
@@ -686,19 +673,19 @@ pub mod io_ops {
                     fd.into(),
                 );
             }
-            nctx.return_(ret)
+            (ret).into()
         }
     }
 
     #[scheme(name = "term/nonblocking!")]
-    pub fn term_nonblocking(fd: i32, enabled: bool) -> bool {
+    pub fn term_nonblocking(fd: i32, enabled: bool) -> Value<'gc> {
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let flags = libc::fcntl(fd, libc::F_GETFL);
             if flags < 0 {
                 let err = std::io::Error::last_os_error();
                 let msg = err.to_string();
-                return nctx.raise_io_error(
+                return call.raise_io_error(
                     err,
                     IoOperation::Stat,
                     "term/nonblocking!",
@@ -715,7 +702,7 @@ pub mod io_ops {
             if libc::fcntl(fd, libc::F_SETFL, new_flags) < 0 {
                 let err = std::io::Error::last_os_error();
                 let msg = err.to_string();
-                return nctx.raise_io_error(
+                return call.raise_io_error(
                     err,
                     IoOperation::Stat,
                     "term/nonblocking!",
@@ -723,15 +710,14 @@ pub mod io_ops {
                     fd.into(),
                 );
             }
-            nctx.return_(true)
+            (true).into()
         }
     }
 
     #[scheme(name = "io/read")]
-    pub fn io_read(fd: i32, buf: Gc<'gc, ByteVector>, from: usize, nbytes: usize) -> isize {
+    pub fn io_read(fd: i32, buf: Gc<'gc, ByteVector>, from: usize, nbytes: usize) -> Value<'gc> {
         if from + nbytes > buf.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "io/read",
                 "buffer too small for read",
                 None,
@@ -750,15 +736,19 @@ pub mod io_ops {
         unsafe {
             let ptr = buf.as_slice_mut_unchecked().as_mut_ptr().add(from) as *mut libc::c_void;
             let ret = libc::read(fd, ptr, nbytes);
-            nctx.return_(ret)
+            (ret).into_value(ctx)
         }
     }
 
     #[scheme(name = "term/read-fd")]
-    pub fn term_read_fd(fd: i32, buf: Gc<'gc, ByteVector>, start: usize, count: usize) -> isize {
+    pub fn term_read_fd(
+        fd: i32,
+        buf: Gc<'gc, ByteVector>,
+        start: usize,
+        count: usize,
+    ) -> Value<'gc> {
         if start + count > buf.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "term/read-fd",
                 "buffer too small for read",
                 None,
@@ -780,11 +770,11 @@ pub mod io_ops {
             if ret < 0 {
                 let errno = errno::errno().0;
                 if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK {
-                    return nctx.return_(0);
+                    return (0).into();
                 }
                 let err = std::io::Error::last_os_error();
                 let msg = err.to_string();
-                return nctx.raise_io_error(
+                return call.raise_io_error(
                     err,
                     IoOperation::Read,
                     "term/read-fd",
@@ -792,15 +782,14 @@ pub mod io_ops {
                     fd.into(),
                 );
             }
-            nctx.return_(ret)
+            (ret).into_value(ctx)
         }
     }
 
     #[scheme(name = "io/write")]
-    pub fn io_write(fd: i32, buf: Gc<'gc, ByteVector>, from: usize, nbytes: usize) -> isize {
+    pub fn io_write(fd: i32, buf: Gc<'gc, ByteVector>, from: usize, nbytes: usize) -> Value<'gc> {
         if from + nbytes > buf.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "io/write",
                 "buffer too small for write",
                 None,
@@ -819,15 +808,19 @@ pub mod io_ops {
         unsafe {
             let ptr = buf.as_slice().as_ptr().add(from) as *mut libc::c_void;
             let ret = libc::write(fd, ptr, nbytes);
-            nctx.return_(ret)
+            (ret).into_value(ctx)
         }
     }
 
     #[scheme(name = "term/write-fd")]
-    pub fn term_write_fd(fd: i32, buf: Gc<'gc, ByteVector>, start: usize, count: usize) -> isize {
+    pub fn term_write_fd(
+        fd: i32,
+        buf: Gc<'gc, ByteVector>,
+        start: usize,
+        count: usize,
+    ) -> Value<'gc> {
         if start + count > buf.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "term/write-fd",
                 "buffer too small for write",
                 None,
@@ -849,7 +842,7 @@ pub mod io_ops {
             if ret < 0 {
                 let err = std::io::Error::last_os_error();
                 let msg = err.to_string();
-                return nctx.raise_io_error(
+                return call.raise_io_error(
                     err,
                     IoOperation::Write,
                     "term/write-fd",
@@ -857,17 +850,17 @@ pub mod io_ops {
                     fd.into(),
                 );
             }
-            nctx.return_(ret)
+            (ret).into_value(ctx)
         }
     }
 
     #[scheme(name = "term/sigwinch-version")]
     pub fn term_sigwinch_version() -> u64 {
-        nctx.return_(TERM_SIGWINCH_VERSION.load(Ordering::Relaxed))
+        TERM_SIGWINCH_VERSION.load(Ordering::Relaxed)
     }
 
     #[scheme(name = "term/install-sigwinch-handler!")]
-    pub fn term_install_sigwinch_handler() -> bool {
+    pub fn term_install_sigwinch_handler() -> Value<'gc> {
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let mut action: libc::sigaction = std::mem::zeroed();
@@ -878,7 +871,7 @@ pub mod io_ops {
             if libc::sigaction(libc::SIGWINCH, &action, std::ptr::null_mut()) < 0 {
                 let err = std::io::Error::last_os_error();
                 let msg = err.to_string();
-                return nctx.raise_io_error(
+                return call.raise_io_error(
                     err,
                     IoOperation::Stat,
                     "term/install-sigwinch-handler!",
@@ -886,15 +879,15 @@ pub mod io_ops {
                     Value::new(false),
                 );
             }
-            nctx.return_(true)
+            (true).into()
         }
     }
 
     #[scheme(name = "term/enable-raw-mode!")]
-    pub fn term_enable_raw_mode() -> bool {
+    pub fn term_enable_raw_mode() -> Value<'gc> {
         let mut state = TERM_RAW_MODE_STATE.lock().expect("raw mode mutex poisoned");
         if state.is_some() {
-            return nctx.return_(true);
+            return Value::new(true);
         }
 
         // SAFETY: Preconditions verified by the surrounding code
@@ -903,7 +896,7 @@ pub mod io_ops {
                 Ok(fd) => fd,
                 Err(err) => {
                     let msg = err.to_string();
-                    return nctx.raise_io_error(
+                    return call.raise_io_error(
                         err,
                         IoOperation::Open,
                         "term/enable-raw-mode!",
@@ -916,37 +909,37 @@ pub mod io_ops {
             let mut saved: libc::termios = std::mem::zeroed();
             if libc::tcgetattr(fd, &mut saved) < 0 {
                 let _ = libc::close(fd);
-                return term_io_error(nctx, IoOperation::Stat, "term/enable-raw-mode!", fd.into());
+                return term_io_error(call, IoOperation::Stat, "term/enable-raw-mode!", fd.into());
             }
 
             let mut raw = saved;
             libc::cfmakeraw(&mut raw);
             if libc::tcsetattr(fd, libc::TCSANOW, &raw) < 0 {
                 let _ = libc::close(fd);
-                return term_io_error(nctx, IoOperation::Stat, "term/enable-raw-mode!", fd.into());
+                return term_io_error(call, IoOperation::Stat, "term/enable-raw-mode!", fd.into());
             }
 
             *state = Some((fd, saved));
-            nctx.return_(true)
+            Value::new(true)
         }
     }
 
     #[scheme(name = "term/disable-raw-mode!")]
-    pub fn term_disable_raw_mode() -> bool {
+    pub fn term_disable_raw_mode() -> Value<'gc> {
         let mut state = TERM_RAW_MODE_STATE.lock().expect("raw mode mutex poisoned");
         let Some((fd, saved)) = *state else {
-            return nctx.return_(true);
+            return Value::new(true);
         };
 
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             if libc::tcsetattr(fd, libc::TCSANOW, &saved) < 0 {
-                return term_io_error(nctx, IoOperation::Stat, "term/disable-raw-mode!", fd.into());
+                return term_io_error(call, IoOperation::Stat, "term/disable-raw-mode!", fd.into());
             }
 
             if libc::close(fd) < 0 {
                 return term_io_error(
-                    nctx,
+                    call,
                     IoOperation::Close,
                     "term/disable-raw-mode!",
                     fd.into(),
@@ -955,17 +948,15 @@ pub mod io_ops {
         }
 
         *state = None;
-        nctx.return_(true)
+        Value::new(true)
     }
 
     #[scheme(name = "term/raw-mode-enabled?")]
     pub fn term_raw_mode_enabled() -> bool {
-        nctx.return_(
-            TERM_RAW_MODE_STATE
-                .lock()
-                .expect("raw mode mutex poisoned")
-                .is_some(),
-        )
+        TERM_RAW_MODE_STATE
+            .lock()
+            .expect("raw mode mutex poisoned")
+            .is_some()
     }
 
     #[scheme(name = "term/terminal-size-list")]
@@ -986,20 +977,19 @@ pub mod io_ops {
             }
             if result < 0 {
                 return term_io_error(
-                    nctx,
+                    call,
                     IoOperation::Stat,
                     "term/terminal-size-list",
                     fd.into(),
                 );
             }
 
-            let ctx = nctx.ctx;
             let mut result = Value::null();
             result = Value::cons(ctx, (size.ws_ypixel as i32).into(), result);
             result = Value::cons(ctx, (size.ws_xpixel as i32).into(), result);
             result = Value::cons(ctx, (size.ws_row as i32).into(), result);
             result = Value::cons(ctx, (size.ws_col as i32).into(), result);
-            nctx.return_(result)
+            result
         }
     }
 
@@ -1010,10 +1000,9 @@ pub mod io_ops {
         from: usize,
         nbytes: usize,
         offset: i64,
-    ) -> isize {
+    ) -> Value<'gc> {
         if from + nbytes > buf.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "io/pread",
                 "buffer too small for pread",
                 None,
@@ -1033,7 +1022,7 @@ pub mod io_ops {
         unsafe {
             let ptr = buf.as_slice_mut_unchecked().as_mut_ptr().add(from) as *mut libc::c_void;
             let ret = libc::pread(fd, ptr, nbytes, offset);
-            nctx.return_(ret)
+            (ret).into_value(ctx)
         }
     }
 
@@ -1044,10 +1033,9 @@ pub mod io_ops {
         from: usize,
         nbytes: usize,
         offset: i64,
-    ) -> isize {
+    ) -> Value<'gc> {
         if from + nbytes > buf.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "io/pwrite",
                 "buffer too small for pwrite",
                 None,
@@ -1067,7 +1055,7 @@ pub mod io_ops {
         unsafe {
             let ptr = buf.as_slice().as_ptr().add(from) as *const libc::c_void;
             let ret = libc::pwrite(fd, ptr, nbytes, offset);
-            nctx.return_(ret)
+            (ret).into_value(ctx)
         }
     }
 
@@ -1076,14 +1064,14 @@ pub mod io_ops {
         // SAFETY: FFI: fd is valid, whence is a valid seek origin
         unsafe {
             let ret = libc::lseek(fd, offset, whence);
-            nctx.return_(ret)
+            ret
         }
     }
 
     #[scheme(name = "io/mkstemp")]
     pub fn io_mkstemp(template: Gc<'gc, Str<'gc>>) -> Value<'gc> {
         if template.len() > 128 {
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "io/mkstemp",
                 "template too long",
                 None,
@@ -1100,10 +1088,9 @@ pub mod io_ops {
         unsafe {
             let ret = libc::mkstemp(arr.as_mut_ptr() as *mut _);
             let newname = std::ffi::CStr::from_ptr(arr.as_ptr() as _).to_string_lossy();
-            let ctx = nctx.ctx;
             let gname = Str::new(ctx, &newname, true);
             let res = crate::list!(ctx, ret, gname);
-            nctx.return_(res)
+            res
         }
     }
 
@@ -1136,7 +1123,7 @@ pub mod io_ops {
         }
 
         if filename.is_empty() {
-            return nctx.return_(-1);
+            return -1;
         }
 
         // SAFETY: FFI: path is a valid NUL-terminated string with valid flags
@@ -1144,7 +1131,7 @@ pub mod io_ops {
             let cpath =
                 CString::new(filename.to_string()).expect("filename should not contain null bytes");
             let ret = libc::open(cpath.as_ptr(), newflags | libc::O_NONBLOCK, mode);
-            nctx.return_(ret)
+            ret
         }
     }
 
@@ -1154,15 +1141,20 @@ pub mod io_ops {
         unsafe {
             let ret = libc::close(fd);
 
-            nctx.return_(ret)
+            ret
         }
     }
 
     #[scheme(name = "syscall:read")]
-    pub fn syscall_read(fd: i32, buf: Gc<'gc, ByteVector>, nbytes: usize) -> isize {
-        if nbytes > buf.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+    pub fn syscall_read(
+        fd: i32,
+        buf: Gc<'gc, ByteVector>,
+        nbytes: usize,
+        start: Option<usize>,
+    ) -> Value<'gc> {
+        let start = start.unwrap_or(0);
+        if start.checked_add(nbytes).is_none_or(|end| end > buf.len()) {
+            return call.wrong_argument_violation(
                 "syscall:read",
                 "buffer too small for read",
                 None,
@@ -1176,28 +1168,33 @@ pub mod io_ops {
         loop {
             // SAFETY: Mutable access is exclusive and goes through GC write barrier
             let ret = unsafe {
-                let ptr = buf.as_slice_mut_unchecked().as_mut_ptr() as *mut libc::c_void;
+                let ptr = buf.as_slice_mut_unchecked().as_mut_ptr().add(start) as *mut libc::c_void;
                 libc::read(fd, ptr, nbytes)
             };
+            if ret == -1 && errno::errno().0 == libc::EINTR {
+                continue;
+            }
             if ret != -1
                 || (errno::errno().0 != libc::EAGAIN && errno::errno().0 != libc::EWOULDBLOCK)
             {
-                return nctx.return_(ret);
+                return ret.into_value(ctx);
             }
-            let scope = RootScope::new(nctx.ctx);
-            let retk = scope.root(nctx.retk);
+            let scope = RootScope::new(ctx);
             let buf_root = scope.root(buf.into());
-            nctx.ctx.call_in_native(|| blocking_poll_read(fd));
-            nctx.retk = retk.get();
+            ctx.call_in_native(|| blocking_poll_read(fd));
             buf = buf_root.get().downcast();
         }
     }
 
     #[scheme(name = "syscall:write")]
-    pub fn syscall_write(fd: i32, buf: Gc<'gc, ByteVector>, nbytes: usize, offset: usize) -> isize {
+    pub fn syscall_write(
+        fd: i32,
+        buf: Gc<'gc, ByteVector>,
+        nbytes: usize,
+        offset: usize,
+    ) -> Value<'gc> {
         if nbytes > buf.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "syscall:write",
                 "buffer too small for write",
                 None,
@@ -1214,16 +1211,17 @@ pub mod io_ops {
                 let ptr = buf.as_slice().as_ptr().wrapping_add(offset) as *const libc::c_void;
                 libc::write(fd, ptr, nbytes)
             };
+            if ret == -1 && errno::errno().0 == libc::EINTR {
+                continue;
+            }
             if ret != -1
                 || (errno::errno().0 != libc::EAGAIN && errno::errno().0 != libc::EWOULDBLOCK)
             {
-                return nctx.return_(ret);
+                return ret.into_value(ctx);
             }
-            let scope = RootScope::new(nctx.ctx);
-            let retk = scope.root(nctx.retk);
+            let scope = RootScope::new(ctx);
             let buf_root = scope.root(buf.into());
-            nctx.ctx.call_in_native(|| blocking_poll_write(fd));
-            nctx.retk = retk.get();
+            ctx.call_in_native(|| blocking_poll_write(fd));
             buf = buf_root.get().downcast();
         }
     }
@@ -1234,7 +1232,7 @@ pub mod io_ops {
             0 => libc::SEEK_SET,
             1 => libc::SEEK_CUR,
             2 => libc::SEEK_END,
-            _ => return nctx.return_(-1),
+            _ => return -1,
         };
         loop {
             // SAFETY: FFI: fd is valid, whence is a valid seek origin
@@ -1242,13 +1240,16 @@ pub mod io_ops {
             if ret != -1
                 || (errno::errno().0 != libc::EAGAIN && errno::errno().0 != libc::EWOULDBLOCK)
             {
-                return nctx.return_(ret);
+                return ret;
             }
-            let scope = RootScope::new(nctx.ctx);
-            let retk = scope.root(nctx.retk);
-            nctx.ctx.call_in_native(|| blocking_poll_write(fd));
-            nctx.retk = retk.get();
+            ctx.call_in_native(|| blocking_poll_write(fd));
         }
+    }
+
+    #[scheme(name = "syscall:isatty")]
+    pub fn syscall_isatty(fd: i32) -> bool {
+        // SAFETY: FFI: isatty accepts any integer descriptor
+        unsafe { libc::isatty(fd) == 1 }
     }
 
     #[scheme(name = "syscall:pollinput")]
@@ -1262,9 +1263,9 @@ pub mod io_ops {
             };
             let ret = libc::poll(&mut fds as *mut libc::pollfd, 1, 0);
             if ret > 0 && (fds.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR)) != 0 {
-                nctx.return_(1)
+                1
             } else {
-                nctx.return_(0)
+                0
             }
         }
     }
@@ -1276,7 +1277,7 @@ pub mod io_ops {
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let ret = libc::unlink(cpath.as_ptr());
-            nctx.return_(ret)
+            ret
         }
     }
 
@@ -1289,7 +1290,7 @@ pub mod io_ops {
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let ret = libc::rename(cold.as_ptr(), cnew.as_ptr());
-            nctx.return_(ret)
+            ret
         }
     }
 
@@ -1303,22 +1304,18 @@ pub mod io_ops {
             let cpath = CString::new(path).expect("path should not contain null bytes");
             let ret = libc::stat(cpath.as_ptr(), &mut buf);
             if ret != 0 {
-                return nctx.return_(-1);
+                return -1;
             }
 
             let tm = libc::localtime(&buf.st_mtime);
-            let wbuf = Gc::write(nctx.ctx, vbuf);
-            wbuf[0]
-                .unlock()
-                .set((1900 + (*tm).tm_year).into_value(nctx.ctx));
-            wbuf[1]
-                .unlock()
-                .set((1 + (*tm).tm_mon).into_value(nctx.ctx));
-            wbuf[2].unlock().set((*tm).tm_mday.into_value(nctx.ctx));
-            wbuf[3].unlock().set((*tm).tm_hour.into_value(nctx.ctx));
-            wbuf[4].unlock().set((*tm).tm_min.into_value(nctx.ctx));
-            wbuf[5].unlock().set((*tm).tm_sec.into_value(nctx.ctx));
-            nctx.return_(0)
+            let wbuf = Gc::write(ctx, vbuf);
+            wbuf[0].unlock().set((1900 + (*tm).tm_year).into_value(ctx));
+            wbuf[1].unlock().set((1 + (*tm).tm_mon).into_value(ctx));
+            wbuf[2].unlock().set((*tm).tm_mday.into_value(ctx));
+            wbuf[3].unlock().set((*tm).tm_hour.into_value(ctx));
+            wbuf[4].unlock().set((*tm).tm_min.into_value(ctx));
+            wbuf[5].unlock().set((*tm).tm_sec.into_value(ctx));
+            0
         }
     }
 
@@ -1347,15 +1344,19 @@ pub mod io_ops {
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let ret = libc::access(cpath.as_ptr(), rmode);
-            nctx.return_(ret)
+            ret
         }
     }
 
     #[scheme(name = "syscall:recv")]
-    pub fn syscall_recv(fd: i32, buf: Gc<'gc, ByteVector>, nbytes: usize, flags: i32) -> isize {
+    pub fn syscall_recv(
+        fd: i32,
+        buf: Gc<'gc, ByteVector>,
+        nbytes: usize,
+        flags: i32,
+    ) -> Value<'gc> {
         if nbytes > buf.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "syscall:recv",
                 "buffer too small for recv",
                 None,
@@ -1375,22 +1376,24 @@ pub mod io_ops {
             if ret != -1
                 || (errno::errno().0 != libc::EAGAIN && errno::errno().0 != libc::EWOULDBLOCK)
             {
-                return nctx.return_(ret);
+                return ret.into_value(ctx);
             }
-            let scope = RootScope::new(nctx.ctx);
-            let retk = scope.root(nctx.retk);
+            let scope = RootScope::new(ctx);
             let buf_root = scope.root(buf.into());
-            nctx.ctx.call_in_native(|| blocking_poll_read(fd));
-            nctx.retk = retk.get();
+            ctx.call_in_native(|| blocking_poll_read(fd));
             buf = buf_root.get().downcast();
         }
     }
 
     #[scheme(name = "syscall:send")]
-    pub fn syscall_send(fd: i32, buf: Gc<'gc, ByteVector>, nbytes: usize, flags: i32) -> isize {
+    pub fn syscall_send(
+        fd: i32,
+        buf: Gc<'gc, ByteVector>,
+        nbytes: usize,
+        flags: i32,
+    ) -> Value<'gc> {
         if nbytes > buf.len() {
-            let ctx = nctx.ctx;
-            return nctx.wrong_argument_violation(
+            return call.wrong_argument_violation(
                 "syscall:send",
                 "buffer too small for send",
                 None,
@@ -1410,20 +1413,17 @@ pub mod io_ops {
             if ret != -1
                 || (errno::errno().0 != libc::EAGAIN && errno::errno().0 != libc::EWOULDBLOCK)
             {
-                return nctx.return_(ret);
+                return ret.into_value(ctx);
             }
-            let scope = RootScope::new(nctx.ctx);
-            let retk = scope.root(nctx.retk);
+            let scope = RootScope::new(ctx);
             let buf_root = scope.root(buf.into());
-            nctx.ctx.call_in_native(|| blocking_poll_write(fd));
-            nctx.retk = retk.get();
+            ctx.call_in_native(|| blocking_poll_write(fd));
             buf = buf_root.get().downcast();
         }
     }
 
     #[scheme(name = "process-environment->alist")]
     pub fn process_environment_to_alist() -> Value<'gc> {
-        let ctx = nctx.ctx;
         let mut alist = Value::null();
         for (key, value) in std::env::vars() {
             let key_str = Str::new(ctx, &key, true);
@@ -1432,11 +1432,11 @@ pub mod io_ops {
             alist = Value::cons(ctx, pair, alist);
         }
         alist = alist.list_reverse(ctx);
-        nctx.return_(alist)
+        alist
     }
 
     #[scheme(name = "system")]
-    pub fn system(command: Gc<'gc, Str<'gc>>) -> i32 {
+    pub fn system(command: Gc<'gc, Str<'gc>>) -> Value<'gc> {
         let ccommand =
             CString::new(command.to_string()).expect("command should not contain null bytes");
         // SAFETY: Preconditions verified by the surrounding code
@@ -1444,11 +1444,11 @@ pub mod io_ops {
             let ret = libc::system(ccommand.as_ptr());
             if ret != -1 {
                 if libc::WIFEXITED(ret) {
-                    nctx.return_(libc::WEXITSTATUS(ret))
+                    (libc::WEXITSTATUS(ret)).into()
                 } else if libc::WIFSIGNALED(ret) {
-                    nctx.return_(-libc::WTERMSIG(ret))
+                    (-libc::WTERMSIG(ret)).into()
                 } else {
-                    nctx.return_(-1)
+                    (-1).into()
                 }
             } else {
                 let errno = ::errno::errno();
@@ -1456,7 +1456,7 @@ pub mod io_ops {
                 let message = format!("system() failed: {errno}");
                 let errno_code = errno.0;
 
-                nctx.raise_error("system", &message, &[errno_code.into(), command.into()])
+                call.raise_error("system", &message, &[errno_code.into(), command.into()])
             }
         }
     }
@@ -1465,12 +1465,11 @@ pub mod io_ops {
     pub fn errno_string() -> (i32, Gc<'gc, Str<'gc>>) {
         let errno = ::errno::errno();
         let message = errno.to_string();
-        let ctx = nctx.ctx;
-        nctx.return_((errno.0, Str::new(ctx, &message, true)))
+        (errno.0, Str::new(ctx, &message, true))
     }
 
     #[scheme(name = "acquire-lockfile")]
-    pub fn acquire_lockfile(path: Gc<'gc, Str<'gc>>, wait: Option<bool>) -> i32 {
+    pub fn acquire_lockfile(path: Gc<'gc, Str<'gc>>, wait: Option<bool>) -> Value<'gc> {
         let wait = wait.unwrap_or(true);
         // SAFETY: FFI: path is a valid NUL-terminated string with valid flags
         let fd = unsafe {
@@ -1486,7 +1485,7 @@ pub mod io_ops {
         if fd < 0 {
             let err = std::io::Error::last_os_error();
             let error = err.to_string();
-            return nctx.raise_io_error(
+            return call.raise_io_error(
                 err,
                 IoOperation::Open,
                 "acquire-lockfile",
@@ -1499,7 +1498,7 @@ pub mod io_ops {
         if unsafe { libc::flock(fd, libc::LOCK_EX | if wait { 0 } else { libc::LOCK_NB }) } != 0 {
             let err = std::io::Error::last_os_error();
             let error = err.to_string();
-            return nctx.raise_io_error(
+            return call.raise_io_error(
                 err,
                 IoOperation::Open,
                 "acquire-lockfile",
@@ -1508,16 +1507,16 @@ pub mod io_ops {
             );
         }
 
-        nctx.return_(fd)
+        (fd).into()
     }
 
     #[scheme(name = "release-lockfile")]
-    pub fn release_lockfile(fd: i32) -> bool {
+    pub fn release_lockfile(fd: i32) -> Value<'gc> {
         // SAFETY: FFI: fd is valid, operation follows POSIX flock semantics
         if unsafe { libc::flock(fd, libc::LOCK_UN) } != 0 {
             let err = std::io::Error::last_os_error();
             let error = err.to_string();
-            return nctx.raise_io_error(
+            return call.raise_io_error(
                 err,
                 IoOperation::Close,
                 "release-lockfile",
@@ -1530,7 +1529,7 @@ pub mod io_ops {
         if unsafe { libc::close(fd) } != 0 {
             let err = std::io::Error::last_os_error();
             let error = err.to_string();
-            return nctx.raise_io_error(
+            return call.raise_io_error(
                 err,
                 IoOperation::Close,
                 "release-lockfile",
@@ -1539,7 +1538,7 @@ pub mod io_ops {
             );
         }
 
-        nctx.return_(true)
+        (true).into()
     }
 
     #[scheme(name = "%process-spawn")]
@@ -1555,7 +1554,7 @@ pub mod io_ops {
             Ok(child) => child,
             Err(err) => {
                 let error = err.to_string();
-                return nctx.raise_io_error(
+                return call.raise_io_error(
                     err,
                     IoOperation::Open,
                     "%process-spawn",
@@ -1582,16 +1581,15 @@ pub mod io_ops {
             .as_raw_fd();
         let pid = child.id() as i32;
         std::mem::forget(child);
-        let ctx = nctx.ctx;
-        nctx.return_(if pipe_stderr {
+        if pipe_stderr {
             crate::list!(ctx, ifd, efd, ofd, pid)
         } else {
             crate::list!(ctx, ifd, ofd, pid)
-        })
+        }
     }
 
     #[scheme(name = "%process-wait")]
-    pub fn process_wait(pid: i32) -> i32 {
+    pub fn process_wait(pid: i32) -> Value<'gc> {
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let mut status: i32 = 0;
@@ -1599,7 +1597,7 @@ pub mod io_ops {
             if ret == -1 {
                 let err = std::io::Error::last_os_error();
                 let error = err.to_string();
-                return nctx.raise_io_error(
+                return call.raise_io_error(
                     err,
                     IoOperation::Read,
                     "%process-wait",
@@ -1609,11 +1607,11 @@ pub mod io_ops {
             }
 
             if libc::WIFEXITED(status) {
-                nctx.return_(libc::WEXITSTATUS(status))
+                (libc::WEXITSTATUS(status)).into()
             } else if libc::WIFSIGNALED(status) {
-                nctx.return_(-libc::WTERMSIG(status))
+                (-libc::WTERMSIG(status)).into()
             } else {
-                nctx.return_(-1)
+                (-1).into()
             }
         }
     }
@@ -1622,11 +1620,11 @@ pub mod io_ops {
     #[scheme(name = "make-poller")]
     /// Create a new poller object instance. This can be used
     /// to perform non-blocking I/O operations.
-    pub fn make_poller() -> Gc<'gc, Poller> {
+    pub fn make_poller() -> Value<'gc> {
         let inner = match polling::Poller::new() {
             Ok(poller) => poller,
             Err(err) => {
-                return nctx.raise_io_error(
+                return call.raise_io_error(
                     err,
                     IoOperation::Open,
                     "make-poller",
@@ -1641,7 +1639,7 @@ pub mod io_ops {
             crate::heap::mmtk::AllocationSemantics::Los,
         );
 
-        nctx.return_(poller)
+        (poller).into()
     }
 
     /// Add a file descriptor to the poller with the specified flags.
@@ -1651,7 +1649,7 @@ pub mod io_ops {
     /// - `fd`: The file descriptor to monitor.
     /// - `flags`: The events to monitor (e.g., readable, writable).
     #[scheme(name = "poller-add!")]
-    pub fn poller_add(poller: Gc<'gc, Poller>, key: usize, fd: i32, flags: i32) -> bool {
+    pub fn poller_add(poller: Gc<'gc, Poller>, key: usize, fd: i32, flags: i32) -> Value<'gc> {
         // SAFETY: The raw fd is a valid open file descriptor
         let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
         let readable = (flags & EREADABLE) != 0;
@@ -1667,10 +1665,10 @@ pub mod io_ops {
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             match poller.inner.add(&fd, event) {
-                Ok(()) => nctx.return_(true),
+                Ok(()) => Value::new(true),
                 Err(err) => {
                     let error = err.to_string();
-                    nctx.raise_io_error(
+                    call.raise_io_error(
                         err,
                         IoOperation::Write,
                         "poller-add!",
@@ -1689,7 +1687,7 @@ pub mod io_ops {
         fd: i32,
         flags: i32,
         mode: i32,
-    ) -> bool {
+    ) -> Value<'gc> {
         // SAFETY: The raw fd is a valid open file descriptor
         let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
         let mode = match mode {
@@ -1698,7 +1696,7 @@ pub mod io_ops {
             EEDGE => polling::PollMode::Edge,
             EEDGEONESHOT => polling::PollMode::EdgeOneshot,
             _ => {
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "poller-add/mode!",
                     "invalid mode",
                     Some(mode.into()),
@@ -1730,10 +1728,10 @@ pub mod io_ops {
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             match poller.inner.add_with_mode(&fd, event, mode) {
-                Ok(()) => nctx.return_(true),
+                Ok(()) => Value::new(true),
                 Err(err) => {
                     let error = err.to_string();
-                    nctx.raise_io_error(
+                    call.raise_io_error(
                         err,
                         IoOperation::Write,
                         "poller-add/mode!",
@@ -1746,15 +1744,15 @@ pub mod io_ops {
     }
 
     #[scheme(name = "poller-delete!")]
-    pub fn poller_delete(poller: Gc<'gc, Poller>, fd: i32) -> bool {
+    pub fn poller_delete(poller: Gc<'gc, Poller>, fd: i32) -> Value<'gc> {
         // SAFETY: The raw fd is a valid open file descriptor
         let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
         {
             match poller.inner.delete(fd) {
-                Ok(()) => nctx.return_(true),
+                Ok(()) => Value::new(true),
                 Err(err) => {
                     let error = err.to_string();
-                    nctx.raise_io_error(
+                    call.raise_io_error(
                         err,
                         IoOperation::Write,
                         "poller-delete!",
@@ -1767,7 +1765,7 @@ pub mod io_ops {
     }
 
     #[scheme(name = "poller-modify!")]
-    pub fn poller_modify(poller: Gc<'gc, Poller>, fd: i32, flags: i32) -> bool {
+    pub fn poller_modify(poller: Gc<'gc, Poller>, fd: i32, flags: i32) -> Value<'gc> {
         // SAFETY: The raw fd is a valid open file descriptor
         let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
         let readable = (flags & EREADABLE) != 0;
@@ -1784,10 +1782,10 @@ pub mod io_ops {
 
         {
             match poller.inner.modify(fd, event) {
-                Ok(()) => nctx.return_(true),
+                Ok(()) => Value::new(true),
                 Err(err) => {
                     let error = err.to_string();
-                    nctx.raise_io_error(
+                    call.raise_io_error(
                         err,
                         IoOperation::Write,
                         "poller-modify!",
@@ -1806,7 +1804,7 @@ pub mod io_ops {
         fd: i32,
         flags: i32,
         mode: i32,
-    ) -> bool {
+    ) -> Value<'gc> {
         // SAFETY: The raw fd is a valid open file descriptor
         let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
         let mode = match mode {
@@ -1815,7 +1813,7 @@ pub mod io_ops {
             EEDGE => polling::PollMode::Edge,
             EEDGEONESHOT => polling::PollMode::EdgeOneshot,
             _ => {
-                return nctx.wrong_argument_violation(
+                return call.wrong_argument_violation(
                     "poller-modify/mode!",
                     "invalid mode",
                     Some(mode.into()),
@@ -1841,10 +1839,10 @@ pub mod io_ops {
 
         {
             match poller.inner.modify_with_mode(fd, event, mode) {
-                Ok(()) => nctx.return_(true),
+                Ok(()) => Value::new(true),
                 Err(err) => {
                     let error = err.to_string();
-                    nctx.raise_io_error(
+                    call.raise_io_error(
                         err,
                         IoOperation::Write,
                         "poller-modify/mode!",
@@ -1859,11 +1857,9 @@ pub mod io_ops {
     #[scheme(name = "poller-wait")]
     /// Waits for at least one I/O event and returns a list of events.
     pub fn poller_wait(poller: Gc<'gc, Poller>, timeout: Option<u64>) -> Value<'gc> {
-        let ctx = nctx.ctx;
         let timeout = timeout.map(std::time::Duration::from_micros);
-        // Poller is NonMoving; root for liveness and retk across wait.
+        // Poller is NonMoving, root for liveness across wait.
         let scope = RootScope::new(ctx);
-        let retk = scope.root(nctx.retk);
         let poller_root = scope.root(poller.into());
         let poller_ptr = Gc::as_ptr(poller);
         let wait_outcome = ctx.call_in_native(|| {
@@ -1883,7 +1879,6 @@ pub mod io_ops {
                 collected,
             )
         });
-        nctx.retk = retk.get();
         let _ = poller_root.get();
         drop(scope);
 
@@ -1897,10 +1892,10 @@ pub mod io_ops {
                     ls,
                 );
             }
-            nctx.return_(ls)
+            ls
         } else {
             let err = os_error.unwrap_or(i32::MAX);
-            nctx.raise_error(
+            call.raise_error(
                 "poller-wait",
                 "failed to wait for events",
                 &[err.into_value(ctx)],
@@ -1910,12 +1905,12 @@ pub mod io_ops {
 
     #[scheme(name = "poller-notify")]
     /// Wakes up current or future `poller-wait` invocation.
-    pub fn poller_notify(poller: Gc<'gc, Poller>) -> bool {
+    pub fn poller_notify(poller: Gc<'gc, Poller>) -> Value<'gc> {
         match poller.inner.notify() {
-            Ok(()) => nctx.return_(true),
+            Ok(()) => Value::new(true),
             Err(err) => {
                 let error = err.to_string();
-                nctx.raise_io_error(
+                call.raise_io_error(
                     err,
                     IoOperation::Write,
                     "poller-notify",
@@ -1929,16 +1924,15 @@ pub mod io_ops {
     /// Serialize DATUM with the runtime FASL writer (compression off) to the
     /// file at PATH.
     #[scheme(name = "fasl-write")]
-    pub fn fasl_write(datum: Value<'gc>, path: Gc<'gc, Str<'gc>>) -> bool {
-        let ctx = nctx.ctx;
+    pub fn fasl_write(datum: Value<'gc>, path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
         match std::fs::File::create(path.to_string()) {
             Ok(file) => {
                 let writer = Writer::new(ctx, std::io::BufWriter::new(file));
                 match writer.write(datum) {
-                    Ok(()) => nctx.return_(true),
+                    Ok(()) => Value::new(true),
                     Err(err) => {
                         let error = err.to_string();
-                        nctx.raise_io_error(
+                        call.raise_io_error(
                             err,
                             IoOperation::Write,
                             "fasl-write",
@@ -1950,7 +1944,7 @@ pub mod io_ops {
             }
             Err(err) => {
                 let error = err.to_string();
-                nctx.raise_io_error(err, IoOperation::Open, "fasl-write", &error, path.into())
+                call.raise_io_error(err, IoOperation::Open, "fasl-write", &error, path.into())
             }
         }
     }
@@ -1958,15 +1952,14 @@ pub mod io_ops {
     /// Deserialize one value from the FASL file at PATH.
     #[scheme(name = "fasl-read")]
     pub fn fasl_read(path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
-        let ctx = nctx.ctx;
         match std::fs::File::open(path.to_string()) {
             Ok(file) => {
                 let reader = Reader::new(ctx, std::io::BufReader::new(file));
                 match reader.read() {
-                    Ok(value) => nctx.return_(value),
+                    Ok(value) => value,
                     Err(err) => {
                         let error = err.to_string();
-                        nctx.raise_io_error(
+                        call.raise_io_error(
                             err,
                             IoOperation::Read,
                             "fasl-read",
@@ -1978,7 +1971,7 @@ pub mod io_ops {
             }
             Err(err) => {
                 let error = err.to_string();
-                nctx.raise_io_error(err, IoOperation::Open, "fasl-read", &error, path.into())
+                call.raise_io_error(err, IoOperation::Open, "fasl-read", &error, path.into())
             }
         }
     }
@@ -1986,18 +1979,17 @@ pub mod io_ops {
     /// Serialize DATUM to a bytevector.
     #[scheme(name = "fasl-write->bytevector")]
     pub fn fasl_write_to_bytevector(datum: Value<'gc>) -> Value<'gc> {
-        let ctx = nctx.ctx;
         let mut bytes: Vec<u8> = Vec::new();
         let writer = Writer::new(ctx, &mut bytes);
         match writer.write(datum) {
             Ok(()) => {
                 let bv = ByteVector::new::<false>(ctx, bytes.len(), true);
                 bv.copy_from(bytes.as_slice());
-                nctx.return_(bv.into())
+                bv.into()
             }
             Err(err) => {
                 let error = err.to_string();
-                nctx.raise_io_error(
+                call.raise_io_error(
                     err,
                     IoOperation::Write,
                     "fasl-write->bytevector",
@@ -2012,13 +2004,12 @@ pub mod io_ops {
     #[scheme(name = "fasl-read-bytevector")]
     pub fn fasl_read_bytevector(bv: Gc<'gc, ByteVector>) -> Value<'gc> {
         let bytes = bv.as_slice();
-        let ctx = nctx.ctx;
         let reader = Reader::new(ctx, std::io::Cursor::new(bytes));
         match reader.read() {
-            Ok(value) => nctx.return_(value),
+            Ok(value) => value,
             Err(err) => {
                 let error = err.to_string();
-                nctx.raise_io_error(
+                call.raise_io_error(
                     err,
                     IoOperation::Read,
                     "fasl-read-bytevector",
@@ -2030,7 +2021,7 @@ pub mod io_ops {
     }
 }
 
-pub fn init_io<'gc>(ctx: Context<'gc>) {
+pub fn init_io<'gc>(ctx: MutationContext<'gc>) {
     io_ops::register(ctx);
 
     let module = ctx.module("capy").expect("'capy' module should exist");
@@ -2159,7 +2150,7 @@ unsafe impl ClassTagged for Poller {
     const TYPE_NAME: &'static str = "poller";
 }
 
-// SAFETY: GC trace for `Poller` — all reachable heap fields are visited
+// SAFETY: GC trace for `Poller`, all reachable heap fields are visited
 unsafe impl Trace for Poller {
     // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
@@ -2220,25 +2211,4 @@ fn event_to_flags(ev: polling::Event) -> i32 {
         flags |= EERROR;
     }
     flags
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::runtime::Scheme;
-
-    #[test]
-    fn poller_allocates_with_class_only_header() {
-        Scheme::new_uninit().enter(|ctx| {
-            let poller = Poller {
-                inner: polling::Poller::new().expect("create poller"),
-            };
-            let poller = Gc::new_with_header_word(ctx, poller, poller_header_word());
-
-            assert_eq!(
-                poller.as_gc_object().header().class_id(),
-                ClassId::new(builtin_class_ids::POLLER).unwrap()
-            );
-        });
-    }
 }

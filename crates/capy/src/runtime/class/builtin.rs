@@ -29,7 +29,10 @@ impl BuiltinClassSpec {
         self.category
     }
 
-    pub(crate) fn descriptor<'gc>(self, ctx: crate::runtime::Context<'gc>) -> ClassDescriptor<'gc> {
+    pub(crate) fn descriptor<'gc>(
+        self,
+        ctx: crate::runtime::MutationContext<'gc>,
+    ) -> ClassDescriptor<'gc> {
         let (direct_supers, direct_supers_len) = builtin_direct_supers(self.id);
         let (cpl, cpl_len) = builtin_cpl(self.id);
         ClassDescriptor::with_primitive_layout_hooks(
@@ -159,8 +162,12 @@ pub fn builtin_primitive_layout_hooks(id: ClassId) -> Option<PrimitiveLayoutHook
         builtin_class_ids::CODE_BLOCK => {
             AllocationHooksOf::<'static, crate::runtime::value::CodeBlock<'static>>::HOOKS
         }
-        builtin_class_ids::RELOCATABLE_CODE_BLOCK => {
-            crate::runtime::value::RelocatableCodeBlock::<'static>::HOOKS
+        builtin_class_ids::CODE_BUFFER => crate::runtime::value::CodeBuffer::<'static>::HOOKS,
+        builtin_class_ids::CODE_IMAGE => {
+            AllocationHooksOf::<'static, crate::runtime::value::CodeImage<'static>>::HOOKS
+        }
+        builtin_class_ids::CONTINUATION => {
+            crate::runtime::interp::stack::Continuation::<'static>::HOOKS
         }
         builtin_class_ids::MODULE => {
             AllocationHooksOf::<'static, crate::runtime::modules::Module<'static>>::HOOKS
@@ -293,7 +300,8 @@ builtin_specs! {
     "native-procedure" => builtin_class_ids::NATIVE_PROCEDURE, Builtin;
     "native-continuation" => builtin_class_ids::NATIVE_CONTINUATION, Builtin;
     "code-block" => builtin_class_ids::CODE_BLOCK, Builtin;
-    "relocatable-code-block" => builtin_class_ids::RELOCATABLE_CODE_BLOCK, Builtin;
+    "code-buffer" => builtin_class_ids::CODE_BUFFER, Builtin;
+    "code-image" => builtin_class_ids::CODE_IMAGE, Builtin;
     "module" => builtin_class_ids::MODULE, Builtin;
     "environment" => builtin_class_ids::ENVIRONMENT, Abstract;
     "syntax" => builtin_class_ids::SYNTAX, Builtin;
@@ -308,6 +316,7 @@ builtin_specs! {
     "condition" => builtin_class_ids::CONDITION, Builtin;
     "annotation" => builtin_class_ids::ANNOTATION, Builtin;
     "continuation-marks" => builtin_class_ids::CONTINUATION_MARKS, Builtin;
+    "continuation" => builtin_class_ids::CONTINUATION, Builtin;
     "generic" => builtin_class_ids::GENERIC, Builtin;
     "method" => builtin_class_ids::METHOD, Builtin;
     "next-method" => builtin_class_ids::NEXT_METHOD, Builtin;

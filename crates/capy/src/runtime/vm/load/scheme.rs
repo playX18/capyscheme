@@ -46,13 +46,13 @@ pub(super) mod load_ops {
         let in_vicinity = in_vicinity.map(|path| PathBuf::from(path.as_gc_ref().to_string()));
         let arch = arch.map(|value| value.to_string());
         let result = find_path_to_public(
-            nctx.ctx,
+            ctx,
             filename,
             resolve_relative,
             in_vicinity,
             arch.as_deref(),
         );
-        nctx.return_(result)
+        result
     }
 
     #[scheme(name = "%compile")]
@@ -64,7 +64,6 @@ pub(super) mod load_ops {
         dump_selections: Option<Value<'gc>>,
         preprocessed: Option<bool>,
     ) -> LoadResult<'gc> {
-        let ctx = nctx.ctx;
         let module = resolve_module_value(ctx, m);
         let dump_options = compile_dump_options(ctx, dump_selections);
         let result = compile_expanded_to_destination(
@@ -80,7 +79,7 @@ pub(super) mod load_ops {
             dump_options,
             preprocessed.unwrap_or(false),
         );
-        nctx.return_(result)
+        result
     }
 
     #[scheme(name = "try-load-thunk-in-vicinity")]
@@ -89,12 +88,11 @@ pub(super) mod load_ops {
         resolve_relative: bool,
         in_vicinity: OptionalStringRef<'gc>,
     ) -> LoadResult<'gc> {
-        let ctx = nctx.ctx;
         let filename = PathBuf::from(filename.as_gc_ref().to_string());
         let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_gc_ref().to_string()));
         let result =
             load_thunk_in_vicinity::<false>(ctx, filename, in_vicinity, resolve_relative, None);
-        nctx.return_(result)
+        result
     }
 
     #[scheme(name = "load-thunk-in-vicinity")]
@@ -103,30 +101,29 @@ pub(super) mod load_ops {
         resolve_relative: bool,
         in_vicinity: OptionalStringRef<'gc>,
     ) -> LoadResult<'gc> {
-        let ctx = nctx.ctx;
         let filename = PathBuf::from(filename.as_gc_ref().to_string());
         let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_gc_ref().to_string()));
         let result =
             load_thunk_in_vicinity::<true>(ctx, filename, in_vicinity, resolve_relative, None);
-        nctx.return_(result)
+        result
     }
 
     #[scheme(name = "%bootstrapping?")]
     pub fn scm_bootstrapping() -> LoadResult<'gc> {
         #[cfg(feature = "bootstrap")]
         {
-            nctx.return_(Ok(Value::new(true)))
+            Ok(Value::new(true))
         }
         #[cfg(not(feature = "bootstrap"))]
         {
-            nctx.return_(Ok(Value::new(false)))
+            Ok(Value::new(false))
         }
     }
 
     #[scheme(name = "load-debug-enable!")]
     pub fn load_debug_enable(enabled: bool) -> Value<'gc> {
         set_fasl_debug_entries(enabled);
-        nctx.return_(Value::undefined())
+        Value::undefined()
     }
 
     #[scheme(name = "load-thunk-in-vicinity-k")]
@@ -141,20 +138,14 @@ pub(super) mod load_ops {
     ) -> LoadResult<'gc> {
         let filename = PathBuf::from(filename.as_gc_ref().to_string());
         let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_gc_ref().to_string()));
-        let result = load_thunk_in_vicinity::<false>(
-            nctx.ctx,
-            filename,
-            in_vicinity,
-            resolve_relative,
-            None,
-        );
+        let result =
+            load_thunk_in_vicinity::<false>(ctx, filename, in_vicinity, resolve_relative, None);
 
         match result {
-            Ok(thunk) if thunk.is::<Closure>() => nctx.return_(Ok(thunk)),
+            Ok(thunk) if thunk.is::<Closure>() => Ok(thunk),
             Ok(thunk) => {
                 #[cfg(feature = "bootstrap")]
                 {
-                    let ctx = nctx.ctx;
                     let file = thunk.car().downcast::<Str>().to_string();
                     let file_in = match std::fs::File::open(&file).map_err(|e| {
                         make_io_error(
@@ -170,7 +161,7 @@ pub(super) mod load_ops {
                         )
                     }) {
                         Ok(file_in) => file_in,
-                        Err(err) => return nctx.return_(Err(err)),
+                        Err(err) => return Err(err),
                     };
 
                     let text = match std::io::read_to_string(&file_in).map_err(|e| {
@@ -187,7 +178,7 @@ pub(super) mod load_ops {
                         )
                     }) {
                         Ok(text) => text,
-                        Err(err) => return nctx.return_(Err(err)),
+                        Err(err) => return Err(err),
                     };
                     let src = Str::new(ctx, &file, true);
                     let parser =
@@ -196,19 +187,19 @@ pub(super) mod load_ops {
                         make_lexical_violation(ctx, "compile-file", err.display_with_file(&file))
                     }) {
                         Ok(program) => program,
-                        Err(err) => return nctx.return_(Err(err)),
+                        Err(err) => return Err(err),
                     };
 
-                    let retk = nctx.retk;
-                    let after_call = make_closure_continue_loading_k(ctx, [thunk, retk]);
+                    let after_call =
+                        make_closure_continue_loading_k(ctx, [thunk, Value::current_k()]);
                     let program = Value::list_from_slice(ctx, program);
-                    return nctx.call(k, &[program, env], after_call.into());
+                    call.call_with(k, &[program, env], after_call.into());
+                    return Ok(Value::undefined());
                 }
 
                 #[cfg(not(feature = "bootstrap"))]
                 {
-                    let ctx = nctx.ctx;
-                    nctx.return_(Err(make_io_error(
+                    Err(make_io_error(
                         ctx,
                         "load-thunk-in-vicinity-k",
                         Str::new(
@@ -218,10 +209,10 @@ pub(super) mod load_ops {
                         )
                         .into(),
                         &[],
-                    )))
+                    ))
                 }
             }
-            Err(err) => nctx.return_(Err(err)),
+            Err(err) => Err(err),
         }
     }
 
@@ -229,32 +220,29 @@ pub(super) mod load_ops {
     pub fn search_load_path(filename: StringRef<'gc>, arch: Option<StringRef<'gc>>) -> Value<'gc> {
         let filename = PathBuf::from(filename.as_gc_ref().to_string());
         let arch = arch.map(|value| value.to_string());
-        let result =
-            find_path_to_public(nctx.ctx, filename, true, None::<PathBuf>, arch.as_deref());
+        let result = find_path_to_public(ctx, filename, true, None::<PathBuf>, arch.as_deref());
         match result {
-            Ok(value) => nctx.return_(value),
-            Err(_) => nctx.return_(Value::new(false)),
+            Ok(value) => value,
+            Err(_) => Value::new(false),
         }
     }
 
     #[scheme(name = "stdlib-path")]
     pub fn stdlib_path() -> Value<'gc> {
-        let ctx = nctx.ctx;
-
         let mut load_path = ctx.globals().loc_load_path().get();
         while load_path.is_pair() {
             let base = PathBuf::from(load_path.car().downcast::<Str>().to_string());
             if base.join("boot.scm").is_file() {
-                return nctx.return_(Str::new(ctx, base.to_string_lossy(), true).into());
+                return Str::new(ctx, base.to_string_lossy(), true).into();
             }
             load_path = load_path.cdr();
         }
         let first = ctx.globals().loc_load_path().get();
         if first.is_pair() {
             let base = PathBuf::from(first.car().downcast::<Str>().to_string());
-            return nctx.return_(Str::new(ctx, base.to_string_lossy(), true).into());
+            return Str::new(ctx, base.to_string_lossy(), true).into();
         }
-        nctx.return_(Value::new(false))
+        Value::new(false)
     }
 }
 
@@ -264,10 +252,9 @@ pub(crate) fn continue_loading_k(
     cenv: Value<'gc>,
     _unused: Value<'gc>,
 ) -> LoadResult<'gc> {
-    let rator = nctx.rator().downcast::<Closure>();
+    let rator = call.rator.downcast::<Closure>();
     let source_and_compiled_path = rator[1].get();
     let retk = rator[2].get();
-    nctx.retk = retk;
 
     let compiled_path = source_and_compiled_path
         .list_ref(2)
@@ -275,10 +262,10 @@ pub(crate) fn continue_loading_k(
         .downcast::<Str>()
         .to_string();
     let result = compile_expanded_to_destination(
-        nctx.ctx,
+        ctx,
         ir,
         compiled_path.as_str(),
-        resolve_continuation_module(nctx.ctx, cenv),
+        resolve_continuation_module(ctx, cenv),
         CompilationOptions::default(),
         true,
         DumpArtifactsOptions::default(),
@@ -286,19 +273,23 @@ pub(crate) fn continue_loading_k(
     );
 
     match result {
-        // SAFETY: `retk` is a valid continuation frame on the stack
-        Ok(thunk) => unsafe { nctx.continue_to(retk, &[thunk]) },
-        Err(err) => nctx.return_(Err(err)),
+        // SAFETY: `retk` is the current-continuation token captured by
+        // `load-thunk-in-vicinity-k`, which resumes the caller.
+        Ok(thunk) => {
+            unsafe { call.continue_to(retk, &[thunk]) };
+            Ok(Value::undefined())
+        }
+        Err(err) => Err(err),
     }
 }
 
-fn compile_backtraces_enabled<'gc>(ctx: Context<'gc>) -> bool {
+fn compile_backtraces_enabled<'gc>(ctx: MutationContext<'gc>) -> bool {
     let _ = ctx;
     false
 }
 
 fn resolve_module_value<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     module: Option<Value<'gc>>,
 ) -> Gc<'gc, Module<'gc>> {
     match module {
@@ -308,7 +299,10 @@ fn resolve_module_value<'gc>(
 }
 
 #[allow(dead_code)]
-fn resolve_continuation_module<'gc>(ctx: Context<'gc>, cenv: Value<'gc>) -> Gc<'gc, Module<'gc>> {
+fn resolve_continuation_module<'gc>(
+    ctx: MutationContext<'gc>,
+    cenv: Value<'gc>,
+) -> Gc<'gc, Module<'gc>> {
     if cenv.is::<Module>() {
         cenv.downcast()
     } else {
@@ -317,7 +311,7 @@ fn resolve_continuation_module<'gc>(ctx: Context<'gc>, cenv: Value<'gc>) -> Gc<'
 }
 
 fn compile_expanded_to_destination<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     expanded: Value<'gc>,
     destination: &str,
     module: Gc<'gc, Module<'gc>>,
@@ -345,7 +339,7 @@ fn compile_expanded_to_destination<'gc>(
 }
 
 fn compile_dump_options<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     dump_selections: Option<Value<'gc>>,
 ) -> DumpArtifactsOptions {
     let mut options = if scm_log_level(ctx) >= 5 {
@@ -374,16 +368,13 @@ fn configure_backend_dump_paths(
     if !dump_options.enabled {
         return;
     }
-    if dump_options.dump_cranelift {
-        options.cranelift = Some(resolve_artifact_dump_path(destination, ".clif"));
-    }
-    if dump_options.dump_disassembly {
-        options.disassembly = Some(resolve_artifact_dump_path(destination, ".asm"));
+    if dump_options.dump_bytecode {
+        options.bytecode = Some(resolve_artifact_dump_path(destination, ".bc.txt"));
     }
 }
 
 fn lower_expanded_scheme<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     expanded: Value<'gc>,
     module: Gc<'gc, Module<'gc>>,
     dump_graph: bool,
@@ -402,7 +393,7 @@ fn lower_expanded_scheme<'gc>(
 }
 
 fn load_compiled_library<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     compiled_artifact: &LoadArtifact,
 ) -> LoadResult<'gc> {
     let libs = LIBRARY_COLLECTION.fetch(ctx);
@@ -425,7 +416,7 @@ fn load_compiled_library<'gc>(
 }
 
 fn find_path_to_public<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     filename: PathBuf,
     resolve_relative: bool,
     in_vicinity: Option<PathBuf>,

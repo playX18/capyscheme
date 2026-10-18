@@ -4,7 +4,7 @@ use super::descriptor::ClassDescriptor;
 use super::slot::{SlotAccessError, SlotAccessorDescriptor, SlotInitError};
 use crate::heap::object::{AllocationHooks, GcObject};
 use crate::heap::{Gc, Visitor, WeakProcessor};
-use crate::runtime::Context;
+use crate::runtime::MutationContext;
 use crate::runtime::value::Value;
 
 #[derive(Clone, Copy)]
@@ -73,7 +73,7 @@ impl core::fmt::Debug for PrimitiveLayoutHooks {
 }
 
 pub type PrimitiveAllocateHook = for<'gc> fn(
-    Context<'gc>,
+    MutationContext<'gc>,
     Gc<'gc, ClassDescriptor<'gc>>,
     &[(Value<'gc>, Value<'gc>)],
 ) -> Result<Value<'gc>, SlotInitError<'gc>>;
@@ -86,20 +86,20 @@ pub type PrimitiveCompareHook =
     for<'gc> fn(Gc<'gc, ClassDescriptor<'gc>>, Value<'gc>, Value<'gc>) -> Option<bool>;
 pub type PrimitiveHashHook = for<'gc> fn(Gc<'gc, ClassDescriptor<'gc>>, Value<'gc>) -> u64;
 pub type PrimitiveSlotRefHook = for<'gc> fn(
-    Context<'gc>,
+    MutationContext<'gc>,
     Gc<'gc, ClassDescriptor<'gc>>,
     Value<'gc>,
     SlotAccessorDescriptor<'gc>,
 ) -> Result<Value<'gc>, SlotAccessError>;
 pub type PrimitiveSlotSetHook = for<'gc> fn(
-    Context<'gc>,
+    MutationContext<'gc>,
     Gc<'gc, ClassDescriptor<'gc>>,
     Value<'gc>,
     SlotAccessorDescriptor<'gc>,
     Value<'gc>,
 ) -> Result<(), SlotAccessError>;
 pub type PrimitiveSlotBoundHook = for<'gc> fn(
-    Context<'gc>,
+    MutationContext<'gc>,
     Gc<'gc, ClassDescriptor<'gc>>,
     Value<'gc>,
     SlotAccessorDescriptor<'gc>,

@@ -48,7 +48,7 @@ unsafe impl ClassTagged for Stringbuf {
     const TYPE_NAME: &'static str = "#<stringbuf>";
 }
 
-// SAFETY: GC trace for `Stringbuf` — all reachable heap fields are visited
+// SAFETY: GC trace for `Stringbuf`, all reachable heap fields are visited
 unsafe impl Trace for Stringbuf {
     // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, _visitor: &mut Visitor) {
@@ -626,12 +626,25 @@ impl<'gc> Str<'gc> {
 
     /// Assignment to the character at the given index.
     ///
+    /// Detaches a shared buffer first: a mutable string may share its buffer
+    /// with the string it was sliced from (or the symbol it names) until the
+    /// first write. Returns false without writing when the string itself is
+    /// immutable, callers raise.
+    ///
     /// ## Complexity
     ///
     /// - O(1) if the string is narrow and the character is a valid ASCII character.
     /// - O(n) if the string is ASCII but the character is UTF-8
-    pub fn set(this: Gc<'gc, Self>, mc: impl Into<Mutation<'gc>>, index: usize, value: char) {
+    pub fn set(
+        this: Gc<'gc, Self>,
+        mc: impl Into<Mutation<'gc>>,
+        index: usize,
+        value: char,
+    ) -> bool {
         let mc = mc.into();
+        if !Self::ensure_mutable(this, mc) {
+            return false;
+        }
         if value as u32 > 0xff && this.is_narrow() {
             let new_buf = this.stringbuf.get().wide(mc);
             barrier::field!(Gc::write(mc, this), Self, stringbuf)
@@ -646,6 +659,7 @@ impl<'gc> Str<'gc> {
             this.wide_chars_mut()
                 .expect("string buffer encoding matches branch")[index] = value;
         }
+        true
     }
 
     pub fn contains_char(&self, c: char) -> bool {

@@ -12,7 +12,7 @@ use super::util::{ensure_module, make_pointer_value};
 pub type SniNativeFn =
     unsafe extern "C" fn(env: *mut SniEnv<'static>, argc: i32, argv: *const ScmRef) -> ScmRef;
 
-/// Trampoline: Scheme NativeFn → SniNativeFn stored in free[1] as Pointer.
+/// Trampoline: Scheme NativeFn -> SniNativeFn stored in free[1] as Pointer.
 ///
 /// Scheme code that the callback runs goes through `call_scheme`, which catches
 /// its raises. No raise unwinds this frame. The error is left as the pending

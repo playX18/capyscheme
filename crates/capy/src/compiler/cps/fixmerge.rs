@@ -14,7 +14,6 @@
 use std::collections::HashSet;
 
 use super::graph::{FunctionLink, FunctionLinks, Graph, Parent, Subterm, TermId, TermKind};
-use crate::utils::flags;
 
 /// Merge every adjacent chain of `Fix`/`Letk` terms reachable from `root`
 /// into a single `Fix` group (functions + reified continuations), keeping
@@ -23,12 +22,12 @@ pub fn merge_nested_groups<'gc>(graph: &mut Graph<'gc>, root: Subterm) {
     let mut visited = HashSet::new();
     walk_term(graph, root, &mut visited);
 
-    if flags::share_dump() {
+    if log::log_enabled!(target: crate::heap::logging::SHARE_LOG_TARGET, log::Level::Debug) {
         let mut groups = 0usize;
         let mut merged = 0usize;
         let mut visited2 = HashSet::new();
         dump_groups(graph, root, &mut visited2, &mut groups, &mut merged);
-        log::debug!("fixmerge: {groups} groups after merge, {merged} merged");
+        log::debug!(target: crate::heap::logging::SHARE_LOG_TARGET, "fixmerge: {groups} groups after merge, {merged} merged");
     }
 }
 

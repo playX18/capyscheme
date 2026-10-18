@@ -10,15 +10,15 @@ typedef struct {
 typedef void (*capy_scheme_entry_fn)(void *data);
 
 /*
- * Install `env` as the setjmp target, call `entry(data)`, and return after a
- * matching longjmp. From Rust's perspective this function returns only once
- * (after longjmp); the returns-twice behavior of setjmp stays inside C.
+ * Install `env` as the setjmp target and call `entry(data)`. Returns 0 when
+ * `entry` returns, and 1 when a matching longjmp cut it short. From Rust's
+ * perspective this function returns once; the returns-twice behavior of
+ * setjmp stays inside C.
  */
 int capy_with_setjmp(capy_jmp_buf *env, capy_scheme_entry_fn entry, void *data) {
     if (setjmp(*(jmp_buf *)env) == 0) {
         entry(data);
-        /* Scheme entry must exit via longjmp. */
-        abort();
+        return 0;
     }
     return 1;
 }

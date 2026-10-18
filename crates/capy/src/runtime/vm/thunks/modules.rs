@@ -1,17 +1,21 @@
 use crate::runtime::vm::exceptions::make_undefined_violation as undefined_violation;
 use crate::runtime::vm::thunk_raise;
 use crate::runtime::{
-    Context,
+    MutationContext,
     modules::{Module, Variable},
     value::{Symbol, Value},
     vm::debug::print_stacktraces_impl,
 };
 
-pub fn make_variable<'gc>(ctx: Context<'gc>, value: Value<'gc>) -> Value<'gc> {
+pub fn make_variable<'gc>(ctx: MutationContext<'gc>, value: Value<'gc>) -> Value<'gc> {
     Variable::new(ctx, value).into()
 }
 
-pub fn lookup_bound<'gc>(ctx: Context<'gc>, module: Value<'gc>, name: Value<'gc>) -> Value<'gc> {
+pub fn lookup_bound<'gc>(
+    ctx: MutationContext<'gc>,
+    module: Value<'gc>,
+    name: Value<'gc>,
+) -> Value<'gc> {
     assert!(name.is::<Symbol>());
     if !module.is::<Module>() {
         unreachable!("lookup-bound: not a module: {}", module);
@@ -43,7 +47,7 @@ pub fn lookup_bound<'gc>(ctx: Context<'gc>, module: Value<'gc>, name: Value<'gc>
     variable.into()
 }
 
-pub fn lookup<'gc>(ctx: Context<'gc>, module: Value<'gc>, name: Value<'gc>) -> Value<'gc> {
+pub fn lookup<'gc>(ctx: MutationContext<'gc>, module: Value<'gc>, name: Value<'gc>) -> Value<'gc> {
     let mut module = module;
     if module == Value::new(false) {
         module = crate::runtime::modules::current_module(ctx).get(ctx);
@@ -52,8 +56,8 @@ pub fn lookup<'gc>(ctx: Context<'gc>, module: Value<'gc>, name: Value<'gc>) -> V
     let variable = module.downcast::<Module>().variable(ctx, name);
 
     let Some(var) = variable else {
-        // SAFETY: Return address slot is valid — set up by the native calling convention
-        let ret = unsafe { crate::runtime::vm::thunks::helpers::llvm_return_address() };
+        // SAFETY: Return address slot is valid, set up by the native calling convention
+        let _ret = unsafe { crate::runtime::vm::thunks::helpers::llvm_return_address() };
 
         thunk_raise(
             ctx,
@@ -65,7 +69,7 @@ pub fn lookup<'gc>(ctx: Context<'gc>, module: Value<'gc>, name: Value<'gc>) -> V
 }
 
 pub fn lookup_bound_public<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     module: Value<'gc>,
     name: Value<'gc>,
 ) -> Value<'gc> {
@@ -90,7 +94,7 @@ pub fn lookup_bound_public<'gc>(
 }
 
 pub fn lookup_bound_private<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     module: Value<'gc>,
     name: Value<'gc>,
 ) -> Value<'gc> {
@@ -114,7 +118,7 @@ pub fn lookup_bound_private<'gc>(
     var.into()
 }
 
-pub fn define<'gc>(ctx: Context<'gc>, name: Value<'gc>, value: Value<'gc>) -> Value<'gc> {
+pub fn define<'gc>(ctx: MutationContext<'gc>, name: Value<'gc>, value: Value<'gc>) -> Value<'gc> {
     let module = crate::runtime::modules::current_module(ctx)
         .get(ctx)
         .downcast::<Module>();
@@ -124,7 +128,7 @@ pub fn define<'gc>(ctx: Context<'gc>, name: Value<'gc>, value: Value<'gc>) -> Va
     Value::undefined()
 }
 
-pub fn current_module<'gc>(ctx: Context<'gc>) -> Value<'gc> {
+pub fn current_module<'gc>(ctx: MutationContext<'gc>) -> Value<'gc> {
     let module = crate::runtime::modules::current_module(ctx).get(ctx);
     if !module.is::<Module>() {
         print_stacktraces_impl(ctx);
@@ -133,9 +137,9 @@ pub fn current_module<'gc>(ctx: Context<'gc>) -> Value<'gc> {
     module
 }
 
-pub fn set_current_module<'gc>(ctx: Context<'gc>, module: Value<'gc>) -> Value<'gc> {
+pub fn set_current_module<'gc>(ctx: MutationContext<'gc>, module: Value<'gc>) -> Value<'gc> {
     if !module.is::<Module>() {
-        // SAFETY: Return address slot is valid — set up by the native calling convention
+        // SAFETY: Return address slot is valid, set up by the native calling convention
         let ret = unsafe { crate::runtime::vm::thunks::helpers::llvm_return_address() };
         backtrace::resolve(ret as _, |sym| {
             log::trace!("set-current-module: {module} ");
@@ -150,7 +154,7 @@ pub fn set_current_module<'gc>(ctx: Context<'gc>, module: Value<'gc>) -> Value<'
 }
 
 pub fn module_ensure_local_variable<'gc>(
-    ctx: Context<'gc>,
+    ctx: MutationContext<'gc>,
     module: Value<'gc>,
     name: Value<'gc>,
 ) -> Value<'gc> {

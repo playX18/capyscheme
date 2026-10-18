@@ -172,7 +172,7 @@ pub fn optimize_graph_func_to_ssa<'gc>(
     let stages = super::analysis::StageAnalysis::new(&program.graph, &graph_reify);
     // Flow analysis (call web, closure classes, escape).
     let flow = super::flow::FlowAnalysis::new(&program.graph, &graph_reify);
-    if flags::share_dump() {
+    if log::log_enabled!(target: crate::heap::logging::SHARE_LOG_TARGET, log::Level::Debug) {
         let recursive = super::analysis::recursive_functions(&program.graph, &graph_reify);
         let escaping = graph_reify
             .functions
@@ -181,6 +181,7 @@ pub fn optimize_graph_func_to_ssa<'gc>(
             .count();
         let classes = flow.classes().len();
         log::debug!(
+            target: crate::heap::logging::SHARE_LOG_TARGET,
             "share: {} functions, {} recursive, {} escaping, {} closure classes",
             graph_reify.functions.len(),
             recursive.len(),
@@ -199,7 +200,7 @@ pub fn optimize_graph_func_to_ssa<'gc>(
     if share_profile.is_enabled() {
         share_profile.field("shared_sites", share.sites().count());
     }
-    if flags::share_dump() {
+    if log::log_enabled!(target: crate::heap::logging::SHARE_LOG_TARGET, log::Level::Debug) {
         for (site, decision) in share.sites() {
             let kinds: Vec<&str> = decision
                 .members
@@ -213,6 +214,7 @@ pub fn optimize_graph_func_to_ssa<'gc>(
                 })
                 .collect();
             log::trace!(
+                target: crate::heap::logging::SHARE_LOG_TARGET,
                 "share: site {site:?} allocate={} record_vars={} members={} kinds=[{}]",
                 decision.allocate,
                 decision.record_vars.len(),
@@ -2377,8 +2379,8 @@ fn emit_contification_dump(index: usize, phase: &str, dump: &str) {
     else {
         // Directory unusable: keep the dump visible through the log.
         crate::heap::logging::ensure_max_level(log::LevelFilter::Info);
-        log::warn!("contify {phase}: dump directory unusable, emitting inline");
-        log::info!("{dump}");
+        log::warn!(target: crate::heap::logging::DUMP_LOG_TARGET, "contify {phase}: dump directory unusable, emitting inline");
+        log::info!(target: crate::heap::logging::DUMP_LOG_TARGET, "{dump}");
         return;
     };
     dump::GCPS_CONTIFY.write_at(&format!("contify {phase}"), &path, dump);

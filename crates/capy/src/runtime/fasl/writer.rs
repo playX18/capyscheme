@@ -9,7 +9,7 @@ use im::HashSet;
 use crate::heap::mmtk::util::Address;
 
 use crate::runtime::{
-    Context,
+    MutationContext,
     value::{
         BigInt, ByteVector, Complex, HashTable, HashTableType, IntoValue, Keyword, Rational, Str,
         Symbol, Tuple, Value, Vector,
@@ -18,13 +18,12 @@ use crate::runtime::{
 };
 
 use super::{
-    CodeSourceLocation, CodeSpec, FASL_COMPRESSION_GZIP, FASL_COMPRESSION_NONE, FASL_MAGIC,
-    FASL_TAG_BEGIN, FASL_TAG_BIGINT, FASL_TAG_BVECTOR, FASL_TAG_CHAR, FASL_TAG_CLOSURE,
-    FASL_TAG_COMPLEX, FASL_TAG_DLIST, FASL_TAG_ENTRY, FASL_TAG_F, FASL_TAG_FIXNUM, FASL_TAG_FLONUM,
-    FASL_TAG_GRAPH, FASL_TAG_GRAPH_DEF, FASL_TAG_IMMEDIATE, FASL_TAG_KEYWORD, FASL_TAG_LOOKUP,
-    FASL_TAG_NIL, FASL_TAG_PLIST, FASL_TAG_RATIONAL, FASL_TAG_REF, FASL_TAG_REF_INIT, FASL_TAG_STR,
-    FASL_TAG_SYMBOL, FASL_TAG_SYNTAX, FASL_TAG_T, FASL_TAG_TUPLE, FASL_TAG_UNINTERNED_SYMBOL,
-    FASL_TAG_UNLINKED_CODEBLOCK, FASL_TAG_VECTOR, FASL_VERSION, ProgramSpec, checked_u32_len,
+    ConstSpec, FASL_COMPRESSION_GZIP, FASL_COMPRESSION_NONE, FASL_MAGIC, FASL_TAG_BIGINT,
+    FASL_TAG_BVECTOR, FASL_TAG_CHAR, FASL_TAG_COMPLEX, FASL_TAG_DLIST, FASL_TAG_F, FASL_TAG_FIXNUM,
+    FASL_TAG_FLONUM, FASL_TAG_IMMEDIATE, FASL_TAG_KEYWORD, FASL_TAG_LOOKUP, FASL_TAG_NIL,
+    FASL_TAG_PLIST, FASL_TAG_PROGRAM, FASL_TAG_RATIONAL, FASL_TAG_REF, FASL_TAG_REF_INIT,
+    FASL_TAG_STR, FASL_TAG_SYMBOL, FASL_TAG_SYNTAX, FASL_TAG_T, FASL_TAG_TUPLE,
+    FASL_TAG_UNINTERNED_SYMBOL, FASL_TAG_VECTOR, FASL_VERSION, ProgramSpec, checked_u32_len,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -49,7 +48,7 @@ pub enum Image<'a, 'gc> {
 }
 
 pub struct Writer<'gc, W: Write> {
-    pub ctx: Context<'gc>,
+    pub ctx: MutationContext<'gc>,
     pub writer: BufWriter<W>,
     pub lites: crate::heap::Gc<'gc, HashTable<'gc>>,
     pub stack: Vec<Value<'gc>>,
@@ -413,11 +412,16 @@ impl<'gc, W: Write> Writer<'gc, W> {
     }
 
     fn scan_program(&mut self, spec: &ProgramSpec<'_, 'gc>) -> io::Result<()> {
-        for value in spec.values {
-            self.scan(value.value)?;
-        }
         for code in spec.code_blocks {
-            self.scan(code.code.metadata)?;
+            self.scan(code.metadata)?;
+            for constant in code.constants {
+                if let ConstSpec::Value(value) = constant {
+                    self.scan(*value)?;
+                }
+            }
+            for span in code.spans {
+                self.scan(*span)?;
+            }
         }
         Ok(())
     }
@@ -430,24 +434,69 @@ impl<'gc, W: Write> Writer<'gc, W> {
     }
 
     fn put_program(&mut self, spec: &ProgramSpec<'_, 'gc>) -> io::Result<()> {
-        self.put8(FASL_TAG_GRAPH)?;
-        self.put32(spec.graph_len)?;
-        self.put32(0)?;
-        let item_count = checked_u32_len(spec.values.len() + spec.code_blocks.len() + 1)?;
-        self.put8(FASL_TAG_BEGIN)?;
-        self.put32(item_count)?;
-        for value in spec.values {
-            self.put8(FASL_TAG_GRAPH_DEF)?;
-            self.put32(value.index)?;
-            self.put(value.value)?;
-        }
+        self.put8(FASL_TAG_PROGRAM)?;
+        self.put64(crate::bytecode::def::format_hash())?;
+        self.put32(checked_u32_len(spec.code_blocks.len())?)?;
         for code in spec.code_blocks {
-            self.put8(FASL_TAG_GRAPH_DEF)?;
-            self.put32(code.index)?;
-            self.put_code_block(&code.code)?;
+            self.put32(code.arity as u32)?;
+            self.put32(code.frame_size)?;
+            self.put(code.metadata)?;
+            self.put32(checked_u32_len(code.code.len())?)?;
+            self.put_many(code.code)?;
+            self.put32(checked_u32_len(code.pool.len())?)?;
+            for word in code.pool {
+                self.put32(*word)?;
+            }
+            self.put32(checked_u32_len(code.metadata_counts.len())?)?;
+            for count in code.metadata_counts {
+                self.put32(*count)?;
+            }
+            self.put32(checked_u32_len(code.constants.len())?)?;
+            for constant in code.constants {
+                match constant {
+                    ConstSpec::Value(value) => {
+                        self.put8(0)?;
+                        self.put(*value)?;
+                    }
+                    ConstSpec::Code(index) => {
+                        self.put8(1)?;
+                        self.put32(*index)?;
+                    }
+                    ConstSpec::Cell(id) => {
+                        self.put8(2)?;
+                        self.put32(*id)?;
+                    }
+                }
+            }
+            self.put32(checked_u32_len(code.spans.len())?)?;
+            for span in code.spans {
+                self.put(*span)?;
+            }
+            self.put32(checked_u32_len(code.srcmap.len())?)?;
+            let mut prev_start = 0u32;
+            for run in code.srcmap {
+                self.put_uleb128(run.start.wrapping_sub(prev_start))?;
+                self.put_uleb128(run.len)?;
+                self.put8(run.flags)?;
+                self.put_uleb128(run.span)?;
+                prev_start = run.start;
+            }
         }
-        self.put_entry_closure(spec.entry_code_index, spec.entry_is_cont)?;
-        Ok(())
+        self.put32(spec.entry)
+    }
+
+    fn put_uleb128(&mut self, mut value: u32) -> io::Result<()> {
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            self.put8(byte)?;
+            if value == 0 {
+                return Ok(());
+            }
+        }
     }
 
     fn payload_writer<'a>(&self, writer: &'a mut Vec<u8>) -> Writer<'gc, &'a mut Vec<u8>> {
@@ -478,51 +527,7 @@ impl<'gc, W: Write> Writer<'gc, W> {
         }
     }
 
-    fn put_entry_closure(&mut self, entry_code_index: u32, is_cont: bool) -> io::Result<()> {
-        self.put8(FASL_TAG_CLOSURE)?;
-        self.put8(FASL_TAG_ENTRY)?;
-        self.put32(entry_code_index)?;
-        self.put32(0)?;
-        self.put8(u8::from(is_cont))
-    }
-
-    fn put_code_block(&mut self, spec: &CodeSpec<'_, 'gc>) -> io::Result<()> {
-        self.put8(FASL_TAG_UNLINKED_CODEBLOCK)?;
-        self.put32(checked_u32_len(spec.bytes.len())?)?;
-        self.put_many(spec.bytes)?;
-        self.put32(spec.entry_offset)?;
-        self.put32(spec.arity as u32)?;
-        self.put8(u8::from(spec.is_cont))?;
-        self.put(spec.metadata)?;
-        self.put32(checked_u32_len(spec.relocations.len())?)?;
-        for relocation in spec.relocations {
-            relocation.encode(&mut self.writer)?;
-        }
-        self.put_source_map(spec.source_map)?;
-        Ok(())
-    }
-
-    fn put_source_map(&mut self, source_map: &[super::CodeSourceMapEntry]) -> io::Result<()> {
-        self.put32(checked_u32_len(source_map.len())?)?;
-        for entry in source_map {
-            self.put32(entry.start)?;
-            self.put32(entry.end)?;
-            self.put_source_location(&entry.source)?;
-        }
-        Ok(())
-    }
-
-    fn put_source_location(&mut self, source: &CodeSourceLocation) -> io::Result<()> {
-        let file = source.file.as_bytes();
-        self.put32(checked_u32_len(file.len())?)?;
-        self.put_many(file)?;
-        self.put32(source.line)?;
-        self.put32(source.column)?;
-        self.put32(source.end_line.unwrap_or(0))?;
-        self.put32(source.end_column.unwrap_or(0))
-    }
-
-    pub fn new(ctx: Context<'gc>, writer: W) -> Self {
+    pub fn new(ctx: MutationContext<'gc>, writer: W) -> Self {
         Self {
             ctx,
             writer: BufWriter::new(writer),
