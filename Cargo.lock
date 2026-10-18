@@ -1441,7 +1441,6 @@ dependencies = [
  "delegate",
  "downcast-rs",
  "enum-map",
- "env_logger",
  "is-terminal",
  "itertools",
  "lazy_static",

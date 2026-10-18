@@ -1339,10 +1339,23 @@ pub mod module_ops {
         let unique_id = m
             .next_unique_id
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let sym = format!("{}-{}-{}", id, m.name.get().hash_equal(), unique_id);
+        let name_hash = {
+            use std::hash::{Hash, Hasher};
+            // Content-based: `hash_equal` falls back to per-object hash codes
+            // for symbols, which differ between processes.
+            let mut hasher = simplehash::CityHasher64::new();
+            crate::runtime::value::EqualHash(m.name.get()).hash(&mut hasher);
+            hasher.finish()
+        };
+        let sym = format!("{}-{}-{}", id, name_hash, unique_id);
+        // The name must be reproducible across compiler processes: macros
+        // exported from one compiled library embed these names (e.g. the
+        // `core` procedure behind a keyword `define`), and importers compiled
+        // in another process must refer to the same names. The module hash and
+        // per-module id are already unique, so no process-global counter is
+        // mixed in.
         let str = Str::new(ctx, sym, true);
-        let sym = Symbol::gensym(ctx, Some(str));
-        sym.into()
+        Symbol::from_string(ctx, str).into()
     }
 
     #[scheme(name = "module-generate-unique-id!")]

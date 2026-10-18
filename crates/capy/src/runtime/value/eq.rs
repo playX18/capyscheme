@@ -226,6 +226,23 @@ impl<'gc> Value<'gc> {
                 hasher.write_u8(0x1);
                 v[i].get().hash_equal_(hasher);
             }
+        } else if self.is::<Symbol>() {
+            self.downcast::<Symbol>().hash(hasher);
+        } else if self.is::<Str>() {
+            self.downcast::<Str>().hash(hasher);
+        } else if self.is::<ByteVector>() {
+            (**self.downcast::<ByteVector>()).hash(hasher);
+        } else if self.is::<Syntax>() {
+            // `equal?` also compares wraps, modules and sources; hashing only
+            // the expression stays consistent with it and avoids identity.
+            hasher.write_u8(0x3);
+            self.downcast::<Syntax>().expr.hash_equal_(hasher);
+        } else if self.is::<Keyword>() {
+            // Hash by name: object hash codes depend on allocation history,
+            // which makes derived names (e.g. psyntax's `fresh-derived-name`)
+            // differ between compiler processes.
+            hasher.write_u8(0x2);
+            hasher.write_u64(self.downcast::<Keyword>().symbol.hash.get());
         } else {
             <Self as std::hash::Hash>::hash(&self, hasher);
         }
