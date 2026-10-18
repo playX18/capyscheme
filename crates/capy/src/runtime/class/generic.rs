@@ -7,8 +7,8 @@ use super::descriptor::ClassDescriptor;
 use super::instance::SchemeInstance;
 use super::table::class_table;
 use crate::heap::alloc::{Array, ArrayRef};
+use crate::heap::cell::FILL_RETRIES;
 use crate::heap::cell::Lock;
-use crate::heap::cell::{FILL_RETRIES, cas_cache, swap_cache};
 use crate::heap::object::{ClassId, builtin_class_ids, class_header_word};
 use crate::heap::{Gc, Trace};
 use crate::prelude::*;
@@ -755,6 +755,14 @@ impl<'gc> GenericDescriptor<'gc> {
         self.epoch_atomic().load(Ordering::Acquire)
     }
 
+    /// Whether a filler that read `epoch` may still publish: no cache clear
+    /// ran since, and none was mid-change when it read (an odd epoch marks a
+    /// method change between [`Self::begin_change`] and its closing clear).
+    #[inline]
+    fn epoch_is_current(&self, epoch: u32) -> bool {
+        epoch & 1 == 0 && self.epoch() == epoch
+    }
+
     #[inline]
     fn epoch_atomic(&self) -> &AtomicU32 {
         // SAFETY: `Lock<u32>` is `repr(transparent)` over `Cell<u32>`, which has
@@ -847,6 +855,7 @@ impl<'gc> GenericDescriptor<'gc> {
             !generic.flags().sealed(),
             "sealed generic cannot accept methods"
         );
+        Self::begin_change(ctx, generic);
         if let Some(method) = generic.find_method(specializers, required_arg_count) {
             MethodDescriptor::set_body(ctx, method, body);
             MethodDescriptor::set_flags(ctx, method, flags);
@@ -1133,10 +1142,10 @@ impl<'gc> GenericDescriptor<'gc> {
             return;
         }
         for _ in 0..=FILL_RETRIES {
-            if generic.epoch() != epoch {
+            let current = generic.slot_cache.load(Ordering::Acquire);
+            if !generic.epoch_is_current(epoch) {
                 return;
             }
-            let current = generic.slot_cache.get();
             if current.len() >= 8 || current.iter().any(|e| e.class_id == hit.class_id) {
                 return;
             }
@@ -1153,7 +1162,11 @@ impl<'gc> GenericDescriptor<'gc> {
                 }
             });
             let owner = Gc::write(ctx, generic);
-            if cas_cache(&generic.slot_cache, current, appended) {
+            if generic
+                .slot_cache
+                .compare_exchange(current, appended, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
                 let _ = owner;
                 // Fired between registering and publishing: the sweep may
                 // have missed this entry.
@@ -1277,10 +1290,11 @@ impl<'gc> GenericDescriptor<'gc> {
         );
         let rest = ids.get(2..).unwrap_or(&[]);
         for _ in 0..=FILL_RETRIES {
-            if generic.epoch() != epoch {
+            // Load before validating the epoch (see `begin_change`).
+            let current = generic.dispatch_table.load(Ordering::Acquire);
+            if !generic.epoch_is_current(epoch) {
                 return;
             }
-            let current = generic.dispatch_table.get();
             if Self::probe(current, key, rest).is_some() {
                 return;
             }
@@ -1322,7 +1336,11 @@ impl<'gc> GenericDescriptor<'gc> {
             }
             let table = Array::from_slice(ctx, &buckets);
             let owner = Gc::write(ctx, generic);
-            if cas_cache(&generic.dispatch_table, current, table) {
+            if generic
+                .dispatch_table
+                .compare_exchange(current, table, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
                 let _ = owner;
                 return;
             }
@@ -1335,12 +1353,33 @@ impl<'gc> GenericDescriptor<'gc> {
     ) {
         // Bump first: a filler that read the old epoch is refused from here
         // on, and one that already passed its check loses the CAS below
-        // because the array it expected has been swapped out.
+        // because the array it expected has been swapped out (fillers load
+        // that array before checking the epoch). After `begin_change` the
+        // epoch is odd and this closes the change (+1); otherwise it steps
+        // over an even epoch (+2), keeping it even.
+        let step = if generic.epoch() & 1 == 1 { 1 } else { 2 };
+        generic.epoch_atomic().fetch_add(step, Ordering::AcqRel);
+        Self::wipe_caches(ctx, generic);
+    }
+
+    /// Open a method change: the epoch turns odd, which refuses every filler,
+    /// and the caches are emptied *before* the method set or a body is
+    /// touched. A filler that read an even epoch then either published
+    /// before this wipe (and is wiped) or loses its CAS.
+    fn begin_change(ctx: MutationContext<'gc>, generic: Gc<'gc, GenericDescriptor<'gc>>) {
         generic.epoch_atomic().fetch_add(1, Ordering::AcqRel);
+        Self::wipe_caches(ctx, generic);
+    }
+
+    fn wipe_caches(ctx: MutationContext<'gc>, generic: Gc<'gc, GenericDescriptor<'gc>>) {
         let owner = Gc::write(ctx, generic);
         let _ = owner;
-        swap_cache(&generic.dispatch_table, empty_dispatch_table(ctx));
-        swap_cache(&generic.slot_cache, empty_slot_cache(ctx));
+        generic
+            .dispatch_table
+            .atomic_swap(empty_dispatch_table(ctx), Ordering::Release);
+        generic
+            .slot_cache
+            .atomic_swap(empty_slot_cache(ctx), Ordering::Release);
         Self::clear_method_cache(ctx, generic);
     }
 
@@ -1353,13 +1392,17 @@ impl<'gc> GenericDescriptor<'gc> {
     ) {
         let owner = Gc::write(ctx, generic);
         let _ = owner;
-        swap_cache(&generic.slot_cache, empty_slot_cache(ctx));
+        generic
+            .slot_cache
+            .atomic_swap(empty_slot_cache(ctx), Ordering::Release);
     }
 
     fn clear_method_cache(ctx: MutationContext<'gc>, generic: Gc<'gc, GenericDescriptor<'gc>>) {
         let owner = Gc::write(ctx, generic);
         let _ = owner;
-        swap_cache(&generic.method_cache, empty_method_cache(ctx));
+        generic
+            .method_cache
+            .atomic_swap(empty_method_cache(ctx), Ordering::Release);
     }
 
     /// After a dispatch to a `NO_NEXT` closure method, remember it for
@@ -1382,10 +1425,10 @@ impl<'gc> GenericDescriptor<'gc> {
         let class_of = |v: Value<'gc>| v.as_cell_raw().class_id().bits();
         let (class0, class1) = (class_of(args[0]), args.get(1).map_or(0, |a| class_of(*a)));
         for _ in 0..=FILL_RETRIES {
-            if generic.epoch() != epoch {
+            let current = generic.method_cache.load(Ordering::Acquire);
+            if !generic.epoch_is_current(epoch) {
                 return;
             }
-            let current = generic.method_cache.get();
             if current.len() >= 8
                 || current.iter().any(|e| {
                     e.argc as usize == args.len() && e.class0 == class0 && e.class1 == class1
@@ -1407,7 +1450,11 @@ impl<'gc> GenericDescriptor<'gc> {
                 }
             });
             let owner = Gc::write(ctx, generic);
-            if cas_cache(&generic.method_cache, current, appended) {
+            if generic
+                .method_cache
+                .compare_exchange(current, appended, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
                 let _ = owner;
                 return;
             }

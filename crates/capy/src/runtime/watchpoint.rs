@@ -35,7 +35,7 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use crate::heap::alloc::{Array, ArrayRef};
-use crate::heap::cell::{FILL_RETRIES, Lock, cas_cache};
+use crate::heap::cell::{FILL_RETRIES, Lock};
 use crate::heap::weak::Weak;
 use crate::heap::{Gc, Trace};
 use crate::runtime::MutationContext;
@@ -232,7 +232,11 @@ impl<'gc> WatchpointSet<'gc> {
             });
             let owner = Gc::write(ctx, this);
             let _ = owner;
-            if cas_cache(&this.dependents, current, appended) {
+            if this
+                .dependents
+                .compare_exchange(current, appended, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
                 // Fire reads the dependents after setting the state, so a
                 // set invalidated before this check may have missed us.
                 let _ = this.state_atomic().compare_exchange(

@@ -4,7 +4,6 @@ use bytemuck::NoUninit;
 use super::barrier::*;
 use crate::heap::Gc;
 use crate::heap::Mutation;
-use crate::heap::alloc::ArrayRef;
 use crate::heap::collection::Visitor;
 use crate::heap::traits::Trace;
 use std::cell::*;
@@ -115,6 +114,56 @@ make_lock_wrapper!(
         #[inline]
         pub fn get(&self) -> T where T: Copy {
             self.cell.get()
+        }
+
+        /// Atomically load a pointer-sized value with `order`.
+        #[inline]
+        pub fn load(&self, order: Ordering) -> T where T: Copy {
+            const { assert!(size_of::<T>() == size_of::<usize>()) };
+            // SAFETY: `Lock<T>` is `repr(transparent)` over `Cell<T>`, so the
+            // field is one pointer-sized word; its other writers are atomic.
+            // The word read is a bit copy of a `T` stored there, and `T: Copy`.
+            unsafe {
+                let word = (*(self.as_ptr() as *const AtomicUsize)).load(order);
+                std::ptr::read(&word as *const usize as *const T)
+            }
+        }
+
+        /// Atomically replace the value with `new` if it is bit-for-bit
+        /// `current`. Returns the previous value in both cases (`Ok` on a
+        /// swap), like [`AtomicUsize::compare_exchange`]. Same restrictions as
+        /// [`Self::load`]. The caller owns the write barrier.
+        #[inline]
+        pub fn compare_exchange(
+            &self,
+            current: T,
+            new: T,
+            success: Ordering,
+            failure: Ordering,
+        ) -> Result<T, T> where T: Copy {
+            const { assert!(size_of::<T>() == size_of::<usize>()) };
+            // SAFETY: as in `load`; `T` values are bit-copied to and from a word.
+            unsafe {
+                let word = |value: &T| std::ptr::read(value as *const T as *const usize);
+                let from = |word: usize| std::ptr::read(&word as *const usize as *const T);
+                (*(self.as_ptr() as *const AtomicUsize))
+                    .compare_exchange(word(&current), word(&new), success, failure)
+                    .map(from)
+                    .map_err(from)
+            }
+        }
+
+        /// Atomically store `new` and return the previous value. Same
+        /// restrictions as [`Self::load`]. The caller owns the write barrier.
+        #[inline]
+        pub fn atomic_swap(&self, new: T, order: Ordering) -> T where T: Copy {
+            const { assert!(size_of::<T>() == size_of::<usize>()) };
+            // SAFETY: as in `load`.
+            unsafe {
+                let word = std::ptr::read(&new as *const T as *const usize);
+                let old = (*(self.as_ptr() as *const AtomicUsize)).swap(word, order);
+                std::ptr::read(&old as *const usize as *const T)
+            }
         }
 
         #[inline]
@@ -354,34 +403,6 @@ unsafe impl<T: NoUninit + Trace> Trace for AtomicLock<T> {
             value.process_weak_refs(weak_processor);
         }
     }
-}
-
-/// Compare-and-swap a cache array pointer.
-#[inline]
-pub(crate) fn cas_cache<'gc, T: Trace>(
-    field: &Lock<ArrayRef<'gc, T>>,
-    expected: ArrayRef<'gc, T>,
-    new: ArrayRef<'gc, T>,
-) -> bool {
-    const _: () = assert!(size_of::<Lock<ArrayRef<'static, u8>>>() == size_of::<usize>());
-    // SAFETY: `Lock<Gc<_>>` is a single pointer-sized word; all writers of
-    // cache fields go through this function or the clear path's atomic swap.
-    let atomic = unsafe { &*(field.as_ptr() as *const AtomicUsize) };
-    atomic
-        .compare_exchange(
-            expected.as_ptr() as usize,
-            new.as_ptr() as usize,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_ok()
-}
-
-#[inline]
-pub(crate) fn swap_cache<'gc, T: Trace>(field: &Lock<ArrayRef<'gc, T>>, new: ArrayRef<'gc, T>) {
-    // SAFETY: as in `cas_cache`.
-    let atomic = unsafe { &*(field.as_ptr() as *const AtomicUsize) };
-    atomic.store(new.as_ptr() as usize, Ordering::Release);
 }
 
 /// How many times a fill retries after losing a publish race.
