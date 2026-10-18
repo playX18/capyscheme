@@ -54,7 +54,7 @@ pub unsafe extern "C" fn sni_eval_string(
             crate::runtime::vm::ExecutionResult::Err(_) => return SCM_REF_NULL,
         }
     }
-    // Soft fallback: intern as string so embeds can still smoke-test the API.
+    // Soft fallback: intern as string so embeds can still exercise the API.
     let s = e.ctx.str(src);
     e.make_local(s)
 }

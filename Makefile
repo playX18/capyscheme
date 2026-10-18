@@ -655,7 +655,10 @@ install-portable: build build-runtime-portable
 
 # Produces a portable tar.gz archive without installing.
 # Mirrors install-portable.
-dist-portable: build build-runtime-portable
+dist-portable: build
+	# Must run after `build`, not alongside it under `make -j`: both write
+	# the same libcapy with different features, and stage-0 needs bootstrap.
+	$(MAKE) build-runtime-portable
 	set -euxo pipefail; \
 	outdir=$${OUTDIR:-dist}; \
 	stagedir=$${STAGEDIR:-stage-dist}; \
