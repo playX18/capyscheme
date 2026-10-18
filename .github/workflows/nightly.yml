@@ -61,6 +61,20 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+          fetch-depth: 0
+
+      # Everything since the last stable vX.Y.Z tag 
+      - name: Generate changelog
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --unreleased --strip header
+        env:
+          OUTPUT: RELEASE_NOTES.md
+
       - uses: actions/download-artifact@v4
         with:
           path: assets
@@ -79,7 +93,7 @@ jobs:
             --target "$SHA" \
             --prerelease \
             --title "Nightly $(date -u +%Y-%m-%d)" \
-            --notes "Automated nightly build of \`${SHA:0:12}\`. Not a stable release."
+            --notes "$(printf 'Automated nightly build of `%s`. Not a stable release.\n\n## Changes since the last release\n\n%s\n' "${SHA:0:12}" "$(cat RELEASE_NOTES.md)")"
 
   tap:
     name: Update Homebrew tap

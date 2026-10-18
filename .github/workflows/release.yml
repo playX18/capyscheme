@@ -42,6 +42,29 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog
+        uses: orhun/git-cliff-action@v4
+        id: cliff
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: RELEASE_NOTES.md
+          GITHUB_REPO: ${{ github.repository }}
+
+      - name: Generate full CHANGELOG.md
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --verbose 6899cb4^..HEAD # generate from 1st October commits, repo was migrated to GH and old commits pile up...
+        env:
+          OUTPUT: CHANGELOG.md
+          GITHUB_REPO: ${{ github.repository }}
+
       - uses: actions/download-artifact@v4
         with:
           path: assets
@@ -62,10 +85,10 @@ jobs:
         run: |
           flag=""
           [ "$PRERELEASE" = "true" ] && flag="--prerelease"
-          gh release create "$GITHUB_REF_NAME" assets/* \
+          gh release create "$GITHUB_REF_NAME" assets/* CHANGELOG.md \
             --repo "$GITHUB_REPOSITORY" \
             --title "CapyScheme $GITHUB_REF_NAME" \
-            --generate-notes $flag
+            --notes-file RELEASE_NOTES.md $flag
 
   tap:
     name: Update Homebrew tap

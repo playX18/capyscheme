@@ -93,10 +93,10 @@ jobs:
         if: inputs.run-tests
         run: make test VERSION='${{ steps.meta.outputs.version }}' TARGET="$TARGET"
 
-      - name: Smoke-test the packaged archive
+      - name: Test the packaged archive
         run: |
-          mkdir smoke && tar -C smoke -xzf "dist/${{ steps.meta.outputs.archive }}"
-          smoke/capy/${{ steps.meta.outputs.version }}/capy -c '(display "ok") (newline)'
+          mkdir pkgtest && tar -C pkgtest -xzf "dist/${{ steps.meta.outputs.archive }}"
+          pkgtest/capy/${{ steps.meta.outputs.version }}/capy -c '(display "ok") (newline)'
 
       # Must come after the tests: the FHS build rebuilds the runtime with
       # /usr as sysroot, which replaces the portable binaries in target/.
