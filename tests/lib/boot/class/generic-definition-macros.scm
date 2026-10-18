@@ -59,7 +59,7 @@
     (list 'split (slot-ref obj 'x)))
   (define-method macro-keyword-split #:locked ((obj point))
     (list 'keyword-split (slot-ref obj 'x)))
-  (define-method (macro-options (obj point) #:optional (prefix 'default) #:key (scale 1))
+  (define-method (macro-options (obj point) #:prefix [prefix 'default] #:scale [scale 1])
     (list prefix (* (slot-ref obj 'x) scale)))
   (define-method (macro-ref (obj point))
     (slot-ref obj 'x))
@@ -125,7 +125,7 @@
     (macro-options p)
     '(default 9))
   (test-equal "define-method handles keyword method arguments"
-    (macro-options p 'scaled #:scale 3)
+    (macro-options p #:prefix 'scaled #:scale 3)
     '(scaled 27))
   (test-assert "define-generic installs setter generic"
     (generic? (setter macro-ref)))

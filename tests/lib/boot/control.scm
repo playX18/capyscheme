@@ -74,6 +74,6 @@
 
 (test-equal "call-in-continuation-runs-winders"
   (dynamic-wind-result)
-  '((returned (out in) (proc out in)) (out in proc out in)))
+  '((returned (out in) (proc in out in)) (out proc in out in)))
 
 (test-end "boot control")

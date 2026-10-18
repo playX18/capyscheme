@@ -57,7 +57,7 @@
         (slot-ref obj 'color)
         (next-method)))
 
-(define-method (scale-point (obj point) #:optional (label 'scaled) #:key (factor 1))
+(define-method (scale-point (obj point) #:label [label 'scaled] #:factor [factor 1])
   (list label
         (* (slot-ref obj 'x) factor)
         (* (slot-ref obj 'y) factor)))
@@ -141,7 +141,7 @@
 (newline)
 (display (scale-point p))
 (newline)
-(display (scale-point cp 'triple #:factor 3))
+(display (scale-point cp #:label 'triple #:factor 3))
 (newline)
 (display (describe-any 'loose))
 (newline)
