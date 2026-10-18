@@ -92,7 +92,6 @@
       (cons <native-procedure> "native-procedure")
       (cons <native-continuation> "native-continuation")
       (cons <code-block> "code-block")
-      (cons <relocatable-code-block> "relocatable-code-block")
       (cons <module> "module")
       (cons <environment> "environment")
       (cons <syntax> "syntax")
