@@ -814,6 +814,9 @@ dist-rpm: build
 		"%files" \
 		"/usr/bin/capy" \
 		"/usr/bin/capyc" \
+		"/usr/bin/libcapy.so" \
+		"/usr/lib/libcapy.so" \
+		"/usr/include/capy.h" \
 		"/usr/lib/capy/compiled" \
 		"/usr/share/capy/lib" \
 		"" \

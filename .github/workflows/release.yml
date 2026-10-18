@@ -1,0 +1,68 @@
+# CD: pushing a tag like v3.0.0 builds, tests and publishes a GitHub release.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify tag
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          cargo_version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          case "$tag" in
+            "$cargo_version"|"$cargo_version"-*) ;;
+            *) echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $cargo_version"; exit 1 ;;
+          esac
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+          case "$tag" in *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;; *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;; esac
+
+  build:
+    needs: verify
+    uses: ./.github/workflows/build.yml
+    with:
+      label: ${{ needs.verify.outputs.version }}
+      upload: true
+
+  publish:
+    name: Publish release
+    needs: [verify, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          pattern: capyscheme-*
+          merge-multiple: true
+
+      - name: Combine checksums
+        run: |
+          cd assets
+          cat *.sha256 > SHA256SUMS
+          rm -- *.sha256
+          cat SHA256SUMS
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          flag=""
+          [ "$PRERELEASE" = "true" ] && flag="--prerelease"
+          gh release create "$GITHUB_REF_NAME" assets/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "CapyScheme $GITHUB_REF_NAME" \
+            --generate-notes $flag

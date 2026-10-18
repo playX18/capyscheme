@@ -1,0 +1,133 @@
+# Reusable: build the portable distribution and run the test suite on every
+# supported platform. Called by ci.yml, nightly.yml and release.yml.
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      label:
+        description: "Archive label, e.g. `nightly` or `3.0.0` -> capyscheme-<label>-<target>.tar.gz"
+        type: string
+        required: true
+      run-tests:
+        type: boolean
+        default: true
+      upload:
+        description: "Upload the tarballs as workflow artifacts"
+        type: boolean
+        default: false
+      ref:
+        description: "Git ref to build (default: the triggering ref)"
+        type: string
+        default: ""
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04,     target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: macos-latest,     target: aarch64-apple-darwin }
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang libclang-dev cmake pkg-config \
+            autoconf automake libtool rsync python3 \
+            dpkg-dev fakeroot rpm
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install autoconf automake libtool cmake rsync
+
+      # rust-toolchain.toml pins `nightly`; this installs it and the target.
+      - name: Install Rust
+        run: |
+          rustup toolchain install nightly --profile minimal --target "$TARGET"
+          rustup default nightly
+          rustc -vV
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Resolve version
+        id: meta
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "archive=capyscheme-${{ inputs.label }}-$TARGET.tar.gz" >> "$GITHUB_OUTPUT"
+          # deb/rpm versions: pre-releases must sort below the final release (`~`).
+          case "${{ inputs.label }}" in
+            nightly) pkg="$version~nightly.$(date -u +%Y%m%d)" ;;
+            ci)      pkg="$version" ;;
+            *)       pkg="${{ inputs.label }}"; pkg="${pkg//-/~}" ;;
+          esac
+          echo "pkgversion=$pkg" >> "$GITHUB_OUTPUT"
+
+      - name: Build distribution (runtime + stage 0/1/2)
+        run: |
+          jobs=$(getconf _NPROCESSORS_ONLN)
+          make -j"$jobs" dist-portable \
+            VERSION='${{ steps.meta.outputs.version }}' \
+            TARGET="$TARGET" \
+            OUTNAME='${{ steps.meta.outputs.archive }}'
+
+      - name: Test
+        if: inputs.run-tests
+        run: make test VERSION='${{ steps.meta.outputs.version }}' TARGET="$TARGET"
+
+      - name: Smoke-test the packaged archive
+        run: |
+          mkdir smoke && tar -C smoke -xzf "dist/${{ steps.meta.outputs.archive }}"
+          smoke/capy/${{ steps.meta.outputs.version }}/capy -c '(display "ok") (newline)'
+
+      # Must come after the tests: the FHS build rebuilds the runtime with
+      # /usr as sysroot, which replaces the portable binaries in target/.
+      - name: Build .deb and .rpm
+        if: runner.os == 'Linux'
+        run: |
+          make -j"$(getconf _NPROCESSORS_ONLN)" dist-deb dist-rpm \
+            VERSION='${{ steps.meta.outputs.pkgversion }}' \
+            TARGET="$TARGET"
+          ls -l dist
+
+      - name: Verify .deb and .rpm
+        if: runner.os == 'Linux'
+        run: |
+          dpkg-deb -I dist/*.deb
+          dpkg-deb -c dist/*.deb | grep -E ' \./usr/bin/capy$'
+          rpm -qip dist/*.rpm
+          rpm -qlp dist/*.rpm | grep -E '^/usr/bin/capy$'
+
+      - name: Checksum
+        run: |
+          cd dist
+          files=$(ls | grep -v '\.sha256$')
+          if command -v sha256sum >/dev/null; then sha256sum $files > "${{ steps.meta.outputs.archive }}.sha256"
+          else shasum -a 256 $files > "${{ steps.meta.outputs.archive }}.sha256"; fi
+          cat *.sha256
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.upload
+        with:
+          name: capyscheme-${{ matrix.target }}
+          path: dist/capyscheme-*
+          if-no-files-found: error
+          retention-days: 7

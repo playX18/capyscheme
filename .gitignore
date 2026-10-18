@@ -14,3 +14,4 @@ stage-*
 dist
 .fmt-tmp
 /benchmarks/clos/build
+stage-pkg

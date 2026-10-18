@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [main, stage]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    uses: ./.github/workflows/build.yml
+    with:
+      label: ci
+      upload: true
