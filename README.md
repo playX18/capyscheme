@@ -28,6 +28,18 @@ For versions of Capy v3 there are goals to achieve, initial release of v3.0.0 is
 - Introduce GC replacement API: Currently we explicitly only support MMTk, and it's worth making GC "pluggable" so experimentation on various algorithms is possible.
 
 
+# Installation
+
+## Homebrew (macOS arm64, Linux x86_64/arm64)
+
+```sh
+brew tap playX18/tap
+brew install capyscheme            # stable release: capy, capyc
+brew install capyscheme-nightly    # nightly build: capy-nightly, capyc-nightly
+```
+
+Prebuilt tarballs, `.deb` and `.rpm` packages are also attached to each [release](https://github.com/playX18/capyscheme/releases).
+
 # Documentation
 
 - [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md): compiler pipeline, build system.

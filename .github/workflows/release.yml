@@ -66,3 +66,43 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "CapyScheme $GITHUB_REF_NAME" \
             --generate-notes $flag
+
+  tap:
+    name: Update Homebrew tap
+    needs: [verify, publish]
+    if: needs.verify.outputs.prerelease != 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          pattern: capyscheme-*
+          merge-multiple: true
+
+      - uses: actions/checkout@v4
+        with:
+          repository: playX18/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Generate formula
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          scripts/gen-formula.sh stable "$VERSION" assets > tap/Formula/capyscheme.rb
+
+      - name: Commit and push
+        working-directory: tap
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula
+          if git diff --cached --quiet; then echo "formula unchanged"; exit 0; fi
+          git commit -m "capyscheme $VERSION"
+          for i in 1 2 3; do
+            git pull --rebase origin main && git push origin HEAD:main && exit 0
+            sleep 5
+          done
+          exit 1

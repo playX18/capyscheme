@@ -80,3 +80,41 @@ jobs:
             --prerelease \
             --title "Nightly $(date -u +%Y-%m-%d)" \
             --notes "Automated nightly build of \`${SHA:0:12}\`. Not a stable release."
+
+  tap:
+    name: Update Homebrew tap
+    needs: [check, publish]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          pattern: capyscheme-*
+          merge-multiple: true
+
+      - uses: actions/checkout@v4
+        with:
+          repository: playX18/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Generate formula
+        run: |
+          cargo_version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          scripts/gen-formula.sh nightly "$cargo_version-nightly.$(date -u +%Y%m%d)" assets > tap/Formula/capyscheme-nightly.rb
+
+      - name: Commit and push
+        working-directory: tap
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula
+          if git diff --cached --quiet; then echo "formula unchanged"; exit 0; fi
+          git commit -m "capyscheme-nightly ${GITHUB_SHA:0:12}"
+          for i in 1 2 3; do
+            git pull --rebase origin main && git push origin HEAD:main && exit 0
+            sleep 5
+          done
+          exit 1
