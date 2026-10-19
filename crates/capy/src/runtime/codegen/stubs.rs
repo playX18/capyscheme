@@ -172,7 +172,7 @@ fn bail_oneway() -> bool {
 }
 
 /// Execute the bailing instruction in the Rust engine, then resume the template interpreter.
-pub unsafe extern "C" fn capy_bail(th: *const (), op: u64, width: u64) -> *const u8 {
+pub unsafe extern "C" fn capy_bail(th: *const (), op: u64, _width: u64) -> *const u8 {
     unsafe {
         BAIL_COUNTS[(op as u8) as usize].fetch_add(1, Relaxed);
 
@@ -468,7 +468,7 @@ pub fn emit_interpreter_resume(masm: &mut Masm, map: Label) {
 
 /// One bail handler for opcode `op`: flush the resume count, save state,
 /// store `PC` to `Tc::ip`, and call `bail`.
-pub fn emit_bail_handler(masm: &mut Masm, bail: Extern, op: u8, width: u8) {
+pub fn emit_bail_handler(masm: &mut Masm, bail: Extern, op: u8, _width: u8) {
     // The resume count `w`: the argument count at an entry, the value count
     // at a return point, ignored everywhere else. Templates keep `AC` holding
     // it at every bail site, except the calls, which pass the caller
