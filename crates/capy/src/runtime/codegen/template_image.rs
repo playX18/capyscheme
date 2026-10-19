@@ -368,7 +368,7 @@ fn generate() -> io::Result<(LoadedImage, [[HandlerKind; 256]; 3])> {
     const _: () = assert!(OpcodeId::COUNT <= u8::MAX as usize);
     let op_invalid = masm.label();
     masm.bind(op_invalid);
-    stubs::emit_bail_handler(&mut masm, bail, u8::MAX);
+    stubs::emit_bail_handler(&mut masm, bail, u8::MAX, 0);
     let op_invalid_end = masm.label();
     masm.bind(op_invalid_end);
     masm.define_symbol(
@@ -408,7 +408,7 @@ fn generate() -> io::Result<(LoadedImage, [[HandlerKind; 256]; 3])> {
                         paths,
                     };
                     if forced_bail[byte] {
-                        stubs::emit_bail_handler(&mut masm, bail, byte as u8);
+                        stubs::emit_bail_handler(&mut masm, bail, byte as u8, width as u8);
                         kinds[width][byte] = HandlerKind::Bail;
                     } else {
                         emit::emit_template(&mut masm, &mut context, OpcodeId::$Op);
