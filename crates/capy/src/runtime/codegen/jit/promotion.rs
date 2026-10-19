@@ -66,12 +66,6 @@ impl HotnessPolicy for ThresholdPolicy {
     fn tiers(&self) -> TierSet {
         self.tiers
     }
-
-    fn next_tier(&self) -> Option<Tier> {
-        self.tiers()
-            .iter()
-            .find(|tier| compiler_for(*tier).is_some())
-    }
 }
 
 /// What a [`request_tier_up`] call did.

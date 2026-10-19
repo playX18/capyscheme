@@ -334,16 +334,6 @@ fn template_range() -> Option<(u64, u64)> {
     codegen::template_image::code_range()
 }
 
-/// Whether `addr` lies in template-interpreter code
-fn in_interp_code(addr: u64) -> bool {
-    if let Some((base, end)) = template_range() {
-        if addr >= base && addr < end {
-            return true;
-        }
-    }
-    codegen::template_lazy::contains(addr)
-}
-
 static NATIVE_SYMBOLS: RwLock<BTreeMap<u64, String>> = RwLock::new(BTreeMap::new());
 const NATIVE_SYMBOL_CAP: usize = 4096;
 
@@ -416,8 +406,10 @@ pub fn symbolize_caller(ra: u64, resume: u64, closure: u64) -> String {
     {
         return String::from("???");
     }
-    if in_interp_code(ra) {
-        return String::from("???");
+    if let Some((base, end)) = template_range() {
+        if ra >= base && ra < end {
+            return String::from("???");
+        }
     }
     if let Some(entry) = lookup_jit(ra) {
         let offset = ra.wrapping_sub(entry.base) as u32;
@@ -439,11 +431,13 @@ pub fn symbolize_running(rip: u64, pcreg: u64, closure: u64) -> String {
     if let Some(name) = native_name(closure) {
         return sanitize(&name);
     }
-    if in_interp_code(rip) {
-        if let Some(entry) = lookup_interp(pcreg) {
-            return sanitize(&span_label(&entry.name, &entry.table, pcreg, entry.start));
+    if let Some((base, end)) = template_range() {
+        if rip >= base && rip < end {
+            if let Some(entry) = lookup_interp(pcreg) {
+                return sanitize(&span_label(&entry.name, &entry.table, pcreg, entry.start));
+            }
+            return String::from("???");
         }
-        return String::from("???");
     }
     if let Some(entry) = lookup_jit(rip) {
         let offset = rip.wrapping_sub(entry.base) as u32;

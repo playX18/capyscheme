@@ -525,9 +525,6 @@ define_flags! {
     template_bail: Text, "CAPY_TEMPLATE_BAIL", None, "", "engine",
         "Comma-separated opcode names forced to bail to the Rust engine.";
 
-    template_eager: Bool, "CAPY_TEMPLATE_EAGER", None, "1", "engine",
-        "Generate every template-interpreter handler eagerly instead of materializing handlers lazily on first bail.";
-
     prim_stats: Bool, "CAPY_PRIM_STATS", None, "0", "engine",
         "Count primitive calls and report at exit.";
 

@@ -576,7 +576,6 @@ fn build_image(
     masm.define_symbol(&name, start, end, SymbolKind::Function);
 
     let image = masm.finish().map_err(std::io::Error::other)?;
-
     // Over the per-block limit: build nothing, the caller poisons the block
     // so it never retries. Silent like the other limit skips, only the log
     // names it.
@@ -592,7 +591,6 @@ fn build_image(
     }
     // The last poll is behind us: link takes the code memory lock.
     let pcs: Vec<usize> = instructions.iter().map(|&(pc, ..)| pc).collect();
-
     let Linked {
         loaded,
         offsets,
@@ -611,7 +609,6 @@ fn build_image(
             end,
         },
     )?;
-
     let base = loaded.base();
 
     log::debug!(

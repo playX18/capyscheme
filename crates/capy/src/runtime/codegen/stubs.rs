@@ -167,7 +167,7 @@ pub(crate) fn interpreter_resume_addr() -> *const u8 {
 }
 
 /// Whether `capy_bail` keeps the one-way behavior.
-pub(crate) fn bail_oneway() -> bool {
+fn bail_oneway() -> bool {
     flags::template_bail_oneway()
 }
 
@@ -175,8 +175,6 @@ pub(crate) fn bail_oneway() -> bool {
 pub unsafe extern "C" fn capy_bail(th: *const (), op: u64, width: u64) -> *const u8 {
     unsafe {
         BAIL_COUNTS[(op as u8) as usize].fetch_add(1, Relaxed);
-        // A lazily deferred handler materializes on first bail
-        super::template_lazy::materialize(width as u8, op as u8);
 
         let mutator = MutationContext::from_ptr(th);
         let tc: &Tc<'static> = mutator.tc();
@@ -288,23 +286,6 @@ pub fn emit_dispatch(masm: &mut Masm, map: Label) {
     }
 }
 
-pub fn emit_movabs(masm: &mut Masm, dst: VReg, addr: usize) {
-    onlineasm!(*masm.assembler();
-        move {dst}, {addr as i64};
-    );
-}
-
-pub fn emit_dispatch_absolute(masm: &mut Masm, base: usize) {
-    let pc = regs::PC;
-    let (t5, t7) = (tmp::T2, tmp::T3);
-    emit_movabs(masm, t7, base);
-    let slot = masm.assembler().mem_indexed(t7, t5, 8, 0);
-    onlineasm!(*masm.assembler();
-        loadb {t5}, [{pc}];
-        jmp {slot};
-    );
-}
-
 /// Dispatch when the next opcode byte is already in the dispatch scratch
 /// (`t5`): the table jump without the opcode load. Used by fall-through
 /// `next`, which issues the load before bumping `PC`.
@@ -327,15 +308,6 @@ pub fn emit_dispatch_preloaded(masm: &mut Masm, map: Label) {
             jmp {slot};
         );
     }
-}
-
-pub fn emit_dispatch_preloaded_absolute(masm: &mut Masm, base: usize) {
-    let (t5, t7) = (tmp::T2, tmp::T3);
-    emit_movabs(masm, t7, base);
-    let slot = masm.assembler().mem_indexed(t7, t5, 8, 0);
-    onlineasm!(*masm.assembler();
-        jmp {slot};
-    );
 }
 
 pub fn emit_op_count(masm: &mut Masm, width: usize, byte: u8, enabled: bool) {
@@ -520,12 +492,11 @@ pub fn emit_bail_handler(masm: &mut Masm, bail: Extern, op: u8, width: u8) {
     );
     masm.save_scheme_state();
     let ip = masm.assembler().mem(tc, sabi::TC_IP as i32);
-    let (a0, a1, a2) = arg_regs();
+    let (a0, a1, _) = arg_regs();
     onlineasm!(*masm.assembler();
         storep {ip}, {pc};
         move {a0}, {tc};
         move {a1}, {op as i64};
-        move {a2}, {width as i64};
         call {bail};
     );
     masm.restore_scheme_state();

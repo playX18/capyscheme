@@ -60,7 +60,6 @@ pub fn load(
     let mut loaded = memory
         .with_allocator(|allocator| image.finished.load(allocator, &resolve))
         .map_err(|err| io::Error::other(format!("failed to load generated code: {err:?}")))?;
-
     let rx = loaded.rx() as usize;
     // From here on, an error drops `image`, which releases the span.
     let mut image_out = LoadedImage {
@@ -122,7 +121,6 @@ pub fn load(
     publish_perf_map(&symbols);
 
     image_out.eh_frame = EhFrame::register(rx, &image.finished, &image.cfi)?;
-
     image_out.symbols = symbols;
     Ok(image_out)
 }
@@ -171,11 +169,6 @@ impl LoadedImage {
     pub fn patch_unpublished(&self, offset: usize, bytes: &[u8]) -> io::Result<()> {
         let mut span = *self.loaded.span();
         code_memory().patch(&mut span, offset, bytes)
-    }
-
-    pub fn patch_live_u64(&self, offset: usize, word: u64) -> io::Result<()> {
-        let mut span = *self.loaded.span();
-        code_memory().patch_live_u64(&mut span, offset, word)
     }
 }
 
