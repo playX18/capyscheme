@@ -492,11 +492,12 @@ pub fn emit_bail_handler(masm: &mut Masm, bail: Extern, op: u8, _width: u8) {
     );
     masm.save_scheme_state();
     let ip = masm.assembler().mem(tc, sabi::TC_IP as i32);
-    let (a0, a1, _) = arg_regs();
+    let (a0, a1, a2) = arg_regs();
     onlineasm!(*masm.assembler();
         storep {ip}, {pc};
         move {a0}, {tc};
         move {a1}, {op as i64};
+        move {a2}, {_width};
         call {bail};
     );
     masm.restore_scheme_state();

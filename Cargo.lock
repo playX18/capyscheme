@@ -2247,8 +2247,8 @@ checksum = "009994f150cc0cd50ff54917d5bc8bffe8cad10ca10d81c34da2ec421ae61782"
 
 [[package]]
 name = "tree-sitter-scheme"
-version = "0.24.7-1"
-source = "git+https://github.com/6cdh/tree-sitter-scheme#c6cb7c7d7a04b3f5d999c28e2e9c0c31b2d50ece"
+version = "0.25.0"
+source = "git+https://github.com/6cdh/tree-sitter-scheme?rev=45c72463ac4260ef6e07d1c0642ed43d4e9957b4#45c72463ac4260ef6e07d1c0642ed43d4e9957b4"
 dependencies = [
  "cc",
  "tree-sitter-language",
