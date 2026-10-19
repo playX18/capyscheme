@@ -3003,12 +3003,12 @@
                                                                                                                     r)
                                                                                                               (map (lambda (tmp.7)
                                                                                                                      (list (make-syntax
-                                                                                                                             '@@
+                                                                                                                             '|@@|
                                                                                                                              '((top))
                                                                                                                              '(hygiene
                                                                                                                                 capy))
                                                                                                                            (make-syntax
-                                                                                                                             '@@
+                                                                                                                             '|@@|
                                                                                                                              '((top))
                                                                                                                              '(hygiene
                                                                                                                                 capy))
@@ -3937,7 +3937,7 @@
                                                                                                '(hygiene
                                                                                                   capy))
                                                                                              (list (list (make-syntax
-                                                                                                           '@@
+                                                                                                           '|@@|
                                                                                                            '((top))
                                                                                                            '(hygiene
                                                                                                               capy))
@@ -3975,12 +3975,12 @@
                                                                                                   capy)))))))
                                                                (map (lambda (tmp.2)
                                                                       (list (make-syntax
-                                                                              '@@
+                                                                              '|@@|
                                                                               '((top))
                                                                               '(hygiene
                                                                                  capy))
                                                                             (make-syntax
-                                                                              '@@
+                                                                              '|@@|
                                                                               '((top))
                                                                               '(hygiene
                                                                                  capy))
@@ -4054,7 +4054,7 @@
                                                                                                '(hygiene
                                                                                                   capy))
                                                                                              (cons (list (make-syntax
-                                                                                                           '@@
+                                                                                                           '|@@|
                                                                                                            '((top))
                                                                                                            '(hygiene
                                                                                                               capy))
@@ -4093,12 +4093,12 @@
                                                                                                   capy)))))))
                                                                (map (lambda (tmp.2)
                                                                       (list (make-syntax
-                                                                              '@@
+                                                                              '|@@|
                                                                               '((top))
                                                                               '(hygiene
                                                                                  capy))
                                                                             (make-syntax
-                                                                              '@@
+                                                                              '|@@|
                                                                               '((top))
                                                                               '(hygiene
                                                                                  capy))
@@ -6151,7 +6151,7 @@
                                          (vector
                                            'free-id
                                            (make-syntax
-                                             '@@
+                                             '|@@|
                                              top-wrap
                                              '(hygiene capy)))
                                          'each-any
@@ -8260,12 +8260,12 @@
                                                                                           (begin
                                                                                             (global-extend
                                                                                               'module-ref
-                                                                                              '@
+                                                                                              '|@|
                                                                                               expand-public-ref)
                                                                                             (begin
                                                                                               (global-extend
                                                                                                 'module-ref
-                                                                                                '@@
+                                                                                                '|@@|
                                                                                                 expand-private-ref)
                                                                                               (begin
                                                                                                 (global-extend

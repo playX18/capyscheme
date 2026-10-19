@@ -1500,7 +1500,7 @@
                    (import ispec)
                    ...
                    (re-export r ...)
-                   (@@ @@ (name name* ...) body)
+                   (|@@| |@@| (name name* ...) body)
                    ...))))))))
 
   (define (expand-define-library-form stx)
@@ -1727,9 +1727,9 @@
                     (module-name? #'(name name* ...))
                     (parse
                       #'((eval-when (expand load eval)
-                          (let ([m ((@@ (capy) define-module*) '(name name* ...))])
+                          (let ([m ((|@@| (capy) define-module*) '(name name* ...))])
                            (current-module m)))
-                         (@@ @@ (name name* ...) body)
+                         (|@@| |@@| (name name* ...) body)
                          ...)
                       r w s m essew mod)]))
 
@@ -1739,9 +1739,9 @@
                     (module-name? #'(name name* ...))
                     (parse
                       #'((eval-when (expand load eval)
-                          (let ([m ((@@ (capy) define-module*) '(name name* ...) #t)])
+                          (let ([m ((|@@| (capy) define-module*) '(name name* ...) #t)])
                            (current-module m)))
-                         (@@ @@ (name name* ...) body)
+                         (|@@| |@@| (name name* ...) body)
                          ...)
                       r w s m essew mod)]))
 
@@ -2620,7 +2620,7 @@
               (let ((tmp-1 ($sc-dispatch
                             tmp
                             (list '_
-                              (vector 'free-id (make-syntax '@@ top-wrap '(hygiene capy)))
+                              (vector 'free-id (make-syntax '|@@| top-wrap '(hygiene capy)))
                               'each-any
                               'any))))
                 (if (and tmp-1 (apply (lambda (mod exp) (module-name? mod)) tmp-1))
@@ -3495,8 +3495,8 @@
   (global-extend 'define-syntax 'define-syntax '())
   (global-extend 'define-syntax-parameter 'define-syntax-parameter '())
   (global-extend 'define-property 'define-property '())
-  (global-extend 'module-ref '@ expand-public-ref)
-  (global-extend 'module-ref '@@ expand-private-ref)
+  (global-extend 'module-ref '|@| expand-public-ref)
+  (global-extend 'module-ref '|@@| expand-private-ref)
   (global-extend 'core 'syntax-parameterize expand-syntax-parameterize)
 
   (set! identifier-binding 

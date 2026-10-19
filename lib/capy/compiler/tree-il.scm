@@ -370,11 +370,11 @@
           `(set! ,(alias-for (lset-sym term) env (lset-name term))
             ,(emit (lset-value term) env used))]
         [(module-ref? term)
-          `(,(if (module-ref-public? term) '@ '@@)
+          `(,(if (module-ref-public? term) '|@| '|@@|)
             ,(module-ref-module term)
             ,(module-ref-name term))]
         [(module-set? term)
-          `(set! (,(if (module-set-public? term) '@ '@@)
+          `(set! (,(if (module-set-public? term) '|@| '|@@|)
                   ,(module-set-module term)
                   ,(module-set-name term))
             ,(emit (module-set-value term) env used))]

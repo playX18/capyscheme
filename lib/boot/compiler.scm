@@ -16,21 +16,21 @@
   (let ([token #f])
     (dynamic-wind
       (lambda ()
-        (set! token ((@@ (capy) %runtime-stats-begin-reader))))
+        (set! token ((|@@| (capy) %runtime-stats-begin-reader))))
       thunk
       (lambda ()
-        ((@@ (capy) %runtime-stats-end-reader) token)))))
+        ((|@@| (capy) %runtime-stats-end-reader) token)))))
 
 ;; Per-pass timing for the Scheme-side compile pipeline. Enabled by the same
 ;; CAPY_PROFILE_PASSES env var as the Rust pass profiler (utils/pass_profile.rs).
 (define (%profile-phase name thunk)
-  (let ([flag ((@@ (capy) getenv) "CAPY_PROFILE_PASSES")])
+  (let ([flag ((|@@| (capy) getenv) "CAPY_PROFILE_PASSES")])
     (if (and flag (not (equal? flag "")))
-      (let ([t0 ((@@ (capy) microsecond))])
+      (let ([t0 ((|@@| (capy) microsecond))])
         (call-with-values
           thunk
           (lambda results
-            (let ([t1 ((@@ (capy) microsecond))])
+            (let ([t1 ((|@@| (capy) microsecond))])
               (display
                 (string-append
                   ";; PERF (capy) phase=" name " elapsed_ms="
@@ -63,7 +63,7 @@
       output-file)
     (dynamic-wind
       (lambda ()
-        ((@@ (capy) %runtime-stats-begin-compilation)))
+        ((|@@| (capy) %runtime-stats-begin-compilation)))
       (lambda ()
         (call-with-input-file filename
           (lambda (in)
@@ -88,4 +88,4 @@
                                (lambda () (eliminate-assignments code)))])
                   (%compile code output-file mod load-thunk? dump-options #t)))))))
       (lambda ()
-        ((@@ (capy) %runtime-stats-end-compilation))))))
+        ((|@@| (capy) %runtime-stats-end-compilation))))))

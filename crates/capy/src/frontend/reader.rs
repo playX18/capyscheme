@@ -87,17 +87,21 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
         self.source_file
     }
 
-    /// Record `node`'s span for `expression` in the datum properties
-    /// table. Skipped values carry spans only as wrapped syntax objects
-    /// (see [`wrap`]): immediates and numbers lack table identity (every
-    /// `1` would share one span), and interned values alias across reads
-    /// (a span filed under `foo` would leak into every same-named read).
-    ///
-    /// Lines are 1-based, columns 0-based: the established convention
-    /// (`lib/boot/reader.scm` counts lines from 1, and
-    /// `render-source-line` documents a 1-based line). Tree-sitter rows
-    /// are 0-based, hence the `+ 1`.
     pub fn annotate(&self, expression: Value<'gc>, node: &Node) {
+        self.annotate_span(
+            expression,
+            (
+                node.start_position().row as u32 + 1,
+                node.start_position().column as u32,
+            ),
+            (
+                node.end_position().row as u32 + 1,
+                node.end_position().column as u32,
+            ),
+        );
+    }
+
+    pub fn annotate_span(&self, expression: Value<'gc>, start: (u32, u32), end: (u32, u32)) {
         if expression.is_immediate() || expression.is_number() {
             return;
         }
@@ -107,17 +111,15 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
         if expression.is::<Keyword>() {
             return;
         }
-        let start_point = node.start_position();
-        let end_point = node.end_position();
 
         add_source(
             self.ctx,
             expression,
             self.source_file,
-            start_point.row as i32 + 1,
-            start_point.column as i32,
-            end_point.row as i32 + 1,
-            end_point.column as i32,
+            start.0 as i32,
+            start.1 as i32,
+            end.0 as i32,
+            end.1 as i32,
         );
     }
 
@@ -128,6 +130,90 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
     pub fn is_symbol_of(&self, node: &Node, symbol: &str) -> bool {
         node.kind() == "symbol" && self.text_of(node) == symbol
+    }
+
+    fn is_intertoken(kind: &str) -> bool {
+        matches!(kind, "comment" | "block_comment" | "sexp_comment")
+    }
+
+    fn abbrev_name(prefix: &str) -> Option<&'static str> {
+        match prefix {
+            "'" => Some("quote"),
+            "`" => Some("quasiquote"),
+            "," => Some("unquote"),
+            ",@" => Some("unquote-splicing"),
+            "#'" => Some("syntax"),
+            "#`" => Some("quasisyntax"),
+            "#," => Some("unsyntax"),
+            "#,@" => Some("unsyntax-splicing"),
+            _ => None,
+        }
+    }
+
+    fn parse_abbrev(&self, node: &Node, prefix: &str) -> Result<Value<'gc>, LexicalError<'gc>> {
+        let mut cursor = node.walk();
+        let children: Vec<Node> = node.children(&mut cursor).collect();
+        let span = Self::span_of(node, node);
+        let (value, _) = self.parse_abbrev_children(&children, 0, prefix, span)?;
+        Ok(value)
+    }
+
+    fn parse_abbrev_children(
+        &self,
+        children: &[Node],
+        start: usize,
+        prefix: &str,
+        span: ((u32, u32), (u32, u32)),
+    ) -> Result<(Value<'gc>, usize), LexicalError<'gc>> {
+        let err = || LexicalError::InvalidSyntax { span: span.0 };
+        let name = Self::abbrev_name(prefix).ok_or_else(err)?;
+        let mut next = start + 1;
+        while next < children.len()
+            && children[next].is_named()
+            && Self::is_intertoken(children[next].kind())
+        {
+            next += 1;
+        }
+        let datum = children.get(next).filter(|datum| {
+            datum.is_named() && datum.kind() != "ERROR" && datum.kind() != "MISSING"
+        });
+        let Some(datum) = datum else {
+            return Err(err());
+        };
+        next += 1;
+        let expr = self.parse_lexeme(datum)?;
+
+        let tag: Value<'gc> = Symbol::from_str(self.ctx, name).into();
+        Ok((
+            self.wrap_span(span.0, span.1, list!(self.ctx, tag, expr)),
+            next,
+        ))
+    }
+
+    fn span_of(first: &Node, last: &Node) -> ((u32, u32), (u32, u32)) {
+        (
+            (
+                first.start_position().row as u32 + 1,
+                first.start_position().column as u32,
+            ),
+            (
+                last.end_position().row as u32 + 1,
+                last.end_position().column as u32,
+            ),
+        )
+    }
+
+    fn parse_unit(
+        &self,
+        children: &[Node],
+        i: usize,
+        span: ((u32, u32), (u32, u32)),
+    ) -> Result<(Value<'gc>, usize), LexicalError<'gc>> {
+        let child = &children[i];
+        if child.is_named() {
+            return Ok((self.parse_lexeme(child)?, i + 1));
+        }
+        Err(LexicalError::InvalidSyntax { span: span.0 })
     }
 
     fn parse_symbol_text(
@@ -211,7 +297,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
         let mut result = Vec::new();
         for child in root_node.children(&mut cursor) {
-            if child.kind() == "comment" {
+            if Self::is_intertoken(child.kind()) {
                 continue;
             }
             result.push(self.parse_lexeme(&child)?);
@@ -224,23 +310,30 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
         &self,
         node: &Node,
         src: ((u32, u32), (u32, u32)),
-
-        typ: CompoundType,
     ) -> Result<Value<'gc>, LexicalError<'gc>> {
         let mut cursor = node.walk();
-        let mut children = node.children(&mut cursor);
+        let children: Vec<Node> = node.children(&mut cursor).collect();
 
-        let terminator = match self.text_of(
-            &children
-                .next()
-                .expect("compound node should have at least one child"),
-        ) {
-            "(" => ")",
-            "#(" => ")",
-            "#u8(" => ")",
-            "[" => "]",
+        let _ = src;
+        let span = Self::span_of(node, node);
+        let (value, _) = self.parse_compound_children(&children, 0, span)?;
+        Ok(value)
+    }
+
+    fn parse_compound_children(
+        &self,
+        children: &[Node],
+        start: usize,
+        span: ((u32, u32), (u32, u32)),
+    ) -> Result<(Value<'gc>, usize), LexicalError<'gc>> {
+        let opener = children.get(start).map(|c| self.text_of(c)).unwrap_or("");
+        let (terminator, typ) = match opener {
+            "(" => (")", CompoundType::List),
+            "[" => ("]", CompoundType::List),
+            "#(" => (")", CompoundType::Vector),
+            "#u8(" | "#vu8(" => (")", CompoundType::Bytevector),
             _ => {
-                return Err(LexicalError::InvalidSyntax { span: src.0 });
+                return Err(LexicalError::InvalidSyntax { span: span.0 });
             }
         };
 
@@ -248,102 +341,109 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
         let mut prev = Value::null();
 
+        let mut i = start + 1;
         loop {
-            match children.next() {
-                None => {
-                    return Err(LexicalError::UnclosedList {
-                        start_at: src.0,
-                        end_at: src.1,
-                    });
-                }
-                Some(child) => match child.kind() {
-                    x if x == terminator => match typ {
-                        CompoundType::Vector => {
-                            let vec = Value::list_to_vector(head, self.ctx);
+            let Some(child) = children.get(i) else {
+                return Err(LexicalError::UnclosedList {
+                    start_at: span.0,
+                    end_at: span.1,
+                });
+            };
+            match child.kind() {
+                x if x == terminator => match typ {
+                    CompoundType::Vector => {
+                        let vec = Value::list_to_vector(head, self.ctx);
 
-                            return Ok(self.wrap(node, vec.into()));
-                        }
-
-                        CompoundType::Bytevector => {
-                            let len = Value::list_length(head);
-
-                            let bv = ByteVector::new::<false>(self.ctx, len, true);
-
-                            let mut vec = Vec::with_capacity(len);
-
-                            let mut current = head;
-
-                            while !current.is_null() {
-                                let byte = current.as_int32();
-                                vec.push(byte as u8);
-                                current = current.cdr();
-                            }
-                            // SAFETY: Mutable access is exclusive and goes through GC write barrier
-                            unsafe {
-                                bv.as_slice_mut_unchecked().copy_from_slice(&vec);
-                            }
-
-                            return Ok(self.wrap(node, bv.into()));
-                        }
-
-                        CompoundType::List => {
-                            return Ok(self.wrap(node, head));
-                        }
-                    },
-
-                    x if x == ")" || x == "]" => {
-                        let end = child.end_position();
-                        return Err(LexicalError::UnclosedList {
-                            start_at: src.0,
-                            end_at: (end.row as u32 + 1, end.column as u32),
-                        });
+                        return Ok((self.wrap_span(span.0, span.1, vec.into()), i + 1));
                     }
 
-                    "symbol" if self.text_of(&child) == "." => {
-                        if matches!(typ, CompoundType::List) {
-                            let Some(next) = children.next() else {
-                                return Err(LexicalError::ImproperListMissingTail { span: src.0 });
-                            };
-                            if next.kind() == terminator {
-                                return Err(LexicalError::ImproperListMultiple {
-                                    span: src.0,
-                                    dot_spans: vec![Value::null()],
-                                    multi_tails: vec![Value::null()],
-                                });
-                            }
+                    CompoundType::Bytevector => {
+                        let len = Value::list_length(head);
 
-                            let tail = self.parse_lexeme(&next)?;
+                        let bv = ByteVector::new::<false>(self.ctx, len, true);
 
-                            if prev.is_pair() {
-                                prev.set_cdr(self.ctx, tail);
-                            }
+                        let mut vec = Vec::with_capacity(len);
 
-                            return Ok(self.wrap(node, head));
-                        } else {
-                            return Err(LexicalError::InvalidSyntax { span: src.0 });
+                        let mut current = head;
+
+                        while !current.is_null() {
+                            let byte = current.car().as_int32();
+                            vec.push(byte as u8);
+                            current = current.cdr();
                         }
+                        // SAFETY: Mutable access is exclusive and goes through GC write barrier
+                        unsafe {
+                            bv.as_slice_mut_unchecked().copy_from_slice(&vec);
+                        }
+
+                        return Ok((self.wrap_span(span.0, span.1, bv.into()), i + 1));
                     }
 
-                    _ => {
-                        if child.kind() == "comment" {
-                            continue;
-                        }
-                        let lexeme = self.parse_lexeme(&child)?;
-
-                        let new_prev = Value::cons(self.ctx, lexeme, Value::null());
-
-                        if prev.is_pair() {
-                            prev.set_cdr(self.ctx, new_prev);
-                        }
-                        prev = new_prev;
-
-                        if !head.is_pair() {
-                            head = new_prev;
-                        }
-
-                        continue;
+                    CompoundType::List => {
+                        return Ok((self.wrap_span(span.0, span.1, head), i + 1));
                     }
                 },
+
+                x if x == ")" || x == "]" => {
+                    let end = child.end_position();
+                    return Err(LexicalError::UnclosedList {
+                        start_at: span.0,
+                        end_at: (end.row as u32 + 1, end.column as u32),
+                    });
+                }
+
+                "dot" => {
+                    if matches!(typ, CompoundType::List) {
+                        let tail_pos = children[i + 1..]
+                            .iter()
+                            .position(|next| !next.is_named() || !Self::is_intertoken(next.kind()))
+                            .map(|pos| pos + i + 1)
+                            .ok_or(LexicalError::ImproperListMissingTail { span: span.0 })?;
+                        let tail = &children[tail_pos];
+                        if tail.kind() == terminator {
+                            return Err(LexicalError::ImproperListMultiple {
+                                span: span.0,
+                                dot_spans: vec![Value::null()],
+                                multi_tails: vec![Value::null()],
+                            });
+                        }
+                        if !tail.is_named() {
+                            return Err(LexicalError::InvalidSyntax { span: span.0 });
+                        }
+
+                        let tail = self.parse_lexeme(tail)?;
+
+                        if prev.is_pair() {
+                            prev.set_cdr(self.ctx, tail);
+                        }
+
+                        return Ok((self.wrap_span(span.0, span.1, head), tail_pos + 1));
+                    } else {
+                        return Err(LexicalError::InvalidSyntax { span: span.0 });
+                    }
+                }
+
+                _ => {
+                    if child.is_named() && Self::is_intertoken(child.kind()) {
+                        i += 1;
+                        continue;
+                    }
+                    let (lexeme, next) = self.parse_unit(children, i, span)?;
+
+                    let new_prev = Value::cons(self.ctx, lexeme, Value::null());
+
+                    if prev.is_pair() {
+                        prev.set_cdr(self.ctx, new_prev);
+                    }
+                    prev = new_prev;
+
+                    if !head.is_pair() {
+                        head = new_prev;
+                    }
+
+                    i = next;
+                    continue;
+                }
             }
         }
     }
@@ -518,114 +618,24 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                 Ok(self.wrap(node, value))
             }
 
-            "quote" => {
-                let mut cursor = node.walk();
-                let child = node
-                    .children(&mut cursor)
-                    .nth(1)
-                    .expect("quote node should have a child expression");
+            "quote" => self.parse_abbrev(node, "'"),
 
-                let expr = self.parse_lexeme(&child)?;
+            "syntax_quote" => self.parse_abbrev(node, "#'"),
 
-                let quote: Value<'gc> = Symbol::from_str(self.ctx, "quote").into();
-                Ok(self.wrap(node, list!(self.ctx, quote, expr)))
-            }
+            "quasisyntax" => self.parse_abbrev(node, "#`"),
 
-            "syntax" => {
-                let mut cursor = node.walk();
-                let child = node
-                    .children(&mut cursor)
-                    .nth(1)
-                    .expect("syntax node should have a child expression");
+            "unsyntax" => self.parse_abbrev(node, "#,"),
 
-                let expr = self.parse_lexeme(&child)?;
+            "unsyntax_splicing" => self.parse_abbrev(node, "#,@"),
 
-                let syntax: Value<'gc> = Symbol::from_str(self.ctx, "syntax").into();
-                Ok(self.wrap(node, list!(self.ctx, syntax, expr)))
-            }
+            "quasiquote" => self.parse_abbrev(node, "`"),
 
-            "quasisyntax" => {
-                let mut cursor = node.walk();
-                let child = node
-                    .children(&mut cursor)
-                    .nth(1)
-                    .expect("quasisyntax node should have a child expression");
+            "unquote" => self.parse_abbrev(node, ","),
 
-                let expr = self.parse_lexeme(&child)?;
-
-                let quasisyntax: Value<'gc> = Symbol::from_str(self.ctx, "quasisyntax").into();
-                Ok(self.wrap(node, list!(self.ctx, quasisyntax, expr)))
-            }
-
-            "unsyntax" => {
-                let mut cursor = node.walk();
-                let child = node
-                    .children(&mut cursor)
-                    .nth(1)
-                    .expect("unsyntax node should have a child expression");
-
-                let expr = self.parse_lexeme(&child)?;
-
-                let unsyntax: Value<'gc> = Symbol::from_str(self.ctx, "unsyntax").into();
-                Ok(self.wrap(node, list!(self.ctx, unsyntax, expr)))
-            }
-
-            "unsyntax_splicing" => {
-                let mut cursor = node.walk();
-                let child = node
-                    .children(&mut cursor)
-                    .nth(1)
-                    .expect("unsyntax_splicing node should have a child expression");
-
-                let expr = self.parse_lexeme(&child)?;
-
-                let unsyntax_splicing: Value<'gc> =
-                    Symbol::from_str(self.ctx, "unsyntax-splicing").into();
-                Ok(self.wrap(node, list!(self.ctx, unsyntax_splicing, expr)))
-            }
-
-            "quasiquote" => {
-                let mut cursor = node.walk();
-                let child = node
-                    .children(&mut cursor)
-                    .nth(1)
-                    .expect("quasiquote node should have a child expression");
-
-                let expr = self.parse_lexeme(&child)?;
-
-                let quasiquote: Value<'gc> = Symbol::from_str(self.ctx, "quasiquote").into();
-                Ok(self.wrap(node, list!(self.ctx, quasiquote, expr)))
-            }
-
-            "unquote" => {
-                let mut cursor = node.walk();
-                let child = node
-                    .children(&mut cursor)
-                    .nth(1)
-                    .expect("unquote node should have a child expression");
-
-                let expr = self.parse_lexeme(&child)?;
-
-                let unquote: Value<'gc> = Symbol::from_str(self.ctx, "unquote").into();
-                Ok(self.wrap(node, list!(self.ctx, unquote, expr)))
-            }
-
-            "unquote_splicing" => {
-                let mut cursor = node.walk();
-                let child = node
-                    .children(&mut cursor)
-                    .nth(1)
-                    .expect("unquote_splicing node should have a child expression");
-
-                let expr = self.parse_lexeme(&child)?;
-
-                let unquote_splicing: Value<'gc> =
-                    Symbol::from_str(self.ctx, "unquote-splicing").into();
-                Ok(self.wrap(node, list!(self.ctx, unquote_splicing, expr)))
-            }
+            "unquote_splicing" => self.parse_abbrev(node, ",@"),
 
             "list" => {
-                let list = self.parse_compound_node(node, src, CompoundType::List)?;
+                let list = self.parse_compound_node(node, src)?;
                 Ok(self.wrap(node, list))
             }
 
@@ -688,45 +698,50 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
             }
 
             "vector" => {
-                let vec = self.parse_compound_node(node, src, CompoundType::Vector)?;
+                let vec = self.parse_compound_node(node, src)?;
                 Ok(self.wrap(node, vec))
             }
 
-            "#u8" => {
-                let bv = self.parse_compound_node(node, src, CompoundType::Bytevector)?;
+            "byte_vector" => {
+                let bv = self.parse_compound_node(node, src)?;
                 Ok(self.wrap(node, bv))
             }
 
-            "#vu8" => {
-                let bv = self.parse_compound_node(node, src, CompoundType::Bytevector)?;
-                Ok(self.wrap(node, bv))
-            }
+            "ERROR" | "MISSING" => Err(LexicalError::InvalidSyntax { span: src.0 }),
 
             "directive" => Ok(Value::null()),
+            // `#n=` labels and `#n#` references need shared or cyclic
+            // structure, which this reader cannot build: reject them
+            // loudly rather than misreading the data.
+            "dot" | "datum_label" | "datum_reference" => {
+                Err(LexicalError::InvalidSyntax { span: src.0 })
+            }
             "keyword" => {
                 let kw = self.ctx.keyword(&self.text_of(node)[2..]);
                 Ok(self.wrap(node, kw.into()))
             }
 
-            _ => panic!(
-                "Unhandled node kind: {}: {} at {} in {}",
-                node.kind(),
-                self.text_of(node),
-                node.start_position().row + 1,
-                self.source_file
-            ),
+            _ => Err(LexicalError::InvalidSyntax { span: src.0 }),
         }
     }
 
-    /// Attach `node`'s span to `val` through both channels: datum
-    /// properties for fresh heap values, plus a syntax object when
-    /// wrapping. This is the reader's single span choke point: every
-    /// parsed value flows through here, so atoms and compounds alike keep
-    /// the span of the node they were parsed from, except immediates,
-    /// numbers, and interned values, which have no safe table identity
-    /// (see [`annotate`]) and travel by syntax wrap only.
     pub fn wrap(&self, node: &Node, val: Value<'gc>) -> Value<'gc> {
-        self.annotate(val, node);
+        // 1-based lines per the reader convention (see [`annotate`]).
+        self.wrap_span(
+            (
+                node.start_position().row as u32 + 1,
+                node.start_position().column as u32,
+            ),
+            (
+                node.end_position().row as u32 + 1,
+                node.end_position().column as u32,
+            ),
+            val,
+        )
+    }
+
+    pub fn wrap_span(&self, start: (u32, u32), end: (u32, u32), val: Value<'gc>) -> Value<'gc> {
+        self.annotate_span(val, start, end);
         if !self.wrap_stx || val.is::<Syntax>() {
             return val;
         }
@@ -734,19 +749,14 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
             empty_wrap<'gc>: Value<'gc> = (ctx) list!(ctx, Value::null());
         );
         let filename = self.source_file;
-        // 1-based lines per the reader convention (see [`annotate`]).
-        let line = node.start_position().row as i32 + 1;
-        let column = node.start_position().column as i32;
-        let end_line = node.end_position().row as i32 + 1;
-        let end_column = node.end_position().column as i32;
         let v = Vector::from_slice(
             self.ctx,
             &[
                 filename,
-                line.into(),
-                column.into(),
-                end_line.into(),
-                end_column.into(),
+                (start.0 as i32).into(),
+                (start.1 as i32).into(),
+                (end.0 as i32).into(),
+                (end.1 as i32).into(),
                 Value::new(false),
                 Value::new(false),
                 Value::from(Symbol::from_str(self.ctx, "read")),

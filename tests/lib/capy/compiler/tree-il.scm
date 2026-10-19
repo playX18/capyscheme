@@ -87,9 +87,9 @@
     (test-equal
       "imported free toplevel reference becomes public module ref"
       `(let ((module-var
-               ((@@ (capy) define-module*)
+               ((|@@| (capy) define-module*)
                 ',consumer-name)))
-         (@ ,provider-name exported-value))
+         (|@| ,provider-name exported-value))
       (tree-il->scheme
         (resolve-free-vars
           (make-let

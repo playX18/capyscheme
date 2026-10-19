@@ -111,39 +111,28 @@ pub(crate) fn code_range() -> Option<(u64, u64)> {
     })
 }
 
-/// The generated `interpreter_enter_cp` glue, installed with the markers: the
-/// machine entry of every interpreted closure. Every caller that jumps
-/// through `closure.code` presets `CP`, so closures skip the `CP` reload at
-/// the top of `interpreter_enter` (which `scheme_entry` still needs).
 static INTERPRETER_ENTER: AtomicUsize = AtomicUsize::new(0);
 
 fn set_interpreter_enter(addr: *const u8) {
     INTERPRETER_ENTER.store(addr as usize, Ordering::Relaxed);
 }
 
-/// The machine entry for new closures, once the image is loaded.
 pub(crate) fn interpreter_enter_if_loaded() -> Option<*const u8> {
     let addr = INTERPRETER_ENTER.load(Ordering::Relaxed);
     (addr != 0).then_some(addr as *const u8)
 }
 
-/// The generated `subr_call` glue, installed with the markers: the machine
-/// entry of every native closure. Native calls link like bytecode calls and
-/// land here through `jump [CP + CLOSURE_CODE]`.
 static SUBR_CALL: AtomicUsize = AtomicUsize::new(0);
 
 fn set_subr_call(addr: *const u8) {
     SUBR_CALL.store(addr as usize, Ordering::Relaxed);
 }
 
-/// The machine entry for new native closures, once the image is loaded.
 pub(crate) fn subr_call_if_loaded() -> Option<*const u8> {
     let addr = SUBR_CALL.load(Ordering::Relaxed);
     (addr != 0).then_some(addr as *const u8)
 }
 
-/// The generated `generic_call` entry: the machine entry of generic
-/// function closures, in front of `subr_call`.
 static GENERIC_CALL: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn generic_call_if_loaded() -> Option<*const u8> {
@@ -159,7 +148,7 @@ pub unsafe fn run_template<'gc>(
 ) -> NativeReturn<'gc> {
     // SAFETY: the image's `scheme_entry` is generated with this signature,
     // and the returned values live in the mutator's heap, so shortening
-    // them to 'gc is sound. The caller upholds `fp`/`argc` (unsafe fn).
+    // them to 'gc is sound.
     unsafe {
         let template_interpreter = ensure_loaded();
         let entry: extern "C" fn(*const (), Slot, usize) -> NativeReturn<'static> =

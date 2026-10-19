@@ -1,12 +1,4 @@
 //! Generated glues, stubs, and their Rust control slow paths.
-//!
-//! Every stub is `saveSchemeState`, one `extern "C" fn(th) -> *const u8`
-//! control path that sets `Tc::{stack.fp, ac, rv, cp, ip}` and returns the
-//! machine address to continue at, `restoreSchemeState`, a reload of
-//! `AC`/`RV`/`CP`, and `jump` to the returned address, except
-//! `subr_call`, which calls the native directly and only spills to its
-//! cold control path off the `ReturnOne` fast path. The stubs' control
-//! paths are in `codegen/slow.rs`, `capy_bail` is here.
 
 use parking_lot::Mutex;
 use std::io;
@@ -84,11 +76,7 @@ pub fn maybe_report_bail_stats() {
     });
 }
 
-/// Executed-opcode counts on the template interpreter, `[width][byte]` flattened, for
-/// `CAPY_TEMPLATE_OP_STATS`. Updated by generated handler prologues (see
-/// [`emit_op_count`]) with a plain load/add/store, like
-/// `Masm::hot_check`'s counters: debug-only, and lost updates under threads
-/// only undercount.
+/// Executed-opcode counts on the template interpreter
 static OP_COUNTS: [AtomicU64; 3 * 256] = [const { AtomicU64::new(0) }; 3 * 256];
 
 /// Snapshot of the executed-opcode counts, indexed by `[width][byte]`.
@@ -98,24 +86,17 @@ pub fn op_counts() -> [[u64; 256]; 3] {
     })
 }
 
-/// Address of one counter cell, embedded as an immediate in template-interpreter handler
-/// prologues. `AtomicU64` is a plain `u64` in memory.
 fn op_count_addr(width: usize, byte: u8) -> usize {
     debug_assert!(width < 3);
     &OP_COUNTS[width * 256 + byte as usize] as *const AtomicU64 as usize
 }
 
-/// Generator flag for template-interpreter executed-opcode counting. Off by default,
-/// `CAPY_TEMPLATE_OP_STATS=1` at generation time emits one counting prologue per
-/// handler. Zero overhead when off: nothing is emitted.
+/// Generator flag for template-interpreter executed-opcode counting.
 pub fn op_stats_enabled() -> bool {
     flags::template_op_stats()
 }
 
-/// Print executed-opcode totals to stderr: per-width counts (the wide-prefix
-/// double-dispatch frequency) plus the top opcodes per
-/// width. Installed with `atexit` when `CAPY_TEMPLATE_OP_STATS=1` (see
-/// `maybe_report_op_stats`).
+/// Print executed-opcode totals to stderr
 extern "C" fn print_op_stats() {
     let counts = op_counts();
     let width_totals: [u64; 3] = std::array::from_fn(|width| counts[width].iter().sum());
@@ -136,8 +117,6 @@ extern "C" fn print_op_stats() {
     ranked.sort_by(|a, b| b.2.cmp(&a.2));
     for (width, op, count) in ranked.iter().take(15) {
         let width_name = ["narrow", "wide16", "wide32"][*width];
-        // The wide dispatchers live in the narrow map under the prefix
-        // bytes, which `opcode_name` (prefixes excluded) would mislabel.
         let name: &str = match (*width, *op) {
             (0, b) if b == def::WIDE16_PREFIX => "op_wide16",
             (0, b) if b == def::WIDE32_PREFIX => "op_wide32",
@@ -163,12 +142,7 @@ pub fn maybe_report_op_stats() {
     });
 }
 
-/// The generated `interpreter_resume` glue, installed with the markers. `capy_bail`
-/// continues there after a one-shot bail, unlike the markers it precedes no
-/// `RpHeader`, so it lives outside the marker table.
 static INTERPRETER_RESUME: AtomicUsize = AtomicUsize::new(0);
-
-/// The generated exit glue, installed with the markers.
 static EXIT_GLUE: AtomicUsize = AtomicUsize::new(0);
 
 pub fn set_exit_glue(addr: *const u8) {
@@ -198,15 +172,6 @@ pub(crate) fn bail_oneway() -> bool {
 }
 
 /// Execute the bailing instruction in the Rust engine, then resume the template interpreter.
-///
-/// The bail handler flushed `SFP` to `Tc::stack.fp`, stored `PC` to `Tc::ip`
-/// and the resume count to `Tc::ac`, `op` is the bailing opcode's byte.
-/// `resume_one` runs exactly that instruction: on `ResumeTemplate` the resume
-/// state is already staged in `Tc` and the address to continue at is
-/// `interpreter_resume`, which reloads `PC`/`CONSTANT_POINTER`/`MD`. A `ReturnOk`/`ReturnErr`
-/// return instead ended the activation, so the value is staged for
-/// `scheme_exit` as the one-way bail did, for the exit glue. With `CAPY_TEMPLATE_BAIL_ONEWAY=1`
-/// the whole rest of the activation runs in the Rust engine.
 pub unsafe extern "C" fn capy_bail(th: *const (), op: u64, width: u64) -> *const u8 {
     unsafe {
         BAIL_COUNTS[(op as u8) as usize].fetch_add(1, Relaxed);
@@ -259,10 +224,7 @@ pub fn arg_regs() -> (VReg, VReg, VReg) {
     }
 }
 
-/// The first five C argument registers, for direct prim calls
-/// (`th, argc, a, b, c`). The fourth is `CP` and (on x86-64) the fifth is
-/// `PC`: both are dead across a prim in JIT code, while the template
-/// interpreter spills `CP`/`PC`/`AC` to the native stack first.
+/// The first five C argument registers
 pub(crate) fn arg_regs5() -> (VReg, VReg, VReg, VReg, VReg) {
     #[cfg(target_arch = "x86_64")]
     {
@@ -301,9 +263,7 @@ pub(crate) fn ret_regs() -> (VReg, VReg) {
 
 /// Narrow dispatch through the opcode map at `map`: `jump map[byte at PC]`.
 /// On AArch64 the map base lives in [`regs::DISPATCH`](crate::runtime::sabi::regs)
-/// (set once in [`emit_scheme_entry`]), so the `adrp`+`add` pair folds away
-/// and the tail is `ldrb; ldr [d, w, lsl #3]; br`. x86-64 keeps the `lea`:
-/// it has no spare callee-saved register, and the `lea` is one µop.
+/// (set once in [`emit_scheme_entry`]).
 pub fn emit_dispatch(masm: &mut Masm, map: Label) {
     let pc = regs::PC;
     #[cfg(target_arch = "aarch64")]
@@ -378,13 +338,6 @@ pub fn emit_dispatch_preloaded_absolute(masm: &mut Masm, base: usize) {
     );
 }
 
-/// Template-interpreter executed-opcode counter prologue: increment the
-/// `[width][byte]` cell. Returns immediately when `enabled` is false, so
-/// disabled handlers carry zero overhead: no bytes are emitted. Debug-only:
-/// a plain load/add/store, like `Masm::hot_check` (lost updates under
-/// threads only undercount). Clobbers the template scratch `T0`/`T1`, which
-/// hold nothing live at handler entry. Template-interpreter-only: templates and the JIT are
-/// untouched, so shared template signatures stay context-generic.
 pub fn emit_op_count(masm: &mut Masm, width: usize, byte: u8, enabled: bool) {
     if !enabled {
         return;
@@ -427,18 +380,12 @@ pub(crate) fn emit_control_tail(masm: &mut Masm) {
     );
 }
 
-/// `scheme_entry(th, fp, argc) -> NativeReturn`: the 4.2 prologue, then a
-/// jump to `enter`. The frame stays fixed until `scheme_exit` frees it.
-/// The only Rust -> Scheme entry, so the per-activation registers (the tag
-/// registers, and on AArch64 the opcode-map base `regs::DISPATCH`) are set
-/// here once, every dispatch below inherits them.
+/// `scheme_entry(th, fp, argc) -> NativeReturn`: prologue, then a
+/// jump to `enter`.
 pub fn emit_scheme_entry(masm: &mut Masm, enter: Label, map: Label) {
     let (tc, sfp, ac, rv) = (regs::TC, regs::SFP, regs::AC, regs::RV);
     let (a0, a1, a2) = arg_regs();
-    // `RV` arrives holding whatever the C caller left in it (on AArch64 it
-    // is `a0`, the thread pointer). Stubs spill `RV` to the traced
-    // `Tc::rv`, so it must hold a value before the first one: clear it to
-    // `Value::VALUE_EMPTY`, which tracing skips.
+
     onlineasm!(*masm.assembler();
         move {tc}, {a0};
         move {sfp}, {a1};
@@ -458,9 +405,7 @@ pub fn emit_scheme_entry(masm: &mut Masm, enter: Label, map: Label) {
             loadp {ap}, {cursor};
         );
     }
-    // The tag registers are set once per activation, here: they are
-    // reserved by all generated code, and this is the
-    // only Rust -> Scheme entry, so every template and glue can read them.
+
     let (number_tag, not_cell) = (regs::NUMBER_TAG, regs::NOT_CELL_MASK);
     let tag = sabi::NUMBER_TAG;
     let mask = sabi::NOT_CELL_MASK;
@@ -468,9 +413,7 @@ pub fn emit_scheme_entry(masm: &mut Masm, enter: Label, map: Label) {
         move {number_tag}, {tag};
         move {not_cell}, {mask};
     );
-    // The AArch64 dispatch register, same placement argument: `map` is bound
-    // at the end of this image, so this `leap` resolves forward. x86-64 has
-    // no such register.
+
     #[cfg(target_arch = "aarch64")]
     {
         let dispatch = regs::DISPATCH;
@@ -489,9 +432,6 @@ pub fn emit_scheme_entry(masm: &mut Masm, enter: Label, map: Label) {
 
 /// `scheme_exit`: load the `NativeReturn` that `capy_bail` staged in
 /// `Tc::{ac, rv}` into the C return registers, then the epilogue.
-/// The exit glue: leave the activation with the return code in `Tc::ac`
-/// and the value in `Tc::rv`, staged by `capy_exit` or another control
-/// path.
 pub fn emit_exit_glue(masm: &mut Masm) {
     let tc = regs::TC;
     let ac = masm.assembler().mem(tc, sabi::TC_AC as i32);
@@ -507,7 +447,7 @@ pub fn emit_exit_glue(masm: &mut Masm) {
 /// `interpreter_enter`: `CP` from `fp[1]`, then the interpreter entry (which
 /// heals a closure of compiled code and jumps to it when the JIT is on).
 /// Returns the label just after the `CP` reload, for callers that already
-/// set `CP` (emitted as `interpreter_enter_cp`).
+/// set `CP` .
 pub fn emit_interpreter_enter(masm: &mut Masm, map: Label) -> Label {
     let (sfp, cp) = (regs::SFP, regs::CP);
     onlineasm!(*masm.assembler();
@@ -532,10 +472,7 @@ pub fn emit_interpreter_return(masm: &mut Masm, map: Label) {
 }
 
 /// `interpreter_resume`: a control path staged the resume state in `Tc`, reload
-/// `PC` from `Tc::ip` and `CONSTANT_POINTER`/`MD` from the closure in `Tc::cp` (the
-/// bailed instruction may have entered another procedure), then dispatch.
-/// The closure comes from `Tc`, not the frame: after `underflow` the frame
-/// is virtual and its `r1` is meaningless.
+/// `PC` from `Tc::ip` and `CONSTANT_POINTER`/`MD` from the closure in `Tc::cp` then dispatch.
 pub fn emit_interpreter_resume(masm: &mut Masm, map: Label) {
     let (tc, pc) = (regs::TC, regs::PC);
     let (constant_pointer, md) = (regs::CONSTANT_POINTER, regs::MD);
@@ -558,9 +495,7 @@ pub fn emit_interpreter_resume(masm: &mut Masm, map: Label) {
 }
 
 /// One bail handler for opcode `op`: flush the resume count, save state,
-/// store `PC` to `Tc::ip`, and call `bail`. These are replaced one opcode at
-/// a time with real templates, template slow paths share this shape through
-/// [`super::template::TemplateContext::control`].
+/// store `PC` to `Tc::ip`, and call `bail`.
 pub fn emit_bail_handler(masm: &mut Masm, bail: Extern, op: u8, width: u8) {
     // The resume count `w`: the argument count at an entry, the value count
     // at a return point, ignored everywhere else. Templates keep `AC` holding
@@ -626,18 +561,6 @@ pub fn emit_stub(masm: &mut Masm, path: Extern) {
 /// The machine entry of a native procedure (`subr_call`, installed as
 /// `closure.code` for natives). Entered by jump with `SFP` = the call's
 /// frame, `CP` = the closure, `AC` = the argument count.
-///
-/// Calls the native directly with `(TC, SFP)`. A `ReturnOne` serves inline
-/// (`RV=[SFP+16]; AC=1; jmp [SFP]`), anything else spills to the `path`
-/// cold call, the repurposed `capy_subr_call(th, code)`. The direct call
-/// sits at the same stack depth as a control call, so its alignment is
-/// inherited, like every stub this ends in jumps, never `ret`, so AArch64
-/// needs no `lr` handling.
-///
-/// The stub publishes the same stack state the driver's `run_native` does:
-/// `fp` (via `save_scheme_state`), the count, and `sp` (the first free
-/// slot above the arguments). Staging (`prepare_call_data`) reserves and
-/// writes at `sp`, so a stale `sp` would alias the live frame.
 pub(crate) fn emit_subr_call(masm: &mut Masm, path: Extern) {
     let tc = regs::TC;
     let sfp = regs::SFP;
@@ -655,9 +578,6 @@ pub(crate) fn emit_subr_call(masm: &mut Masm, path: Extern) {
     let ra_at = masm.assembler().mem(sfp, 0);
     let cold = masm.label();
     let body = masm.label();
-    // `a2` doubles as the scratch: the transients are spilled and
-    // the call takes two arguments, so nothing live shares it on either
-    // target. `sp` goes out before the target load reuses it.
     let sp_slot = masm.assembler().mem_indexed(sfp, ac_register, 8, 16);
     onlineasm!(*masm.assembler();
         storeq {ac_at}, {ac_register};
@@ -681,11 +601,6 @@ pub(crate) fn emit_subr_call(masm: &mut Masm, path: Extern) {
         move {ac_register}, 1;
         jmp {ra_at};
     );
-    // `EnterBody`: the native turned its frame into a call. `SFP` is
-    // reloaded from the stack state (the frame may have moved), the callee
-    // is at `[SFP + 8]` and the count in `Tc::ac`. Enter the callee's
-    // compiled code when it has some (`jit_entry` 0 before compiling, all
-    // ones when it never will), else its machine entry, as a call IC hit.
     masm.bind(body);
     let jit_entry = masm
         .assembler()
@@ -713,7 +628,6 @@ pub(crate) fn emit_subr_call(masm: &mut Masm, path: Extern) {
         jmp {code_at};
     );
     masm.bind(cold);
-    // `a1` first: it aliases nothing, while `a0` aliases `r0` on AArch64.
     onlineasm!(*masm.assembler();
         move {a1}, {r0};
         move {a0}, {tc};
@@ -726,19 +640,6 @@ pub(crate) fn emit_subr_call(masm: &mut Masm, path: Extern) {
 /// The machine entry of a generic function closure. Entered like
 /// `subr_call` (`SFP` = the call's frame, `CP` = the closure, `AC` = the
 /// argument count).
-///
-/// Serves a one-argument call whose receiver class has a cached slot reader
-/// (`GenericDescriptor::slot_cache`, filled by the first dispatch that
-/// resolves to a plain accessor) without leaving generated code: the same
-/// `(class id, class descriptor, index)` validation as the
-/// `get_slot` template, then the slot is returned in `RV` and in place at `fp[2]` (return
-/// points of native continuations read the frame) with `AC = 1`.
-/// Writers (two arguments) store behind the inline unlog-bit check, logging
-/// out of line and restarting when it is set.
-/// Everything else (other arities, immediates, no matching entry,
-/// unbound slots) jumps to `subr_call` with the state untouched. `RV` is
-/// scratch here and reset to 0 before any fallthrough, as in the slot
-/// templates.
 pub(crate) fn emit_generic_call(masm: &mut Masm, subr_call: Label) {
     use crate::runtime::class::generic::slot_cache_layout as layout;
     let (sfp, cp, ac, rv, tc) = (regs::SFP, regs::CP, regs::AC, regs::RV, regs::TC);
@@ -786,10 +687,7 @@ pub(crate) fn emit_generic_call(masm: &mut Masm, subr_call: Label) {
     let index_at = masm.assembler().mem(t0, layout::INDEX as i32);
     let storage_at = masm.assembler().mem(t1, 8);
     let storage_stamp_at = masm.assembler().mem(t1, 0);
-    // The header id match guarantees the `SchemeInstance` layout. `t1`
-    // becomes the instance's `SlotStorage`: its stamp equal to the entry's
-    // means the cached index is in bounds of it, and the stamp load depends
-    // on the storage pointer's address, so it needs no fence.
+
     onlineasm!(*masm.assembler();
         loadi {rv}, {class_at};
         bqneq {rv}, {t2}, {next};
@@ -814,8 +712,7 @@ pub(crate) fn emit_generic_call(masm: &mut Masm, subr_call: Label) {
         jmp {ra_at};
     );
     // A writer entry: the store goes to the slot storage, which the unlog
-    // bit guards. A set bit logs the storage out of line (no collection can
-    // happen there) and the stub restarts, its checks now passing.
+    // bit guards.
     masm.bind(writer_path);
     onlineasm!(*masm.assembler();
         bqneq {ac}, 2, {reset};
@@ -850,9 +747,7 @@ pub(crate) fn emit_generic_call(masm: &mut Masm, subr_call: Label) {
         subq {t3}, {t3}, 1;
         bqneq {t3}, 0, {looping};
     );
-    // No slot entry served the call: try the method cache, whose hit enters
-    // a `NO_NEXT` body exactly as `subr_call` does for `EnterBody` (the
-    // arguments shift right behind a `#f` next-method).
+    // No slot entry served the call: try the method cache
     masm.bind(reset);
     {
         use crate::runtime::class::generic::method_cache_layout as ml;
@@ -959,8 +854,7 @@ pub(crate) fn emit_generic_call(masm: &mut Masm, subr_call: Label) {
             subq {t3}, {t3}, 1;
             bqneq {t3}, 0, {mloop};
         );
-        // The method cache missed: probe the open-addressed dispatch table,
-        // keyed as the Rust side keys it (`dispatch_key`/`dispatch_hash`).
+        // The method cache missed: probe the open-addressed dispatch table.
         // Generics dispatching on more than two arguments have `rest` ids
         // the probe does not compare, and stay on the Rust path.
         masm.bind(fail);
@@ -1036,7 +930,7 @@ pub(crate) fn emit_generic_call(masm: &mut Masm, subr_call: Label) {
                 urshiftq {t1}, 32;
                 andq {t1}, {t1}, {t3};
             );
-            // `t0` table, `t1` index, `t2` key; `rv` the bucket under test.
+            // `t0` table, `t1` index, `t2` key, `rv` the bucket under test.
             masm.bind(probe);
             onlineasm!(*masm.assembler();
                 move {rv}, {t1};
@@ -1101,22 +995,12 @@ pub(crate) fn emit_generic_call(masm: &mut Masm, subr_call: Label) {
 // `polymorphic == LINK_MEGA` before the stub jump, so the site stays on the
 // generic inline path and never reaches the stub again.
 //
-// Cases are the code blocks themselves, in `CallLinkInfo::cases`, which the
-// collector traces like every other metadata reference: a case keeps its
-// block alive (and through `CodeBlock::machine` the block's compiled code),
-// and a moved block is updated in place. The stub reads the slots on every
-// call rather than baking addresses, so nothing it compares can go stale.
-//
 // A hit enters the block's compiled code directly when it has some, else
 // goes through `closure.code` (the interpreter entry, which heals, or
 // `subr_call` for a native).
-//
-// Generation and case fills run under `SITE_WRITES` on the miss path, the
-// stub base publishes with Release. The template's plain loads may lag,
-// which only costs a slow-path miss, never a wrong entry.
 
 /// One generated call IC stub: the image its site's `stub` word points
-/// into. Owned by the stub's [`CodeImage`]; dropping it returns the span.
+/// into. Owned by the stub's [`CodeImage`]
 pub(crate) struct CallIcStub {
     pub(crate) image: LoadedImage,
 }
@@ -1295,9 +1179,7 @@ struct BuiltStub<'gc> {
     owner: Gc<'gc, CodeImage<'gc>>,
 }
 
-/// Generate the `call`/`tail-call` stub for the site at `link`. The owner
-/// holds the stub, and releases it once unreachable: a stub that loses the
-/// publish race is plain garbage.
+/// Generate the `call`/`tail-call` stub for the site at `link`.
 fn generate_stub<'gc>(
     mutator: MutationContext<'gc>,
     link: &CallLinkInfo,
@@ -1331,8 +1213,7 @@ fn generate_stub<'gc>(
 }
 
 /// Publish a generated stub at its site, or drop it when a racing thread
-/// published first. The publisher stores the owner (with the barrier) and
-/// then publishes the base.
+/// published first.
 fn publish_or_free<'gc>(
     link: &CallLinkInfo,
     buffer: Value<'gc>,
@@ -1416,9 +1297,6 @@ pub fn emit_call_ic_stub(masm: &mut Masm, link: &CallLinkInfo, miss: Extern, is_
     );
 }
 
-/// Stage a shared [`slow::Control`] decision and return the machine address
-/// to continue at. Like the shared stager, but always stages `RV`: the miss
-/// path never carries a live value in it.
 unsafe fn stage_ic_control(th: *const (), control: slow::Control<'static>) -> *const u8 {
     // SAFETY: forwarded from the caller.
     unsafe { super::slow::stage_control_with(th, control, Some(Value::undefined())) }
@@ -1434,7 +1312,7 @@ pub enum SwitchSearchKind {
 }
 
 /// A sparse switch-table search, emitted at the current position and
-/// entered with `call`: no `save_scheme_state`, no C call, no heap access.
+/// entered with `call`
 ///
 /// Convention: `T0` is the entries pointer, `T1` the count, `T2` the key
 /// (the low 32 bits for [`SwitchSearchKind::Int`], the masked hash for
@@ -1442,14 +1320,6 @@ pub enum SwitchSearchKind {
 /// sign-extended displacement on a hit, `T1` set to 0 on a miss (the
 /// caller loads `default` itself, off the hot path). Clobbers `T0`..`T3`,
 /// every SABI register is preserved.
-///
-/// Both loops halve `(base, n)` in four registers: `half` is recomputed
-/// from the intact `n` wherever the probe address computation destroyed
-/// it. Int pairs cost ~10 instructions per probe, symbol triples ~12
-/// (the stride-12 address multiplies, strides that are not a power of two
-/// need their multiplicand twice). The caller emits one copy per switch
-/// handler, bound to a label it calls: the search stays in-image without
-/// threading a stub address through the template contexts.
 pub fn emit_switch_search(masm: &mut Masm, kind: SwitchSearchKind) {
     let (search, hit, miss, greater) = (masm.label(), masm.label(), masm.label(), masm.label());
     masm.bind(search);

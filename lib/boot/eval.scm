@@ -4,19 +4,19 @@
   (let ([token #f])
     (dynamic-wind
       (lambda ()
-        (set! token ((@@ (capy) %runtime-stats-begin-reader))))
+        (set! token ((|@@| (capy) %runtime-stats-begin-reader))))
       thunk
       (lambda ()
-        ((@@ (capy) %runtime-stats-end-reader) token)))))
+        ((|@@| (capy) %runtime-stats-end-reader) token)))))
 
 (define (%runtime-stats-timed-psyntax thunk)
   (let ([token #f])
     (dynamic-wind
       (lambda ()
-        (set! token ((@@ (capy) %runtime-stats-begin-psyntax))))
+        (set! token ((|@@| (capy) %runtime-stats-begin-psyntax))))
       thunk
       (lambda ()
-        ((@@ (capy) %runtime-stats-end-psyntax) token)))))
+        ((|@@| (capy) %runtime-stats-end-psyntax) token)))))
 
 (define (compile-tree-il x e)
   (define (join exps)
@@ -83,7 +83,7 @@
       output-file)
     (dynamic-wind
       (lambda ()
-        ((@@ (capy) %runtime-stats-begin-compilation)))
+        ((|@@| (capy) %runtime-stats-begin-compilation)))
       (lambda ()
         (call-with-input-file filename
           (lambda (in)
@@ -93,7 +93,7 @@
               (receive (code mod new-mod) (compile-tree-il exps module)
                 (%compile code output-file mod load-thunk? dump-options))))))
       (lambda ()
-        ((@@ (capy) %runtime-stats-end-compilation))))))
+        ((|@@| (capy) %runtime-stats-end-compilation))))))
 
 ;; Compile `filename` and put output into `compiled-path`.
 ;; Env is a module where the file is being compiled.

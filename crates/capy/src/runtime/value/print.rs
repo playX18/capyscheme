@@ -17,6 +17,30 @@ impl<'gc, 'a, 'b> ValueFmt<'gc, 'a, 'b> {
         }
     }
 
+    fn symbol_needs_bars(name: &str) -> bool {
+        name.is_empty()
+            || name == "."
+            || name.chars().any(|c| {
+                c.is_whitespace()
+                    || matches!(
+                        c,
+                        '(' | ')'
+                            | '['
+                            | ']'
+                            | '{'
+                            | '}'
+                            | '"'
+                            | '\''
+                            | '`'
+                            | ','
+                            | ';'
+                            | '#'
+                            | '|'
+                            | '\\'
+                    )
+            })
+    }
+
     fn print_cdr(
         &mut self,
         x: Value<'gc>,
@@ -118,7 +142,23 @@ impl<'gc, 'a, 'b> ValueFmt<'gc, 'a, 'b> {
         } else if x == Value::new(true) {
             write!(self.fmt, "#t")
         } else if x.is::<Symbol>() {
-            write!(self.fmt, "{}", x.downcast::<Symbol>())
+            let symbol = x.downcast::<Symbol>();
+
+            if slashify {
+                let name = symbol.as_str();
+                if Self::symbol_needs_bars(&name) {
+                    write!(self.fmt, "|")?;
+                    for c in name.chars() {
+                        if c == '|' || c == '\\' {
+                            write!(self.fmt, "\\")?;
+                        }
+                        write!(self.fmt, "{c}")?;
+                    }
+                    write!(self.fmt, "|")?;
+                    return Ok(());
+                }
+            }
+            write!(self.fmt, "{symbol}")
         } else if x.is::<Str>() {
             let s = x.downcast::<Str>();
             if slashify {

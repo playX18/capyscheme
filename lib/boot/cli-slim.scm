@@ -38,28 +38,28 @@
                 (set! arg0 arg)
                 (set! interactive? #f)
                 (finish args
-                  (cons `((@@ (capy) load) ,arg0) out))]
+                  (cons `((|@@| (capy) load) ,arg0) out))]
               [(string=? arg "-s")
                 (if (null? args)
                   (error "missing argument for -s"))
                 (set! arg0 (car args))
                 (set! interactive? #f)
                 (finish (cdr args)
-                  (cons `((@@ (capy) load) ,arg0) out))]
+                  (cons `((|@@| (capy) load) ,arg0) out))]
               [(string=? arg "-c")
                 (if (null? args)
                   (error "missing argument for -c"))
                 (set! arg0 (car args))
                 (set! interactive? #f)
                 (finish (cdr args)
-                  (cons `((@@ (boot cli) eval-string) ,arg0) out))]
+                  (cons `((|@@| (boot cli) eval-string) ,arg0) out))]
               [(string=? arg "--")
                 (finish args out)]
               [(string=? arg "-l")
                 (if (null? args)
                   (error "-l: missing a file to load"))
                 (parse (cdr args)
-                  (cons `((@ (capy) load) ,(car args)) out))]
+                  (cons `((|@| (capy) load) ,(car args)) out))]
               [(string=? arg "-L")
                 (if (null? args)
                   (error "-L: missing a directory to add to load path"))
@@ -117,7 +117,7 @@
           (eval `(begin
                   ,@(reverse out)
                   ,(if interactive?
-                    `((@ (core repl) read-eval-print-loop))
+                    `((|@| (core repl) read-eval-print-loop))
                     '(exit 0)))))))
     (format #t "args=~a~%" args)
     (if (pair? args)

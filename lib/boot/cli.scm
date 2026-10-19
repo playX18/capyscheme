@@ -228,7 +228,7 @@
           (eval `(begin
                   ,@(reverse out)
                   ,(if interactive?
-                    `((@ (core repl) read-eval-print-loop))
+                    `((|@| (core repl) read-eval-print-loop))
                     '(exit 0)))))))
     (define (run)
       (with-exception-handler
@@ -255,7 +255,7 @@
           (if (arg-results-ref res "log-trace")
             (begin
               (log:set-max-level! log:trace)
-              ((@@ (capy) gc-logging-enable!) #t)))
+              ((|@@| (capy) gc-logging-enable!) #t)))
           (if (not (zero? (log:max-level)))
             (log:set-logger! *simple-logger*))
           (when (arg-results-ref res "help")
@@ -276,32 +276,32 @@
           (if (arg-results-ref res "fresh-auto-compile")
             (set! %fresh-auto-compile #t))
           (if (arg-results-ref res "debug")
-            ((@@ (capy) load-debug-enable!) #t))
+            ((|@@| (capy) load-debug-enable!) #t))
           (define out '())
 
           (when (arg-results-ref res "runtime-stats")
-            (set! out (cons `((@@ (capy) runtime-stats-enable!) #t) out)))
+            (set! out (cons `((|@@| (capy) runtime-stats-enable!) #t) out)))
 
           (when (arg-results-ref res "load")
-            (set! out (cons `((@@ (capy) load) ,(arg-results-ref res "load")) out)))
+            (set! out (cons `((|@@| (capy) load) ,(arg-results-ref res "load")) out)))
           (when (arg-results-ref res "script")
             (set! arg0 (arg-results-ref res "script"))
             (set! interactive? #f)
-            (set! out (cons `((@@ (capy) load) ,(arg-results-ref res "script")) out)))
+            (set! out (cons `((|@@| (capy) load) ,(arg-results-ref res "script")) out)))
           (when (arg-results-ref res "command")
             (set! interactive? #f)
-            (set! out (cons `((@@ (boot cli) eval-string) ,(arg-results-ref res "command")) out)))
+            (set! out (cons `((|@@| (boot cli) eval-string) ,(arg-results-ref res "command")) out)))
           ;; `capy file.scm args...`: run the first positional as a script, the
           ;; rest stay available as program arguments.
           (let ([files (arg-results-rest res)])
             (when (and interactive? (pair? files))
               (set! interactive? #f)
-              (set! out (cons `((@@ (capy) load) ,(car files)) out))))
+              (set! out (cons `((|@@| (capy) load) ,(car files)) out))))
           (when entrypoint
             (set! interactive? #f)
             (set! out (cons `(,entrypoint) out)))
           (when (and (arg-results-ref res "runtime-stats") (not interactive?))
-            (set! out (cons `((@@ (capy) format) #t "~a~%" ((@@ (capy) runtime-stats-report))) out)))
+            (set! out (cons `((|@@| (capy) format) #t "~a~%" ((|@@| (capy) runtime-stats-report))) out)))
           (finish (arg-results-rest res) out))))
 
     (add-flag! parser
@@ -403,7 +403,7 @@
 
 (define (enter-compiler args)
   "Entrypoint for `capyc` compiler CLI."
-  ((@@ (capy) primitive-load) "boot/compiler.scm")
+  ((|@@| (capy) primitive-load) "boot/compiler.scm")
 
   (define arg0 "capyc")
   (define parser (argparser))
@@ -483,7 +483,7 @@
       (print-help))
 
     (when runtime-stats
-      ((@@ (capy) runtime-stats-enable!) #t))
+      ((|@@| (capy) runtime-stats-enable!) #t))
     (when (arg-results-ref res "nobacktrace")
       (format (current-error-port)
         "warning: --nobacktrace is deprecated; debug is controlled when FASL is loaded~%"))
@@ -525,7 +525,7 @@
                     (format #t ";; Compiled ~a -> ~a~%" file out))))))
           source-files)
         (when runtime-stats
-          ((@@ (capy) format) #t "~a~%" ((@@ (capy) runtime-stats-report)))))))
+          ((|@@| (capy) format) #t "~a~%" ((|@@| (capy) runtime-stats-report)))))))
 
   (add-option! parser
     "output"

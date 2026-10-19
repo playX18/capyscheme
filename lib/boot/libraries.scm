@@ -1437,8 +1437,8 @@
     enum-set-complement
     enum-set-projection
 
-    @@
-    @
+    |@@|
+    |@|
     with-ellipsis)
   (import (capy)))
 
