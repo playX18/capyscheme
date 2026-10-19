@@ -87,13 +87,19 @@ jobs:
           SHA: ${{ needs.check.outputs.sha }}
         run: |
           ls -l assets
-          gh release delete nightly --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          ids=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq '.[] | select(.tag_name == "nightly") | .id' || true)
+          for id in $ids; do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id" || true
+          done
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/nightly" || true
           gh release create nightly assets/* \
             --repo "$GITHUB_REPOSITORY" \
             --target "$SHA" \
             --prerelease \
             --title "Nightly $(date -u +%Y-%m-%d)" \
             --notes "$(printf 'Automated nightly build of `%s`. Not a stable release.\n\n## Changes since the last release\n\n%s\n' "${SHA:0:12}" "$(cat RELEASE_NOTES.md)")"
+          gh release edit nightly --repo "$GITHUB_REPOSITORY" --draft=false
 
   tap:
     name: Update Homebrew tap
