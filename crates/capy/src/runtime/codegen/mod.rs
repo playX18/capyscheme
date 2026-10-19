@@ -21,4 +21,5 @@ pub mod slow;
 pub mod stubs;
 pub mod template;
 pub mod template_image;
+pub(crate) mod template_lazy;
 pub(crate) mod unit;

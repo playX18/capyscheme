@@ -14,7 +14,7 @@ use crate::bytecode::def::{self, OpcodeId, WIDE16_PREFIX, WIDE32_PREFIX};
 use crate::runtime::interp::markers::{self, MarkerValues};
 use crate::runtime::interp::stack::Slot;
 use crate::runtime::interp::template_interp::{
-    InterpreterTemplateContext, MAP_ENTER_SLOT, MAP_TABLE_SLOTS,
+    CodeAddr, InterpreterTemplateContext, MAP_ENTER_SLOT, MAP_TABLE_SLOTS,
 };
 use crate::runtime::sabi;
 use crate::runtime::value::NativeReturn;
@@ -39,6 +39,8 @@ pub struct TemplateInterpreter {
     scheme_entry: *const u8,
     gen_micros: u128,
     handler_kinds: [[HandlerKind; 256]; 3],
+    /// Absolute address of the opcode map
+    map_base: usize,
 }
 
 /// How one opcode-map slot's handler was emitted.
@@ -62,26 +64,32 @@ unsafe impl Sync for TemplateInterpreter {}
 pub fn ensure_loaded() -> &'static TemplateInterpreter {
     TEMPLATE_INTERPRETER.get_or_init(|| {
         let start = std::time::Instant::now();
-        let (image, handler_kinds) =
+        let (image, handler_kinds, map_base) =
             generate().expect("template: failed to generate interpreter image");
         let gen_micros = start.elapsed().as_micros();
         let scheme_entry = image
             .symbol_addr("scheme_entry")
             .expect("template: scheme_entry missing");
-        let sizes = image.code_size();
+
         install_markers(&image);
         stubs::maybe_report_bail_stats();
         stubs::maybe_report_op_stats();
         super::gc::maybe_report_alloc_stats();
         super::jit::maybe_report_jit_stats();
-        log::info!(target: crate::heap::logging::JIT_LOG_TARGET, "template: generated {sizes} bytes in {gen_micros} us");
+
         TemplateInterpreter {
             image,
             scheme_entry,
             gen_micros,
             handler_kinds,
+            map_base,
         }
     })
+}
+
+/// The loaded image's opcode-map address
+pub(crate) fn map_base() -> Option<usize> {
+    TEMPLATE_INTERPRETER.get().map(|t| t.map_base)
 }
 
 /// How each opcode-map handler was emitted: `[width][byte]`.
@@ -215,7 +223,7 @@ pub(crate) fn declare_slow_paths(masm: &mut Masm) -> SlowPaths {
     }
 }
 
-fn generate() -> io::Result<(LoadedImage, [[HandlerKind; 256]; 3])> {
+fn generate() -> io::Result<(LoadedImage, [[HandlerKind; 256]; 3], usize)> {
     let mut masm = Masm::new();
     let image_start = masm.label();
     masm.bind(image_start);
@@ -379,7 +387,7 @@ fn generate() -> io::Result<(LoadedImage, [[HandlerKind; 256]; 3])> {
     const _: () = assert!(OpcodeId::COUNT <= u8::MAX as usize);
     let op_invalid = masm.label();
     masm.bind(op_invalid);
-    stubs::emit_bail_handler(&mut masm, bail, u8::MAX);
+    stubs::emit_bail_handler(&mut masm, bail, u8::MAX, 0);
     let op_invalid_end = masm.label();
     masm.bind(op_invalid_end);
     masm.define_symbol(
@@ -389,9 +397,10 @@ fn generate() -> io::Result<(LoadedImage, [[HandlerKind; 256]; 3])> {
         SymbolKind::Handler,
     );
 
-    // One handler per opcode per width: the specialized template where one exists,
-    // the bail handler everywhere else (or forced by `CAPY_TEMPLATE_BAIL`).
+    // One handler per opcode per width: the specialized template eagerly,
+    // or a bail handler when forced by `CAPY_TEMPLATE_BAIL`.
     let forced_bail = parse_bail_filter();
+    let eager = crate::utils::flags::template_eager();
     let mut handlers: [[Option<Label>; 256]; 3] = [[None; 256]; 3];
     let mut kinds = [[HandlerKind::None; 256]; 3];
     macro_rules! emit_handlers {
@@ -413,13 +422,13 @@ fn generate() -> io::Result<(LoadedImage, [[HandlerKind; 256]; 3])> {
                     let mut context = InterpreterTemplateContext {
                         width: bytecodegen::OperandWidth::from_index(width as u8),
                         op: OpcodeId::$Op,
-                        map,
-                        interpreter_return,
+                        map: CodeAddr::Label(map),
+                        interpreter_return: CodeAddr::Label(interpreter_return),
                         bail,
                         paths,
                     };
-                    if forced_bail[byte] {
-                        stubs::emit_bail_handler(&mut masm, bail, byte as u8);
+                    if forced_bail[byte] || !eager {
+                        stubs::emit_bail_handler(&mut masm, bail, byte as u8, width as u8);
                         kinds[width][byte] = HandlerKind::Bail;
                     } else {
                         emit::emit_template(&mut masm, &mut context, OpcodeId::$Op);
@@ -472,8 +481,10 @@ fn generate() -> io::Result<(LoadedImage, [[HandlerKind; 256]; 3])> {
 
     let mut image = masm.finish().map_err(io::Error::other)?;
     image.tables.push(TablePatch { base: map, entries });
+    let map_off = image.finished.offset(map).expect("the opcode map is bound") as usize;
     let loaded = image::load(image, |name| resolve_slow_path(name))?;
-    Ok((loaded, kinds))
+    let map_base = loaded.base().as_usize() + map_off;
+    Ok((loaded, kinds, map_base))
 }
 
 fn emit_wide(masm: &mut Masm, map: Label, width: u8) {

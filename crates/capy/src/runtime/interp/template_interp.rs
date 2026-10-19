@@ -21,13 +21,20 @@ use crate::runtime::codegen::template::{
 use crate::runtime::sabi::regs;
 use crate::utils::flags;
 
+/// How a template addresses the opcode map and the interpreter return..
+#[derive(Clone, Copy)]
+pub enum CodeAddr {
+    Label(Label),
+    Absolute(usize),
+}
+
 /// The interpreter context
 pub struct InterpreterTemplateContext {
     pub width: OperandWidth,
     pub op: OpcodeId,
-    pub map: Label,
+    pub map: CodeAddr,
     /// The `interpreter_return`.
-    pub interpreter_return: Label,
+    pub interpreter_return: CodeAddr,
     pub bail: Extern,
     pub paths: SlowPaths,
 }
@@ -72,7 +79,42 @@ impl InterpreterTemplateContext {
     }
 
     fn dispatch(&mut self, masm: &mut Masm) {
-        stubs::emit_dispatch(masm, self.map);
+        match self.map {
+            CodeAddr::Label(map) => stubs::emit_dispatch(masm, map),
+            CodeAddr::Absolute(base) => stubs::emit_dispatch_absolute(masm, base),
+        }
+    }
+
+    /// `dst = map + MAP_ENTER_OFF` for a new closure's machine entry.
+    fn map_enter(&mut self, masm: &mut Masm, dst: VReg) {
+        match self.map {
+            CodeAddr::Label(map) => {
+                let slot = masm.assembler().mem(dst, MAP_ENTER_OFF);
+                onlineasm!(*masm.assembler();
+                    leap {dst}, {map};
+                    loadq {dst}, {slot};
+                );
+            }
+            CodeAddr::Absolute(base) => {
+                stubs::emit_movabs(masm, dst, base);
+                let slot = masm.assembler().mem(dst, MAP_ENTER_OFF);
+                onlineasm!(*masm.assembler();
+                    loadq {dst}, {slot};
+                );
+            }
+        }
+    }
+
+    /// `dst = interpreter_return`.
+    fn return_addr(&mut self, masm: &mut Masm, dst: VReg) {
+        match self.interpreter_return {
+            CodeAddr::Label(label) => {
+                onlineasm!(*masm.assembler();
+                    leap {dst}, {label};
+                );
+            }
+            CodeAddr::Absolute(addr) => stubs::emit_movabs(masm, dst, addr),
+        }
     }
 }
 
@@ -145,12 +187,7 @@ impl Operands for InterpreterTemplateContext {
     }
 
     fn machine_entry(&mut self, masm: &mut Masm, dst: VReg) {
-        let map = self.map;
-        let slot = masm.assembler().mem(dst, MAP_ENTER_OFF);
-        onlineasm!(*masm.assembler();
-            leap {dst}, {map};
-            loadq {dst}, {slot};
-        );
+        self.map_enter(masm, dst);
     }
 }
 
@@ -166,7 +203,10 @@ impl Flow for InterpreterTemplateContext {
             loadb {tmp::T2}, {op_at};
             addp {pc}, {pc}, {len as i64};
         );
-        stubs::emit_dispatch_preloaded(masm, self.map);
+        match self.map {
+            CodeAddr::Label(map) => stubs::emit_dispatch_preloaded(masm, map),
+            CodeAddr::Absolute(base) => stubs::emit_dispatch_preloaded_absolute(masm, base),
+        }
     }
 
     fn jump(&mut self, masm: &mut Masm, field: usize) {
@@ -204,7 +244,7 @@ impl Flow for InterpreterTemplateContext {
     }
 
     fn call_return_point(&mut self, masm: &mut Masm, frame: VReg) {
-        let (pc, interpreter_return) = (regs::PC, self.interpreter_return);
+        let pc = regs::PC;
         let len = op_len(self.op, self.width) as i32;
         let next = masm.assembler().mem(pc, len);
         let resume = masm.assembler().mem(frame, -8);
@@ -212,7 +252,9 @@ impl Flow for InterpreterTemplateContext {
         onlineasm!(*masm.assembler();
             leap {tmp::T0}, {next};
             storep {resume}, {tmp::T0};
-            leap {tmp::T0}, {interpreter_return};
+        );
+        self.return_addr(masm, tmp::T0);
+        onlineasm!(*masm.assembler();
             storep {ra}, {tmp::T0};
         );
     }
@@ -233,12 +275,14 @@ impl Flow for InterpreterTemplateContext {
     }
 
     fn resume_caller(&mut self, masm: &mut Masm, slow: Label) {
-        let (sfp, pc, interpreter_return) = (regs::SFP, regs::PC, self.interpreter_return);
+        let (sfp, pc) = (regs::SFP, regs::PC);
         let ra = masm.assembler().mem(sfp, 0);
         let resume = masm.assembler().mem(sfp, -8);
         onlineasm!(*masm.assembler();
             loadq {tmp::T0}, {ra};
-            leap {tmp::T1}, {interpreter_return};
+        );
+        self.return_addr(masm, tmp::T1);
+        onlineasm!(*masm.assembler();
             bqneq {tmp::T0}, {tmp::T1}, {slow};
             loadp {pc}, {resume};
         );

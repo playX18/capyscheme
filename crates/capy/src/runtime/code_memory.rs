@@ -2,8 +2,8 @@
 //!
 //! Spans are the allocator's plain `Copy` handles.
 
-use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::Release;
+use std::sync::atomic::{AtomicU32, AtomicU64};
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{io, sync::LazyLock};
@@ -148,6 +148,27 @@ impl CodeMemory {
                 .lock()
                 .write(span, |span| {
                     AtomicU32::from_ptr(span.rw().add(offset).cast::<u32>()).store(word, Release);
+                })
+                .map_err(|err| io::Error::other(format!("failed to patch JIT memory: {err:?}")))?;
+        }
+        Ok(())
+    }
+
+    pub fn patch_live_u64(&self, span: &mut Span, offset: usize, word: u64) -> io::Result<()> {
+        if offset % 8 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "live code patch is not 8-byte aligned",
+            ));
+        }
+        validate_patch_bounds(span, offset, &[0; 8])?;
+        // SAFETY: `span` is a live allocation of this allocator, the word is
+        // aligned and inside it
+        unsafe {
+            self.allocator
+                .lock()
+                .write(span, |span| {
+                    AtomicU64::from_ptr(span.rw().add(offset).cast::<u64>()).store(word, Release);
                 })
                 .map_err(|err| io::Error::other(format!("failed to patch JIT memory: {err:?}")))?;
         }
