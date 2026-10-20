@@ -112,7 +112,7 @@ CAPY_ENV = \
 
 # Per-load timing during bootstrap stages (Chez-style `time` in load/compile).
 # Override with `make TIME_ENV= stage-0` to disable.
-TIME_ENV ?= CAPY_TIME_LOADS=1
+TIME_ENV ?= CAPY_TIME_LOADS=0
 
 R7RS_BENCH_RUNS ?= 5
 R7RS_BENCHMARKS ?=
