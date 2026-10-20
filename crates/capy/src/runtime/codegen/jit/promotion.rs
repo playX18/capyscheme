@@ -26,7 +26,7 @@ pub(crate) trait HotnessPolicy {
     /// has a compiler in this build, or `None` when the set names none
     /// (tier-up is then skipped).
     fn next_tier(&self) -> Option<Tier> {
-        None
+        Some(Tier::Baseline)
     }
 }
 
