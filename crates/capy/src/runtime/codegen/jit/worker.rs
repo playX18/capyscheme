@@ -1,8 +1,9 @@
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::Ordering::Release;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, Once};
+use std::thread::JoinHandle;
 
 use mmtk::util::Address;
 
@@ -108,32 +109,59 @@ unsafe impl Trace for WorkerRoot<'_> {
 static PENDING: Mutex<usize> = Mutex::new(0);
 static PENDING_READY: Condvar = Condvar::new();
 static THREADS: Once = Once::new();
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+static WORKERS: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
 
 fn spawn_workers() {
     THREADS.call_once(|| {
+        
+        // On Linux `_dl_fini` races `__deregister_frame` and we need to drain workers beforehand.
+        if unsafe { libc::atexit(drain_jit_workers) } != 0 {
+            log::warn!(target: crate::heap::logging::JIT_LOG_TARGET, "failed to register JIT exit drain");
+        }
         for index in 0..flags::jit_workers() {
-            if let Err(err) = std::thread::Builder::new()
+            match std::thread::Builder::new()
                 .name(format!("capy-jit-{index}"))
                 .spawn(worker_loop)
             {
-                log::warn!(target: crate::heap::logging::JIT_LOG_TARGET, "worker thread failed to spawn: {err}");
+                Ok(handle) => WORKERS
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(handle),
+                Err(err) => {
+                    log::warn!(target: crate::heap::logging::JIT_LOG_TARGET, "worker thread failed to spawn: {err}");
+                }
             }
         }
     });
 }
 
-/// Submit `code_block` for background compilation at `tier` as `id`: queue
-/// it, rooted through the VM globals. Compiled code jumps into the
-/// interpreter image, and the worker only wakes on jobs, so ensure that
-/// image is loaded first. A full queue evicts its oldest job, whose claim is
-/// released so its block can fire again: the newest submit is the one hot
-/// right now.
+/// Stop all JIT workers and wait for them
+extern "C" fn drain_jit_workers() {
+    SHUTDOWN.store(true, Ordering::SeqCst);
+    PENDING_READY.notify_all();
+    let handles: Vec<JoinHandle<()>> = std::mem::take(
+        WORKERS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_mut(),
+    );
+    for handle in handles {
+        let _ = handle.join();
+    }
+}
+
+/// Submit `code_block` for background compilation at `tier` as `id`
 pub(crate) fn submit<'gc>(
     ctx: MutationContext<'gc>,
     code_block: Gc<'gc, CodeBlock<'gc>>,
     id: usize,
     tier: Tier,
 ) {
+    if SHUTDOWN.load(Ordering::SeqCst) {
+        release_claim(code_block);
+        return;
+    }
     ensure_loaded();
     spawn_workers();
     let label = crate::runtime::value::proc::procedure_span_short(ctx, code_block);
@@ -173,8 +201,13 @@ fn worker_loop() {
         // In native: a waiting worker never holds up a collection.
         {
             let mut pending = PENDING_READY
-                .wait_while(PENDING.lock().unwrap(), |pending| *pending == 0)
-                .unwrap();
+                .wait_while(PENDING.lock().unwrap(), |pending| {
+                    *pending == 0 && !SHUTDOWN.load(Ordering::SeqCst)
+                })
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if SHUTDOWN.load(Ordering::SeqCst) {
+                break;
+            }
             *pending -= 1;
         }
         mutator.mutate(|ctx, root| {
@@ -193,8 +226,15 @@ fn worker_loop() {
                 log::warn!(target: crate::heap::logging::JIT_LOG_TARGET, "worker panicked on job #{id}");
                 Err(())
             });
-            // The root still holds the buffer: attach before releasing it.
-            finish_job(ctx, buffer, id, result);
+            if SHUTDOWN.load(Ordering::SeqCst) {
+                if let Ok(built) = result {
+                    std::mem::forget(built);
+                }
+                buffer.build_failed.store(true, Ordering::Release);
+            } else {
+                // The root still holds the buffer: attach before releasing it.
+                finish_job(ctx, buffer, id, result);
+            }
             // Released while mutating, so never during a root scan.
             root.current.set(None);
             Some(())
@@ -218,7 +258,7 @@ fn finish_job<'gc>(
     };
     if attached.is_err() {
         // Installing mutators poison the block.
-        buffer.build_failed.store(true, Release);
+        buffer.build_failed.store(true, Ordering::Release);
     }
 }
 

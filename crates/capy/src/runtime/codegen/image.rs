@@ -362,16 +362,19 @@ impl EhFrame {
         if regions.is_empty() {
             return Ok(None);
         }
-        let (bytes, fde_offsets) =
+
+        let (bytes, _fde_offsets) =
             Self::build(rx, finished, regions, cfg!(target_vendor = "apple"))?;
-        // SAFETY: the pointers stay valid until `drop` deregisters them, the
-        // unwinder only reads the entries while another thread runs this
-        // image's code, which outlives any deregistration by construction.
+        // SAFETY: the pointers stay valid until `drop` deregisters them with
+        // the exact registered pointer. Concurrent registration races the
+        // exit-time static deregistration in `_dl_fini`, so the JIT exit
+        // drain stops and joins every worker before `exit()` can reach
+        // it
         unsafe {
             #[cfg(target_vendor = "apple")]
             let fdes: Vec<*const u8> = {
                 let base = bytes.as_ptr();
-                let fdes: Vec<*const u8> = fde_offsets.iter().map(|&off| base.add(off)).collect();
+                let fdes: Vec<*const u8> = _fde_offsets.iter().map(|&off| base.add(off)).collect();
                 for &fde in &fdes {
                     __register_frame(fde);
                 }

@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```rust
-//! use easy_bitfield::*;
+//! use capy::utils::easy_bitfield::*;
 //!
 //! pub type X = BitField<usize, bool, 0, 1, false>;
 //! pub type Y = BitField<usize, u16, { X::NEXT_BIT }, 16, false>;
@@ -42,7 +42,7 @@ use std::{marker::PhantomData, sync::atomic::Ordering};
 /// # Example usage
 ///
 /// ```rust
-/// use easy_bitfield::*;
+/// use capy::utils::easy_bitfield::*;
 /// // simple boolean bitfield at position 0
 /// pub type MyBitfield = BitField<usize, bool, 0, 1, false>;
 /// // simple 17-bit bitfield that is encoded/decoded from u32, located at second bit
