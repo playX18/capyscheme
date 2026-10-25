@@ -110,6 +110,9 @@ impl<'gc, T> Weak<'gc, T> {
     pub fn upgrade(self, mc: impl Into<Mutation<'gc>>) -> Option<Gc<'gc, T>> {
         let mc = mc.into();
         self.ptr.map(|ptr| unsafe {
+            // SAFETY: a worker touches its mutator for one goroutine at a
+            // time, and a goroutine runs on one worker at a time, so this borrow is the
+            // only live one.
             mc.thread().mutator_unchecked().barrier.load_weak_reference(
                 ObjectReference::from_raw_address_unchecked(Address::from_ptr(ptr.as_ptr())),
             );

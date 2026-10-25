@@ -167,26 +167,6 @@ impl<'gc, T> Gc<'gc, T> {
         this.as_gc_object().hashcode()
     }
 
-    /// Allocate `value` on the GC heap.
-    #[inline]
-    pub fn new(mc: impl Into<Mutation<'gc>>, value: T) -> Gc<'gc, T>
-    where
-        T: Trace,
-    {
-        mc.into()
-            .allocate(value, mmtk::AllocationSemantics::Default)
-    }
-
-    #[inline]
-    pub fn new_with_header_word(
-        mc: impl Into<Mutation<'gc>>,
-        value: T,
-        header_word: u64,
-    ) -> Gc<'gc, T> {
-        mc.into()
-            .allocate_with_header_word(value, header_word, mmtk::AllocationSemantics::Default)
-    }
-
     pub fn to_object_reference(self) -> ObjectReference {
         unsafe { ObjectReference::from_raw_address_unchecked(Address::from_ptr(self.ptr.as_ptr())) }
     }

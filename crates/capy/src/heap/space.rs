@@ -1,6 +1,7 @@
-//! Allocation space selectors for [`crate::runtime::MutationContext::alloc_in`].
+//! Where a freshly allocated object lives.
 
-/// Where to place a freshly allocated object.
+/// An allocation space, chosen at the call site of
+/// [`Mutation::allocate_in`](crate::heap::Mutation::allocate_in).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Space {
     /// Default nursery / immix space (movable).
@@ -9,14 +10,17 @@ pub enum Space {
     NonMoving,
     /// Large object space.
     Los,
+    /// Never collected.
+    Immortal,
 }
 
 impl Space {
-    pub fn to_semantics(self) -> mmtk::AllocationSemantics {
+    pub(crate) fn to_semantics(self) -> mmtk::AllocationSemantics {
         match self {
             Space::Default => mmtk::AllocationSemantics::Default,
             Space::NonMoving => mmtk::AllocationSemantics::NonMoving,
             Space::Los => mmtk::AllocationSemantics::Los,
+            Space::Immortal => mmtk::AllocationSemantics::Immortal,
         }
     }
 }

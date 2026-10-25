@@ -53,20 +53,12 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
         let thread = Thread::from_mutator_thread(mtls);
         let mut sv = RootSlotVisitor::new();
         let mut visitor = unsafe { Visitor::new(VisitorKind::Slot(&mut sv), None) };
+
+        let home = thread.home_goroutine();
         unsafe {
-            if thread.is_thread_state_initialized() {
-                let state = thread
-                    .native_data()
-                    .state
-                    .get()
-                    .as_mut()
-                    .expect("index in range");
-                state.assume_init_mut().trace(&mut visitor);
-                thread
-                    .tc_ptr()
-                    .as_mut()
-                    .expect("thread context built with thread")
-                    .trace(&mut visitor);
+            if home.sched.state_ready.get() {
+                (*home.state_ptr()).trace(&mut visitor);
+                (*home.tc_ptr()).trace(&mut visitor);
             }
         }
 
@@ -93,26 +85,23 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
         mut factory: impl mmtk::vm::RootsWorkFactory<<MemoryManager as mmtk::vm::VMBinding>::VMSlot>,
     ) {
         crate::heap::oop_storage::OopStorageSet::get().scan_strong(&mut factory);
-        crate::runtime::codegen::reclaim::scan_roots(&mut factory);
+        crate::heap::GarbageCollector::get()
+            .finalizers
+            .scan_ready(&mut factory);
 
         let threads = crate::heap::GarbageCollector::get().threads.threads();
         for thread in threads.iter() {
-            if !thread.is_thread_state_initialized() {
+            if thread.native_data_mut_ptr().is_null() {
                 continue;
             }
             let mut sv = RootSlotVisitor::new();
             let mut visitor = unsafe { Visitor::new(VisitorKind::Slot(&mut sv), None) };
             unsafe {
-                thread
-                    .state_ptr()
-                    .as_mut()
-                    .expect("thread state initialized")
-                    .trace(&mut visitor);
-                thread
-                    .tc_ptr()
-                    .as_mut()
-                    .expect("thread context built with thread")
-                    .trace(&mut visitor);
+                let home = thread.home_goroutine();
+                if home.sched.state_ready.get() {
+                    (*home.state_ptr()).trace(&mut visitor);
+                    (*home.tc_ptr()).trace(&mut visitor);
+                }
 
                 let mutator_state = (*thread.native_data_mut_ptr()).mutator_state;
                 if let Some(mut mutator_state) = mutator_state {
@@ -127,6 +116,22 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
                 }
             }
             factory.create_process_roots_work(sv.set.into_iter().collect());
+        }
+
+        unsafe {
+            crate::runtime::sched::scheduler::trace_registered_goroutines(|g| {
+                let mut sv = RootSlotVisitor::new();
+                let mut visitor = Visitor::new(VisitorKind::Slot(&mut sv), None);
+                if g.sched.state_ready.get() {
+                    (*g.state_ptr()).trace(&mut visitor);
+                }
+
+                if g.sched.has_stack() {
+                    (*g.tc_ptr()).trace(&mut visitor);
+                }
+                g.sched.trace_start(&mut visitor);
+                factory.create_process_roots_work(sv.set.into_iter().collect());
+            });
         }
         drop(threads);
 

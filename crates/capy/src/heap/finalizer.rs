@@ -7,10 +7,10 @@ use std::{
 use mmtk::{
     scheduler::GCWorker,
     util::ObjectReference,
-    vm::{ObjectTracer, ObjectTracerContext},
+    vm::{ObjectTracer, ObjectTracerContext, RootsWorkFactory},
 };
 
-use crate::heap::{Gc, Trace, mm::MemoryManager, sync::monitor::Monitor};
+use crate::heap::{Gc, ObjectSlot, Trace, mm::MemoryManager, sync::monitor::Monitor};
 
 pub trait FinalizationNotify: 'static {
     fn notify_in_processing(&self);
@@ -29,6 +29,13 @@ pub unsafe trait FinalizerQueue: 'static {
 
     /// Schedule execution of finalizers.
     fn schedule(&self);
+
+    /// Append the address of every slot holding an object this queue has
+    /// resurrected and not yet handed out. The collector treats them as
+    /// roots (and updates them if the object moves), so a resurrected object
+    /// stays alive until the queue releases it. The slots must stay at a
+    /// stable address for the duration of the collection.
+    fn ready_slots(&self, _slots: &mut Vec<ObjectSlot>) {}
 }
 
 struct Key(Arc<dyn FinalizerQueue>);
@@ -177,6 +184,19 @@ impl Finalizers {
         }
 
         had_some
+    }
+
+    /// Report the resurrected-but-undelivered objects of every queue as
+    /// roots.
+    pub(crate) fn scan_ready(&self, factory: &mut impl RootsWorkFactory<ObjectSlot>) {
+        let state = self.0.lock();
+        let mut slots = Vec::new();
+        for queue in state.queues.iter().flatten() {
+            queue.ready_slots(&mut slots);
+        }
+        if !slots.is_empty() {
+            factory.create_process_roots_work(slots);
+        }
     }
 
     pub(crate) fn schedule(&self) {

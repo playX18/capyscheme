@@ -26,6 +26,13 @@ pub fn add_core_constraints(set: &mut MarkingConstraintSet) {
         |_visitor| {},
     )));
 
+    set.add(Box::new(SimpleMarkingConstraint::new(
+        "Gr",
+        "Goroutine Registry",
+        ConstraintVolatility::GreyedByExecution,
+        |_visitor| {},
+    )));
+
     // Weak / ephemeron outgrowths, body is a marker, real work is in WeakProcessingState.
     set.add(Box::new(
         SimpleMarkingConstraint::new(

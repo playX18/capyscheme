@@ -20,6 +20,8 @@ impl<'a> Iterator for MutatorIterator<'a> {
             let thread = &self.guard[self.index];
             self.index += 1;
             if thread.is_mutator() {
+                // SAFETY: MMTk asks for a mutator only while its thread is stopped
+                // at a GC safepoint, so this borrow is the only live one.
                 return Some(unsafe { thread.mutator_unchecked() });
             }
         }
@@ -33,6 +35,8 @@ impl mmtk::vm::ActivePlan<MemoryManager> for ActivePlan {
     }
 
     fn mutator(tls: mmtk::util::VMMutatorThread) -> &'static mut mmtk::Mutator<MemoryManager> {
+        // SAFETY: MMTk asks for a mutator only while its thread is stopped
+        // at a GC safepoint, so this borrow is the only live one.
         unsafe { Thread::from_mutator_thread(tls).mutator_unchecked() }
     }
 

@@ -6,7 +6,8 @@ use std::{
     ops::{Deref, Index, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
-use mmtk::{AllocationSemantics, util::conversions::raw_align_up};
+use crate::heap::Space;
+use mmtk::util::conversions::raw_align_up;
 
 use crate::heap::collection::Visitor;
 use crate::heap::{
@@ -83,11 +84,11 @@ impl<T: Trace> Array<T> {
         weak_proc: array_process_weaks::<T>,
     };
 
-    /// Allocates new array on heap with specified semantics, length `len` and a closure `f`
+    /// Allocates new array in `space` with length `len` and a closure `f`
     /// which returns value for specified index.
-    pub fn with_semantics<'gc, F>(
+    pub fn new_in<'gc, F>(
         mc: impl Into<Mutation<'gc>>,
-        semantics: AllocationSemantics,
+        space: Space,
         len: usize,
         mut f: F,
     ) -> Gc<'gc, Self>
@@ -99,14 +100,14 @@ impl<T: Trace> Array<T> {
         let align = align_of::<Self>();
 
         let allocation = unsafe {
-            mc.raw_allocate_with_header_word_unpublished(
+            mc.allocate_raw_unpublished(
                 size,
                 align,
                 type_class_header_word::<Array<T>>(
                     crate::runtime::MutationContext::from(mc),
                     Self::HOOKS,
                 ),
-                semantics,
+                space,
             )
         };
 
@@ -117,7 +118,7 @@ impl<T: Trace> Array<T> {
             let alloc = allocation.object();
             let this = alloc.to_address().as_mut_ref::<Self>();
             this.len = 0;
-            mc.publish_allocated_object(allocation);
+            mc.publish(allocation);
 
             for i in 0..len {
                 this.data
@@ -131,11 +132,11 @@ impl<T: Trace> Array<T> {
         }
     }
 
-    pub fn with<'gc, F>(mc: impl Into<Mutation<'gc>>, len: usize, f: F) -> Gc<'gc, Self>
+    pub fn new<'gc, F>(mc: impl Into<Mutation<'gc>>, len: usize, f: F) -> Gc<'gc, Self>
     where
         F: FnMut(Mutation<'gc>, usize) -> T,
     {
-        Self::with_semantics(mc, AllocationSemantics::Default, len, f)
+        Self::new_in(mc, Space::Default, len, f)
     }
 
     pub fn from_slice<'gc>(mc: impl Into<Mutation<'gc>>, arr: impl AsRef<[T]>) -> Gc<'gc, Self>
@@ -144,7 +145,7 @@ impl<T: Trace> Array<T> {
     {
         let arr = arr.as_ref();
 
-        Self::with(mc, arr.len(), |_, index| arr[index].clone())
+        Self::new(mc, arr.len(), |_, index| arr[index].clone())
     }
 
     pub fn from_iter<'gc>(
@@ -159,7 +160,7 @@ impl<T: Trace> Array<T> {
         if Some(lower) == upper {
             let size = lower;
 
-            Self::with(mc, size, |_, _| {
+            Self::new(mc, size, |_, _| {
                 iter.next().expect("Iterator should have enough elements")
             })
         } else {

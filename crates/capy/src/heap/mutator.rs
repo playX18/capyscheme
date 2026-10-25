@@ -5,8 +5,9 @@ use crate::{
         mm::MemoryManager,
         object::{AllocationHooksOf, GcObject, HeapObjectHeader, OBJECT_REF_OFFSET},
         ptr::Gc,
+        space::Space,
         sync::thread::{
-            AllocFastPath, Thread, ThreadNativeData, current_native_data, current_thread,
+            AllocFastPath, Goroutine, NativeCtx, Thread, current_goroutine, current_thread,
             is_current_thread_registed,
         },
         traits::Trace,
@@ -226,12 +227,25 @@ where
         F: for<'gc> FnOnce(crate::runtime::MutationContext<'gc>, &'gc Root<'gc, R>) -> T,
     {
         unsafe {
-            let mc = Mutation::new();
+            // A scope already open on this thread (Scheme running on a thread
+            // calls back into its own mutator) is continued, not reopened.
+            let nested = matches!(
+                current_thread().get_exec_status(),
+                crate::heap::sync::thread::ThreadState::Mutating
+                    | crate::heap::sync::thread::ThreadState::MutatingToBlock
+            );
+            let mc = if nested {
+                Mutation::new_nested()
+            } else {
+                Mutation::new()
+            };
             let mc: Mutation<'static> = std::mem::transmute(mc);
             let ctx = crate::runtime::MutationContext::from(mc);
             let state = self.state.as_ptr().as_mut().expect("state must be valid");
             let res = std::panic::catch_unwind(AssertUnwindSafe(|| f(ctx, &mut state.root)));
-            Thread::enter_native();
+            if !nested {
+                Thread::enter_native();
+            }
             match res {
                 Ok(v) => v,
                 Err(e) => std::panic::resume_unwind(e),
@@ -287,9 +301,11 @@ where
 #[derive(Copy, Clone)]
 #[repr(transparent)]
 pub struct Mutation<'gc> {
-    /// Points into the owning thread's `#[thread_local]` slot, kept as a raw
-    /// pointer so mutation through it (LAB, mutator) keeps write provenance.
-    nd: NonNull<ThreadNativeData>,
+    /// The running [`Goroutine`]. This is the value the `TC` register holds,
+    /// and native procs receive it as `ctx` (`NativeFn` takes a `Mutation` by
+    /// value), so the representation must stay the bare pointer. The worker
+    /// context is reached through [`Goroutine::native`].
+    nd: NonNull<Goroutine>,
     _gc: PhantomData<&'gc ()>,
 }
 
@@ -307,29 +323,40 @@ impl<'gc> Deref for Mutation<'gc> {
             self.thread().is_thread_state_initialized(),
             "thread state is not initialized"
         );
-        unsafe { &*(self.nd().state_ptr() as *const State<'gc>) }
+        unsafe { &*(self.g().state_ptr() as *const State<'gc>) }
     }
 }
 
 use mmtk::util::alloc::AllocationOptions;
 
 impl<'gc> Mutation<'gc> {
-    pub const OFFSET_OF_STATE: usize = ThreadNativeData::STATE_OFFSET;
+    pub const OFFSET_OF_STATE: usize = std::mem::offset_of!(Goroutine, state);
 
+    /// The running goroutine.
     #[inline(always)]
-    fn nd(&self) -> &'gc ThreadNativeData {
+    fn g(&self) -> &'gc Goroutine {
         // SAFETY: the slot outlives every `Mutation` handed out for it.
         unsafe { &*self.nd.as_ptr() }
     }
 
+    /// The worker context of the running goroutine.
     #[inline(always)]
-    fn nd_ptr(&self) -> *mut ThreadNativeData {
+    fn nd(&self) -> &'gc NativeCtx {
+        self.g().native()
+    }
+
+    /// The running goroutine, mutable. Only the owning thread touches it.
+    #[inline(always)]
+    fn goroutine_ptr(&self) -> *mut Goroutine {
         self.nd.as_ptr()
     }
 
     #[inline(always)]
     unsafe fn post_alloc(&self, object: GcObject, bytes: usize, semantics: AllocationSemantics) {
         unsafe {
+            // SAFETY: a worker touches its mutator for one goroutine at a
+            // time, and a goroutine runs on one worker at a time, so this borrow is the
+            // only live one.
             mmtk::memory_manager::post_alloc(
                 self.nd().mutator_unchecked(),
                 object
@@ -346,7 +373,7 @@ impl<'gc> Mutation<'gc> {
     ///
     /// `allocation` must be a valid `UnpublishedAllocation` returned by a prior
     /// `allocate_*` call, and the caller must hold the GC's mutator lock.
-    pub unsafe fn publish_allocated_object(&self, allocation: UnpublishedAllocation) {
+    pub unsafe fn publish(&self, allocation: UnpublishedAllocation) {
         unsafe {
             self.post_alloc(
                 allocation.object,
@@ -357,7 +384,7 @@ impl<'gc> Mutation<'gc> {
     }
 
     #[inline(always)]
-    /// Publish a default-space object allocated on the compiled-code fast path.
+    /// Publish a default-space object allocated on the fast path.
     ///
     /// # Safety
     ///
@@ -389,21 +416,6 @@ impl<'gc> Mutation<'gc> {
     }
 
     #[inline(always)]
-    unsafe fn finish_allocated_object(
-        &self,
-        object_start: Address,
-        size: usize,
-        semantics: AllocationSemantics,
-    ) -> GcObject {
-        let allocation = unsafe { self.finish_unpublished_object(object_start, size, semantics) };
-        let object = allocation.object();
-        unsafe {
-            self.publish_allocated_object(allocation);
-        }
-        object
-    }
-
-    #[inline(always)]
     unsafe fn finish_unpublished_object_with_header(
         &self,
         object_start: Address,
@@ -418,39 +430,20 @@ impl<'gc> Mutation<'gc> {
     }
 
     #[inline(always)]
-    unsafe fn finish_allocated_object_with_header(
-        &self,
-        object_start: Address,
-        size: usize,
-        header_word: u64,
-        semantics: AllocationSemantics,
-    ) -> GcObject {
-        let allocation = unsafe {
-            self.finish_unpublished_object_with_header(object_start, size, header_word, semantics)
-        };
-        let object = allocation.object();
-        unsafe {
-            self.publish_allocated_object(allocation);
-        }
-        object
-    }
-
-    #[inline(always)]
     pub fn state(&self) -> &'gc State<'gc> {
         debug_assert!(
             self.thread().is_thread_state_initialized(),
             "thread state is not initialized"
         );
-        unsafe { &*(self.nd().state_ptr() as *const State<'gc>) }
+        unsafe { &*(self.g().state_ptr() as *const State<'gc>) }
     }
 
     #[inline(always)]
     pub fn tc(&self) -> &'gc Tc<'gc> {
         // The thread context is built with the thread and needs no init gate.
-        unsafe { &*(self.nd().tc_ptr() as *const Tc<'gc>) }
+        unsafe { &*(self.g().tc_ptr() as *const Tc<'gc>) }
     }
 
-    /// The pointer the `TC` register holds: the thread's [`ThreadNativeData`].
     pub fn as_ptr(self) -> *const () {
         self.nd.as_ptr() as *const ()
     }
@@ -463,14 +456,15 @@ impl<'gc> Mutation<'gc> {
     /// whose lifetime is valid for the returned mutation handle.
     pub unsafe fn from_ptr(ptr: *const ()) -> Self {
         Mutation {
-            nd: unsafe { NonNull::new_unchecked(ptr as *mut ThreadNativeData) },
+            // SAFETY: `ptr` is a live goroutine, see `as_ptr`.
+            nd: unsafe { NonNull::new_unchecked(ptr as *mut Goroutine) },
             _gc: PhantomData,
         }
     }
 
-    /// The native data this handle points at.
+    /// The worker context this handle points at.
     #[inline(always)]
-    pub(crate) fn native_data(&self) -> &'gc ThreadNativeData {
+    pub(crate) fn native_data(&self) -> &'gc NativeCtx {
         self.nd()
     }
 
@@ -499,7 +493,7 @@ impl<'gc> Mutation<'gc> {
     /// meaning to the value can be assigned by implementing your own blocking adapters.
     #[must_use]
     pub fn take_yieldpoint(&self) -> i32 {
-        self.nd()
+        self.g()
             .take_yieldpoint
             .load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -517,47 +511,181 @@ impl<'gc> Mutation<'gc> {
         !obj.to_object_reference().is_movable()
     }
 
+    /// Allocate `value` in the default space, with the class derived from `T`.
     #[inline(always)]
-    pub fn allocate<T: 'gc + Trace>(&self, value: T, semantics: AllocationSemantics) -> Gc<'gc, T> {
-        self.allocate_with_header_word(
-            value,
-            AllocationHooksOf::<'gc, T>::class_header_word((*self).into()),
-            semantics,
-        )
+    pub fn allocate<T: 'gc + Trace>(&self, value: T) -> Gc<'gc, T> {
+        self.allocate_with(value, AllocationHooksOf::<'gc, T>::class_header_word(*self))
     }
 
+    /// Allocate `value` in the default space with an explicit class header.
     #[inline(always)]
-    pub fn allocate_with_header_word<T: 'gc>(
-        &self,
-        value: T,
-        header_word: u64,
-        semantics: AllocationSemantics,
-    ) -> Gc<'gc, T> {
+    pub fn allocate_with<T: 'gc>(&self, value: T, header_word: u64) -> Gc<'gc, T> {
+        self.allocate_in(Space::Default, value, header_word)
+    }
+
+    /// Allocate `value` in `space` with an explicit class header.
+    #[inline(always)]
+    pub fn allocate_in<T: 'gc>(&self, space: Space, value: T, header_word: u64) -> Gc<'gc, T> {
         unsafe {
-            let size = size_of::<T>();
-            let align = size_of::<usize>().max(align_of::<T>());
-            let allocation =
-                self.raw_allocate_with_header_word_unpublished(size, align, header_word, semantics);
+            let allocation = self.allocate_raw_unpublished(
+                size_of::<T>(),
+                size_of::<usize>().max(align_of::<T>()),
+                header_word,
+                space,
+            );
             let obj = allocation.object();
             obj.to_address().store(value);
-            self.publish_allocated_object(allocation);
+            self.publish(allocation);
 
             Gc::from_gc_object(obj)
         }
     }
 
+    /// Allocate uninitialized storage for a `T` laid out as `layout`
+    /// (`layout` may exceed `size_of::<T>()` for trailing data).
+    pub fn allocate_layout<T: 'gc + Trace>(
+        &self,
+        layout: Layout,
+        header_word: u64,
+        space: Space,
+    ) -> Gc<'gc, MaybeUninit<T>> {
+        unsafe {
+            let obj = self.allocate_raw(layout.size(), layout.align(), header_word, space);
+            obj.to_address().store(MaybeUninit::<T>::uninit());
+            Gc::from_gc_object(obj)
+        }
+    }
+
+    /// Allocate raw GC memory for an object of `size` payload bytes and
+    /// install `header_word` as its class header.
+    ///
+    /// # Safety
+    ///
+    /// `header_word` must encode the class of the object the caller writes
+    /// into the returned allocation, and the caller must initialize the
+    /// payload before the next safepoint.
+    #[inline(always)]
+    pub unsafe fn allocate_raw(
+        &self,
+        size: usize,
+        alignment: usize,
+        header_word: u64,
+        space: Space,
+    ) -> GcObject {
+        unsafe {
+            let allocation = self.allocate_raw_unpublished(size, alignment, header_word, space);
+            let object = allocation.object();
+            self.publish(allocation);
+            object
+        }
+    }
+
+    /// Like [`allocate_raw`](Self::allocate_raw), but the object is not yet
+    /// visible to MMTk metadata.
+    ///
+    /// # Safety
+    ///
+    /// The caller must initialize every field used by GC sizing and tracing
+    /// before calling [`publish`](Self::publish).
+    #[inline(always)]
+    pub unsafe fn allocate_raw_unpublished(
+        &self,
+        size: usize,
+        alignment: usize,
+        header_word: u64,
+        space: Space,
+    ) -> UnpublishedAllocation {
+        let mut semantics = self.nd().map_semantics(space.to_semantics());
+        unsafe {
+            if size + size_of::<HeapObjectHeader>() >= LOS_THRESHOLD_BYTES {
+                semantics = AllocationSemantics::Los;
+            }
+
+            let alignment = alignment.max(std::mem::size_of::<usize>());
+            let size = raw_align_up(size, alignment);
+            debug_assert!(size.is_multiple_of(alignment));
+            if semantics == AllocationSemantics::Default
+                && self.nd().alloc_fastpath() == AllocFastPath::TLAB
+            {
+                let lab = &mut *self.goroutine_ptr();
+
+                let object_start = lab.lab_allocate(
+                    size + size_of::<HeapObjectHeader>(),
+                    alignment,
+                    OBJECT_REF_OFFSET as _,
+                );
+                if !object_start.is_zero() {
+                    return self.finish_unpublished_object_with_header(
+                        object_start,
+                        size,
+                        header_word,
+                        semantics,
+                    );
+                }
+            }
+
+            self.allocate_out_of_line(size, alignment, header_word, semantics)
+        }
+    }
+
+    /// Allocate through MMTk, bypassing the TLAB.
+    unsafe fn allocate_out_of_line(
+        &self,
+        size: usize,
+        alignment: usize,
+        header_word: u64,
+        mut semantics: AllocationSemantics,
+    ) -> UnpublishedAllocation {
+        let _no_preempt = crate::runtime::sched::preempt::NoPreempt::enter();
+        if semantics == AllocationSemantics::Default
+            && size + size_of::<HeapObjectHeader>() >= self.nd().max_non_los_alloc_bytes()
+        {
+            semantics = AllocationSemantics::Los;
+        }
+
+        unsafe {
+            self.flush_tlab();
+            // MMTk exclusivity: a worker touches its mutator for one goroutine at a
+            // time, and a goroutine runs on one worker at a time, so this borrow is the
+            // only live one.
+            let mutator = self.nd().mutator_unchecked();
+            let bytes = size + size_of::<HeapObjectHeader>();
+            let offset = OBJECT_REF_OFFSET as usize;
+            let object_start = if semantics == AllocationSemantics::Los {
+                mmtk::memory_manager::alloc_slow_with_options(
+                    mutator,
+                    bytes,
+                    alignment,
+                    offset,
+                    semantics,
+                    DEFAULT_ALLOC_OPTIONS,
+                )
+            } else {
+                mmtk::memory_manager::alloc_with_options(
+                    mutator,
+                    bytes,
+                    alignment,
+                    offset,
+                    semantics,
+                    DEFAULT_ALLOC_OPTIONS,
+                )
+            };
+            self.refill_tlab();
+
+            self.finish_unpublished_object_with_header(object_start, size, header_word, semantics)
+        }
+    }
+
     /// Flush TLAB and reset it to the initial state. This function must be used before
     /// calling into MMTk API such as
-    /// [`raw_allocate_slow_with_header_word`](Self::raw_allocate_slow_with_header_word).
+    /// [`allocate_out_of_line`](Self::allocate_out_of_line).
     ///
     /// # Safety
     ///
     /// This function is safe only if TLAB is flushed *before* call into MMTK API such as
-    /// [`raw_allocate_slow_with_header_word`](Self::raw_allocate_slow_with_header_word).
+    /// [`allocate_out_of_line`](Self::allocate_out_of_line).
     pub unsafe fn flush_tlab(&self) {
-        let tlab = unsafe { &mut (*self.nd_ptr()).lab };
-
-        let (cursor, limit) = tlab.take();
+        let (cursor, limit) = unsafe { (*self.goroutine_ptr()).lab_take() };
 
         if cursor.is_zero() {
             debug_assert!(limit.is_zero());
@@ -571,6 +699,9 @@ impl<'gc> Mutation<'gc> {
 
         match selector {
             AllocatorSelector::Immix(_) => unsafe {
+                // SAFETY: a worker touches its mutator for one goroutine at a
+                // time, and a goroutine runs on one worker at a time, so this borrow is the
+                // only live one.
                 let allocator = self
                     .nd()
                     .mutator_unchecked()
@@ -579,6 +710,9 @@ impl<'gc> Mutation<'gc> {
             },
 
             AllocatorSelector::BumpPointer(_) => unsafe {
+                //SAFETY: a worker touches its mutator for one goroutine at a
+                // time, and a goroutine runs on one worker at a time, so this borrow is the
+                // only live one.
                 let allocator = self
                     .nd()
                     .mutator_unchecked()
@@ -593,28 +727,26 @@ impl<'gc> Mutation<'gc> {
     /// Refill TLAB with new memory.
     ///
     /// This function must be invoked after slowpath calls like
-    /// `raw_allocate_slow_with_header_word`. Otherwise TLAB might contain
+    /// `allocate_out_of_line`. Otherwise TLAB might contain
     /// invalid data and cause memory corruption.
     ///
     /// # Safety
     ///
     /// This function is safe only if TLAB is refilled *after* call into MMTKA API such as
-    /// [`raw_allocate_slow_with_header_word`](Self::raw_allocate_slow_with_header_word).
+    /// [`allocate_out_of_line`](Self::allocate_out_of_line).
     pub unsafe fn refill_tlab(&self) {
-        let tlab = unsafe { &mut (*self.nd_ptr()).lab };
-
         let selector = mmtk::memory_manager::get_allocator_mapping(
             &super::GarbageCollector::get().mmtk,
             AllocationSemantics::Default,
         );
 
-        let allocator = match selector {
+        let window = match selector {
             AllocatorSelector::Immix(_) => unsafe {
                 let allocator = self
                     .nd()
                     .mutator_unchecked()
                     .allocator_impl_mut::<ImmixAllocator<MemoryManager>>(selector);
-                &allocator.bump_pointer
+                &mut allocator.bump_pointer
             },
 
             AllocatorSelector::BumpPointer(_) => unsafe {
@@ -622,302 +754,15 @@ impl<'gc> Mutation<'gc> {
                     .nd()
                     .mutator_unchecked()
                     .allocator_impl_mut::<BumpAllocator<MemoryManager>>(selector);
-                &allocator.bump_pointer
+                &mut allocator.bump_pointer
             },
 
             _ => return,
         };
 
-        tlab.rebind(allocator.cursor, allocator.limit);
-    }
-
-    /// Slow-path raw allocation that installs a precomputed object header word.
-    ///
-    /// # Safety
-    ///
-    /// Same as [`raw_allocate`](Self::raw_allocate). `header_word` must encode
-    /// the class ID for the object that will be written into the returned
-    /// allocation.
-    pub unsafe fn raw_allocate_slow_with_header_word(
-        &self,
-        size: usize,
-        alignment: usize,
-        header_word: u64,
-        semantics: AllocationSemantics,
-    ) -> GcObject {
-        unsafe {
-            self.flush_tlab();
-            let object_start = mmtk::memory_manager::alloc_slow_with_options(
-                self.nd().mutator_unchecked(),
-                size + size_of::<HeapObjectHeader>(),
-                alignment,
-                OBJECT_REF_OFFSET as usize,
-                semantics,
-                DEFAULT_ALLOC_OPTIONS,
-            );
-            self.refill_tlab();
-
-            self.finish_allocated_object_with_header(object_start, size, header_word, semantics)
-        }
-    }
-
-    /// Raw allocation in Immortal Space that installs a precomputed object
-    /// header word.
-    ///
-    /// # Safety
-    ///
-    /// Same as [`raw_allocate`](Self::raw_allocate). `header_word` must encode
-    /// the class ID for the object that will be written into the returned
-    /// allocation.
-    pub unsafe fn raw_allocate_immortal_with_header_word(
-        &self,
-        size: usize,
-        alignment: usize,
-        header_word: u64,
-    ) -> GcObject {
-        unsafe {
-            self.flush_tlab();
-            let object_start = mmtk::memory_manager::alloc_slow_with_options(
-                self.nd().mutator_unchecked(),
-                size + size_of::<HeapObjectHeader>(),
-                alignment,
-                OBJECT_REF_OFFSET as usize,
-                AllocationSemantics::Immortal,
-                DEFAULT_ALLOC_OPTIONS,
-            );
-            self.refill_tlab();
-
-            self.finish_allocated_object_with_header(
-                object_start,
-                size,
-                header_word,
-                AllocationSemantics::Immortal,
-            )
-        }
-    }
-
-    /// Raw allocation in Non-Moving Space that installs a precomputed object
-    /// header word.
-    ///
-    /// # Safety
-    ///
-    /// Same as [`raw_allocate`](Self::raw_allocate). `header_word` must encode
-    /// the class ID for the object that will be written into the returned
-    /// allocation.
-    pub unsafe fn raw_allocate_nonmoving_with_header_word(
-        &self,
-        size: usize,
-        alignment: usize,
-        header_word: u64,
-    ) -> GcObject {
-        let semantics = self.nd().map_semantics(AllocationSemantics::NonMoving);
-        unsafe {
-            self.flush_tlab();
-            let object_start = mmtk::memory_manager::alloc_slow_with_options(
-                self.nd().mutator_unchecked(),
-                size + size_of::<HeapObjectHeader>(),
-                alignment,
-                OBJECT_REF_OFFSET as usize,
-                semantics,
-                DEFAULT_ALLOC_OPTIONS,
-            );
-            self.refill_tlab();
-
-            self.finish_allocated_object_with_header(object_start, size, header_word, semantics)
-        }
-    }
-
-    /// Raw allocation in Large Object Space that installs a precomputed object
-    /// header word.
-    ///
-    /// # Safety
-    ///
-    /// Same as [`raw_allocate`](Self::raw_allocate). `header_word` must encode
-    /// the class ID for the object that will be written into the returned
-    /// allocation.
-    pub unsafe fn raw_allocate_los_with_header_word(
-        &self,
-        size: usize,
-        alignment: usize,
-        header_word: u64,
-    ) -> GcObject {
-        unsafe {
-            self.flush_tlab();
-            let object_start = mmtk::memory_manager::alloc_slow_with_options(
-                self.nd().mutator_unchecked(),
-                size + size_of::<HeapObjectHeader>(),
-                alignment,
-                OBJECT_REF_OFFSET as usize,
-                AllocationSemantics::Los,
-                DEFAULT_ALLOC_OPTIONS,
-            );
-            self.refill_tlab();
-
-            self.finish_allocated_object_with_header(
-                object_start,
-                size,
-                header_word,
-                AllocationSemantics::Los,
-            )
-        }
-    }
-
-    pub fn allocate_with_layout_header_word<T: 'gc + Trace>(
-        &self,
-        layout: Layout,
-        header_word: u64,
-        semantics: AllocationSemantics,
-    ) -> Gc<'gc, MaybeUninit<T>> {
-        unsafe {
-            let size = layout.size();
-            let align = layout.align();
-            let obj = self.raw_allocate_with_header_word(size, align, header_word, semantics);
-            obj.to_address().store(MaybeUninit::<T>::uninit());
-            Gc::from_gc_object(obj)
-        }
-    }
-
-    #[inline(always)]
-    /// Allocate raw GC memory and install a precomputed object header word.
-    ///
-    /// # Safety
-    ///
-    /// Same as [`raw_allocate`](Self::raw_allocate). `header_word` must encode
-    /// the class ID for the object that will be written into the returned
-    /// allocation.
-    pub unsafe fn raw_allocate_with_header_word(
-        &self,
-        size: usize,
-        alignment: usize,
-        header_word: u64,
-        semantics: AllocationSemantics,
-    ) -> GcObject {
-        let allocation = unsafe {
-            self.raw_allocate_with_header_word_unpublished(size, alignment, header_word, semantics)
-        };
-        let object = allocation.object();
-        unsafe {
-            self.publish_allocated_object(allocation);
-        }
-        object
-    }
-
-    #[inline(always)]
-    /// Allocate raw GC memory and install a precomputed object header word
-    /// without publishing the object to MMTk metadata.
-    ///
-    /// # Safety
-    ///
-    /// The caller must initialize any fields used by GC sizing/tracing before
-    /// calling [`publish_allocated_object`](Self::publish_allocated_object).
-    pub unsafe fn raw_allocate_with_header_word_unpublished(
-        &self,
-        size: usize,
-        alignment: usize,
-        header_word: u64,
-        mut semantics: AllocationSemantics,
-    ) -> UnpublishedAllocation {
-        semantics = self.nd().map_semantics(semantics);
-        unsafe {
-            if size + size_of::<HeapObjectHeader>() >= LOS_THRESHOLD_BYTES {
-                semantics = AllocationSemantics::Los;
-            }
-
-            let alignment = alignment.max(std::mem::size_of::<usize>());
-            let size = raw_align_up(size, alignment);
-            debug_assert!(size.is_multiple_of(alignment));
-            if semantics == AllocationSemantics::Default
-                && self.nd().alloc_fastpath() == AllocFastPath::TLAB
-            {
-                let lab = &mut (*self.nd_ptr()).lab;
-
-                let object_start = lab.allocate(
-                    size + size_of::<HeapObjectHeader>(),
-                    alignment,
-                    OBJECT_REF_OFFSET as _,
-                );
-                if !object_start.is_zero() {
-                    return self.finish_unpublished_object_with_header(
-                        object_start,
-                        size,
-                        header_word,
-                        semantics,
-                    );
-                }
-
-                return self.raw_allocate_out_of_line_with_header_word_unpublished(
-                    size,
-                    alignment,
-                    header_word,
-                    semantics,
-                );
-            }
-
-            self.raw_allocate_out_of_line_with_header_word_unpublished(
-                size,
-                alignment,
-                header_word,
-                semantics,
-            )
-        }
-    }
-
-    unsafe fn raw_allocate_out_of_line_with_header_word_unpublished(
-        &self,
-        size: usize,
-        alignment: usize,
-        header_word: u64,
-        mut semantics: AllocationSemantics,
-    ) -> UnpublishedAllocation {
-        if semantics == AllocationSemantics::Default
-            && size + size_of::<HeapObjectHeader>() >= self.nd().max_non_los_alloc_bytes()
-        {
-            semantics = AllocationSemantics::Los;
-        }
-
-        let size = raw_align_up(size, alignment);
-        unsafe {
-            match semantics {
-                AllocationSemantics::Los => {
-                    self.flush_tlab();
-                    let object_start = mmtk::memory_manager::alloc_slow_with_options(
-                        self.nd().mutator_unchecked(),
-                        size + size_of::<HeapObjectHeader>(),
-                        alignment,
-                        OBJECT_REF_OFFSET as usize,
-                        AllocationSemantics::Los,
-                        DEFAULT_ALLOC_OPTIONS,
-                    );
-                    self.refill_tlab();
-
-                    self.finish_unpublished_object_with_header(
-                        object_start,
-                        size,
-                        header_word,
-                        AllocationSemantics::Los,
-                    )
-                }
-                semantics => {
-                    self.flush_tlab();
-                    let object_start = mmtk::memory_manager::alloc_with_options(
-                        self.nd().mutator_unchecked(),
-                        size + size_of::<HeapObjectHeader>(),
-                        alignment,
-                        OBJECT_REF_OFFSET as _,
-                        semantics,
-                        DEFAULT_ALLOC_OPTIONS,
-                    );
-                    self.refill_tlab();
-
-                    self.finish_unpublished_object_with_header(
-                        object_start,
-                        size,
-                        header_word,
-                        semantics,
-                    )
-                }
-            }
-        }
+        let (cursor, limit) = (window.cursor, window.limit);
+        window.reset(Address::ZERO, Address::ZERO);
+        unsafe { (*self.goroutine_ptr()).lab_rebind(cursor, limit) };
     }
 
     /// Raw weak reference load barrier.
@@ -930,6 +775,9 @@ impl<'gc> Mutation<'gc> {
             return;
         }
 
+        // SAFETY: a worker touches its mutator for one goroutine at a
+        // time, and a goroutine runs on one worker at a time, so this borrow is the
+        // only live one.
         unsafe {
             self.nd().mutator_unchecked().barrier().load_weak_reference(
                 weak.to_object_reference()
@@ -958,6 +806,9 @@ impl<'gc> Mutation<'gc> {
                 let shift = (addr >> 3) & 0b111;
                 let byte_val = meta_addr.load::<u8>();
 
+                // SAFETY: a worker touches its mutator for one goroutine at a
+                // time, and a goroutine runs on one worker at a time, so this borrow is the
+                // only live one.
                 if (byte_val >> shift) & 1 == 1 {
                     self.nd()
                         .mutator_unchecked()
@@ -976,6 +827,9 @@ impl<'gc> Mutation<'gc> {
                 let shift = (addr >> 3) & 0b111;
                 let byte_val = unsafe { meta_addr.load::<u8>() };
                 if (byte_val >> shift) & 1 == 1 {
+                    // SAFETY: a worker touches its mutator for one goroutine at a
+                    // time, and a goroutine runs on one worker at a time, so this borrow is the
+                    // only live one.
                     unsafe {
                         self.nd()
                             .mutator_unchecked()
@@ -1028,170 +882,6 @@ impl<'gc> Mutation<'gc> {
         }
     }
 
-    /// Allocate raw GC memory without initializing the object header.
-    ///
-    /// # Safety
-    ///
-    /// The caller must initialize the returned memory, including any required
-    /// header fields, before exposing it to tracing, barriers, or Scheme code.
-    pub unsafe fn raw_alloc_uninit(
-        &self,
-        size: usize,
-        alignment: usize,
-        mut semantics: AllocationSemantics,
-    ) -> GcObject {
-        semantics = self.nd().map_semantics(semantics);
-        unsafe {
-            if size + size_of::<HeapObjectHeader>() >= LOS_THRESHOLD_BYTES {
-                semantics = AllocationSemantics::Los;
-            }
-
-            // Never below word alignment, and never capped: the object (not
-            // the header) must land on `alignment`, like every other path.
-            let alignment = alignment.max(std::mem::size_of::<usize>());
-            let size = raw_align_up(size, alignment);
-
-            if semantics == AllocationSemantics::Default
-                && self.nd().alloc_fastpath() == AllocFastPath::TLAB
-            {
-                let lab = &mut (*self.nd_ptr()).lab;
-
-                let object_start = lab.allocate(
-                    size + size_of::<HeapObjectHeader>(),
-                    alignment,
-                    OBJECT_REF_OFFSET as _,
-                );
-                if !object_start.is_zero() {
-                    return self.finish_allocated_object(object_start, size, semantics);
-                }
-
-                return self.raw_allocate_slow_uninit(size, alignment, semantics);
-            }
-
-            self.raw_allocate_out_of_line_uninit(size, alignment, semantics)
-        }
-    }
-
-    /// Slow-path raw allocation without initializing the object header.
-    ///
-    /// # Safety
-    ///
-    /// Same as [`raw_alloc_uninit`](Self::raw_alloc_uninit).
-    pub unsafe fn raw_allocate_slow_uninit(
-        &self,
-        size: usize,
-        alignment: usize,
-        semantics: AllocationSemantics,
-    ) -> GcObject {
-        unsafe {
-            self.flush_tlab();
-            let object_start = mmtk::memory_manager::alloc_slow_with_options(
-                self.nd().mutator_unchecked(),
-                size + size_of::<HeapObjectHeader>(),
-                alignment,
-                OBJECT_REF_OFFSET as usize,
-                semantics,
-                DEFAULT_ALLOC_OPTIONS,
-            );
-            self.refill_tlab();
-
-            self.finish_allocated_object(object_start, size, semantics)
-        }
-    }
-
-    /// Out-of-line raw allocation without initializing the object header.
-    ///
-    /// # Safety
-    ///
-    /// Same as [`raw_alloc_uninit`](Self::raw_alloc_uninit).
-    pub unsafe fn raw_allocate_out_of_line_uninit(
-        &self,
-        size: usize,
-        alignment: usize,
-        mut semantics: AllocationSemantics,
-    ) -> GcObject {
-        semantics = self.nd().map_semantics(semantics);
-        if semantics == AllocationSemantics::Default
-            && size + size_of::<HeapObjectHeader>() >= self.nd().max_non_los_alloc_bytes()
-        {
-            semantics = AllocationSemantics::Los;
-        }
-
-        let size = raw_align_up(size, alignment);
-        unsafe {
-            match semantics {
-                AllocationSemantics::Los => self.raw_allocate_los_uninit(size, alignment),
-                AllocationSemantics::Immortal => self.raw_allocate_immortal_uninit(size, alignment),
-                AllocationSemantics::NonMoving => {
-                    self.raw_allocate_nonmoving_uninit(size, alignment)
-                }
-                _ => self.raw_allocate_slow_uninit(size, alignment, semantics),
-            }
-        }
-    }
-
-    pub fn raw_allocate_los_uninit(&self, size: usize, alignment: usize) -> GcObject {
-        unsafe {
-            self.flush_tlab();
-            let object_start = mmtk::memory_manager::alloc_slow_with_options(
-                self.nd().mutator_unchecked(),
-                size + size_of::<HeapObjectHeader>(),
-                alignment,
-                OBJECT_REF_OFFSET as usize,
-                AllocationSemantics::Los,
-                DEFAULT_ALLOC_OPTIONS,
-            );
-            self.refill_tlab();
-
-            self.finish_allocated_object(object_start, size, AllocationSemantics::Los)
-        }
-    }
-
-    /// Allocate immortal raw memory without initializing the object header.
-    ///
-    /// # Safety
-    ///
-    /// Same as [`raw_alloc_uninit`](Self::raw_alloc_uninit).
-    pub unsafe fn raw_allocate_immortal_uninit(&self, size: usize, alignment: usize) -> GcObject {
-        unsafe {
-            self.flush_tlab();
-            let object_start = mmtk::memory_manager::alloc_slow_with_options(
-                self.nd().mutator_unchecked(),
-                size + size_of::<HeapObjectHeader>(),
-                alignment,
-                OBJECT_REF_OFFSET as usize,
-                AllocationSemantics::Immortal,
-                DEFAULT_ALLOC_OPTIONS,
-            );
-            self.refill_tlab();
-
-            self.finish_allocated_object(object_start, size, AllocationSemantics::Immortal)
-        }
-    }
-
-    /// Allocate non-moving raw memory without initializing the object header.
-    ///
-    /// # Safety
-    ///
-    /// Same as [`raw_alloc_uninit`](Self::raw_alloc_uninit).
-    pub unsafe fn raw_allocate_nonmoving_uninit(&self, size: usize, alignment: usize) -> GcObject {
-        let semantics = self.nd().map_semantics(AllocationSemantics::NonMoving);
-        unsafe {
-            self.flush_tlab();
-            let object_start = mmtk::memory_manager::alloc_slow_with_options(
-                self.nd().mutator_unchecked(),
-                size + size_of::<HeapObjectHeader>(),
-                alignment,
-                OBJECT_REF_OFFSET as usize,
-                semantics,
-                DEFAULT_ALLOC_OPTIONS,
-            );
-            self.refill_tlab();
-
-            self.finish_allocated_object(object_start, size, semantics)
-        }
-    }
-
     pub fn barrier(&self) -> BarrierSelector {
         self.nd().barrier()
     }
@@ -1208,13 +898,21 @@ impl<'gc> Mutation<'gc> {
 }
 
 impl<'gc> Mutation<'gc> {
-    unsafe fn new() -> Self {
-        let nd = current_native_data();
+    pub(crate) unsafe fn new() -> Self {
+        let g = current_goroutine();
 
         Thread::leave_native();
 
         Self {
-            nd: NonNull::from(nd),
+            nd: NonNull::from(g),
+            _gc: PhantomData,
+        }
+    }
+
+    /// A handle for a mutation scope that is already open on this thread.
+    pub(crate) unsafe fn new_nested() -> Self {
+        Self {
+            nd: NonNull::from(current_goroutine()),
             _gc: PhantomData,
         }
     }

@@ -53,18 +53,23 @@ impl mmtk::vm::Collection<MemoryManager> for Collection {
     }
 
     fn spawn_gc_thread(_tls: mmtk::util::VMThread, ctx: mmtk::vm::GCThreadContext<MemoryManager>) {
-        std::thread::spawn(move || match ctx {
-            GCThreadContext::Worker(worker) => {
-                let thread = Thread::new(false);
-                init_current_thread(thread.clone());
-                worker.run(
-                    VMWorkerThread(thread.to_vm_thread()),
-                    &super::GarbageCollector::get().mmtk,
-                );
+        static NEXT_WORKER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let index = NEXT_WORKER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::thread::Builder::new()
+            .name(format!("capy-gc-{index}"))
+            .spawn(move || match ctx {
+                GCThreadContext::Worker(worker) => {
+                    let thread = Thread::new(false);
+                    init_current_thread(thread.clone());
+                    worker.run(
+                        VMWorkerThread(thread.to_vm_thread()),
+                        &super::GarbageCollector::get().mmtk,
+                    );
 
-                deinit_current_thread();
-            }
-        });
+                    deinit_current_thread();
+                }
+            })
+            .expect("failed to spawn GC worker thread");
     }
 
     fn schedule_finalization(_tls: VMWorkerThread) {
