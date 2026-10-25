@@ -129,23 +129,17 @@ fn expand_proc_ref<'gc>(
                 call_term(ctx, lexical, args, lexical.source())
             };
 
-            Some(Gc::new(
-                ctx,
-                Term {
-                    source: proc.source.into(),
-                    kind: TermKind::Proc(Gc::new(
-                        ctx,
-                        Proc {
-                            args: proc.args,
-                            name: proc.name,
-                            source: proc.source,
-                            variadic: proc.variadic,
-                            body,
-                            meta: proc.meta,
-                        },
-                    )),
-                },
-            ))
+            Some(ctx.allocate(Term {
+                source: proc.source.into(),
+                kind: TermKind::Proc(ctx.allocate(Proc {
+                    args: proc.args,
+                    name: proc.name,
+                    source: proc.source,
+                    variadic: proc.variadic,
+                    body,
+                    meta: proc.meta,
+                })),
+            }))
         }
     }
 }

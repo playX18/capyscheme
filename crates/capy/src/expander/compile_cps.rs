@@ -2171,40 +2171,28 @@ fn convert_wcm_thunk<'gc>(
     src: Value<'gc>,
     mode: AttachmentMode,
 ) -> TermId {
-    let thunk = Gc::new(
-        cps.ctx,
-        Proc {
-            args: Array::from_slice(cps.ctx, []),
-            name: Value::new(false),
-            source: src,
-            variadic: None,
-            body: result,
-            meta: cps.current_meta,
-        },
-    );
-    let thunk = Gc::new(
-        cps.ctx,
-        crate::expander::core::Term {
-            kind: TermKind::Proc(thunk),
-            source: crate::heap::cell::Lock::new(src),
-        },
-    );
+    let thunk = cps.ctx.allocate(Proc {
+        args: Array::from_slice(cps.ctx, []),
+        name: Value::new(false),
+        source: src,
+        variadic: None,
+        body: result,
+        meta: cps.current_meta,
+    });
+    let thunk = cps.ctx.allocate(crate::expander::core::Term {
+        kind: TermKind::Proc(thunk),
+        source: crate::heap::cell::Lock::new(src),
+    });
 
-    let mref = Gc::new(
-        cps.ctx,
-        crate::expander::core::Term {
-            kind: TermKind::PrimRef(cps.ctx.intern("call-with-continuation-mark")),
-            source: crate::heap::cell::Lock::new(src),
-        },
-    );
+    let mref = cps.ctx.allocate(crate::expander::core::Term {
+        kind: TermKind::PrimRef(cps.ctx.intern("call-with-continuation-mark")),
+        source: crate::heap::cell::Lock::new(src),
+    });
 
-    let call = Gc::new(
-        cps.ctx,
-        crate::expander::core::Term {
-            source: crate::heap::cell::Lock::new(src),
-            kind: TermKind::Call(mref, Array::from_slice(cps.ctx, [key, mark, thunk])),
-        },
-    );
+    let call = cps.ctx.allocate(crate::expander::core::Term {
+        source: crate::heap::cell::Lock::new(src),
+        kind: TermKind::Call(mref, Array::from_slice(cps.ctx, [key, mark, thunk])),
+    });
 
     convert(cps, call, k, owner, mode)
 }

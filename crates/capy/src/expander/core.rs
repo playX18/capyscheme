@@ -219,26 +219,20 @@ pub fn expand<'gc>(cenv: &mut Cenv<'gc>, program: Value<'gc>) -> Result<TermRef<
                 .set(_source.unwrap_or(Value::new(false)));
         })
     } else {
-        Ok(Gc::new(
-            cenv.ctx,
-            Term {
-                source: Lock::new(datum_sourcev(cenv.ctx, program)),
-                kind: TermKind::Const(program),
-            },
-        ))
+        Ok(cenv.ctx.allocate(Term {
+            source: Lock::new(datum_sourcev(cenv.ctx, program)),
+            kind: TermKind::Const(program),
+        }))
     }
 }
 
 pub fn fresh_lvar<'gc>(ctx: MutationContext<'gc>, name: Value<'gc>) -> LVarRef<'gc> {
-    Gc::new(
-        ctx,
-        LVar {
-            name,
-            id: Value::new(false),
-            set_count: Cell::new(0),
-            ref_count: Cell::new(0),
-        },
-    )
+    ctx.allocate(LVar {
+        name,
+        id: Value::new(false),
+        set_count: Cell::new(0),
+        ref_count: Cell::new(0),
+    })
 }
 
 pub fn fresh_lvar_derived<'gc>(
@@ -249,15 +243,12 @@ pub fn fresh_lvar_derived<'gc>(
     let name =
         Symbol::from_str_uninterned(ctx, &format!("{}{}:{}", base.name, base.id, suffix), None);
 
-    Gc::new(
-        ctx,
-        LVar {
-            name: name.into(),
-            id: base.id,
-            set_count: Cell::new(0),
-            ref_count: Cell::new(0),
-        },
-    )
+    ctx.allocate(LVar {
+        name: name.into(),
+        id: base.id,
+        set_count: Cell::new(0),
+        ref_count: Cell::new(0),
+    })
 }
 
 #[derive(Debug)]
@@ -424,25 +415,19 @@ fn expand_define<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
             let body_term = expand_body(cenv, body, datum_sourcev(cenv.ctx, body))?;
             cenv.pop_frame();
 
-            let proc = Gc::new(
-                cenv.ctx,
-                Proc {
-                    name,
-                    args: Array::from_slice(cenv.ctx, params),
-                    variadic,
-                    body: body_term,
-                    source: datum_sourcev(cenv.ctx, form),
-                    meta,
-                },
-            );
+            let proc = cenv.ctx.allocate(Proc {
+                name,
+                args: Array::from_slice(cenv.ctx, params),
+                variadic,
+                body: body_term,
+                source: datum_sourcev(cenv.ctx, form),
+                meta,
+            });
 
-            let proc_term = Gc::new(
-                cenv.ctx,
-                Term {
-                    source: Lock::new(datum_sourcev(cenv.ctx, form)),
-                    kind: TermKind::Proc(proc),
-                },
-            );
+            let proc_term = cenv.ctx.allocate(Term {
+                source: Lock::new(datum_sourcev(cenv.ctx, form)),
+                kind: TermKind::Proc(proc),
+            });
 
             let module = get_current_module(cenv.ctx).downcast::<Module>();
             let module_name = module.name();
@@ -484,13 +469,10 @@ fn expand_quote<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'
 
     let datum = form.cadr();
 
-    Ok(Gc::new(
-        cenv.ctx,
-        Term {
-            source: Lock::new(datum_sourcev(cenv.ctx, form)),
-            kind: TermKind::Const(datum),
-        },
-    ))
+    Ok(cenv.ctx.allocate(Term {
+        source: Lock::new(datum_sourcev(cenv.ctx, form)),
+        kind: TermKind::Const(datum),
+    }))
 }
 
 fn expand_when<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
@@ -553,13 +535,10 @@ fn expand_if<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>
     } else if form.list_length() == 3 {
         let cond = expand(cenv, form.cadr())?;
         let consequent = expand(cenv, form.caddr())?;
-        let alternative = Gc::new(
-            cenv.ctx,
-            Term {
-                source: Lock::new(false.into()),
-                kind: TermKind::Const(Value::undefined()),
-            },
-        );
+        let alternative = cenv.ctx.allocate(Term {
+            source: Lock::new(false.into()),
+            kind: TermKind::Const(Value::undefined()),
+        });
 
         Ok(if_term(cenv.ctx, cond, consequent, alternative))
     } else {
@@ -752,13 +731,10 @@ fn expand_wcm<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc
     let value_term = expand(cenv, value)?;
     let body_term = expand_body(cenv, body, datum_sourcev(cenv.ctx, form))?;
 
-    Ok(Gc::new(
-        cenv.ctx,
-        Term {
-            source: Lock::new(datum_sourcev(cenv.ctx, form)),
-            kind: TermKind::WithContinuationMark(key_term, value_term, body_term),
-        },
-    ))
+    Ok(cenv.ctx.allocate(Term {
+        source: Lock::new(datum_sourcev(cenv.ctx, form)),
+        kind: TermKind::WithContinuationMark(key_term, value_term, body_term),
+    }))
 }
 
 fn finalize_body<'gc>(
@@ -801,28 +777,22 @@ fn finalize_body<'gc>(
                 let formals = formals
                     .into_iter()
                     .map(|sym| {
-                        Gc::new(
-                            cenv.ctx,
-                            LVar {
-                                name: sym,
-                                id: Value::new(false),
-                                set_count: Cell::new(0),
-                                ref_count: Cell::new(0),
-                            },
-                        )
-                    })
-                    .collect::<Vec<_>>();
-
-                let variadic = variadic.map(|sym| {
-                    Gc::new(
-                        cenv.ctx,
-                        LVar {
+                        cenv.ctx.allocate(LVar {
                             name: sym,
                             id: Value::new(false),
                             set_count: Cell::new(0),
                             ref_count: Cell::new(0),
-                        },
-                    )
+                        })
+                    })
+                    .collect::<Vec<_>>();
+
+                let variadic = variadic.map(|sym| {
+                    cenv.ctx.allocate(LVar {
+                        name: sym,
+                        id: Value::new(false),
+                        set_count: Cell::new(0),
+                        ref_count: Cell::new(0),
+                    })
                 });
 
                 cenv.new_frame();
@@ -839,26 +809,20 @@ fn finalize_body<'gc>(
 
                 cenv.pop_frame();
 
-                let proc = Gc::new(
-                    cenv.ctx,
-                    Proc {
-                        name: name.name,
-                        args: Array::from_slice(cenv.ctx, formals),
-                        variadic,
-                        body: body_term,
-                        source: datum_sourcev(cenv.ctx, def_body),
-                        meta: Value::null(),
-                    },
-                );
+                let proc = cenv.ctx.allocate(Proc {
+                    name: name.name,
+                    args: Array::from_slice(cenv.ctx, formals),
+                    variadic,
+                    body: body_term,
+                    source: datum_sourcev(cenv.ctx, def_body),
+                    meta: Value::null(),
+                });
 
                 lhs.push(name);
-                rhs.push(Gc::new(
-                    cenv.ctx,
-                    Term {
-                        source: Lock::new(datum_sourcev(cenv.ctx, def_body)),
-                        kind: TermKind::Proc(proc),
-                    },
-                ));
+                rhs.push(cenv.ctx.allocate(Term {
+                    source: Lock::new(datum_sourcev(cenv.ctx, def_body)),
+                    kind: TermKind::Proc(proc),
+                }));
             }
 
             Define::Simple(var, val) => {
@@ -938,29 +902,23 @@ fn collect_formals<'gc>(
             }));
         }
 
-        let lvar = Gc::new(
-            ctx,
-            LVar {
-                name: arg,
-                id: Value::new(false),
-                set_count: Cell::new(0),
-                ref_count: Cell::new(0),
-            },
-        );
+        let lvar = ctx.allocate(LVar {
+            name: arg,
+            id: Value::new(false),
+            set_count: Cell::new(0),
+            ref_count: Cell::new(0),
+        });
         args.push(lvar);
         current = current.cdr();
     }
 
     let variadic = if current.is::<Symbol>() {
-        Some(Gc::new(
-            ctx,
-            LVar {
-                name: current,
-                id: Value::new(false),
-                set_count: Cell::new(0),
-                ref_count: Cell::new(0),
-            },
-        ))
+        Some(ctx.allocate(LVar {
+            name: current,
+            id: Value::new(false),
+            set_count: Cell::new(0),
+            ref_count: Cell::new(0),
+        }))
     } else if !current.is_null() {
         return Err(Box::new(CompileError {
             message: "improper formals list".to_string(),
@@ -1029,25 +987,19 @@ fn expand_lambda<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
     let body_term = expand_body(cenv, body, datum_sourcev(cenv.ctx, form))?;
     cenv.pop_frame();
 
-    let proc = Gc::new(
-        cenv.ctx,
-        Proc {
-            name: Value::new(false),
-            args: Array::from_slice(cenv.ctx, args),
-            variadic,
-            body: body_term,
-            source: datum_sourcev(cenv.ctx, form),
-            meta,
-        },
-    );
+    let proc = cenv.ctx.allocate(Proc {
+        name: Value::new(false),
+        args: Array::from_slice(cenv.ctx, args),
+        variadic,
+        body: body_term,
+        source: datum_sourcev(cenv.ctx, form),
+        meta,
+    });
 
-    Ok(Gc::new(
-        cenv.ctx,
-        Term {
-            source: Lock::new(datum_sourcev(cenv.ctx, form)),
-            kind: TermKind::Proc(proc),
-        },
-    ))
+    Ok(cenv.ctx.allocate(Term {
+        source: Lock::new(datum_sourcev(cenv.ctx, form)),
+        kind: TermKind::Proc(proc),
+    }))
 }
 
 fn expand_let<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
@@ -1096,25 +1048,19 @@ fn expand_let<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc
         let body_term = expand_body(cenv, body, datum_sourcev(cenv.ctx, form))?;
         cenv.pop_frame();
 
-        let proc = Gc::new(
-            cenv.ctx,
-            Proc {
-                name,
-                args: Array::from_slice(cenv.ctx, proc_args),
-                variadic: None,
-                body: body_term,
-                source: datum_sourcev(cenv.ctx, form),
-                meta: Value::null(),
-            },
-        );
+        let proc = cenv.ctx.allocate(Proc {
+            name,
+            args: Array::from_slice(cenv.ctx, proc_args),
+            variadic: None,
+            body: body_term,
+            source: datum_sourcev(cenv.ctx, form),
+            meta: Value::null(),
+        });
 
-        let proc_term = Gc::new(
-            cenv.ctx,
-            Term {
-                source: Lock::new(datum_sourcev(cenv.ctx, form)),
-                kind: TermKind::Proc(proc),
-            },
-        );
+        let proc_term = cenv.ctx.allocate(Term {
+            source: Lock::new(datum_sourcev(cenv.ctx, form)),
+            kind: TermKind::Proc(proc),
+        });
 
         let val_terms = vals
             .into_iter()
@@ -1363,25 +1309,19 @@ fn expand_do<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>
 
     let loop_body = if_term(cenv.ctx, test_term, result_term, false_branch);
 
-    let loop_proc = Gc::new(
-        cenv.ctx,
-        Proc {
-            name: loop_name,
-            args: Array::from_slice(cenv.ctx, loop_vars),
-            variadic: None,
-            body: loop_body,
-            source: datum_sourcev(cenv.ctx, form),
-            meta: Value::null(),
-        },
-    );
+    let loop_proc = cenv.ctx.allocate(Proc {
+        name: loop_name,
+        args: Array::from_slice(cenv.ctx, loop_vars),
+        variadic: None,
+        body: loop_body,
+        source: datum_sourcev(cenv.ctx, form),
+        meta: Value::null(),
+    });
 
-    let loop_proc_term = Gc::new(
-        cenv.ctx,
-        Term {
-            source: Lock::new(datum_sourcev(cenv.ctx, form)),
-            kind: TermKind::Proc(loop_proc),
-        },
-    );
+    let loop_proc_term = cenv.ctx.allocate(Term {
+        source: Lock::new(datum_sourcev(cenv.ctx, form)),
+        kind: TermKind::Proc(loop_proc),
+    });
 
     let initial_call = call_term(
         cenv.ctx,
@@ -1518,18 +1458,15 @@ fn expand_receive<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef
     let consumer_term = expand(cenv, consumer)?;
     cenv.pop_frame();
 
-    Ok(Gc::new(
-        cenv.ctx,
-        Term {
-            source: Lock::new(datum_sourcev(cenv.ctx, form)),
-            kind: TermKind::Receive(
-                Array::from_slice(cenv.ctx, formals),
-                opt_formal,
-                producer_term,
-                consumer_term,
-            ),
-        },
-    ))
+    Ok(cenv.ctx.allocate(Term {
+        source: Lock::new(datum_sourcev(cenv.ctx, form)),
+        kind: TermKind::Receive(
+            Array::from_slice(cenv.ctx, formals),
+            opt_formal,
+            producer_term,
+            consumer_term,
+        ),
+    }))
 }
 
 fn expand_values<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
@@ -1558,13 +1495,10 @@ fn expand_values<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
         }));
     }
 
-    Ok(Gc::new(
-        cenv.ctx,
-        Term {
-            source: Lock::new(datum_sourcev(cenv.ctx, form)),
-            kind: TermKind::Values(Array::from_slice(cenv.ctx, values)),
-        },
-    ))
+    Ok(cenv.ctx.allocate(Term {
+        source: Lock::new(datum_sourcev(cenv.ctx, form)),
+        kind: TermKind::Values(Array::from_slice(cenv.ctx, values)),
+    }))
 }
 
 fn expand_letrec_star<'gc>(
@@ -1637,13 +1571,10 @@ fn expand_private_ref<'gc>(
         }));
     }
 
-    Ok(Gc::new(
-        cenv.ctx,
-        Term {
-            source: Lock::new(datum_sourcev(cenv.ctx, form)),
-            kind: TermKind::ModuleRef(modname, varname, false),
-        },
-    ))
+    Ok(cenv.ctx.allocate(Term {
+        source: Lock::new(datum_sourcev(cenv.ctx, form)),
+        kind: TermKind::ModuleRef(modname, varname, false),
+    }))
 }
 
 fn expand_public_ref<'gc>(
@@ -1669,13 +1600,10 @@ fn expand_public_ref<'gc>(
         }));
     }
 
-    Ok(Gc::new(
-        cenv.ctx,
-        Term {
-            source: Lock::new(datum_sourcev(cenv.ctx, form)),
-            kind: TermKind::ModuleRef(modname, varname, true),
-        },
-    ))
+    Ok(cenv.ctx.allocate(Term {
+        source: Lock::new(datum_sourcev(cenv.ctx, form)),
+        kind: TermKind::ModuleRef(modname, varname, true),
+    }))
 }
 
 fn expand_cond<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {

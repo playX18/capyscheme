@@ -1,5 +1,5 @@
+use crate::heap::alloc::Array;
 use crate::heap::alloc::ArrayRef;
-use crate::heap::{Gc, alloc::Array};
 use crate::runtime::value::ValueEqual;
 use crate::{
     expander::core::{
@@ -208,33 +208,27 @@ impl<'gc> LetrecRectifier<'gc> {
                 inits.extend_from_slice(&l.rhs);
                 let rhs = Array::from_slice(self.ctx, &inits);
 
-                Gc::new(
-                    self.ctx,
-                    Term {
-                        source: tail.source.get().into(),
-                        kind: TermKind::Let(Let {
-                            style: LetStyle::LetRecStar,
-                            rhs,
-                            lhs,
-
-                            body: l.body,
-                        }),
-                    },
-                )
-            }
-
-            _ => Gc::new(
-                self.ctx,
-                Term {
+                self.ctx.allocate(Term {
                     source: tail.source.get().into(),
                     kind: TermKind::Let(Let {
                         style: LetStyle::LetRecStar,
-                        rhs: Array::from_slice(self.ctx, [val]),
-                        lhs: Array::from_slice(self.ctx, [var]),
-                        body: tail,
+                        rhs,
+                        lhs,
+
+                        body: l.body,
                     }),
-                },
-            ),
+                })
+            }
+
+            _ => self.ctx.allocate(Term {
+                source: tail.source.get().into(),
+                kind: TermKind::Let(Let {
+                    style: LetStyle::LetRecStar,
+                    rhs: Array::from_slice(self.ctx, [val]),
+                    lhs: Array::from_slice(self.ctx, [var]),
+                    body: tail,
+                }),
+            }),
         }
     }
 

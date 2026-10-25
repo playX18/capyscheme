@@ -34,13 +34,10 @@ where
                 if Gc::ptr_eq(nexp, val) {
                     post(ctx, x)
                 } else {
-                    let lset = Gc::new(
-                        ctx,
-                        Term {
-                            source: x.source.get().into(),
-                            kind: TermKind::LSet(lvar, nexp),
-                        },
-                    );
+                    let lset = ctx.allocate(Term {
+                        source: x.source.get().into(),
+                        kind: TermKind::LSet(lvar, nexp),
+                    });
                     post(ctx, lset)
                 }
             }
@@ -50,13 +47,10 @@ where
                 if Gc::ptr_eq(nexp, val) {
                     post(ctx, x)
                 } else {
-                    let mset = Gc::new(
-                        ctx,
-                        Term {
-                            source: x.source.get().into(),
-                            kind: TermKind::ModuleSet(module, name, public, nexp),
-                        },
-                    );
+                    let mset = ctx.allocate(Term {
+                        source: x.source.get().into(),
+                        kind: TermKind::ModuleSet(module, name, public, nexp),
+                    });
                     post(ctx, mset)
                 }
             }
@@ -66,13 +60,10 @@ where
                 if Gc::ptr_eq(nexp, val) {
                     post(ctx, x)
                 } else {
-                    let tset = Gc::new(
-                        ctx,
-                        Term {
-                            source: x.source.get().into(),
-                            kind: TermKind::ToplevelSet(module, name, nexp),
-                        },
-                    );
+                    let tset = ctx.allocate(Term {
+                        source: x.source.get().into(),
+                        kind: TermKind::ToplevelSet(module, name, nexp),
+                    });
                     post(ctx, tset)
                 }
             }
@@ -82,13 +73,10 @@ where
                 if Gc::ptr_eq(nexp, value) {
                     post(ctx, x)
                 } else {
-                    let def = Gc::new(
-                        ctx,
-                        Term {
-                            source: x.source.get().into(),
-                            kind: TermKind::Define(module, name, nexp),
-                        },
-                    );
+                    let def = ctx.allocate(Term {
+                        source: x.source.get().into(),
+                        kind: TermKind::Define(module, name, nexp),
+                    });
                     post(ctx, def)
                 }
             }
@@ -100,13 +88,10 @@ where
                 if Gc::ptr_eq(ncond, cond) && Gc::ptr_eq(ncons, cons) && Gc::ptr_eq(nalt, alt) {
                     post(ctx, x)
                 } else {
-                    let ifterm = Gc::new(
-                        ctx,
-                        Term {
-                            source: x.source.get().into(),
-                            kind: TermKind::If(ncond, ncons, nalt),
-                        },
-                    );
+                    let ifterm = ctx.allocate(Term {
+                        source: x.source.get().into(),
+                        kind: TermKind::If(ncond, ncons, nalt),
+                    });
                     post(ctx, ifterm)
                 }
             }
@@ -125,13 +110,10 @@ where
                 if !changed {
                     post(ctx, x)
                 } else {
-                    let call = Gc::new(
-                        ctx,
-                        Term {
-                            source: x.source.get().into(),
-                            kind: TermKind::Call(nproc, Array::from_slice(ctx, &nargs)),
-                        },
-                    );
+                    let call = ctx.allocate(Term {
+                        source: x.source.get().into(),
+                        kind: TermKind::Call(nproc, Array::from_slice(ctx, &nargs)),
+                    });
                     post(ctx, call)
                 }
             }
@@ -149,13 +131,10 @@ where
                 if !changed {
                     post(ctx, x)
                 } else {
-                    let call = Gc::new(
-                        ctx,
-                        Term {
-                            source: x.source.get().into(),
-                            kind: TermKind::PrimCall(prim, Array::from_slice(ctx, &nargs)),
-                        },
-                    );
+                    let call = ctx.allocate(Term {
+                        source: x.source.get().into(),
+                        kind: TermKind::PrimCall(prim, Array::from_slice(ctx, &nargs)),
+                    });
                     post(ctx, call)
                 }
             }
@@ -167,13 +146,10 @@ where
                 if Gc::ptr_eq(nhead, head) && Gc::ptr_eq(ntail, tail) {
                     post(ctx, x)
                 } else {
-                    let seqterm = Gc::new(
-                        ctx,
-                        Term {
-                            source: x.source.get().into(),
-                            kind: TermKind::Seq(nhead, ntail),
-                        },
-                    );
+                    let seqterm = ctx.allocate(Term {
+                        source: x.source.get().into(),
+                        kind: TermKind::Seq(nhead, ntail),
+                    });
                     post(ctx, seqterm)
                 }
             }
@@ -183,24 +159,18 @@ where
                 if Gc::ptr_eq(nbody, proc.body) {
                     post(ctx, x)
                 } else {
-                    let proc = Gc::new(
-                        ctx,
-                        Proc {
-                            name: proc.name,
-                            variadic: proc.variadic,
-                            args: proc.args,
-                            body: nbody,
-                            source: proc.source,
-                            meta: proc.meta,
-                        },
-                    );
-                    let term = Gc::new(
-                        ctx,
-                        Term {
-                            source: x.source.get().into(),
-                            kind: TermKind::Proc(proc),
-                        },
-                    );
+                    let proc = ctx.allocate(Proc {
+                        name: proc.name,
+                        variadic: proc.variadic,
+                        args: proc.args,
+                        body: nbody,
+                        source: proc.source,
+                        meta: proc.meta,
+                    });
+                    let term = ctx.allocate(Term {
+                        source: x.source.get().into(),
+                        kind: TermKind::Proc(proc),
+                    });
                     post(ctx, term)
                 }
             }
@@ -213,17 +183,14 @@ where
                     if !Gc::ptr_eq(nbody, r.body) {
                         changed = true;
                     }
-                    let proc = Gc::new(
-                        ctx,
-                        Proc {
-                            name: r.name,
-                            variadic: r.variadic,
-                            args: r.args,
-                            body: nbody,
-                            source: r.source,
-                            meta: r.meta,
-                        },
-                    );
+                    let proc = ctx.allocate(Proc {
+                        name: r.name,
+                        variadic: r.variadic,
+                        args: r.args,
+                        body: nbody,
+                        source: r.source,
+                        meta: r.meta,
+                    });
                     rhs.push(proc);
                 }
 
@@ -231,17 +198,14 @@ where
                 if !changed && Gc::ptr_eq(nbody, fix.body) {
                     post(ctx, x)
                 } else {
-                    let fixt = Gc::new(
-                        ctx,
-                        Term {
-                            source: x.source.get().into(),
-                            kind: TermKind::Fix(Fix {
-                                lhs: fix.lhs,
-                                rhs: Array::from_slice(ctx, &rhs),
-                                body: nbody,
-                            }),
-                        },
-                    );
+                    let fixt = ctx.allocate(Term {
+                        source: x.source.get().into(),
+                        kind: TermKind::Fix(Fix {
+                            lhs: fix.lhs,
+                            rhs: Array::from_slice(ctx, &rhs),
+                            body: nbody,
+                        }),
+                    });
                     post(ctx, fixt)
                 }
             }
@@ -261,18 +225,15 @@ where
                 if !changed && Gc::ptr_eq(nbody, l_.body) {
                     post(ctx, x)
                 } else {
-                    let lett = Gc::new(
-                        ctx,
-                        Term {
-                            source: x.source.get().into(),
-                            kind: TermKind::Let(crate::expander::core::Let {
-                                style: l_.style,
-                                lhs: l_.lhs,
-                                rhs: Array::from_slice(ctx, &rhs),
-                                body: nbody,
-                            }),
-                        },
-                    );
+                    let lett = ctx.allocate(Term {
+                        source: x.source.get().into(),
+                        kind: TermKind::Let(crate::expander::core::Let {
+                            style: l_.style,
+                            lhs: l_.lhs,
+                            rhs: Array::from_slice(ctx, &rhs),
+                            body: nbody,
+                        }),
+                    });
                     post(ctx, lett)
                 }
             }
@@ -290,13 +251,10 @@ where
                 if !changed {
                     post(ctx, x)
                 } else {
-                    let valterm = Gc::new(
-                        ctx,
-                        Term {
-                            source: x.source.get().into(),
-                            kind: TermKind::Values(Array::from_slice(ctx, &nvals)),
-                        },
-                    );
+                    let valterm = ctx.allocate(Term {
+                        source: x.source.get().into(),
+                        kind: TermKind::Values(Array::from_slice(ctx, &nvals)),
+                    });
                     post(ctx, valterm)
                 }
             }
@@ -307,13 +265,10 @@ where
                 if Gc::ptr_eq(nproducer, producer) && Gc::ptr_eq(nreceiver, receiver) {
                     post(ctx, x)
                 } else {
-                    let recterm = Gc::new(
-                        ctx,
-                        Term {
-                            source: x.source.get().into(),
-                            kind: TermKind::Receive(vars, variadic, nproducer, nreceiver),
-                        },
-                    );
+                    let recterm = ctx.allocate(Term {
+                        source: x.source.get().into(),
+                        kind: TermKind::Receive(vars, variadic, nproducer, nreceiver),
+                    });
                     post(ctx, recterm)
                 }
             }
@@ -325,13 +280,10 @@ where
                 if Gc::ptr_eq(nkey, key) && Gc::ptr_eq(nmark, mark) && Gc::ptr_eq(nresult, result) {
                     post(ctx, x)
                 } else {
-                    let wcmterm = Gc::new(
-                        ctx,
-                        Term {
-                            source: x.source.get().into(),
-                            kind: TermKind::WithContinuationMark(nkey, nmark, nresult),
-                        },
-                    );
+                    let wcmterm = ctx.allocate(Term {
+                        source: x.source.get().into(),
+                        kind: TermKind::WithContinuationMark(nkey, nmark, nresult),
+                    });
                     post(ctx, wcmterm)
                 }
             }

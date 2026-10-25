@@ -102,13 +102,10 @@ fn rec<'gc>(
             let test = rec(ctx, *test, substitutions);
             let cons = rec(ctx, *cons, substitutions);
             let alt = rec(ctx, *alt, substitutions);
-            Gc::new(
-                ctx,
-                Term {
-                    source: Lock::new(term.source()),
-                    kind: TermKind::If(test, cons, alt),
-                },
-            )
+            ctx.allocate(Term {
+                source: Lock::new(term.source()),
+                kind: TermKind::If(test, cons, alt),
+            })
         }
 
         TermKind::PrimCall(prim, args) => {
@@ -122,13 +119,10 @@ fn rec<'gc>(
         TermKind::Seq(head, tail) => {
             let head = rec(ctx, *head, substitutions);
             let tail = rec(ctx, *tail, substitutions);
-            Gc::new(
-                ctx,
-                Term {
-                    source: Lock::new(term.source()),
-                    kind: TermKind::Seq(head, tail),
-                },
-            )
+            ctx.allocate(Term {
+                source: Lock::new(term.source()),
+                kind: TermKind::Seq(head, tail),
+            })
         }
 
         TermKind::Values(values) => {
@@ -136,24 +130,18 @@ fn rec<'gc>(
                 .iter()
                 .map(|val| rec(ctx, *val, substitutions))
                 .collect_gc(ctx);
-            Gc::new(
-                ctx,
-                Term {
-                    source: Lock::new(term.source()),
-                    kind: TermKind::Values(values),
-                },
-            )
+            ctx.allocate(Term {
+                source: Lock::new(term.source()),
+                kind: TermKind::Values(values),
+            })
         }
 
         TermKind::ToplevelSet(module, name, val) => {
             let val = rec(ctx, *val, substitutions);
-            Gc::new(
-                ctx,
-                Term {
-                    source: Lock::new(term.source()),
-                    kind: TermKind::ToplevelSet(*module, *name, val),
-                },
-            )
+            ctx.allocate(Term {
+                source: Lock::new(term.source()),
+                kind: TermKind::ToplevelSet(*module, *name, val),
+            })
         }
 
         TermKind::Proc(proc) => {
@@ -167,13 +155,10 @@ fn rec<'gc>(
                 substitutions,
             );
 
-            Gc::new(
-                ctx,
-                Term {
-                    source: term.source().into(),
-                    kind: TermKind::Proc(proc.with_body(ctx, body)),
-                },
-            )
+            ctx.allocate(Term {
+                source: term.source().into(),
+                kind: TermKind::Proc(proc.with_body(ctx, body)),
+            })
         }
 
         TermKind::Let(let_) => {
@@ -209,18 +194,15 @@ fn rec<'gc>(
             // and updating the body accordingly.
             let body = wrap_mutable(ctx, let_.lhs.iter().copied(), let_.body, substitutions);
 
-            Gc::new(
-                ctx,
-                Term {
-                    source: Lock::new(term.source()),
-                    kind: TermKind::Let(Let {
-                        style: let_.style,
-                        lhs: let_.lhs,
-                        rhs,
-                        body,
-                    }),
-                },
-            )
+            ctx.allocate(Term {
+                source: Lock::new(term.source()),
+                kind: TermKind::Let(Let {
+                    style: let_.style,
+                    lhs: let_.lhs,
+                    rhs,
+                    body,
+                }),
+            })
         }
 
         TermKind::Fix(fix) => {
@@ -238,33 +220,27 @@ fn rec<'gc>(
                         substitutions,
                     );
 
-                    Gc::new(
-                        ctx,
-                        Proc {
-                            name: proc.name,
-                            body,
-                            args: proc.args,
-                            variadic: proc.variadic,
-                            source: proc.source,
-                            meta: proc.meta,
-                        },
-                    )
+                    ctx.allocate(Proc {
+                        name: proc.name,
+                        body,
+                        args: proc.args,
+                        variadic: proc.variadic,
+                        source: proc.source,
+                        meta: proc.meta,
+                    })
                 })
                 .collect_gc(ctx);
 
             let body = rec(ctx, fix.body, substitutions);
 
-            Gc::new(
-                ctx,
-                Term {
-                    source: Lock::new(term.source()),
-                    kind: TermKind::Fix(Fix {
-                        body,
-                        lhs: fix.lhs,
-                        rhs: procs,
-                    }),
-                },
-            )
+            ctx.allocate(Term {
+                source: Lock::new(term.source()),
+                kind: TermKind::Fix(Fix {
+                    body,
+                    lhs: fix.lhs,
+                    rhs: procs,
+                }),
+            })
         }
 
         TermKind::Receive(vars, variadic, producer, consumer) => {
@@ -277,37 +253,28 @@ fn rec<'gc>(
                 substitutions,
             );
 
-            Gc::new(
-                ctx,
-                Term {
-                    source: Lock::new(term.source()),
-                    kind: TermKind::Receive(*vars, *variadic, producer, consumer),
-                },
-            )
+            ctx.allocate(Term {
+                source: Lock::new(term.source()),
+                kind: TermKind::Receive(*vars, *variadic, producer, consumer),
+            })
         }
 
         TermKind::WithContinuationMark(key, value, result) => {
             let key = rec(ctx, *key, substitutions);
             let value = rec(ctx, *value, substitutions);
             let result = rec(ctx, *result, substitutions);
-            Gc::new(
-                ctx,
-                Term {
-                    source: Lock::new(term.source()),
-                    kind: TermKind::WithContinuationMark(key, value, result),
-                },
-            )
+            ctx.allocate(Term {
+                source: Lock::new(term.source()),
+                kind: TermKind::WithContinuationMark(key, value, result),
+            })
         }
 
         TermKind::ModuleSet(module, name, public, val) => {
             let val = rec(ctx, *val, substitutions);
-            Gc::new(
-                ctx,
-                Term {
-                    source: Lock::new(term.source()),
-                    kind: TermKind::ModuleSet(*module, *name, *public, val),
-                },
-            )
+            ctx.allocate(Term {
+                source: Lock::new(term.source()),
+                kind: TermKind::ModuleSet(*module, *name, *public, val),
+            })
         }
     }
 }

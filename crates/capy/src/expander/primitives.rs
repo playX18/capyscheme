@@ -343,13 +343,10 @@ pub fn resolve_primitive_refs<'gc>(
                 && let Some(prim) = ctx.globals().interesting_primitive_vars().get(ctx, *name)
                 && Gc::ptr_eq(var, prim.downcast::<Variable>())
             {
-                Gc::new(
-                    ctx,
-                    Term {
-                        source: Lock::new(x.source()),
-                        kind: TermKind::PrimRef(*name),
-                    },
-                )
+                ctx.allocate(Term {
+                    source: Lock::new(x.source()),
+                    kind: TermKind::PrimRef(*name),
+                })
             } else {
                 x
             }
@@ -367,13 +364,10 @@ pub fn resolve_primitive_refs<'gc>(
                     && let Some(prim) = ctx.globals().interesting_primitive_vars().get(ctx, *name)
                     && Gc::ptr_eq(var, prim.downcast::<Variable>())
                 {
-                    return Gc::new(
-                        ctx,
-                        Term {
-                            source: Lock::new(x.source()),
-                            kind: TermKind::PrimRef(*name),
-                        },
-                    );
+                    return ctx.allocate(Term {
+                        source: Lock::new(x.source()),
+                        kind: TermKind::PrimRef(*name),
+                    });
                 }
             }
 
@@ -531,9 +525,7 @@ primitive_expanders!(
         }
 
 
-        Some(Gc::new(
-            ctx,
-            Term {
+        Some(ctx.allocate(Term {
                 source: src.into(),
                 kind: TermKind::Receive(
                     consumer.args,
@@ -541,8 +533,7 @@ primitive_expanders!(
                     producer.body,
                     consumer.body,
                 ),
-            },
-        ))
+            },))
     }
 
     "eq?" ex_eqp<'gc>(ctx, args, src) {
@@ -1753,25 +1744,19 @@ pub fn expand_primitive_calls<'gc>(ctx: MutationContext<'gc>, t: TermRef<'gc>) -
                     term
                 } else {
                     // failed expansion: reify primitive into a function call to it instead
-                    let module_ref = Gc::new(
-                        ctx,
-                        Term {
-                            source: t.source().into(),
-                            kind: TermKind::ModuleRef(capy_module, *name, true),
-                        },
-                    );
+                    let module_ref = ctx.allocate(Term {
+                        source: t.source().into(),
+                        kind: TermKind::ModuleRef(capy_module, *name, true),
+                    });
 
                     call_term(ctx, module_ref, args.as_slice(), t.source())
                 }
             } else {
                 // failed expansion: reify primitive into a function call to it instead
-                let module_ref = Gc::new(
-                    ctx,
-                    Term {
-                        source: t.source().into(),
-                        kind: TermKind::ModuleRef(capy_module, *name, true),
-                    },
-                );
+                let module_ref = ctx.allocate(Term {
+                    source: t.source().into(),
+                    kind: TermKind::ModuleRef(capy_module, *name, true),
+                });
 
                 call_term(ctx, module_ref, args.as_slice(), t.source())
             }
