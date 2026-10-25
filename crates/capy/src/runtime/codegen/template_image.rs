@@ -34,9 +34,11 @@ const _: () = {
 
 static TEMPLATE_INTERPRETER: OnceLock<TemplateInterpreter> = OnceLock::new();
 
+type SchemeEntry = for<'gc> extern "C" fn(*const (), Slot<'gc>, usize) -> NativeReturn<'gc>;
+
 pub struct TemplateInterpreter {
     image: LoadedImage,
-    scheme_entry: *const u8,
+    scheme_entry: SchemeEntry,
     gen_micros: u128,
     handler_kinds: [[HandlerKind; 256]; 3],
 }
@@ -68,6 +70,8 @@ pub fn ensure_loaded() -> &'static TemplateInterpreter {
         let scheme_entry = image
             .symbol_addr("scheme_entry")
             .expect("template: scheme_entry missing");
+        let scheme_entry =
+            unsafe { std::mem::transmute::<*const u8, SchemeEntry>(scheme_entry) };
         let sizes = image.code_size();
         install_markers(&image);
         stubs::maybe_report_bail_stats();
@@ -138,19 +142,8 @@ pub unsafe fn run_template<'gc>(
     fp: Slot<'gc>,
     argc: usize,
 ) -> NativeReturn<'gc> {
-    // SAFETY: the image's `scheme_entry` is generated with this signature,
-    // and the returned values live in the mutator's heap, so shortening
-    // them to 'gc is sound.
-    unsafe {
-        let template_interpreter = ensure_loaded();
-        let entry: extern "C" fn(*const (), Slot, usize) -> NativeReturn<'static> =
-            std::mem::transmute(template_interpreter.scheme_entry);
-        std::mem::transmute::<NativeReturn<'static>, NativeReturn<'gc>>(entry(
-            mutator.as_ptr(),
-            fp,
-            argc,
-        ))
-    }
+    let entry = ensure_loaded().scheme_entry;
+    entry(mutator.as_ptr(), fp, argc)
 }
 
 /// Whether this thread runs Scheme through the generated image.

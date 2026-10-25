@@ -94,10 +94,6 @@ pub(crate) struct CodeUnit {
     pub(crate) listing: Listing,
 }
 
-// The image is written once before publication and only read afterwards.
-unsafe impl Send for CodeUnit {}
-unsafe impl Sync for CodeUnit {}
-
 impl CodeUnit {
     /// A unit for the loaded `image`; counts it and its code in the live
     /// totals until it is dropped.

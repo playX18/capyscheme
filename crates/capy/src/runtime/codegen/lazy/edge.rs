@@ -88,12 +88,6 @@ pub(crate) fn emit_direct_jump(masm: &mut Masm, thunk: Label) -> PatchHandle {
 /// The span of the image holding a direct edge's jump, kept in its cell.
 pub(crate) struct DirectSpan(pub(crate) Span);
 
-// SAFETY: a `Span` is a plain handle to a code allocation (addresses and a
-// size). The allocation outlives the cell: both die with the unit. Writes
-// through it go through `CodeMemory` under the code memory lock.
-unsafe impl Send for DirectSpan {}
-unsafe impl Sync for DirectSpan {}
-
 /// Where the direct jump of an edge lives: its image's span and the offset
 /// of the word to rewrite.
 #[derive(Clone, Copy)]

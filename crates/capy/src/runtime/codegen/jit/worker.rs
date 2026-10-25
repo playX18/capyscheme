@@ -1,9 +1,8 @@
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Condvar, Mutex, Once};
-use std::thread::JoinHandle;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Condvar, Mutex, Once};
 
 use mmtk::util::Address;
 
@@ -15,6 +14,7 @@ use crate::heap::collection::Visitor;
 use crate::heap::mutator::Mutator;
 use crate::heap::{Gc, Trace, WeakProcessor};
 use crate::runtime::MutationContext;
+use crate::runtime::service::{self, ServiceCtl, ServiceThread};
 use crate::runtime::value::{CodeBlock, CodeBuffer};
 use crate::utils::flags;
 
@@ -108,47 +108,42 @@ unsafe impl Trace for WorkerRoot<'_> {
 /// in native state (never holding up a collection) until there is one.
 static PENDING: Mutex<usize> = Mutex::new(0);
 static PENDING_READY: Condvar = Condvar::new();
-static THREADS: Once = Once::new();
-static SHUTDOWN: AtomicBool = AtomicBool::new(false);
-static WORKERS: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
+static STARTED: Once = Once::new();
+
+const JIT_WORKER_STACK_BYTES: usize = 16 << 20;
+
+struct JitWorker {
+    index: usize,
+}
+
+impl ServiceThread for JitWorker {
+    fn name(&self) -> String {
+        format!("capy-jit-{}", self.index)
+    }
+
+    fn stack_size(&self) -> Option<usize> {
+        Some(JIT_WORKER_STACK_BYTES)
+    }
+
+    fn run_service(&self, ctl: &ServiceCtl) {
+        worker_loop(ctl);
+    }
+
+    fn stop_service(&self) {
+        // Order the terminate flag before a worker that has not yet blocked.
+        drop(PENDING.lock().unwrap_or_else(|e| e.into_inner()));
+        PENDING_READY.notify_all();
+    }
+}
 
 fn spawn_workers() {
-    THREADS.call_once(|| {
-        
-        // On Linux `_dl_fini` races `__deregister_frame` and we need to drain workers beforehand.
-        if unsafe { libc::atexit(drain_jit_workers) } != 0 {
-            log::warn!(target: crate::heap::logging::JIT_LOG_TARGET, "failed to register JIT exit drain");
-        }
+    STARTED.call_once(|| {
         for index in 0..flags::jit_workers() {
-            match std::thread::Builder::new()
-                .name(format!("capy-jit-{index}"))
-                .spawn(worker_loop)
-            {
-                Ok(handle) => WORKERS
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .push(handle),
-                Err(err) => {
-                    log::warn!(target: crate::heap::logging::JIT_LOG_TARGET, "worker thread failed to spawn: {err}");
-                }
+            if let Err(err) = service::start(Arc::new(JitWorker { index })) {
+                log::warn!(target: crate::heap::logging::JIT_LOG_TARGET, "worker thread failed to spawn: {err}");
             }
         }
     });
-}
-
-/// Stop all JIT workers and wait for them
-extern "C" fn drain_jit_workers() {
-    SHUTDOWN.store(true, Ordering::SeqCst);
-    PENDING_READY.notify_all();
-    let handles: Vec<JoinHandle<()>> = std::mem::take(
-        WORKERS
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .as_mut(),
-    );
-    for handle in handles {
-        let _ = handle.join();
-    }
 }
 
 /// Submit `code_block` for background compilation at `tier` as `id`
@@ -158,7 +153,7 @@ pub(crate) fn submit<'gc>(
     id: usize,
     tier: Tier,
 ) {
-    if SHUTDOWN.load(Ordering::SeqCst) {
+    if service::is_shutting_down() {
         release_claim(code_block);
         return;
     }
@@ -192,7 +187,7 @@ pub(crate) fn submit<'gc>(
 
 /// Compile jobs until the process exits, as a mutator: wait in native,
 /// take and compile a job while mutating.
-fn worker_loop() {
+fn worker_loop(ctl: &ServiceCtl) {
     crate::runtime::profile::capture::block_sigprof_for_worker();
     let mutator = Mutator::<crate::Rootable!(WorkerRoot<'_>)>::new(|_| WorkerRoot {
         current: Cell::new(None),
@@ -202,10 +197,10 @@ fn worker_loop() {
         {
             let mut pending = PENDING_READY
                 .wait_while(PENDING.lock().unwrap(), |pending| {
-                    *pending == 0 && !SHUTDOWN.load(Ordering::SeqCst)
+                    *pending == 0 && !ctl.should_terminate()
                 })
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if SHUTDOWN.load(Ordering::SeqCst) {
+            if ctl.should_terminate() {
                 break;
             }
             *pending -= 1;
@@ -226,7 +221,7 @@ fn worker_loop() {
                 log::warn!(target: crate::heap::logging::JIT_LOG_TARGET, "worker panicked on job #{id}");
                 Err(())
             });
-            if SHUTDOWN.load(Ordering::SeqCst) {
+            if ctl.should_terminate() {
                 if let Ok(built) = result {
                     std::mem::forget(built);
                 }

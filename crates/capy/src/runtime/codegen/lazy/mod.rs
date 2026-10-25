@@ -65,7 +65,7 @@ type MutatorPointer = *const ();
 /// The impl type is `'static` only so its vtable can live in the cell
 /// header: a lazy never stores heap data with a lifetime, just raw stable
 /// addresses and plain data.
-pub(crate) trait Lazy: Sized + Send + Sync + 'static {
+pub(crate) trait Lazy: Sized + 'static {
     /// Short name for logs and symbols (`math` keeps the historic lines).
     const NAME: &'static str;
 
@@ -167,11 +167,6 @@ pub(crate) struct CellHeader {
 /// The resume table of the unit a cell belongs to.
 struct OriginTable(NonNull<ResumeTable>);
 
-// SAFETY: the table lives in the unit's heap owner, which outlives its cells
-// and never moves. It is only read.
-unsafe impl Send for OriginTable {}
-unsafe impl Sync for OriginTable {}
-
 const _: () = assert!(core::mem::offset_of!(CellHeader, target) == 0);
 
 impl CellHeader {
@@ -233,6 +228,16 @@ struct Cell<T: Lazy> {
     header: CellHeader,
     value: T,
 }
+
+// SAFETY: a cell is pinned data. Its payload (a `Lazy`) holds only raw stable
+// addresses and plain data, its header's atomics and `OnceLock`s synchronize
+// the rest, and the code-memory writes behind `DirectSpan` and the resume
+// table behind `OriginTable` go through `CodeMemory` under its lock. Both
+// live in the unit's heap owner, which outlives its cells and never moves.
+unsafe impl Send for CellHeader {}
+unsafe impl Sync for CellHeader {}
+unsafe impl<T: Lazy> Send for Cell<T> {}
+unsafe impl<T: Lazy> Sync for Cell<T> {}
 
 impl<T: Lazy> Cell<T> {
     const VTABLE: CellVTable = CellVTable {

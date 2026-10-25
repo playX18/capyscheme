@@ -24,7 +24,7 @@ pub struct GcPlanInfo {
     /// Generated code bumps the LAB itself
     pub inline_alloc: bool,
     /// Objects of this many bytes or more, header included, go to the large
-    /// object space (`raw_allocate_with_header_word`).
+    /// object space (`allocate_raw`).
     pub los_threshold: usize,
 }
 

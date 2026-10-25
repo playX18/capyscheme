@@ -39,9 +39,6 @@ pub(crate) struct ArithSite {
     pub(crate) compare: bool,
 }
 
-unsafe impl Send for ArithSite {}
-unsafe impl Sync for ArithSite {}
-
 impl ArithSite {
     /// The site of `insn`, whose shape was read from `profile_cell`.
     pub(crate) fn new(insn: &DecodedInstruction, profile_cell: usize, compare: bool) -> Self {

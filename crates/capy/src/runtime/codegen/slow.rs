@@ -2,6 +2,7 @@
 
 use crate::bytecode::def::{self, OpcodeId};
 use crate::heap::Gc;
+use crate::heap::Space;
 use crate::heap::object::GcObject;
 use crate::runtime::codegen::{gc, stubs};
 use crate::runtime::interp::frame::CallFrame;
@@ -317,11 +318,11 @@ pub(crate) unsafe extern "C" fn capy_op_alloc(th: MutatorPointer, header: u64, b
         if gc::alloc_stats() {
             gc::SLOW_ALLOCS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        let object = mutator.raw_allocate_with_header_word(
+        let object = mutator.allocate_raw(
             bytes as usize - crate::runtime::sabi::OBJECT_HEADER_BYTES,
             8,
             header,
-            mmtk::AllocationSemantics::Default,
+            Space::Default,
         );
         object.to_address().as_usize() as u64
     }

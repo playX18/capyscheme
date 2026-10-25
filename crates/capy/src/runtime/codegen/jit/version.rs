@@ -42,9 +42,6 @@ pub(crate) struct BlockVersion {
     pub(crate) context: VersionContext,
 }
 
-unsafe impl Send for BlockVersion {}
-unsafe impl Sync for BlockVersion {}
-
 impl Lazy for BlockVersion {
     const NAME: &'static str = "version";
 

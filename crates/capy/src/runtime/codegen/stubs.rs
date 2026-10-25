@@ -977,10 +977,6 @@ pub(crate) struct CallIcStub {
     pub(crate) image: LoadedImage,
 }
 
-// The image is written once before publication and only read (as code)
-// afterwards.
-unsafe impl Send for CallIcStub {}
-
 /// Serializes the writers of call sites: stub generation and case fills.
 /// Readers (the stubs themselves) take no lock.
 static SITE_WRITES: Mutex<()> = Mutex::new(());

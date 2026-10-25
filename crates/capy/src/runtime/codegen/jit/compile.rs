@@ -203,8 +203,6 @@ pub(crate) struct BuiltUnit {
     owner_at: usize,
 }
 
-unsafe impl Send for BuiltUnit {}
-
 pub(crate) fn attach<'gc>(
     mutator: MutationContext<'gc>,
     buffer: Gc<'gc, CodeBuffer<'gc>>,
