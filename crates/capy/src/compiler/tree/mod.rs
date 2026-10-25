@@ -89,15 +89,12 @@ impl<'gc> LVar<'gc> {
     pub fn copy(&self, ctx: MutationContext<'gc>) -> LVarRef<'gc> {
         let name = Symbol::from_str_uninterned(ctx, &format!("{}'", self.name), None);
 
-        Gc::new(
-            ctx,
-            LVar {
-                id: self.id,
-                name: name.into(),
-                set_count: Cell::new(self.set_count.get()),
-                ref_count: Cell::new(self.ref_count.get()),
-            },
-        )
+        ctx.allocate(LVar {
+            id: self.id,
+            name: name.into(),
+            set_count: Cell::new(self.set_count.get()),
+            ref_count: Cell::new(self.ref_count.get()),
+        })
     }
 
     pub fn is_mutated(&self) -> bool {
@@ -148,17 +145,14 @@ pub struct Proc<'gc> {
 
 impl<'gc> Proc<'gc> {
     pub fn with_body(&self, mc: MutationContext<'gc>, body: TermRef<'gc>) -> ProcRef<'gc> {
-        Gc::new(
-            mc,
-            Proc {
-                name: self.name,
-                source: self.source,
-                args: self.args,
-                variadic: self.variadic,
-                body,
-                meta: self.meta,
-            },
-        )
+        mc.allocate(Proc {
+            name: self.name,
+            source: self.source,
+            args: self.args,
+            variadic: self.variadic,
+            body,
+            meta: self.meta,
+        })
     }
 }
 
@@ -211,24 +205,18 @@ impl<'gc> Fix<'gc> {
 }
 
 pub fn constant<'gc>(ctx: MutationContext<'gc>, value: Value<'gc>) -> TermRef<'gc> {
-    Gc::new(
-        ctx,
-        Term {
-            source: Lock::new(false.into()),
-            kind: TermKind::Const(value),
-        },
-    )
+    ctx.allocate(Term {
+        source: Lock::new(false.into()),
+        kind: TermKind::Const(value),
+    })
 }
 
 pub fn lref<'gc>(ctx: MutationContext<'gc>, lvar: LVarRef<'gc>) -> TermRef<'gc> {
     lvar.reference();
-    Gc::new(
-        ctx,
-        Term {
-            source: Lock::new(false.into()),
-            kind: TermKind::LRef(lvar),
-        },
-    )
+    ctx.allocate(Term {
+        source: Lock::new(false.into()),
+        kind: TermKind::LRef(lvar),
+    })
 }
 
 pub fn lset<'gc>(
@@ -237,13 +225,10 @@ pub fn lset<'gc>(
     value: TermRef<'gc>,
 ) -> TermRef<'gc> {
     lvar.mutate();
-    Gc::new(
-        ctx,
-        Term {
-            source: Lock::new(false.into()),
-            kind: TermKind::LSet(lvar, value),
-        },
-    )
+    ctx.allocate(Term {
+        source: Lock::new(false.into()),
+        kind: TermKind::LSet(lvar, value),
+    })
 }
 
 pub fn module_ref<'gc>(
@@ -253,13 +238,10 @@ pub fn module_ref<'gc>(
     public: bool,
     sourcev: Value<'gc>,
 ) -> TermRef<'gc> {
-    Gc::new(
-        ctx,
-        Term {
-            source: Lock::new(sourcev),
-            kind: TermKind::ModuleRef(module, name, public),
-        },
-    )
+    ctx.allocate(Term {
+        source: Lock::new(sourcev),
+        kind: TermKind::ModuleRef(module, name, public),
+    })
 }
 
 pub fn module_set<'gc>(
@@ -270,13 +252,10 @@ pub fn module_set<'gc>(
     exp: TermRef<'gc>,
     sourcev: Value<'gc>,
 ) -> TermRef<'gc> {
-    Gc::new(
-        ctx,
-        Term {
-            source: Lock::new(sourcev),
-            kind: TermKind::ModuleSet(module, name, public, exp),
-        },
-    )
+    ctx.allocate(Term {
+        source: Lock::new(sourcev),
+        kind: TermKind::ModuleSet(module, name, public, exp),
+    })
 }
 
 pub fn toplevel_ref<'gc>(
@@ -285,13 +264,10 @@ pub fn toplevel_ref<'gc>(
     name: Value<'gc>,
     sourcev: Value<'gc>,
 ) -> TermRef<'gc> {
-    Gc::new(
-        ctx,
-        Term {
-            source: Lock::new(sourcev),
-            kind: TermKind::ToplevelRef(module, name),
-        },
-    )
+    ctx.allocate(Term {
+        source: Lock::new(sourcev),
+        kind: TermKind::ToplevelRef(module, name),
+    })
 }
 
 pub fn toplevel_set<'gc>(
@@ -301,13 +277,10 @@ pub fn toplevel_set<'gc>(
     exp: TermRef<'gc>,
     sourcev: Value<'gc>,
 ) -> TermRef<'gc> {
-    Gc::new(
-        ctx,
-        Term {
-            source: Lock::new(sourcev),
-            kind: TermKind::ToplevelSet(module, name, exp),
-        },
-    )
+    ctx.allocate(Term {
+        source: Lock::new(sourcev),
+        kind: TermKind::ToplevelSet(module, name, exp),
+    })
 }
 
 pub fn define<'gc>(
@@ -317,13 +290,10 @@ pub fn define<'gc>(
     value: TermRef<'gc>,
     sourcev: Value<'gc>,
 ) -> TermRef<'gc> {
-    Gc::new(
-        ctx,
-        Term {
-            source: Lock::new(sourcev),
-            kind: TermKind::Define(module, name, value),
-        },
-    )
+    ctx.allocate(Term {
+        source: Lock::new(sourcev),
+        kind: TermKind::Define(module, name, value),
+    })
 }
 
 pub fn if_term<'gc>(
@@ -332,23 +302,17 @@ pub fn if_term<'gc>(
     then_branch: TermRef<'gc>,
     else_branch: TermRef<'gc>,
 ) -> TermRef<'gc> {
-    Gc::new(
-        ctx,
-        Term {
-            source: Lock::new(false.into()),
-            kind: TermKind::If(test, then_branch, else_branch),
-        },
-    )
+    ctx.allocate(Term {
+        source: Lock::new(false.into()),
+        kind: TermKind::If(test, then_branch, else_branch),
+    })
 }
 
 pub fn seq<'gc>(ctx: MutationContext<'gc>, head: TermRef<'gc>, tail: TermRef<'gc>) -> TermRef<'gc> {
-    Gc::new(
-        ctx,
-        Term {
-            source: Lock::new(false.into()),
-            kind: TermKind::Seq(head, tail),
-        },
-    )
+    ctx.allocate(Term {
+        source: Lock::new(false.into()),
+        kind: TermKind::Seq(head, tail),
+    })
 }
 
 pub fn seq_from_slice<'gc>(
@@ -379,18 +343,15 @@ pub fn let_term<'gc>(
     body: TermRef<'gc>,
     src: Value<'gc>,
 ) -> TermRef<'gc> {
-    Gc::new(
-        ctx,
-        Term {
-            source: Lock::new(src),
-            kind: TermKind::Let(Let {
-                style,
-                lhs,
-                rhs,
-                body,
-            }),
-        },
-    )
+    ctx.allocate(Term {
+        source: Lock::new(src),
+        kind: TermKind::Let(Let {
+            style,
+            lhs,
+            rhs,
+            body,
+        }),
+    })
 }
 
 pub fn fix_term<'gc>(
@@ -399,13 +360,10 @@ pub fn fix_term<'gc>(
     rhs: ArrayRef<'gc, ProcRef<'gc>>,
     body: TermRef<'gc>,
 ) -> TermRef<'gc> {
-    Gc::new(
-        ctx,
-        Term {
-            source: Lock::new(false.into()),
-            kind: TermKind::Fix(Fix { lhs, rhs, body }),
-        },
-    )
+    ctx.allocate(Term {
+        source: Lock::new(false.into()),
+        kind: TermKind::Fix(Fix { lhs, rhs, body }),
+    })
 }
 
 pub fn proc_term<'gc>(
@@ -417,23 +375,17 @@ pub fn proc_term<'gc>(
     source: Value<'gc>,
     meta: Value<'gc>,
 ) -> TermRef<'gc> {
-    Gc::new(
-        ctx,
-        Term {
-            source: Lock::new(source),
-            kind: TermKind::Proc(Gc::new(
-                ctx,
-                Proc {
-                    name,
-                    args,
-                    variadic,
-                    body,
-                    source,
-                    meta,
-                },
-            )),
-        },
-    )
+    ctx.allocate(Term {
+        source: Lock::new(source),
+        kind: TermKind::Proc(ctx.allocate(Proc {
+            name,
+            args,
+            variadic,
+            body,
+            source,
+            meta,
+        })),
+    })
 }
 
 pub fn call_term<'gc>(
@@ -443,13 +395,10 @@ pub fn call_term<'gc>(
     sourcev: Value<'gc>,
 ) -> TermRef<'gc> {
     let args = Array::from_slice(ctx, args);
-    Gc::new(
-        ctx,
-        Term {
-            source: Lock::new(sourcev),
-            kind: TermKind::Call(proc, args),
-        },
-    )
+    ctx.allocate(Term {
+        source: Lock::new(sourcev),
+        kind: TermKind::Call(proc, args),
+    })
 }
 
 pub fn prim_call_term<'gc>(
@@ -459,13 +408,10 @@ pub fn prim_call_term<'gc>(
     sourcev: Value<'gc>,
 ) -> TermRef<'gc> {
     let args = Array::from_slice(ctx, args);
-    Gc::new(
-        ctx,
-        Term {
-            source: Lock::new(sourcev),
-            kind: TermKind::PrimCall(proc, args),
-        },
-    )
+    ctx.allocate(Term {
+        source: Lock::new(sourcev),
+        kind: TermKind::PrimCall(proc, args),
+    })
 }
 
 impl<'gc> Term<'gc> {
@@ -731,17 +677,14 @@ impl<'gc> Term<'gc> {
         body: TermRef<'gc>,
         source: Value<'gc>,
     ) -> TermRef<'gc> {
-        Gc::new(
-            mc,
-            Term {
-                source: Lock::new(source),
-                kind: TermKind::Fix(Fix {
-                    lhs: Array::from_iter(mc, lhs),
-                    rhs: Array::from_iter(mc, rhs),
-                    body,
-                }),
-            },
-        )
+        mc.allocate(Term {
+            source: Lock::new(source),
+            kind: TermKind::Fix(Fix {
+                lhs: Array::from_iter(mc, lhs),
+                rhs: Array::from_iter(mc, rhs),
+                body,
+            }),
+        })
     }
 
     pub fn let_(
@@ -752,18 +695,15 @@ impl<'gc> Term<'gc> {
         body: TermRef<'gc>,
         source: Value<'gc>,
     ) -> TermRef<'gc> {
-        Gc::new(
-            mc,
-            Term {
-                source: Lock::new(source),
-                kind: TermKind::Let(Let {
-                    style,
-                    lhs: Array::from_iter(mc, lhs),
-                    rhs: Array::from_iter(mc, rhs),
-                    body,
-                }),
-            },
-        )
+        mc.allocate(Term {
+            source: Lock::new(source),
+            kind: TermKind::Let(Let {
+                style,
+                lhs: Array::from_iter(mc, lhs),
+                rhs: Array::from_iter(mc, rhs),
+                body,
+            }),
+        })
     }
 
     pub fn seq(
@@ -772,13 +712,10 @@ impl<'gc> Term<'gc> {
         tail: TermRef<'gc>,
         src: Value<'gc>,
     ) -> TermRef<'gc> {
-        Gc::new(
-            mc,
-            Term {
-                source: Lock::new(src),
-                kind: TermKind::Seq(head, tail),
-            },
-        )
+        mc.allocate(Term {
+            source: Lock::new(src),
+            kind: TermKind::Seq(head, tail),
+        })
     }
 
     pub fn cond(
@@ -788,13 +725,10 @@ impl<'gc> Term<'gc> {
         alt: TermRef<'gc>,
         src: Value<'gc>,
     ) -> TermRef<'gc> {
-        Gc::new(
-            mc,
-            Term {
-                source: Lock::new(src),
-                kind: TermKind::If(cond, cons, alt),
-            },
-        )
+        mc.allocate(Term {
+            source: Lock::new(src),
+            kind: TermKind::If(cond, cons, alt),
+        })
     }
 
     pub fn prims(
@@ -803,16 +737,13 @@ impl<'gc> Term<'gc> {
         args: impl IntoIterator<Item = TermRef<'gc>>,
         src: Value<'gc>,
     ) -> TermRef<'gc> {
-        Gc::new(
-            ctx,
-            Term {
-                source: Lock::new(src),
-                kind: TermKind::PrimCall(
-                    Symbol::from_str(ctx, name).into(),
-                    Array::from_iter(ctx, args),
-                ),
-            },
-        )
+        ctx.allocate(Term {
+            source: Lock::new(src),
+            kind: TermKind::PrimCall(
+                Symbol::from_str(ctx, name).into(),
+                Array::from_iter(ctx, args),
+            ),
+        })
     }
 
     pub fn lset(
@@ -821,13 +752,10 @@ impl<'gc> Term<'gc> {
         value: TermRef<'gc>,
         src: Value<'gc>,
     ) -> TermRef<'gc> {
-        Gc::new(
-            mc,
-            Term {
-                source: Lock::new(src),
-                kind: TermKind::LSet(lvar, value),
-            },
-        )
+        mc.allocate(Term {
+            source: Lock::new(src),
+            kind: TermKind::LSet(lvar, value),
+        })
     }
 }
 

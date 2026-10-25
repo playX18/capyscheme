@@ -32,7 +32,6 @@ use crate::runtime::prims::def::Primitive;
 use crate::runtime::value::Symbol;
 use crate::runtime::value::Value;
 use crate::runtime::value::proc::SRC_FLAG_SYNTHETIC;
-use crate::utils::flags;
 use bytecodegen::{Label, LinkedBytecodeView};
 
 /// One entry of a code block's constant pool.
@@ -1527,7 +1526,7 @@ impl<'a, 'gc> Lower<'a, 'gc> {
     fn const_fixnum(&self, block: BlockId, index: usize, operand: &Operand<'gc>) -> Option<i32> {
         match operand {
             Operand::Constant(value) if value.is_int32() => Some(value.as_int32()),
-            Operand::Local(first) if flags::fold_arith_immediate() => {
+            Operand::Local(first) => {
                 let instructions = &self.blocks[&block].instructions;
                 let mut current = *first;
                 let mut end = index;
@@ -2587,9 +2586,6 @@ impl<'a, 'gc> Lower<'a, 'gc> {
         block: BlockId,
         terminator: &Terminator<'gc>,
     ) -> Option<FusedBranch<'gc>> {
-        if !flags::fuse_branch_cond() {
-            return None;
-        }
         let (operand, sense) = match terminator {
             Terminator::Branch { test, .. } => (*test, true),
             Terminator::BranchPrim {

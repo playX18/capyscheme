@@ -584,7 +584,7 @@ impl<'a, 'gc> Collector<'a, 'gc> {
         if escapes { min_overlap() } else { 1 }
     }
 
-    /// Stage-ordering gate (only when `CAPY_SHARE_ORDER=1`): every use of a
+    /// Ordering check: every use of a
     /// reused variable must precede every use of the member's private
     /// captures.
     fn order_ok(
