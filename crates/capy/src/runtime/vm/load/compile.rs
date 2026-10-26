@@ -1,8 +1,10 @@
+use crate::runtime::sched::preempt::retry_eintr;
 use std::fs::File;
 use std::io::Write;
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::compiler::{
@@ -10,8 +12,10 @@ use crate::compiler::{
     compile_file, compile_lowered_to_fasl_bytes, dump_lowered_program_artifacts,
     merge_compile_dump_options, resolve_artifact_dump_path,
 };
+use crate::heap::Gc;
 use crate::runtime::MutationContext;
-use crate::runtime::modules::current_module;
+use crate::runtime::compile_service::{self, Failure, JobInput};
+use crate::runtime::modules::{Module, current_module};
 use crate::runtime::value::{Closure, Str, Value};
 use crate::runtime::vm::libraries::LIBRARY_COLLECTION;
 use crate::runtime::vm::thunks::make_io_error;
@@ -110,7 +114,7 @@ fn load_thunk<'gc>(
 
     match mode {
         LoadMode::DescribeIfCompileNeeded => describe_uncompiled_source(ctx, &resolved),
-        LoadMode::ForceCompile => compile_and_load_source(ctx, libs, resolved),
+        LoadMode::ForceCompile => compile_and_load_source(ctx, resolved),
     }
 }
 
@@ -197,9 +201,45 @@ fn describe_uncompiled_source<'gc>(
     Ok(crate::list!(ctx, source, full_source, compiled))
 }
 
+/// Inputs of a compile of expanded Scheme.
+#[derive(Clone)]
+pub(crate) struct ExpandedJob<'gc> {
+    pub(crate) expanded: Value<'gc>,
+    pub(crate) module: Gc<'gc, Module<'gc>>,
+    pub(crate) destination: LoadArtifact,
+    pub(crate) options: CompilationOptions,
+    pub(crate) dump_options: DumpArtifactsOptions,
+    pub(crate) preprocessed: bool,
+}
+
+/// Inputs of a compile of one source file with the Rust expander.
+#[derive(Clone)]
+pub(crate) struct SourceJob<'gc> {
+    pub(crate) source: PathBuf,
+    pub(crate) module: Gc<'gc, Module<'gc>>,
+    pub(crate) destination: LoadArtifact,
+}
+
+/// Compile one source file on a compile thread. The caller loads the result.
+pub(crate) fn run_source_job<'gc>(
+    ctx: MutationContext<'gc>,
+    job: SourceJob<'gc>,
+) -> Result<(), Failure<'gc>> {
+    begin_compilation_artifact(&job.destination.path);
+    let dump_options = merge_compile_dump_options(DumpArtifactsOptions::default());
+    let lowered = compile_file(ctx, &job.source, Some(job.module), dump_options.dump_graph)?;
+    dump_lowered_program_artifacts(ctx, &job.destination.path, &lowered, dump_options);
+    let mut options = CompilationOptions::default();
+    if dump_options.dump_bytecode {
+        options.backend_dumps.bytecode =
+            Some(resolve_artifact_dump_path(&job.destination.path, ".bc.txt"));
+    }
+    compile_lowered_to_destination(ctx, lowered, options, &job.destination)?;
+    Ok(())
+}
+
 fn compile_and_load_source<'gc>(
     ctx: MutationContext<'gc>,
-    libs: &crate::runtime::vm::libraries::LibraryCollection<'gc>,
     resolved: ResolvedLoadPath,
 ) -> Result<Value<'gc>, Value<'gc>> {
     let ResolvedLoadPath::Source {
@@ -217,19 +257,15 @@ fn compile_and_load_source<'gc>(
     };
     let module = current_module(ctx).get(ctx).downcast();
     let _phase = CompilationPhase::new(ctx);
-    begin_compilation_artifact(&build_destination.path);
-    let dump_options = merge_compile_dump_options(DumpArtifactsOptions::default());
-    let lowered = compile_file(ctx, &source_path, Some(module), dump_options.dump_graph)?;
-    dump_lowered_program_artifacts(ctx, &build_destination.path, &lowered, dump_options);
-    let mut options = CompilationOptions::default();
-    if dump_options.dump_bytecode {
-        options.backend_dumps.bytecode = Some(resolve_artifact_dump_path(
-            &build_destination.path,
-            ".bc.txt",
-        ));
-    }
-    compile_lowered_to_destination(ctx, lowered, options, &build_destination)?;
+    let job = SourceJob {
+        source: source_path,
+        module,
+        destination: build_destination.clone(),
+    };
+    let (ctx, outcome) = compile_service::run(ctx, JobInput::Source(job));
+    compile_service::raise_failure(ctx, outcome.unwrap_or_else(|killed| killed.unwind()))?;
 
+    let libs = LIBRARY_COLLECTION.fetch(ctx);
     load_artifact(ctx, libs, &build_destination)
 }
 
@@ -334,7 +370,7 @@ impl Drop for ArtifactLock {
 
 #[cfg(unix)]
 fn lock_file(file: &File) -> std::io::Result<()> {
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+    if unsafe { retry_eintr(|| libc::flock(file.as_raw_fd(), libc::LOCK_EX)) } == 0 {
         Ok(())
     } else {
         Err(std::io::Error::last_os_error())
@@ -415,7 +451,7 @@ fn load_artifact<'gc>(
     })
 }
 
-pub(super) fn destination_artifact_for_current_policy(path: impl AsRef<Path>) -> LoadArtifact {
+pub(crate) fn destination_artifact_for_current_policy(path: impl AsRef<Path>) -> LoadArtifact {
     let kind = artifact_kind_for_policy(get_execution_policy());
     let path = path.as_ref().with_extension(artifact_extension(kind));
     LoadArtifact::new(kind, path)

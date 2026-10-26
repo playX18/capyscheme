@@ -570,13 +570,10 @@ impl<'gc> TermConverter<'gc> {
                 panic!("unbound lvar: {sym}")
             };
             var.reference();
-            Ok(Gc::new(
-                self.ctx,
-                Term {
-                    source: Lock::new(source),
-                    kind: TermKind::LRef(*var),
-                },
-            ))
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::LRef(*var),
+            }))
         } else if is_lset(self.ctx, t) {
             let sym = lset_sym(self.ctx, t);
 
@@ -587,30 +584,21 @@ impl<'gc> TermConverter<'gc> {
 
             let value = lset_value(self.ctx, t);
             let value = self.convert(value)?;
-            Ok(Gc::new(
-                self.ctx,
-                Term {
-                    source: Lock::new(source),
-                    kind: TermKind::LSet(var, value),
-                },
-            ))
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::LSet(var, value),
+            }))
         } else if is_constant(self.ctx, t) {
             let value = constant_value(self.ctx, t);
-            Ok(Gc::new(
-                self.ctx,
-                Term {
-                    source: Lock::new(source),
-                    kind: TermKind::Const(value),
-                },
-            ))
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::Const(value),
+            }))
         } else if is_void(self.ctx, t) {
-            Ok(Gc::new(
-                self.ctx,
-                Term {
-                    source: Lock::new(source),
-                    kind: TermKind::Const(Value::undefined()),
-                },
-            ))
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::Const(Value::undefined()),
+            }))
         } else if is_application(self.ctx, t) {
             let op = self.convert(application_operator(self.ctx, t))?;
             let mut ls = application_operands(self.ctx, t);
@@ -625,13 +613,10 @@ impl<'gc> TermConverter<'gc> {
 
             let args = Array::from_slice(self.ctx, &args);
 
-            Ok(Gc::new(
-                self.ctx,
-                Term {
-                    source: Lock::new(source),
-                    kind: TermKind::Call(op, args),
-                },
-            ))
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::Call(op, args),
+            }))
         } else if is_primcall(self.ctx, t) {
             let prim = primcall_prim(self.ctx, t);
             let mut ls = primcall_args(self.ctx, t);
@@ -643,88 +628,64 @@ impl<'gc> TermConverter<'gc> {
                 ls = ls.cdr();
             }
             let args = Array::from_slice(self.ctx, &args);
-            Ok(Gc::new(
-                self.ctx,
-                Term {
-                    source: Lock::new(source),
-                    kind: TermKind::PrimCall(prim, args),
-                },
-            ))
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::PrimCall(prim, args),
+            }))
         } else if is_primref(self.ctx, t) {
             let name = primref_name(self.ctx, t);
-            Ok(Gc::new(
-                self.ctx,
-                Term {
-                    source: Lock::new(source),
-                    kind: TermKind::PrimRef(name),
-                },
-            ))
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::PrimRef(name),
+            }))
         } else if is_module_ref(self.ctx, t) {
             let module = module_ref_module(self.ctx, t);
             let name = module_ref_name(self.ctx, t);
             let public = module_ref_public(self.ctx, t);
-            Ok(Gc::new(
-                self.ctx,
-                Term {
-                    source: Lock::new(source),
-                    kind: TermKind::ModuleRef(module, name, public),
-                },
-            ))
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::ModuleRef(module, name, public),
+            }))
         } else if is_module_set(self.ctx, t) {
             let module = module_set_module(self.ctx, t);
             let name = module_set_name(self.ctx, t);
             let public = module_set_public(self.ctx, t);
             let value = self.convert(module_set_value(self.ctx, t))?;
-            Ok(Gc::new(
-                self.ctx,
-                Term {
-                    source: Lock::new(source),
-                    kind: TermKind::ModuleSet(module, name, public, value),
-                },
-            ))
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::ModuleSet(module, name, public, value),
+            }))
         } else if is_toplevel_ref(self.ctx, t) {
             let module = toplevel_ref_mod(self.ctx, t);
             let name = toplevel_ref_name(self.ctx, t);
-            Ok(Gc::new(
-                self.ctx,
-                Term {
-                    source: Lock::new(source),
-                    kind: TermKind::ToplevelRef(module, name),
-                },
-            ))
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::ToplevelRef(module, name),
+            }))
         } else if is_toplevel_set(self.ctx, t) {
             let module = toplevel_set_mod(self.ctx, t);
             let name = toplevel_set_name(self.ctx, t);
             let value = self.convert(toplevel_set_value(self.ctx, t))?;
-            Ok(Gc::new(
-                self.ctx,
-                Term {
-                    source: Lock::new(source),
-                    kind: TermKind::ToplevelSet(module, name, value),
-                },
-            ))
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::ToplevelSet(module, name, value),
+            }))
         } else if is_toplevel_define(self.ctx, t) {
             let module = toplevel_define_mod(self.ctx, t);
             let name = toplevel_define_name(self.ctx, t);
             let value = self.convert(toplevel_define_value(self.ctx, t))?;
-            Ok(Gc::new(
-                self.ctx,
-                Term {
-                    source: Lock::new(source),
-                    kind: TermKind::Define(module, name, value),
-                },
-            ))
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::Define(module, name, value),
+            }))
         } else if is_if(self.ctx, t) {
             let cond = self.convert(if_cond(self.ctx, t))?;
             let then = self.convert(if_then(self.ctx, t))?;
             let els = self.convert(if_else(self.ctx, t))?;
-            Ok(Gc::new(
-                self.ctx,
-                Term {
-                    source: Lock::new(source),
-                    kind: TermKind::If(cond, then, els),
-                },
-            ))
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::If(cond, then, els),
+            }))
         } else if is_let(self.ctx, t) {
             let style = match let_style(self.ctx, t) {
                 v if v == sym_let_(self.ctx).into() => core::LetStyle::Let,
@@ -749,15 +710,12 @@ impl<'gc> TermConverter<'gc> {
                 let lhs = ls_lhs.car();
                 let rhs = ls_rhs.car();
 
-                let lvar = Gc::new(
-                    self.ctx,
-                    LVar {
-                        name: lhs,
-                        id,
-                        set_count: Cell::new(0),
-                        ref_count: Cell::new(0),
-                    },
-                );
+                let lvar = self.ctx.allocate(LVar {
+                    name: lhs,
+                    id,
+                    set_count: Cell::new(0),
+                    ref_count: Cell::new(0),
+                });
                 self.lvars.insert(lhs, lvar);
                 lvars.push(lvar);
                 exprs.push(rhs);
@@ -775,18 +733,15 @@ impl<'gc> TermConverter<'gc> {
             let rhs = Array::from_slice(self.ctx, &rhs);
             let body = self.convert(body)?;
 
-            Ok(Gc::new(
-                self.ctx,
-                Term {
-                    source: Lock::new(source),
-                    kind: TermKind::Let(core::Let {
-                        style,
-                        lhs,
-                        rhs,
-                        body,
-                    }),
-                },
-            ))
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::Let(core::Let {
+                    style,
+                    lhs,
+                    rhs,
+                    body,
+                }),
+            }))
         } else if is_fix(self.ctx, t) {
             let ids = fix_ids(self.ctx, t);
             let lhs = fix_lhs(self.ctx, t);
@@ -804,15 +759,12 @@ impl<'gc> TermConverter<'gc> {
                 let lhs = ls_lhs.car();
                 let rhs = ls_rhs.car();
 
-                let lvar = Gc::new(
-                    self.ctx,
-                    LVar {
-                        name: lhs,
-                        id,
-                        set_count: Cell::new(0),
-                        ref_count: Cell::new(0),
-                    },
-                );
+                let lvar = self.ctx.allocate(LVar {
+                    name: lhs,
+                    id,
+                    set_count: Cell::new(0),
+                    ref_count: Cell::new(0),
+                });
                 self.lvars.insert(lhs, lvar);
                 lvars.push(lvar);
                 exprs.push(rhs);
@@ -833,13 +785,10 @@ impl<'gc> TermConverter<'gc> {
             let rhs = Array::from_slice(self.ctx, &rhs);
             let body = self.convert(body)?;
 
-            Ok(Gc::new(
-                self.ctx,
-                Term {
-                    source: Lock::new(source),
-                    kind: TermKind::Fix(core::Fix { lhs, rhs, body }),
-                },
-            ))
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::Fix(core::Fix { lhs, rhs, body }),
+            }))
         } else if is_proc(self.ctx, t) {
             let args = proc_args(self.ctx, t);
             let body = proc_body(self.ctx, t);
@@ -859,15 +808,12 @@ impl<'gc> TermConverter<'gc> {
                 let arg = ls_args.car();
                 let id = ls_ids.car();
 
-                let lvar = Gc::new(
-                    self.ctx,
-                    LVar {
-                        name: arg,
-                        id,
-                        set_count: Cell::new(0),
-                        ref_count: Cell::new(0),
-                    },
-                );
+                let lvar = self.ctx.allocate(LVar {
+                    name: arg,
+                    id,
+                    set_count: Cell::new(0),
+                    ref_count: Cell::new(0),
+                });
                 self.lvars.insert(arg, lvar);
                 lvars.push(lvar);
                 ls_args = ls_args.cdr();
@@ -879,15 +825,12 @@ impl<'gc> TermConverter<'gc> {
 
                 let id = ls_ids.car();
 
-                let lvar = Gc::new(
-                    self.ctx,
-                    LVar {
-                        name: arg,
-                        id,
-                        set_count: Cell::new(0),
-                        ref_count: Cell::new(0),
-                    },
-                );
+                let lvar = self.ctx.allocate(LVar {
+                    name: arg,
+                    id,
+                    set_count: Cell::new(0),
+                    ref_count: Cell::new(0),
+                });
                 self.lvars.insert(arg, lvar);
                 Some(lvar)
             } else {
@@ -896,23 +839,17 @@ impl<'gc> TermConverter<'gc> {
 
             let body = self.convert(body)?;
 
-            Ok(Gc::new(
-                self.ctx,
-                Term {
-                    source: Lock::new(source),
-                    kind: TermKind::Proc(Gc::new(
-                        self.ctx,
-                        core::Proc {
-                            source,
-                            args: Array::from_slice(self.ctx, &lvars),
-                            variadic,
-                            body,
-                            name,
-                            meta,
-                        },
-                    )),
-                },
-            ))
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::Proc(self.ctx.allocate(core::Proc {
+                    source,
+                    args: Array::from_slice(self.ctx, &lvars),
+                    variadic,
+                    body,
+                    name,
+                    meta,
+                })),
+            }))
         } else if is_receive(self.ctx, t) {
             let ids = receive_ids(self.ctx, t);
             let vars = receive_vars(self.ctx, t);
@@ -926,15 +863,12 @@ impl<'gc> TermConverter<'gc> {
             while ls_vars.is_pair() {
                 let var = ls_vars.car();
                 let id = ls_ids.car();
-                let lvar = Gc::new(
-                    self.ctx,
-                    LVar {
-                        name: var,
-                        id,
-                        set_count: Cell::new(0),
-                        ref_count: Cell::new(0),
-                    },
-                );
+                let lvar = self.ctx.allocate(LVar {
+                    name: var,
+                    id,
+                    set_count: Cell::new(0),
+                    ref_count: Cell::new(0),
+                });
                 self.lvars.insert(var, lvar);
                 lvars.push(lvar);
                 ls_vars = ls_vars.cdr();
@@ -945,15 +879,12 @@ impl<'gc> TermConverter<'gc> {
                 let var = ls_vars;
                 let id = ls_ids.cdr();
 
-                let lvar = Gc::new(
-                    self.ctx,
-                    LVar {
-                        name: var,
-                        id,
-                        set_count: Cell::new(0),
-                        ref_count: Cell::new(0),
-                    },
-                );
+                let lvar = self.ctx.allocate(LVar {
+                    name: var,
+                    id,
+                    set_count: Cell::new(0),
+                    ref_count: Cell::new(0),
+                });
                 self.lvars.insert(var, lvar);
                 Some(lvar)
             } else {
@@ -963,18 +894,15 @@ impl<'gc> TermConverter<'gc> {
             let producer = self.convert(producer)?;
             let consumer = self.convert(consumer)?;
 
-            Ok(Gc::new(
-                self.ctx,
-                Term {
-                    source: Lock::new(source),
-                    kind: TermKind::Receive(
-                        Array::from_slice(self.ctx, &lvars),
-                        variadic,
-                        producer,
-                        consumer,
-                    ),
-                },
-            ))
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::Receive(
+                    Array::from_slice(self.ctx, &lvars),
+                    variadic,
+                    producer,
+                    consumer,
+                ),
+            }))
         } else if is_values(self.ctx, t) {
             let mut ls = values_values(self.ctx, t);
             let len = ls.list_length();
@@ -984,13 +912,10 @@ impl<'gc> TermConverter<'gc> {
                 vals.push(v);
                 ls = ls.cdr();
             }
-            Ok(Gc::new(
-                self.ctx,
-                Term {
-                    source: Lock::new(source),
-                    kind: TermKind::Values(Array::from_slice(self.ctx, &vals)),
-                },
-            ))
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::Values(Array::from_slice(self.ctx, &vals)),
+            }))
         } else if is_sequence(self.ctx, t) {
             let mut seq = Vec::new();
             seq.push(self.convert(sequence_head(self.ctx, t))?);
@@ -1010,13 +935,10 @@ impl<'gc> TermConverter<'gc> {
             let key = self.convert(wcm_key(self.ctx, t))?;
             let value = self.convert(wcm_value(self.ctx, t))?;
             let body = self.convert(wcm_body(self.ctx, t))?;
-            Ok(Gc::new(
-                self.ctx,
-                Term {
-                    source: Lock::new(source),
-                    kind: TermKind::WithContinuationMark(key, value, body),
-                },
-            ))
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::WithContinuationMark(key, value, body),
+            }))
         } else {
             Err(t)
         }

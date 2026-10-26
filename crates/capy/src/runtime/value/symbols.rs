@@ -356,7 +356,7 @@ impl<'gc> Keyword<'gc> {
         mc: MutationContext<'gc>,
         symbol: Gc<'gc, Symbol<'gc>>,
     ) -> Gc<'gc, Keyword<'gc>> {
-        Gc::new_with_header_word(mc, Keyword { symbol }, keyword_header_word())
+        mc.allocate_with(Keyword { symbol }, keyword_header_word())
     }
 
     pub fn to_symbol(&self) -> Gc<'gc, Symbol<'gc>> {

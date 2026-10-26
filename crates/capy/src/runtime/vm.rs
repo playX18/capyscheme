@@ -148,6 +148,9 @@ pub unsafe fn call_scheme_with_k<'gc>(
             // `ReturnOne` never escapes a native
             ReturnCode::ReturnOne => unreachable!("ReturnOne escaped its native"),
             ReturnCode::EnterBody => unreachable!("EnterBody escaped its native"),
+            ReturnCode::ReturnErr if crate::runtime::sched::scheduler::take_kill_exit() => {
+                crate::runtime::sched::scheduler::Killed.unwind()
+            }
             ReturnCode::ReturnErr => ExecutionResult::Err(val.value),
             ReturnCode::ReturnOk => ExecutionResult::Ok(val.value),
         }
@@ -445,6 +448,10 @@ impl<'a, 'gc> Call<'a, 'gc> {
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&call)));
         match caught {
             Ok(code) => code,
+            Err(payload) if payload.is::<crate::runtime::sched::scheduler::Killed>() => {
+                crate::runtime::sched::scheduler::begin_kill_exit();
+                unsafe { scheme_longjmp(ctx, ReturnCode::ReturnErr, Value::undefined()) }
+            }
             Err(payload) => {
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     native_panic(ctx, &payload)

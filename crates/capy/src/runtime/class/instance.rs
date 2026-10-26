@@ -33,8 +33,7 @@ impl<'gc> SchemeInstance<'gc> {
     ) -> Gc<'gc, Self> {
         debug_assert_eq!(class.category(), ClassCategory::Scheme);
         let header_word = class_header_word(class.id());
-        Gc::new_with_header_word(
-            ctx,
+        ctx.allocate_with(
             Self {
                 class,
                 storage: SlotStorage::with(

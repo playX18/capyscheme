@@ -202,7 +202,7 @@ impl<'gc> ClassDescriptor<'gc> {
         let primitive_operation_hooks = init
             .primitive_operation_hooks
             .unwrap_or_else(|| default_primitive_operation_hooks(init.category));
-        let direct_slots = Array::with(ctx, init.direct_slot_specs.len(), |ctx, index| {
+        let direct_slots = Array::new(ctx, init.direct_slot_specs.len(), |ctx, index| {
             SlotDescriptor::from_spec(
                 ctx.into(),
                 init.id,
@@ -210,7 +210,7 @@ impl<'gc> ClassDescriptor<'gc> {
                 init.direct_slot_specs[index],
             )
         });
-        let slots = Array::with(
+        let slots = Array::new(
             ctx,
             inherited_len + init.direct_slot_specs.len(),
             |ctx, index| {
@@ -226,10 +226,10 @@ impl<'gc> ClassDescriptor<'gc> {
                 }
             },
         );
-        let accessors = Array::with(ctx, slots.len(), |ctx, index| {
+        let accessors = Array::new(ctx, slots.len(), |ctx, index| {
             SlotAccessorDescriptor::from_slot(ctx.into(), slots[index])
         });
-        let class_slots = Array::with(ctx, slots.len(), |_, index| {
+        let class_slots = Array::new(ctx, slots.len(), |_, index| {
             let slot = slots[index];
             if slot.class_allocated() {
                 Lock::new(slot.init_value())
@@ -597,7 +597,7 @@ impl<'gc> ClassDescriptor<'gc> {
         }) {
             return;
         }
-        let appended = Array::with(ctx, current.len() + 1, |_, index| {
+        let appended = Array::new(ctx, current.len() + 1, |_, index| {
             if index < current.len() {
                 current[index]
             } else {
@@ -641,7 +641,7 @@ impl<'gc> ClassDescriptor<'gc> {
         if current.contains(&method) {
             return;
         }
-        let appended = Array::with(ctx, current.len() + 1, |_, index| {
+        let appended = Array::new(ctx, current.len() + 1, |_, index| {
             if index < current.len() {
                 current[index]
             } else {
@@ -666,7 +666,7 @@ impl<'gc> ClassDescriptor<'gc> {
 }
 
 fn empty_metadata<'gc>(ctx: MutationContext<'gc>) -> ArrayRef<'gc, Value<'gc>> {
-    Array::with(ctx, 0, |_, _| {
+    Array::new(ctx, 0, |_, _| {
         unreachable!("zero-length metadata arrays are never initialized")
     })
 }
@@ -729,7 +729,7 @@ pub(crate) fn slot_accessor_list<'gc>(
 fn empty_weak_subclasses<'gc>(
     ctx: MutationContext<'gc>,
 ) -> ArrayRef<'gc, Weak<'gc, ClassDescriptor<'gc>>> {
-    Array::with(ctx, 0, |_, _| {
+    Array::new(ctx, 0, |_, _| {
         unreachable!("zero-length weak subclass arrays are never initialized")
     })
 }

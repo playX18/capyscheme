@@ -21,11 +21,12 @@ use super::paths::{fallback_file_name, find_path_to};
 use super::{
     artifact::LoadArtifact,
     compile::{
-        CompilationPhase, compile_lowered_to_destination, destination_artifact_for_current_policy,
-        load_thunk_in_vicinity,
+        CompilationPhase, ExpandedJob, compile_lowered_to_destination,
+        destination_artifact_for_current_policy, load_thunk_in_vicinity,
     },
     policy::set_fasl_debug_entries,
 };
+use crate::runtime::compile_service::{self, Failure, JobInput};
 
 type LoadResult<'gc> = Result<Value<'gc>, Value<'gc>>;
 type OptionalStringRef<'gc> = Option<StringRef<'gc>>;
@@ -310,6 +311,30 @@ fn resolve_continuation_module<'gc>(
     }
 }
 
+/// Lower, compile and write `job` on a compile thread.
+pub(crate) fn run_expanded_job<'gc>(
+    ctx: MutationContext<'gc>,
+    job: ExpandedJob<'gc>,
+) -> Result<(), Failure<'gc>> {
+    begin_compilation_artifact(&job.destination.path);
+    let lowered = lower_expanded_scheme(
+        ctx,
+        job.expanded,
+        job.module,
+        job.dump_options.dump_graph,
+        job.preprocessed,
+    )?;
+    let mut options = job.options;
+    configure_backend_dump_paths(
+        &mut options.backend_dumps,
+        &job.destination.path,
+        job.dump_options,
+    );
+    dump_lowered_program_artifacts(ctx, &job.destination.path, &lowered, job.dump_options);
+    compile_lowered_to_destination(ctx, lowered, options, &job.destination)?;
+    Ok(())
+}
+
 fn compile_expanded_to_destination<'gc>(
     ctx: MutationContext<'gc>,
     expanded: Value<'gc>,
@@ -322,14 +347,16 @@ fn compile_expanded_to_destination<'gc>(
 ) -> LoadResult<'gc> {
     let _phase = CompilationPhase::new(ctx);
     let destination = destination_artifact_for_current_policy(destination);
-    begin_compilation_artifact(&destination.path);
-    let dump_options = merge_compile_dump_options(dump_options);
-    let lowered =
-        lower_expanded_scheme(ctx, expanded, module, dump_options.dump_graph, preprocessed)?;
-    let mut options = options;
-    configure_backend_dump_paths(&mut options.backend_dumps, &destination.path, dump_options);
-    dump_lowered_program_artifacts(ctx, &destination.path, &lowered, dump_options);
-    compile_lowered_to_destination(ctx, lowered, options, &destination)?;
+    let job = ExpandedJob {
+        expanded,
+        module,
+        destination: destination.clone(),
+        options,
+        dump_options: merge_compile_dump_options(dump_options),
+        preprocessed,
+    };
+    let (ctx, outcome) = compile_service::run(ctx, JobInput::Expanded(job));
+    compile_service::raise_failure(ctx, outcome.unwrap_or_else(|killed| killed.unwind()))?;
 
     if !load_thunk {
         return Ok(Str::new(ctx, destination.path.display().to_string(), true).into());

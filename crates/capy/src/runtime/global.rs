@@ -262,6 +262,7 @@ pub struct Globals<'gc> {
 
     /// Tier-up jobs waiting for a JIT worker.
     pub jit_jobs: crate::runtime::codegen::jit::JobQueue<'gc>,
+    pub compile_jobs: crate::runtime::compile_service::CompileQueue<'gc>,
 }
 
 impl<'gc> Globals<'gc> {
@@ -462,6 +463,7 @@ impl<'gc> Globals<'gc> {
             loc_wcm_type,
             // Traced by its own `Trace` impl, not a value cell.
             jit_jobs: _,
+            compile_jobs: _,
         } = self;
 
         f(capy_module_name);
@@ -648,6 +650,7 @@ impl<'gc> Globals<'gc> {
             loc_proc_type: Cell::new(loc_proc_type.into()),
             loc_wcm_type: Cell::new(loc_wcm_type.into()),
             jit_jobs: Default::default(),
+            compile_jobs: Default::default(),
         }
     }
 
@@ -695,6 +698,7 @@ impl<'gc> Globals<'gc> {
             loc_proc_type: Cell::new(Value::undefined()),
             loc_wcm_type: Cell::new(Value::undefined()),
             jit_jobs: Default::default(),
+            compile_jobs: Default::default(),
         }
     }
 }

@@ -125,7 +125,7 @@ impl<'gc> GenericInvocation<'gc> {
     /// with no fuse.
     pub fn fused_args(&self, ctx: MutationContext<'gc>) -> ArrayRef<'gc, Value<'gc>> {
         match self.next {
-            Some(next) => Array::with(ctx, self.args.len() + 1, |_, index| {
+            Some(next) => Array::new(ctx, self.args.len() + 1, |_, index| {
                 if index == 0 {
                     next
                 } else {
@@ -709,8 +709,7 @@ impl<'gc> GenericDescriptor<'gc> {
         if is_slot_protocol_generic(name) {
             fire_slot_protocol(ctx);
         }
-        Gc::new_with_header_word(
-            ctx,
+        ctx.allocate_with(
             Self {
                 name: Array::from_slice(ctx, name.as_bytes()),
                 methods: Lock::new(empty_method_metadata(ctx)),
@@ -1149,7 +1148,7 @@ impl<'gc> GenericDescriptor<'gc> {
             if current.len() >= 8 || current.iter().any(|e| e.class_id == hit.class_id) {
                 return;
             }
-            let appended = Array::with(ctx, current.len() + 1, |_, index| {
+            let appended = Array::new(ctx, current.len() + 1, |_, index| {
                 if index < current.len() {
                     current[index]
                 } else {
@@ -1436,7 +1435,7 @@ impl<'gc> GenericDescriptor<'gc> {
             {
                 return;
             }
-            let appended = Array::with(ctx, current.len() + 1, |_, index| {
+            let appended = Array::new(ctx, current.len() + 1, |_, index| {
                 if index < current.len() {
                     current[index]
                 } else {
@@ -1485,7 +1484,7 @@ impl<'gc> GenericDescriptor<'gc> {
         method: Gc<'gc, MethodDescriptor<'gc>>,
     ) {
         let current = generic.methods.get();
-        let appended = Array::with(ctx, current.len() + 1, |_, index| {
+        let appended = Array::new(ctx, current.len() + 1, |_, index| {
             if index < current.len() {
                 current[index]
             } else {
@@ -1508,8 +1507,7 @@ impl<'gc> MethodDescriptor<'gc> {
         body: Value<'gc>,
         flags: MethodFlags,
     ) -> Gc<'gc, Self> {
-        Gc::new_with_header_word(
-            ctx,
+        ctx.allocate_with(
             Self {
                 generic,
                 specializers: Array::from_slice(ctx, specializers),
@@ -1622,8 +1620,7 @@ impl<'gc> NextMethodDescriptor<'gc> {
         args: ArrayRef<'gc, Value<'gc>>,
         index: usize,
     ) -> Gc<'gc, Self> {
-        Gc::new_with_header_word(
-            ctx,
+        ctx.allocate_with(
             Self {
                 generic,
                 methods,
@@ -1671,7 +1668,7 @@ impl<'gc> NextMethodDescriptor<'gc> {
         ctx: MutationContext<'gc>,
         next_method: Gc<'gc, Self>,
     ) -> ArrayRef<'gc, Value<'gc>> {
-        Array::with(ctx, next_method.args.len() + 1, |_, index| {
+        Array::new(ctx, next_method.args.len() + 1, |_, index| {
             if index == 0 {
                 next_method.into()
             } else {
@@ -1711,25 +1708,25 @@ unsafe impl<'gc> ClassTagged for NextMethodDescriptor<'gc> {
 fn empty_method_metadata<'gc>(
     ctx: MutationContext<'gc>,
 ) -> ArrayRef<'gc, Gc<'gc, MethodDescriptor<'gc>>> {
-    Array::with(ctx, 0, |_, _| {
+    Array::new(ctx, 0, |_, _| {
         unreachable!("zero-length method arrays are never initialized")
     })
 }
 
 fn empty_slot_cache<'gc>(ctx: MutationContext<'gc>) -> ArrayRef<'gc, SlotAccessEntry> {
-    Array::with(ctx, 0, |_, _| {
+    Array::new(ctx, 0, |_, _| {
         unreachable!("zero-length slot cache arrays are never initialized")
     })
 }
 
 fn empty_method_cache<'gc>(ctx: MutationContext<'gc>) -> ArrayRef<'gc, MethodEntry<'gc>> {
-    Array::with(ctx, 0, |_, _| {
+    Array::new(ctx, 0, |_, _| {
         unreachable!("zero-length method cache arrays are never initialized")
     })
 }
 
 fn empty_dispatch_table<'gc>(ctx: MutationContext<'gc>) -> ArrayRef<'gc, DispatchBucket<'gc>> {
-    Array::with(ctx, 0, |_, _| {
+    Array::new(ctx, 0, |_, _| {
         unreachable!("zero-length dispatch tables are never initialized")
     })
 }

@@ -603,7 +603,7 @@ impl SlotSite {
                 .filter(|e| e.class_id != entry.class_id)
                 .collect();
             let skip = (kept.len() + 1).saturating_sub(SLOT_POLY_ENTRIES);
-            let rebuilt = Array::with(ctx, kept.len() - skip + 1, |_, index| {
+            let rebuilt = Array::new(ctx, kept.len() - skip + 1, |_, index| {
                 if index + skip < kept.len() {
                     kept[index + skip]
                 } else {

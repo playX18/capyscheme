@@ -74,8 +74,7 @@ impl<'gc> WeakMapping<'gc> {
     pub fn new(ctx: MutationContext<'gc>, key: Value<'gc>, value: Value<'gc>) -> Gc<'gc, Self> {
         assert!(key.is_cell(), "weak-mappings can only have cells as keys");
 
-        Gc::new_with_header_word(
-            ctx,
+        ctx.allocate_with(
             Self {
                 _key: key,
                 _value: value,
@@ -245,7 +244,7 @@ impl<'gc> WeakTable<'gc> {
             "load factor must be in (0, 1)"
         );
 
-        let entries = Array::with(ctx, initial_capacity, |_, _| Lock::new(None));
+        let entries = Array::new(ctx, initial_capacity, |_, _| Lock::new(None));
         let inner = WeakTableInner {
             entries: Lock::new(entries),
             count: Cell::new(0),
@@ -254,8 +253,7 @@ impl<'gc> WeakTable<'gc> {
             mod_count: Cell::new(0),
         };
 
-        let table = Gc::new_with_header_word(
-            ctx,
+        let table = ctx.allocate_with(
             Self {
                 inner: Monitor::new(inner),
             },
@@ -281,7 +279,7 @@ impl<'gc> WeakTable<'gc> {
     ) {
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
-            let entries = Array::with(ctx, 8, |_, _| Lock::new(None));
+            let entries = Array::new(ctx, 8, |_, _| Lock::new(None));
             let inner = WeakTableInner {
                 entries: Lock::new(entries),
                 count: Cell::new(0),
@@ -318,7 +316,7 @@ impl<'gc> WeakTable<'gc> {
 
         let new_capacity = (old_capacity as f64 / inner.load_factor) as usize;
 
-        let new_map = Array::with(ctx, new_capacity, |_, _| Lock::new(None));
+        let new_map = Array::new(ctx, new_capacity, |_, _| Lock::new(None));
 
         inner.mod_count.set(inner.mod_count.get() + 1);
         inner
@@ -367,15 +365,12 @@ impl<'gc> WeakTable<'gc> {
         let tab = Gc::write(ctx, inner.entries.get());
         let e = tab[index].get();
 
-        tab[index].unlock().set(Some(Gc::new(
-            ctx,
-            WeakEntry {
-                hash,
-                _key: WeakValue::from_value(key),
-                _value: Lock::new(value),
-                next: Lock::new(e),
-            },
-        )));
+        tab[index].unlock().set(Some(ctx.allocate(WeakEntry {
+            hash,
+            _key: WeakValue::from_value(key),
+            _value: Lock::new(value),
+            next: Lock::new(e),
+        })));
         inner.count.set(inner.count.get() + 1);
         inner.mod_count.set(inner.mod_count.get() + 1);
     }

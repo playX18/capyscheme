@@ -166,8 +166,7 @@ impl<'gc> Module<'gc> {
         uses: Value<'gc>,
         binder: impl IntoValue<'gc>,
     ) -> Gc<'gc, Self> {
-        Gc::new_with_header_word(
-            ctx,
+        ctx.allocate_with(
             Self {
                 obarray: Lock::new(HashTable::new(ctx, HashTableType::Eq, size, 0.75)),
                 uses: Lock::new(uses),
@@ -850,8 +849,7 @@ const _: () = {
 impl<'gc> Variable<'gc> {
     /// Allocates a variable cell holding `value`.
     pub fn new(ctx: MutationContext<'gc>, value: Value<'gc>) -> Gc<'gc, Self> {
-        Gc::new_with_header_word(
-            ctx,
+        ctx.allocate_with(
             Self {
                 value: Lock::new(value),
             },

@@ -1,12 +1,12 @@
 //! Machine-level Scheme ABI (SABI) constants.
 //!
-//! The `TC` register points at the [`ThreadNativeData`](crate::heap::sync::thread::ThreadNativeData),
-//! so every `TC_*` offset is from the thread base.
+//! The `TC` register points at the running [`VirtualThread`](crate::heap::sync::thread::VirtualThread),
+//! so every `TC_*` offset is from the thread header.
 
 use core::mem::{align_of, offset_of, size_of};
 
 use crate::heap::object::{MAX_CLASS_ID, OBJECT_HEADER_OFFSET};
-use crate::heap::sync::thread::ThreadNativeData;
+use crate::heap::sync::thread::VirtualThread;
 use crate::runtime::interp::stack::StackState;
 use crate::runtime::thread::Tc;
 use crate::runtime::value::{
@@ -15,11 +15,11 @@ use crate::runtime::value::{
 
 pub use crate::heap::object::builtin_class_ids;
 
-/// Native data base to the thread context.
-pub const TC_OFFSET: usize = ThreadNativeData::TC_OFFSET;
-/// `AP`/`EAP` are the LAB cursor and limit.
-pub const TC_AP: usize = ThreadNativeData::LAB_OFFSET_CURSOR;
-pub const TC_EAP: usize = ThreadNativeData::LAB_OFFSET_LIMIT;
+/// VirtualThread-header base of the `Tc` context.
+pub const TC_OFFSET: usize = offset_of!(VirtualThread, tc);
+/// `AP`/`EAP` are the local allocation buffer cursor and limit.
+pub const TC_AP: usize = offset_of!(VirtualThread, ap);
+pub const TC_EAP: usize = offset_of!(VirtualThread, eap);
 
 /// Native data base to `Tc.stack` fields.
 pub const TC_STACK_FP: usize =
@@ -49,7 +49,7 @@ pub const TC_STACK_CALL_ARGS: usize =
 
 /// Native data base to the yieldpoint flag: `0` idle, `> 0` taken at
 /// prologues and loop back-edges, `< 0` at prologues only.
-pub const TC_YIELDPOINT: usize = ThreadNativeData::TAKE_YIELDPOINT_OFFSET;
+pub const TC_YIELDPOINT: usize = offset_of!(VirtualThread, take_yieldpoint);
 
 /// Native data base to the remaining `Tc` fields.
 pub const TC_ESP: usize = TC_OFFSET + offset_of!(Tc<'static>, esp);
@@ -366,7 +366,7 @@ const _: () = {
     assert!(CLASS_ID_MASK == 0x00ff_ffff);
     assert!(size_of::<Value<'static>>() == 8);
     assert!(TC_OFFSET + size_of::<Tc<'static>>() < i32::MAX as usize);
-    assert!(ThreadNativeData::LAB_OFFSET_LIMIT + 8 < i32::MAX as usize);
+    assert!(TC_EAP + 8 < i32::MAX as usize);
 };
 
 #[cfg(target_arch = "x86_64")]

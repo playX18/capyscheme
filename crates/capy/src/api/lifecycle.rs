@@ -4,7 +4,10 @@ use std::{marker::PhantomData, sync::Arc};
 
 use libc::c_void;
 
-use crate::runtime::{MutationContext, Scheme, value::Value, vm::threading::ThreadObject};
+use crate::{
+    heap::{Gc, Mutator},
+    runtime::{MutationContext, Scheme, State, value::Value, vm::threading::ThreadObject},
+};
 
 use super::env::{SCM_REF_NULL, Scm, ScmPtr, ScmRef, SniEnv, env_mut};
 
@@ -79,6 +82,10 @@ pub type ThreadFn = unsafe extern "C" fn(scm: ScmPtr, arg: *mut c_void) -> *mut 
 
 /// Fork a new Scheme thread from the parent env's dynamic state.
 ///
+/// The thread is an OS thread attached to the collector as its own mutator,
+/// not a virtual thread: it blocks its OS thread when it waits. Scheme code
+/// that should not block an OS thread belongs in a `go` thread instead.
+///
 /// Returns a local ref to the thread object, or null on failure.
 ///
 /// # Safety
@@ -101,9 +108,24 @@ pub unsafe extern "C" fn scm_fork(
     let thread_spawned_clone = thread_spawned.clone();
     let arg = arg as usize;
     std::thread::spawn(move || {
-        let scm = Scheme::forked(thread_object_bits, dynamic_state);
+        let mutator = Mutator::new(|mc| {
+            // SAFETY: `thread_object_bits` was obtained from `Gc::as_ptr()` on
+            // the parent thread, and the parent's local ref keeps it alive.
+            let thread_object: Gc<'_, ThreadObject<'_>> =
+                unsafe { Gc::from_ptr(thread_object_bits as _) };
+            thread_object.bind_current_runtime_thread();
+            mc.init_state(State::new(mc, thread_object));
+        });
+        mutator.mutate(|ctx, _| {
+            ctx.state()
+                .dynamic_state
+                .restore(ctx, Value::from_raw(dynamic_state));
+        });
+        let scm = Scm {
+            scheme: Scheme { mutator },
+        };
         thread_spawned_clone.wait();
-        let parent_ptr = ScmPtr(Box::into_raw(Box::new(Scm { scheme: scm })));
+        let parent_ptr = ScmPtr(Box::into_raw(Box::new(scm)));
         // SAFETY: init provided by caller.
         unsafe { init(parent_ptr, arg as _) };
         unsafe {
@@ -111,6 +133,50 @@ pub unsafe extern "C" fn scm_fork(
         }
     });
     e.make_local(thread_object.into())
+}
+
+/// Run `body(data)` as the main thread of `scm`.
+///
+/// The calling thread becomes worker 0 and is blocked until the main thread
+/// returns. The main thread's stack matches the calling thread's stack limit.
+/// Call it on the thread that created `scm`, outside any `scm` call.
+/// Returns 0 once the thread has finished, or -1 for a null handle.
+///
+/// # Safety
+/// `scm` must be a live handle, `body` a valid function pointer, and `data`
+/// whatever `body` expects.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn scm_run_main(
+    scm: ScmPtr,
+    body: unsafe extern "C" fn(*mut c_void),
+    data: *mut c_void,
+) -> libc::c_int {
+    if scm.0.is_null() {
+        return -1;
+    }
+    let data = data as usize;
+    let scheme = &scm.scheme().mutator;
+    crate::runtime::sched::scheduler::run_main(scheme, main_stack_bytes(), move |_cx| {
+        // SAFETY: the caller guarantees `body` and `data` are valid for the
+        // duration of this call, which does not return before `body` does.
+        unsafe { body(data as *mut c_void) };
+    });
+    0
+}
+
+/// Stack size for the main thread
+fn main_stack_bytes() -> usize {
+    const FLOOR: usize = 2 << 20;
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `limit` is a valid out pointer.
+    let ok = unsafe { libc::getrlimit(libc::RLIMIT_STACK, &mut limit) } == 0;
+    if !ok || limit.rlim_cur == libc::RLIM_INFINITY {
+        return FLOOR;
+    }
+    (limit.rlim_cur as usize).max(FLOOR)
 }
 
 /// Get the underlying MutationContext pointer (advanced / internal).

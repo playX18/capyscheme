@@ -219,7 +219,7 @@ impl<'gc> HashTable<'gc> {
     ) {
         if let HashTableType::Generic(_) = typ {
             let inner = InnerHashTable {
-                table: Lock::new(Array::with(ctx, 0, |_, _| Lock::new(None))),
+                table: Lock::new(Array::new(ctx, 0, |_, _| Lock::new(None))),
                 count: Cell::new(0),
                 threshold: Cell::new(0),
                 load_factor: 0.75,
@@ -237,7 +237,7 @@ impl<'gc> HashTable<'gc> {
         }
 
         let size = kvs.len().max(8);
-        let table = Array::with(ctx, size, |_, _| Lock::new(None));
+        let table = Array::new(ctx, size, |_, _| Lock::new(None));
         let threshold = (size as f64 * 0.75).ceil() as usize;
 
         let inner = InnerHashTable {
@@ -271,9 +271,8 @@ impl<'gc> HashTable<'gc> {
     ) -> Gc<'gc, Self> {
         if let HashTableType::Generic(_) = typ {
             // generic hashtable: no table, handled separately.
-            let table = Array::with(mc, 0, |_, _| Lock::new(None));
-            return Gc::new_with_header_word(
-                mc,
+            let table = Array::new(mc, 0, |_, _| Lock::new(None));
+            return mc.allocate_with(
                 Self {
                     inner: Monitor::new(InnerHashTable {
                         table: Lock::new(table),
@@ -296,12 +295,11 @@ impl<'gc> HashTable<'gc> {
             panic!("Load factor must be greater than 0.0");
         }
 
-        let table = Array::with(mc, initial_capacity, |_, _| Lock::new(None));
+        let table = Array::new(mc, initial_capacity, |_, _| Lock::new(None));
 
         let threshold = (initial_capacity as f64 * load_factor).ceil() as usize;
 
-        Gc::new_with_header_word(
-            mc,
+        mc.allocate_with(
             Self {
                 inner: Monitor::new(InnerHashTable {
                     table: Lock::new(table),
@@ -324,9 +322,8 @@ impl<'gc> HashTable<'gc> {
     ) -> Gc<'gc, Self> {
         if let HashTableType::Generic(_) = typ {
             // generic hashtable: no table, handled separately.
-            let table = Array::with(mc, 0, |_, _| Lock::new(None));
-            return Gc::new_with_header_word(
-                mc,
+            let table = Array::new(mc, 0, |_, _| Lock::new(None));
+            return mc.allocate_with(
                 Self {
                     inner: Monitor::new(InnerHashTable {
                         table: Lock::new(table),
@@ -349,12 +346,11 @@ impl<'gc> HashTable<'gc> {
             panic!("Load factor must be greater than 0.0");
         }
 
-        let table = Array::with(mc, initial_capacity, |_, _| Lock::new(None));
+        let table = Array::new(mc, initial_capacity, |_, _| Lock::new(None));
 
         let threshold = (initial_capacity as f64 * load_factor).ceil() as usize;
 
-        Gc::new_with_header_word(
-            mc,
+        mc.allocate_with(
             Self {
                 inner: Monitor::new(InnerHashTable {
                     table: Lock::new(table),
@@ -388,7 +384,7 @@ impl<'gc> HashTable<'gc> {
 
         let new_capacity = (old_capacity << 1) * 2;
 
-        let new_map = Array::with(ctx, new_capacity, |_, _| Lock::new(None));
+        let new_map = Array::new(ctx, new_capacity, |_, _| Lock::new(None));
 
         inner.mod_count.set(inner.mod_count.get() + 1);
         inner
@@ -431,15 +427,12 @@ impl<'gc> HashTable<'gc> {
         let tab = Gc::write(ctx, inner.table.get());
         let e = tab[index].get();
 
-        tab[index].unlock().set(Some(Gc::new(
-            ctx,
-            Entry {
-                hash,
-                key,
-                value: Lock::new(value),
-                next: Lock::new(e),
-            },
-        )));
+        tab[index].unlock().set(Some(ctx.allocate(Entry {
+            hash,
+            key,
+            value: Lock::new(value),
+            next: Lock::new(e),
+        })));
         inner.count.set(inner.count.get() + 1);
         inner.mod_count.set(inner.mod_count.get() + 1);
     }

@@ -51,7 +51,7 @@ pub(crate) fn make_pointer_value<'gc>(
     ptr: *mut std::ffi::c_void,
 ) -> Value<'gc> {
     let p = Pointer::new(ptr);
-    Gc::new_with_header_word(ctx, p, pointer_header_word()).into()
+    ctx.allocate_with(p, pointer_header_word()).into()
 }
 
 pub(crate) fn ensure_module<'gc>(

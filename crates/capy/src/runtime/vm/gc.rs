@@ -20,8 +20,7 @@ mod tests {
     #[test]
     fn ephemeron_allocates_with_class_only_header() {
         Scheme::new_uninit().enter(|ctx| {
-            let ephemeron = Gc::new_with_header_word(
-                ctx,
+            let ephemeron = ctx.allocate_with(
                 Ephemeron {
                     key: Value::null(),
                     value: Value::undefined(),
@@ -129,11 +128,7 @@ pub mod gc {
 
         let ephemeron = Ephemeron { key, value };
 
-        let cell = Value::from(Gc::new_with_header_word(
-            ctx,
-            ephemeron,
-            ephemeron_header_word(),
-        ));
+        let cell = Value::from(ctx.allocate_with(ephemeron, ephemeron_header_word()));
 
         cell
     }

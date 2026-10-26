@@ -25,8 +25,7 @@ fn box_header_word() -> u64 {
 impl<'gc> Boxed<'gc> {
     /// Allocates a box containing `val`.
     pub fn new(ctx: MutationContext<'gc>, val: Value<'gc>) -> Gc<'gc, Self> {
-        Gc::new_with_header_word(
-            ctx,
+        ctx.allocate_with(
             Self {
                 val: Lock::new(val),
             },

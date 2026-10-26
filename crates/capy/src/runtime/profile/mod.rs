@@ -21,6 +21,7 @@ use crate::heap::GarbageCollector;
 use crate::heap::sync::thread::Thread;
 use crate::prelude::scheme;
 use crate::runtime::MutationContext;
+use crate::runtime::service::{self, ServiceCtl, ServiceHandle, ServiceThread};
 
 /// Whether capture is armed
 pub(crate) static ARMED: AtomicBool = AtomicBool::new(false);
@@ -41,11 +42,35 @@ static CONTROL: Mutex<()> = Mutex::new(());
 /// Saved signal state, restored on disarm. Only touched under `CONTROL`.
 static SAVED: Mutex<(Option<libc::sigaction>, Option<libc::itimerval>)> = Mutex::new((None, None));
 /// The aggregator thread while armed.
-static AGGREGATOR: Mutex<Option<Aggregator>> = Mutex::new(None);
+static AGGREGATOR: Mutex<Option<std::sync::Arc<ServiceHandle>>> = Mutex::new(None);
 
-struct Aggregator {
-    stop: std::sync::Arc<AtomicBool>,
-    handle: Option<std::thread::JoinHandle<()>>,
+/// Periodically drains the mutator rings and rewrites the output.
+struct Aggregator;
+
+impl ServiceThread for Aggregator {
+    fn name(&self) -> String {
+        String::from("capy-profile-agg")
+    }
+
+    fn pre_run(&self) {
+        capture::block_sigprof_for_worker();
+    }
+
+    fn run_service(&self, ctl: &ServiceCtl) {
+        let mut drains = 0u64;
+        loop {
+            ctl.sleep(DRAIN_INTERVAL);
+            if ctl.should_terminate() {
+                break;
+            }
+            drain_all();
+            drains += 1;
+            if drains % REAP_EVERY_DRAINS == 0 {
+                maps::reap_interp();
+            }
+            write_output();
+        }
+    }
 }
 
 static FOLD: std::sync::LazyLock<Mutex<HashMap<Vec<String>, u64>>> =
@@ -110,16 +135,9 @@ pub fn arm() -> Result<PathBuf, String> {
     for thread in live_mutators() {
         ensure_ring(&thread);
     }
-    let stop = std::sync::Arc::new(AtomicBool::new(false));
-    let worker_stop = stop.clone();
-    let handle = std::thread::Builder::new()
-        .name(String::from("capy-profile-agg"))
-        .spawn(move || aggregator_loop(worker_stop))
+    let handle = service::start(std::sync::Arc::new(Aggregator))
         .map_err(|err| format!("profiler thread spawn failed: {err}"))?;
-    *AGGREGATOR.lock().unwrap() = Some(Aggregator {
-        stop,
-        handle: Some(handle),
-    });
+    *AGGREGATOR.lock().unwrap() = Some(handle);
     static REGISTER_ATEXIT: std::sync::Once = std::sync::Once::new();
     REGISTER_ATEXIT.call_once(|| unsafe {
         libc::atexit(finalize_atexit);
@@ -156,11 +174,8 @@ fn finalize_inner() {
             libc::sigaction(libc::SIGPROF, &saved, std::ptr::null_mut());
         }
     }
-    if let Some(mut aggregator) = AGGREGATOR.lock().unwrap().take() {
-        aggregator.stop.store(true, Relaxed);
-        if let Some(handle) = aggregator.handle.take() {
-            let _ = handle.join();
-        }
+    if let Some(aggregator) = AGGREGATOR.lock().unwrap().take() {
+        aggregator.stop();
     }
     drain_all();
     write_output();
@@ -231,23 +246,6 @@ pub(crate) fn maybe_arm_from_env() {
         && let Err(err) = arm()
     {
         log::warn!("profiler failed to arm: {err}");
-    }
-}
-
-fn aggregator_loop(stop: std::sync::Arc<AtomicBool>) {
-    capture::block_sigprof_for_worker();
-    let mut drains = 0u64;
-    while !stop.load(Relaxed) {
-        std::thread::sleep(DRAIN_INTERVAL);
-        if stop.load(Relaxed) {
-            break;
-        }
-        drain_all();
-        drains += 1;
-        if drains % REAP_EVERY_DRAINS == 0 {
-            maps::reap_interp();
-        }
-        write_output();
     }
 }
 

@@ -271,7 +271,7 @@ impl<'gc> WeakSetInner<'gc> {
             }
         }
 
-        let new_entries = Array::with(mc, new_size, |_, _| Lock::new(WeakEntry::broken()));
+        let new_entries = Array::new(mc, new_size, |_, _| Lock::new(WeakEntry::broken()));
 
         let old_entries = this.entries.get();
         let old_size = this.size.get();
@@ -529,10 +529,9 @@ impl<'gc> WeakSet<'gc> {
 
         n = HASHSET_SIZES[i];
 
-        let entries = Array::with(mc, n, |_, _| Lock::new(WeakEntry::broken()));
+        let entries = Array::new(mc, n, |_, _| Lock::new(WeakEntry::broken()));
 
-        let weak_set = Gc::new_with_header_word(
-            mc,
+        let weak_set = mc.allocate_with(
             Self {
                 inner: Monitor::new(WeakSetInner {
                     entries: Lock::new(entries),

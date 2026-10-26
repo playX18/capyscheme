@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::bytecode::def;
+use crate::heap::Space;
 use crate::heap::Trace;
 use crate::runtime::codegen::addr::CodeEntry;
 use crate::runtime::codegen::stubs::CallIcStub;
@@ -26,6 +27,10 @@ pub struct CodeImage<'gc> {
     native: UnsafeCell<ManuallyDrop<Native>>,
 }
 
+// SAFETY: the native part is written once before the image is published and is
+// only read afterwards, apart from the single `release` after the collector
+// found the image dead. This is the one place the native code types
+// (`CodeUnit`, `CallIcStub`, ...) are asserted thread-safe.
 unsafe impl Send for CodeImage<'_> {}
 unsafe impl Sync for CodeImage<'_> {}
 
@@ -37,14 +42,14 @@ impl<'gc> CodeImage<'gc> {
     }
 
     pub(crate) fn alloc(ctx: MutationContext<'gc>, native: Native) -> Gc<'gc, Self> {
-        let image = ctx.allocate_with_header_word(
+        let image = ctx.allocate_in(
+            Space::Los,
             Self {
                 owner: UnsafeCell::new(Value::null()),
                 released: AtomicBool::new(false),
                 native: UnsafeCell::new(ManuallyDrop::new(native)),
             },
             Self::header_word(),
-            AllocationSemantics::Los,
         );
         // SAFETY: the image is not shared yet, and never moves.
         unsafe { *image.owner.get() = Value::from(image) };
@@ -246,12 +251,7 @@ impl<'gc> CodeBuffer<'gc> {
         // before anything can trace the object, and every data word is
         // initialized below.
         unsafe {
-            let object = ctx.raw_allocate_with_header_word(
-                size,
-                8,
-                code_buffer_header_word(),
-                AllocationSemantics::NonMoving,
-            );
+            let object = ctx.allocate_raw(size, 8, code_buffer_header_word(), Space::NonMoving);
             let this = object.to_address().as_mut_ref::<Self>();
             this.nconsts = nconsts;
             this.ncode = ncode;
@@ -503,8 +503,7 @@ impl<'gc> CodeBlock<'gc> {
                 init.info,
             );
         }
-        Gc::new_with_header_word(
-            ctx,
+        ctx.allocate_with(
             Self {
                 entrypoint: Address::from_ptr(buffer.entry()),
                 kind: CodeBlockKind::Bytecode,
@@ -548,8 +547,7 @@ impl<'gc> CodeBlock<'gc> {
         metadata: Value<'gc>,
     ) -> Gc<'gc, Self> {
         let buffer = Self::native_buffer(ctx);
-        Gc::new_with_header_word(
-            ctx,
+        ctx.allocate_with(
             Self {
                 entrypoint: Address::from_ptr(buffer.entry()),
                 kind: CodeBlockKind::NativeProc,

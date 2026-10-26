@@ -57,9 +57,7 @@ impl Flags {
         // Pure: warnings stay buffered in `errors` (see `parse_errors`),
         // the logger emits them once it is up. Parsing runs before any
         // logging exists, so nothing here may write to stderr itself.
-        Self::parse_from(&|name| std::env::var(name).ok(), &|name| {
-            std::env::var_os(name)
-        })
+        Self::parse_from(&|name| var(name), &|name| var_os(name))
     }
 
     /// Parse every flag from the given readers (the environment in
@@ -364,19 +362,13 @@ define_flags! {
         "Cross-site chain-head record cost in words.";
 
     share_order: Bool, "CAPY_SHARE_ORDER", Some("--share-order"), "0", "compiler",
-        "Restore the FCO stage-ordering gate for closure-sharing reuse sites.";
+        "Only share a closure environment when every use of the shared variables comes before every use of the member's own captures.";
 
     share_dump: Bool, "CAPY_SHARE_DUMP", Some("--share-dump"), "0", "compiler",
         "Print per-site closure-sharing decisions (allocate/reuse, record size, members) and flow stats. Toggles log target `capy::share`.";
 
     closure_sharing: Bool, "CAPY_CLOSURE_SHARING", Some("--closure-sharing"), "1", "compiler",
-        "Enable shared closure environments (EnvRecord). Set to 0 for the no-sharing baseline.";
-
-    fold_arith_immediate: Bool, "CAPY_FOLD_ARITH_IMM", Some("--fold-arith-imm"), "1", "compiler",
-        "Fold var-bound integer constants into add-immediate in bytecode lowering. Set to 0 for the load_immediate+add/sub baseline.";
-
-    fuse_branch_cond: Bool, "CAPY_FUSE_BRANCH_COND", Some("--fuse-branch-cond"), "1", "compiler",
-        "Fuse branch tests through `not` and same-block var definitions in bytecode lowering. Set to 0 for the materialize-and-test baseline.";
+        "Let closures share environment records instead of each allocating its own.";
 
     gcps_contify: Enum("0", "off", "none", "false", "scc", "legacy", "both", "dom+scc", "dom-then-scc", "dom", "dominator", "dominators"), "CAPY_GCPS_CONTIFY", Some("--gcps-contify"), "dom", "compiler",
         "Contification strategy: off (or 0), scc, dom, or both (dom+scc).";
@@ -390,32 +382,38 @@ define_flags! {
     compile_dump: List("ir", "graph", "gcps", "ssa", "bytecode", "bc", "asm", "disassembly", "noopt", "all", "1"), "CAPY_COMPILE_DUMP", Some("--dump-compile"), "", "dump",
         "Per-compilation artifact dumps (comma-separated): ir, gcps, ssa, bytecode, noopt, or all.";
 
-    compile_dump_noopt: Bool, "CAPY_COMPILE_DUMP_NOOPT", None, "0", "dump",
+    compile_dump_noopt: Bool, "CAPY_COMPILE_DUMP_NOOPT", Some("--compile-dump-noopt"), "0", "dump",
         "Also dump the unoptimized (pre-lowering) IR.";
 
-    compile_dump_dir: Path, "CAPY_COMPILE_DUMP_DIR", None, "", "dump",
+    compile_dump_dir: Path, "CAPY_COMPILE_DUMP_DIR", Some("--compile-dump-dir"), "", "dump",
         "Directory for CAPY_COMPILE_DUMP artifacts (fallback: CAPY_DUMP_DIR or ./capy-dumps).";
 
-    compile_dump_limit: Usize(0, None), "CAPY_COMPILE_DUMP_LIMIT", None, "max", "dump",
+    compile_dump_limit: Usize(0, None), "CAPY_COMPILE_DUMP_LIMIT", Some("--compile-dump-limit"), "max", "dump",
         "Cap the number of compilations that dump artifacts (max = unlimited).";
 
     gcps_dump_contify: List("0", "off", "none", "false", "1", "on", "true", "all", "scc", "legacy", "dom", "dominator", "dominators"), "CAPY_GCPS_DUMP_CONTIFY", Some("--dump-gcps-contify"), "", "dump",
         "GCPS contification dumps: off/0, scc, dom, or all/1 for both sources.";
 
-    gcps_dump_dir: Path, "CAPY_GCPS_DUMP_DIR", None, "", "dump",
+    gcps_dump_dir: Path, "CAPY_GCPS_DUMP_DIR", Some("--gcps-dump-dir"), "", "dump",
         "Directory for CAPY_GCPS_DUMP_CONTIFY dumps (fallback: CAPY_DUMP_DIR or ./capy-dumps).";
 
-    gcps_dump_limit: Usize(0, None), "CAPY_GCPS_DUMP_LIMIT", None, "max", "dump",
+    gcps_dump_limit: Usize(0, None), "CAPY_GCPS_DUMP_LIMIT", Some("--gcps-dump-limit"), "max", "dump",
         "Cap the number of GCPS contification dumps (max = unlimited).";
 
     dump_dir: Path, "CAPY_DUMP_DIR", Some("--dump-dir"), "", "dump",
         "Shared fallback directory for all dump kinds (default: ./capy-dumps).";
 
-    gc_heuristic: Enum("adaptive", "static", "compact", "aggressive", "passive"), "CAPY_GC_HEURISTIC", Some("--gc-heuristic"), "adaptive", "gc",
-        "GC trigger heuristic: adaptive, static, compact, aggressive, or passive.";
+    gc_heuristic: Enum("adaptive", "static", "compact", "aggressive", "passive", "generational"), "CAPY_GC_HEURISTIC", Some("--gc-heuristic"), "adaptive", "gc",
+        "GC trigger heuristic: adaptive, static, compact, aggressive, passive, or generational.";
 
     gc_max_heap: Size, "CAPY_GC_MAX_HEAP", Some("--gc-max-heap"), "2G", "gc",
         "Maximum heap size with optional K/M/G suffix (e.g. 2G).";
+
+    gc_init_heap: Size, "CAPY_GC_INIT_HEAP", Some("--gc-init-heap"), "64M", "gc",
+        "Initial heap size with optional K/M/G suffix; the heap grows up to --gc-max-heap (0 = fixed at max).";
+
+    gc_heap_growth_free_percent: Usize(0, Some(99)), "CAPY_GC_HEAP_GROWTH_FREE_PERCENT", Some("--gc-heap-growth-free-percent"), "50", "gc",
+        "Target free share of the heap after a GC when resizing (clamped to 0-99).";
 
     gc_min_free_percent: Usize(0, Some(100)), "CAPY_GC_MIN_FREE_PERCENT", Some("--gc-min-free-percent"), "10", "gc",
         "Minimum free heap threshold, percent of the heap (clamped to 0-100).";
@@ -451,16 +449,10 @@ define_flags! {
         "Force a GC at least this often; 0 = off.";
 
     gc_plan: Text, "MMTK_PLAN", Some("--gc-plan"), "", "gc",
-        "MMTk GC plan (e.g. GenImmix); consumed by MMTk itself.";
+        "MMTk GC plan: StickyImmix, ConcurrentImmix, MarkSweep, Immix, SemiSpace, GenImmix or GenCopy (default ConcurrentImmix).";
 
     mmtk_gc_trigger: Text, "MMTK_GC_TRIGGER", Some("--gc-trigger"), "", "gc",
         "MMTk GC trigger override; also read by MMTk itself, capy uses it for the default max heap.";
-
-    barrier_kind: Enum("nobarrier", "objbarrier", "satbbarrier", "fieldbarrier"), "CAPY_BARRIER_KIND", Some("--barrier-kind"), "", "gc",
-        "Compile-time barrier kind override (unset = the live GC plan's barrier).";
-
-    native_closure_cache: Bool, "CAPY_NATIVE_CLOSURE_CACHE", Some("--native-closure-cache"), "1", "gc",
-        "Reuse the code block and proc wrapper across native closures of one site (the call/cc family). Set to 0 for the rebuild-every-capture baseline.";
 
     engine: Enum("rust", "template"), "CAPY_ENGINE", Some("--engine"), "", "engine",
         "Execution engine: rust, template, or unset for the build default.";
@@ -495,43 +487,43 @@ define_flags! {
     jit_dump_dir: Path, "CAPY_JIT_DUMP_DIR", Some("--jit-dump-dir"), "", "jit",
         "Write each compiled procedure's listing and ELF to this directory.";
 
-    jit_workers: Usize(0, None), "CAPY_JIT_WORKERS", None, "1", "jit",
+    jit_workers: Usize(0, None), "CAPY_JIT_WORKERS", Some("--jit-workers"), "1", "jit",
         "Tier-up worker threads; 0 compiles synchronously on the requesting thread.";
 
-    jit_tiers: Text, "CAPY_JIT_TIERS", None, "", "jit",
+    jit_tiers: Text, "CAPY_JIT_TIERS", Some("--jit-tiers"), "", "jit",
         "Comma-separated tiers allowed to compile (default: baseline).";
 
-    jit_gdb: Bool, "CAPY_JIT_GDB", None, "0", "jit",
+    jit_gdb: Bool, "CAPY_JIT_GDB", Some("--jit-gdb"), "0", "jit",
         "Register every loaded image with GDB's JIT interface (copies all image code).";
 
-    jit_filter: Text, "CAPY_JIT_FILTER", None, "", "jit",
+    jit_filter: Text, "CAPY_JIT_FILTER", Some("--jit-filter"), "", "jit",
         "Compile only procedures whose metadata contains this text, to bisect a miscompile.";
 
-    perf_map: Bool, "CAPY_PERF_MAP", None, "0", "jit",
+    perf_map: Bool, "CAPY_PERF_MAP", Some("--perf-map"), "0", "jit",
         "Append loaded image symbols to /tmp/perf-<pid>.map for perf.";
 
-    template_alloc_stats: Bool, "CAPY_TEMPLATE_ALLOC_STATS", None, "0", "engine",
+    template_alloc_stats: Bool, "CAPY_TEMPLATE_ALLOC_STATS", Some("--template-alloc-stats"), "0", "engine",
         "Count generated-code allocations (fast path vs capy_op_alloc) and report at exit.";
 
-    template_bail_stats: Bool, "CAPY_TEMPLATE_BAIL_STATS", None, "0", "engine",
+    template_bail_stats: Bool, "CAPY_TEMPLATE_BAIL_STATS", Some("--template-bail-stats"), "0", "engine",
         "Report bailed-opcode counts of the template interpreter at exit.";
 
-    template_bail_oneway: Bool, "CAPY_TEMPLATE_BAIL_ONEWAY", None, "0", "engine",
+    template_bail_oneway: Bool, "CAPY_TEMPLATE_BAIL_ONEWAY", Some("--template-bail-oneway"), "0", "engine",
         "Make capy_bail one-way: stay in the Rust engine after the first bail.";
 
-    template_op_stats: Bool, "CAPY_TEMPLATE_OP_STATS", None, "0", "engine",
+    template_op_stats: Bool, "CAPY_TEMPLATE_OP_STATS", Some("--template-op-stats"), "0", "engine",
         "Count executed opcodes in the template interpreter (emitted at generation time) and report at exit.";
 
-    template_bail: Text, "CAPY_TEMPLATE_BAIL", None, "", "engine",
+    template_bail: Text, "CAPY_TEMPLATE_BAIL", Some("--template-bail"), "", "engine",
         "Comma-separated opcode names forced to bail to the Rust engine.";
 
-    prim_stats: Bool, "CAPY_PRIM_STATS", None, "0", "engine",
+    prim_stats: Bool, "CAPY_PRIM_STATS", Some("--prim-stats"), "0", "engine",
         "Count primitive calls and report at exit.";
 
-    fasl_debug: Bool, "CAPY_FASL_DEBUG", None, "0", "engine",
+    fasl_debug: Bool, "CAPY_FASL_DEBUG", Some("--fasl-debug"), "0", "engine",
         "Load FASL files with debug entries.";
 
-    profile_out: Path, "CAPY_PROFILE_OUT", None, "", "engine",
+    profile_out: Path, "CAPY_PROFILE_OUT", Some("--profile-out"), "", "engine",
         "Arm the SIGPROF profiler at startup and write folded stacks to this file.";
 
     load_path: Text, "CAPY_LOAD_PATH", None, "", "engine",
@@ -540,27 +532,74 @@ define_flags! {
     load_compiled_path: Text, "CAPY_LOAD_COMPILED_PATH", None, "", "engine",
         "Colon-separated directories prepended to the compiled-file load path.";
 
-    ic_log: Bool, "CAPY_IC_LOG", None, "0", "engine",
+    ic_log: Bool, "CAPY_IC_LOG", Some("--ic-log"), "0", "engine",
         "Log generic-dispatch slot-protocol fires (inline-cache invalidations). Toggles log target `capy::ic`.";
 
-    rust_log: Text, "RUST_LOG", None, "", "engine",
+    rust_log: Text, "RUST_LOG", Some("--rust-log"), "", "engine",
         "Log filter in env_logger syntax (e.g. info, capy=debug); mmtk stays silent unless named.";
+
+    compile_threads: Usize(0, None), "CAPY_COMPILE_THREADS", Some("--compile-threads"), "0", "engine",
+        "Background compile service threads; 0 means one per core, at most 2.";
+
+    compile_stack_kb: Usize(0, None), "CAPY_COMPILE_STACK_KB", Some("--compile-stack-kb"), "0", "engine",
+        "Stack size of compile service threads in KiB; 0 means 262144 (256 MiB).";
+
+    workers: Usize(0, None), "CAPY_WORKERS", Some("--workers"), "0", "sched",
+        "Thread scheduler worker threads; 0 means one per core.";
+
+    thread_stack_kb: Usize(0, None), "CAPY_THREAD_STACK_KB", Some("--thread-stack-kb"), "0", "sched",
+        "Thread stack size in KiB; 0 means 2048 (2 MiB).";
+
+    thread_quantum_ms: Usize(0, None), "CAPY_THREAD_QUANTUM_MS", Some("--thread-quantum-ms"), "0", "sched",
+        "Thread preemption quantum in milliseconds; 0 means 10.";
+
+    signal_preempt: Bool, "CAPY_SIGNAL_PREEMPT", Some("--signal-preempt"), "1", "sched",
+        "Send SIGURG to preempt long-running threads. Set to 0 to rely on the cooperative flag alone.";
 }
 
-pub fn xdg_cache_home() -> Option<String> {
-    std::env::var("XDG_CACHE_HOME").ok()
+#[allow(clippy::disallowed_methods)]
+pub fn var(name: &str) -> Option<String> {
+    std::env::var(name).ok()
+}
+
+#[allow(clippy::disallowed_methods)]
+pub fn var_os(name: &str) -> Option<OsString> {
+    std::env::var_os(name)
+}
+
+/// Every UTF-8 variable of the process.
+#[allow(clippy::disallowed_methods)]
+pub fn vars() -> Vec<(String, String)> {
+    std::env::vars().collect()
+}
+
+/// Set a variable. Only sound before other threads read the environment, so
+/// call it during start-up argument handling.
+#[allow(clippy::disallowed_methods)]
+pub unsafe fn set_var(name: impl AsRef<std::ffi::OsStr>, value: impl AsRef<std::ffi::OsStr>) {
+    unsafe { std::env::set_var(name, value) }
 }
 
 pub fn home_dir() -> Option<String> {
-    std::env::var("HOME").ok()
+    var("HOME")
+}
+
+/// The user's home directory
+#[allow(clippy::disallowed_methods)]
+pub fn home_directory() -> Option<PathBuf> {
+    std::env::home_dir()
+}
+
+pub fn xdg_cache_home() -> Option<String> {
+    var("XDG_CACHE_HOME")
 }
 
 pub fn local_app_data() -> Option<String> {
-    std::env::var("LOCALAPPDATA").ok()
+    var("LOCALAPPDATA")
 }
 
 pub fn app_data() -> Option<String> {
-    std::env::var("APPDATA").ok()
+    var("APPDATA")
 }
 
 fn render_value(value: &Value) -> String {

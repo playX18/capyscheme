@@ -5,6 +5,7 @@ pub mod class;
 pub mod code_memory;
 #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub mod codegen;
+pub(crate) mod compile_service;
 pub mod fasl;
 pub mod fluids;
 pub mod gc_stats;
@@ -18,6 +19,8 @@ pub mod prims;
 pub mod profile;
 pub mod root;
 pub mod sabi;
+pub mod sched;
+pub mod service;
 pub mod sni;
 pub mod stats;
 pub mod thread;
@@ -25,6 +28,31 @@ pub mod value;
 pub mod vm;
 pub mod vmthread;
 pub(crate) mod watchpoint;
+
+pub(crate) fn init_once<'gc>(mc: MutationContext<'gc>) {
+    static VM_CORE: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+    static VM_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if VM_READY.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+
+    crate::heap::sync::thread::Thread::enter_native();
+    let _guard = VM_CORE.lock();
+    crate::heap::sync::thread::Thread::leave_native();
+    if VM_READY.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    init_core_tables(mc);
+    init(mc);
+    VM_READY.store(true, std::sync::atomic::Ordering::Release);
+}
+
+pub(crate) fn init_core_tables<'gc>(mc: MutationContext<'gc>) {
+    value::init_weak_sets(mc);
+    value::init_weak_tables(mc);
+    value::init_symbols(mc);
+}
 
 pub(crate) fn init<'gc>(mc: MutationContext<'gc>) {
     let _ = &*VM_THREAD;

@@ -7,8 +7,6 @@
 
 use std::{collections::HashMap, ops::Index, sync::LazyLock};
 
-use mmtk::AllocationSemantics;
-
 use crate::heap::object::{
     AllocationHooks, ClassId, builtin_class_ids, class_header_word,
     class_header_word_with_private_variant_flag,

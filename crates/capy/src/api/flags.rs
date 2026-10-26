@@ -34,3 +34,27 @@ pub extern "C" fn capy_flags_cli_aliases() -> *const libc::c_char {
     });
     ALIASES.as_ptr()
 }
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn capy_flags_set(
+    name: *const libc::c_char,
+    value: *const libc::c_char,
+) -> libc::c_int {
+    if name.is_null() || value.is_null() {
+        return -1;
+    }
+    let (name, value) = unsafe {
+        (
+            std::ffi::CStr::from_ptr(name),
+            std::ffi::CStr::from_ptr(value),
+        )
+    };
+    let (Ok(name), Ok(value)) = (name.to_str(), value.to_str()) else {
+        return -1;
+    };
+    if name.is_empty() || name.contains('=') {
+        return -1;
+    }
+    unsafe { flags::set_var(name, value) };
+    0
+}

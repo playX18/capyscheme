@@ -1,5 +1,6 @@
 //! String and string-buffer heap objects.
 
+use crate::heap::Space;
 use crate::runtime::value::*;
 
 use crate::heap::{
@@ -7,10 +8,7 @@ use crate::heap::{
     cell::Lock,
     collection::Visitor,
     global::Global,
-    mmtk::{
-        AllocationSemantics,
-        util::{Address, conversions::raw_align_up},
-    },
+    mmtk::util::{Address, conversions::raw_align_up},
     object::{
         AllocationHooks, ClassId, builtin_class_ids, class_header_word,
         class_header_word_with_private_variant_flag,
@@ -140,11 +138,11 @@ impl Stringbuf {
         let bytesize_data = length * if is_wide { size_of::<char>() } else { 1 };
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
-            let stringbuf_ = mc.raw_allocate_with_header_word(
+            let stringbuf_ = mc.allocate_raw(
                 size,
                 align_of::<Self>(),
                 stringbuf_header_word(is_wide),
-                AllocationSemantics::Default,
+                Space::Default,
             );
 
             stringbuf_.to_address().store(Stringbuf {
@@ -289,8 +287,7 @@ impl<'gc> Str<'gc> {
                 chars[i] = c;
             }
         }
-        Gc::new_with_header_word(
-            mc,
+        mc.allocate_with(
             Self {
                 stringbuf: Lock::new(buf),
                 start: Cell::new(0),
@@ -315,8 +312,7 @@ impl<'gc> Str<'gc> {
                 std::ptr::write_bytes(chars.as_mut_ptr(), c as u8, count);
             }
 
-            Gc::new_with_header_word(
-                mc,
+            mc.allocate_with(
                 Self {
                     stringbuf: Lock::new(buf),
                     start: Cell::new(0),
@@ -335,8 +331,7 @@ impl<'gc> Str<'gc> {
                 *ch = c;
             }
 
-            Gc::new_with_header_word(
-                mc,
+            mc.allocate_with(
                 Self {
                     stringbuf: Lock::new(buf),
                     start: Cell::new(0),
@@ -366,8 +361,7 @@ impl<'gc> Str<'gc> {
             chars[i] = c;
         }
 
-        Gc::new_with_header_word(
-            mc,
+        mc.allocate_with(
             Self {
                 stringbuf: Lock::new(buf),
                 start: Cell::new(0),
@@ -395,8 +389,7 @@ impl<'gc> Str<'gc> {
         if len == 0 {
             Self::new(mc, "", read_only)
         } else if !force_copy && !buf.is_mutable() {
-            Gc::new_with_header_word(
-                mc,
+            mc.allocate_with(
                 Self {
                     stringbuf: Lock::new(buf),
                     start: Cell::new(start),
@@ -412,8 +405,7 @@ impl<'gc> Str<'gc> {
                     .copy_from_slice(&buf.wide_chars()[start..start + len]);
                 (
                     new_buf,
-                    Gc::new_with_header_word(
-                        mc,
+                    mc.allocate_with(
                         Self {
                             stringbuf: Lock::new(new_buf),
                             start: Cell::new(0),
@@ -429,8 +421,7 @@ impl<'gc> Str<'gc> {
                     .copy_from_slice(&buf.chars()[start..start + len]);
                 (
                     new_buf,
-                    Gc::new_with_header_word(
-                        mc,
+                    mc.allocate_with(
                         Self {
                             stringbuf: Lock::new(new_buf),
                             start: Cell::new(0),
@@ -892,8 +883,7 @@ impl<'gc> Symbol<'gc> {
             buf = name.stringbuf.get();
         }
 
-        Gc::new_with_header_word(
-            mc,
+        mc.allocate_with(
             Self {
                 stringbuf: buf,
                 hash: Cell::new(hash),
@@ -946,8 +936,7 @@ impl<'gc> Symbol<'gc> {
         let mc = mc.into();
         let buf = self.stringbuf;
 
-        Gc::new_with_header_word(
-            mc,
+        mc.allocate_with(
             Str {
                 stringbuf: Lock::new(buf),
                 start: Cell::new(start),

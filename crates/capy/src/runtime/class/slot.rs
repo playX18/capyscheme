@@ -510,8 +510,7 @@ pub struct SlotDefinitionDescriptor<'gc> {
 
 impl<'gc> SlotDefinitionDescriptor<'gc> {
     pub(crate) fn from_slot(ctx: MutationContext<'gc>, slot: SlotDescriptor<'gc>) -> Gc<'gc, Self> {
-        Gc::new_with_header_word(
-            ctx,
+        ctx.allocate_with(
             Self {
                 name: Array::from_slice(ctx, slot.name.as_slice()),
                 owner: slot.owner,
@@ -619,8 +618,7 @@ impl<'gc> SlotAccessorDefinition<'gc> {
         ctx: MutationContext<'gc>,
         accessor: SlotAccessorDescriptor<'gc>,
     ) -> Gc<'gc, Self> {
-        Gc::new_with_header_word(
-            ctx,
+        ctx.allocate_with(
             Self {
                 name: Array::from_slice(ctx, accessor.name.as_slice()),
                 owner: accessor.owner,

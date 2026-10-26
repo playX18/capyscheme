@@ -1,12 +1,12 @@
 //! Hash Array Mapped Trie (HAMT) for persistent maps and sets.
 
+use crate::heap::Space;
 use std::mem::{align_of, offset_of, size_of};
 
 use crate::heap::{
     Gc, Trace,
     cell::Lock,
     collection::Visitor,
-    mmtk::AllocationSemantics,
     object::{AllocationHooks, ClassId, GcObject, builtin_class_ids, class_header_word},
     weak::WeakProcessor,
 };
@@ -195,8 +195,7 @@ fn alloc_leaf<'gc>(
     key: Value<'gc>,
     value: Value<'gc>,
 ) -> Gc<'gc, HamtNode> {
-    let leaf = Gc::new_with_header_word(
-        mc,
+    let leaf = mc.allocate_with(
         HamtLeafNode {
             tag: TAG_LEAF,
             _pad: [0; 3],
@@ -218,11 +217,11 @@ fn alloc_bitmap<'gc>(
     let child_count = children.len() as u32;
     let size = size_of::<HamtBitmapHeader<'gc>>() + size_of_val(children);
     unsafe {
-        let alloc = mc.raw_allocate_with_header_word(
+        let alloc = mc.allocate_raw(
             size,
             align_of::<HamtBitmapHeader<'gc>>(),
             hamt_node_header_word(),
-            AllocationSemantics::Default,
+            Space::Default,
         );
         let header = alloc.to_address().as_mut_ref::<HamtBitmapHeader<'gc>>();
         header.tag = TAG_BITMAP;
@@ -245,8 +244,7 @@ fn alloc_array<'gc>(
     for (i, child) in children.into_iter().enumerate() {
         locks[i] = Lock::new(child);
     }
-    let array = Gc::new_with_header_word(
-        mc,
+    let array = mc.allocate_with(
         HamtArrayNode {
             tag: TAG_ARRAY,
             _pad: [0; 7],
@@ -266,11 +264,11 @@ fn alloc_collision<'gc>(
     let size = size_of::<HamtCollisionHeader<'gc>>()
         + entries.len() * size_of::<HamtCollisionEntry<'gc>>();
     unsafe {
-        let alloc = mc.raw_allocate_with_header_word(
+        let alloc = mc.allocate_raw(
             size,
             align_of::<HamtCollisionHeader<'gc>>(),
             hamt_node_header_word(),
-            AllocationSemantics::Default,
+            Space::Default,
         );
         let header = alloc.to_address().as_mut_ref::<HamtCollisionHeader<'gc>>();
         header.tag = TAG_COLLISION;
@@ -911,8 +909,7 @@ pub struct PersistentMap<'gc> {
 
 impl<'gc> PersistentMap<'gc> {
     pub fn new(mc: MutationContext<'gc>, typ: HashTableType<'gc>) -> Gc<'gc, Self> {
-        Gc::new_with_header_word(
-            mc,
+        mc.allocate_with(
             Self {
                 trie: HamtTrie::new(mc, typ, HamtKind::Map),
             },
@@ -958,8 +955,7 @@ impl<'gc> PersistentMap<'gc> {
             value,
             hash,
         );
-        Gc::new_with_header_word(
-            ctx,
+        ctx.allocate_with(
             Self {
                 trie: HamtTrie {
                     root: Lock::new(new_root),
@@ -989,8 +985,7 @@ impl<'gc> PersistentMap<'gc> {
         if !removed {
             return self;
         }
-        Gc::new_with_header_word(
-            ctx,
+        ctx.allocate_with(
             Self {
                 trie: HamtTrie {
                     root: Lock::new(new_root),
@@ -1039,8 +1034,7 @@ pub struct PersistentSet<'gc> {
 
 impl<'gc> PersistentSet<'gc> {
     pub fn new(mc: MutationContext<'gc>, typ: HashTableType<'gc>) -> Gc<'gc, Self> {
-        Gc::new_with_header_word(
-            mc,
+        mc.allocate_with(
             Self {
                 trie: HamtTrie::new(mc, typ, HamtKind::Set),
             },
@@ -1075,8 +1069,7 @@ impl<'gc> PersistentSet<'gc> {
             Value::undefined(),
             hash,
         );
-        Gc::new_with_header_word(
-            ctx,
+        ctx.allocate_with(
             Self {
                 trie: HamtTrie {
                     root: Lock::new(new_root),
@@ -1106,8 +1099,7 @@ impl<'gc> PersistentSet<'gc> {
         if !removed {
             return self;
         }
-        Gc::new_with_header_word(
-            ctx,
+        ctx.allocate_with(
             Self {
                 trie: HamtTrie {
                     root: Lock::new(new_root),

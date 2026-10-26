@@ -1,5 +1,6 @@
 //! Arbitrary-precision integer representation and formatting.
 
+use crate::heap::Space;
 use std::{
     borrow::Cow,
     fmt,
@@ -17,7 +18,7 @@ use crate::heap::{
     Gc, Trace,
     collection::Visitor,
     global::Global,
-    mmtk::{AllocationSemantics, util::conversions::raw_align_up},
+    mmtk::util::conversions::raw_align_up,
     object::{AllocationHooks, ClassId, GcObject, builtin_class_ids, class_header_word},
 };
 use rand::Rng;
@@ -175,11 +176,7 @@ impl<'gc> BigInt<'gc> {
                 std::mem::align_of::<Self>(),
             );
 
-            let bigint = mc.allocate_with_layout_header_word::<Self>(
-                layout,
-                bigint_header_word(),
-                AllocationSemantics::Default,
-            );
+            let bigint = mc.allocate_layout::<Self>(layout, bigint_header_word(), Space::Default);
 
             bigint.as_mut_ptr().write(BigInt {
                 count: words.len() as u32,
@@ -217,11 +214,7 @@ impl<'gc> BigInt<'gc> {
                 std::mem::align_of::<Self>(),
             );
 
-            let bigint = mc.allocate_with_layout_header_word::<Self>(
-                layout,
-                bigint_header_word(),
-                AllocationSemantics::Default,
-            );
+            let bigint = mc.allocate_layout::<Self>(layout, bigint_header_word(), Space::Default);
 
             bigint.as_mut_ptr().write(BigInt {
                 count: count as u32,

@@ -32,6 +32,7 @@ pub mod utils;
 
 pub use capy_derive::__unelide_lifetimes;
 pub use capy_derive::Trace;
+pub use runtime::sched;
 
 // Curated GC surface. Prefer `runtime::MutationContext` for mutator work.
 pub use heap::Global as HeapGlobal;

@@ -58,8 +58,7 @@ fn is_reified_cc_code(addr: Address) -> bool {
 }
 
 pub fn box_continuation_marks<'gc>(ctx: MutationContext<'gc>, cmarks: Value<'gc>) -> Value<'gc> {
-    Gc::new_with_header_word(
-        ctx,
+    ctx.allocate_with(
         ContinuationMarks { cmarks },
         continuation_marks_header_word(),
     )
@@ -307,8 +306,7 @@ pub(crate) fn null_reified_cc(_ans: &'gc [Value<'gc>]) -> () {
 /// Every capture for one of these primitives shares the function address
 /// and the metadata global, only the three free-var values
 /// (`[stack, winders, raw-marks]`) differ, so a cached capture allocates
-/// just the closure cell. With `CAPY_NATIVE_CLOSURE_CACHE=0` this takes
-/// the same `make_closure_*` path as before.
+/// just the closure cell.
 fn make_reified_closure<'gc>(
     ctx: MutationContext<'gc>,
     proc: NativeFn<'gc>,

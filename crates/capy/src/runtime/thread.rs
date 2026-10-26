@@ -39,22 +39,6 @@ use std::{
 pub type MutationContext<'gc> = Mutation<'gc>;
 
 impl<'gc> Mutation<'gc> {
-    /// Allocate `value` in the default GC space.
-    #[inline]
-    pub fn alloc<T: crate::heap::Trace + 'gc>(self, value: T) -> crate::heap::Gc<'gc, T> {
-        crate::heap::Gc::new(self, value)
-    }
-
-    /// Allocate `value` in the given [`crate::heap::space::Space`].
-    #[inline]
-    pub fn alloc_in<T: crate::heap::Trace + 'gc>(
-        self,
-        space: crate::heap::space::Space,
-        value: T,
-    ) -> crate::heap::Gc<'gc, T> {
-        self.allocate(value, space.to_semantics())
-    }
-
     /// Open a [`crate::runtime::root::RootScope`] on this thread's root stack.
     #[inline]
     pub fn roots(self) -> crate::runtime::root::RootScope<'gc, 'gc> {
@@ -70,8 +54,7 @@ impl<'gc> Mutation<'gc> {
     }
 
     pub fn current_continuation_marks(self) -> Gc<'gc, ContinuationMarks<'gc>> {
-        Gc::new_with_header_word(
-            self,
+        self.allocate_with(
             ContinuationMarks {
                 cmarks: self.state().current_marks(),
             },
@@ -126,8 +109,6 @@ impl<'gc> Mutation<'gc> {
     ///
     /// This is the `call/cc`-family fast path, see
     /// [`crate::runtime::value::ProcedureRegistry::make_cached_closure`].
-    /// With `CAPY_NATIVE_CLOSURE_CACHE=0` this is exactly
-    /// [`Self::make_native_closure`].
     pub fn make_cached_native_closure(
         self,
         proc: NativeFn<'gc>,
@@ -178,6 +159,9 @@ impl<'gc> Mutation<'gc> {
         }
 
         self.state().stats.start_blocking();
+        // A thread that blocks in native code stays on this worker until
+        // it returns, see `PinGuard`.
+        let _pin = crate::runtime::sched::scheduler::pin_current();
         Thread::enter_native();
         let result = {
             let _guard = OutsideGcGuard;
@@ -415,9 +399,9 @@ impl Engine {
 
 /// Machine-level thread context: everything SABI code touches.
 ///
-/// Lives directly in [`ThreadNativeData`](crate::heap::sync::thread::ThreadNativeData),
-/// so the `TC` register (which points at the [`Thread`](crate::heap::sync::thread::Thread))
-/// reaches every field at a constant offset, see [`sabi`](crate::runtime::sabi).
+/// Lives directly in the [`VirtualThread`](crate::heap::sync::thread::VirtualThread) header,
+/// so the `TC` register reaches every field at a constant offset, see
+/// [`sabi`](crate::runtime::sabi).
 #[repr(C)]
 pub struct Tc<'gc> {
     /// The Scheme stack and the registers the interpreter parks in it.
@@ -518,6 +502,15 @@ unsafe impl Trace for State<'_> {
 
 impl<'gc> State<'gc> {
     pub fn new(mc: Mutation<'gc>, thread_object: Gc<'gc, ThreadObject<'gc>>) -> Self {
+        Self::with_dynamic_state(thread_object, DynamicState::new(MutationContext::from(mc)))
+    }
+
+    /// Like [`new`](Self::new), around a dynamic state from a worker's pool.
+    /// The caller restores the spawner's dynamic state into it.
+    pub(crate) fn with_dynamic_state(
+        thread_object: Gc<'gc, ThreadObject<'gc>>,
+        dynamic_state: DynamicState<'gc>,
+    ) -> Self {
         let engine = Engine::from_flags_or_default();
         #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
         if engine == Engine::Template {
@@ -526,7 +519,7 @@ impl<'gc> State<'gc> {
             crate::runtime::codegen::template_image::ensure_loaded();
         }
         Self {
-            dynamic_state: DynamicState::new(MutationContext::from(mc)),
+            dynamic_state,
             engine,
             nest_level: AtomicUsize::new(0),
             thread_object,
@@ -652,9 +645,7 @@ impl Scheme {
                     mc.init_state(state);
                 });
                 m.mutate(|ctx, _| {
-                    if should_init {
-                        super::init(ctx);
-                    }
+                    super::init_once(ctx);
                 });
                 m
             },
@@ -760,29 +751,6 @@ impl Scheme {
         });
 
         scm
-    }
-
-    pub(crate) fn forked(thread_object_bits: u64, dynamic_state_bits: u64) -> Self {
-        Self {
-            mutator: {
-                let m = Mutator::new(|mc| {
-                    // SAFETY: `thread_object_bits` was obtained from `Gc::as_ptr()` on the
-                    // parent thread. The GC keeps the object alive via the parent's root set.
-                    let thread_object: Gc<'_, ThreadObject<'_>> =
-// SAFETY: The pointer references a valid GC-managed object of the expected type
-                        unsafe { Gc::from_ptr(thread_object_bits as _) };
-                    thread_object.bind_current_runtime_thread();
-                    let state = State::new(mc, thread_object);
-                    mc.init_state(state);
-                });
-                m.mutate(|ctx, _| {
-                    ctx.state()
-                        .dynamic_state
-                        .restore(ctx, Value::from_raw(dynamic_state_bits));
-                });
-                m
-            },
-        }
     }
 }
 

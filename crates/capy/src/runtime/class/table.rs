@@ -82,7 +82,7 @@ struct ClassPage<'gc> {
 impl<'gc> ClassPage<'gc> {
     fn new(ctx: MutationContext<'gc>) -> Self {
         Self {
-            slots: Array::with(ctx, super::builtin::CLASS_TABLE_PAGE_SIZE, |_, _| {
+            slots: Array::new(ctx, super::builtin::CLASS_TABLE_PAGE_SIZE, |_, _| {
                 Lock::new(ClassSlot::Empty)
             }),
         }
@@ -312,7 +312,7 @@ impl<'gc> ClassTable<'gc> {
 
     pub(crate) fn with_max_id(ctx: MutationContext<'gc>, max_id: u32) -> Self {
         let page_count = (max_id >> super::builtin::CLASS_TABLE_PAGE_BITS) as usize + 1;
-        let pages = Array::with(ctx, page_count, |_, _| Lock::new(None));
+        let pages = Array::new(ctx, page_count, |_, _| Lock::new(None));
         Self {
             inner: ReentrantMonitor::new(ClassTableInner { pages, max_id }),
             redefinition: ReentrantMonitor::new(ClassRedefinitionState::default()),
@@ -329,8 +329,7 @@ impl<'gc> ClassTable<'gc> {
         ctx: MutationContext<'gc>,
         descriptor: ClassDescriptor<'gc>,
     ) -> Result<(), ClassTableError> {
-        let descriptor = Gc::new_with_header_word(
-            ctx,
+        let descriptor = ctx.allocate_with(
             descriptor,
             class_header_word(builtin_id(builtin_class_ids::CLASS)),
         );
@@ -352,8 +351,7 @@ impl<'gc> ClassTable<'gc> {
         if let Some(existing) = self.lookup(id) {
             return Ok(existing);
         }
-        let descriptor = Gc::new_with_header_word(
-            ctx,
+        let descriptor = ctx.allocate_with(
             ClassDescriptor::from_init(
                 ctx,
                 ClassDescriptorInit {
@@ -431,8 +429,7 @@ impl<'gc> ClassTable<'gc> {
             let (inherited_slots, cpl) = collect_dynamic_hierarchy(&inner, id, &direct_supers);
             (id, inherited_slots, cpl)
         };
-        let descriptor = Gc::new_with_header_word(
-            ctx,
+        let descriptor = ctx.allocate_with(
             ClassDescriptor::from_init(
                 ctx,
                 ClassDescriptorInit {
@@ -512,8 +509,7 @@ impl<'gc> ClassTable<'gc> {
                     .collect::<Vec<_>>(),
             )
         };
-        let descriptor = Gc::new_with_header_word(
-            ctx,
+        let descriptor = ctx.allocate_with(
             ClassDescriptor::from_init(
                 ctx,
                 ClassDescriptorInit {

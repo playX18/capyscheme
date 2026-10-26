@@ -15,11 +15,12 @@
 //! The values stay at offset 8 where the array length word used to be
 //! followed by its elements, which is what compiled code indexes.
 
+use crate::heap::Space;
 use std::alloc::Layout;
 use std::mem::MaybeUninit;
 use std::ops::Index;
 
-use mmtk::{AllocationSemantics, util::conversions::raw_align_up};
+use mmtk::util::conversions::raw_align_up;
 
 use crate::heap::barrier::IndexWrite;
 use crate::heap::cell::Lock;
@@ -115,20 +116,20 @@ impl<'gc> SlotStorage<'gc> {
         // values; `len` counts the initialized prefix while publishing, so
         // a collection during `f` traces only initialized values.
         unsafe {
-            let allocation = mc.raw_allocate_with_header_word_unpublished(
+            let allocation = mc.allocate_raw_unpublished(
                 size,
                 align_of::<Self>(),
                 type_class_header_word::<SlotStorage<'static>>(
                     MutationContext::from(mc),
                     Self::HOOKS,
                 ),
-                AllocationSemantics::Default,
+                Space::Default,
             );
             let alloc = allocation.object();
             let this = alloc.to_address().as_mut_ref::<Self>();
             this.stamp = stamp;
             this.len = 0;
-            mc.publish_allocated_object(allocation);
+            mc.publish(allocation);
             for i in 0..len {
                 this.data
                     .as_mut_ptr()

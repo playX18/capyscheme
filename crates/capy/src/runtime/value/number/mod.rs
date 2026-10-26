@@ -43,7 +43,7 @@ impl<'gc> Complex<'gc> {
     /// Allocates a complex number from real and imaginary parts.
     pub fn new(ctx: MutationContext<'gc>, real: Number<'gc>, imag: Number<'gc>) -> Gc<'gc, Self> {
         let complex = Complex { real, imag };
-        Gc::new_with_header_word(ctx, complex, complex_header_word())
+        ctx.allocate_with(complex, complex_header_word())
     }
 }
 // SAFETY: `gc` for `Complex` upholds all trait invariants
@@ -78,7 +78,7 @@ impl<'gc> Rational<'gc> {
             numerator,
             denominator,
         };
-        Gc::new_with_header_word(ctx, rational, rational_header_word())
+        ctx.allocate_with(rational, rational_header_word())
     }
 }
 
@@ -291,7 +291,11 @@ impl<'gc> Number<'gc> {
                     return 0;
                 }
                 let v = b[0] as u32;
-                if b.negative() { -(v as i32) } else { v as i32 }
+                if b.negative() {
+                    (v as i32).wrapping_neg()
+                } else {
+                    v as i32
+                }
             }
             Number::Flonum(_) | Number::Rational(_) | Number::Complex(_) => {
                 panic!("Cannot coerce non-integer to i32")
@@ -322,7 +326,11 @@ impl<'gc> Number<'gc> {
                     return 0;
                 }
                 let v = b[0];
-                if b.negative() { -(v as i64) } else { v as i64 }
+                if b.negative() {
+                    (v as i64).wrapping_neg()
+                } else {
+                    v as i64
+                }
             }
             Number::Flonum(_) | Number::Rational(_) | Number::Complex(_) => {
                 panic!("Cannot coerce non-integer to i64")
@@ -369,7 +377,7 @@ impl<'gc> Number<'gc> {
                 }
                 let v = b[0];
                 if b.negative() {
-                    -(v as isize)
+                    (v as isize).wrapping_neg()
                 } else {
                     v as isize
                 }

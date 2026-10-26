@@ -1,13 +1,18 @@
+use crate::heap::Space;
 use crate::heap::object::{ClassId, builtin_class_ids, class_header_word};
 use crate::heap::{Visitor, WeakProcessor};
 use crate::prelude::*;
 use crate::runtime::fasl::{Reader, Writer};
+use crate::runtime::sched::blocking;
+use crate::runtime::sched::preempt::retry_eintr;
+use crate::runtime::sched::reactor::{self, Dir};
+use crate::runtime::sched::scheduler::{Woken, current};
 use crate::static_symbols;
 use rustix::fd::AsRawFd;
 use std::ffi::CString;
 use std::sync::{
-    Mutex,
-    atomic::{AtomicU64, Ordering},
+    Arc, Mutex, Once,
+    atomic::{AtomicI32, Ordering},
 };
 static_symbols!(
     SYM_INPUT = "input"
@@ -17,11 +22,99 @@ static_symbols!(
     SYM_TEXTUAL = "textual"
 );
 
-static TERM_SIGWINCH_VERSION: AtomicU64 = AtomicU64::new(0);
+/// Self-pipe every installed signal handler writes to: `[read end, write end]`,
+/// -1 until `signal/fd` first opens it. Each signal arrives as one byte holding
+/// its number.
+static SIGNAL_PIPE: [AtomicI32; 2] = [AtomicI32::new(-1), AtomicI32::new(-1)];
+/// Signals with a live handler, mapped to the action they replaced.
+static SIGNAL_PREVIOUS: Mutex<Vec<(i32, libc::sigaction)>> = Mutex::new(Vec::new());
 static TERM_RAW_MODE_STATE: Mutex<Option<(i32, libc::termios)>> = Mutex::new(None);
 
-extern "C" fn term_sigwinch_handler(_: libc::c_int) {
-    TERM_SIGWINCH_VERSION.fetch_add(1, Ordering::Relaxed);
+extern "C" fn signal_handler(signo: libc::c_int) {
+    let fd = SIGNAL_PIPE[1].load(Ordering::Relaxed);
+    if fd < 0 {
+        return;
+    }
+    // Async-signal-safe. A full pipe already holds a wake-up, and errno must
+    // survive for the code the signal interrupted.
+    // SAFETY: `fd` is the non-blocking write end opened by `open_signal_pipe`.
+    unsafe {
+        let errno = errno_location();
+        let saved = *errno;
+        let byte = signo as u8;
+        libc::write(fd, (&byte as *const u8).cast(), 1);
+        *errno = saved;
+    }
+}
+
+/// Path of the terminal device to open. The device behind stdin, stdout or
+/// stderr is preferred over the `/dev/tty` alias, which kqueue and poll(2)
+/// refuse on macOS, so threads could not wait on it. `/dev/tty` remains the
+/// fallback for a process whose stdio is all redirected.
+fn controlling_tty_path() -> CString {
+    let mut name = [0 as libc::c_char; 256];
+    for fd in 0..=2 {
+        // SAFETY: `name` is writable for the length passed.
+        let named = unsafe { libc::ttyname_r(fd, name.as_mut_ptr(), name.len()) } == 0;
+        if named {
+            // SAFETY: ttyname_r wrote a NUL-terminated string into `name`.
+            return unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }.to_owned();
+        }
+    }
+    CString::new("/dev/tty").expect("static tty path")
+}
+
+/// Signals the scheduler, stack guards and profiler rely on, plus the ones the
+/// kernel will not let a process catch.
+fn signal_reserved(signo: i32) -> bool {
+    matches!(
+        signo,
+        libc::SIGKILL
+            | libc::SIGSTOP
+            | libc::SIGURG
+            | libc::SIGSEGV
+            | libc::SIGBUS
+            | libc::SIGILL
+            | libc::SIGFPE
+            | libc::SIGPROF
+    ) || signo <= 0
+        || signo > 255
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+unsafe fn errno_location() -> *mut libc::c_int {
+    unsafe { libc::__error() }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "freebsd")))]
+unsafe fn errno_location() -> *mut libc::c_int {
+    unsafe { libc::__errno_location() }
+}
+
+fn open_signal_pipe() -> std::io::Result<i32> {
+    let existing = SIGNAL_PIPE[0].load(Ordering::Acquire);
+    if existing >= 0 {
+        return Ok(existing);
+    }
+    let mut fds = [0i32; 2];
+    // SAFETY: `fds` has room for the two descriptors pipe(2) writes.
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    for fd in fds {
+        // SAFETY: both descriptors were just opened and are owned here.
+        unsafe {
+            libc::fcntl(
+                fd,
+                libc::F_SETFL,
+                libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK,
+            );
+            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+        }
+    }
+    SIGNAL_PIPE[1].store(fds[1], Ordering::Relaxed);
+    SIGNAL_PIPE[0].store(fds[0], Ordering::Release);
+    Ok(fds[0])
 }
 
 fn term_io_error<'gc>(
@@ -37,9 +130,9 @@ fn term_io_error<'gc>(
 
 // SAFETY: Caller must ensure preconditions are met (see fn docs)
 unsafe fn open_tty_raw_fd() -> Result<i32, std::io::Error> {
-    let path = CString::new("/dev/tty").expect("static tty path");
+    let path = controlling_tty_path();
     // SAFETY: FFI: path is a valid NUL-terminated string with valid flags
-    let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
+    let fd = unsafe { retry_eintr(|| libc::open(path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC)) };
     if fd < 0 {
         Err(std::io::Error::last_os_error())
     } else {
@@ -68,7 +161,7 @@ pub mod io_ops {
 
     #[scheme(name = "home-directory")]
     pub fn home_directory() -> Value<'gc> {
-        match std::env::home_dir() {
+        match crate::utils::flags::home_directory() {
             Some(buf) => {
                 let s = buf.to_string_lossy();
                 Str::new(ctx, &s, true).into()
@@ -113,9 +206,9 @@ pub mod io_ops {
 
     #[scheme(name = "getenv")]
     pub fn getenv(var: Gc<'gc, Str<'gc>>) -> Value<'gc> {
-        match std::env::var(var.to_string()) {
-            Ok(s) => Str::new(ctx, &s, true).into(),
-            Err(_) => Value::new(false),
+        match crate::utils::flags::var(&var.to_string()) {
+            Some(s) => Str::new(ctx, &s, true).into(),
+            None => Value::new(false),
         }
     }
 
@@ -551,7 +644,7 @@ pub mod io_ops {
         // SAFETY: FFI: path is a valid NUL-terminated string with valid flags
         unsafe {
             let cpath = std::ffi::CString::new(path).expect("path should not contain null bytes");
-            libc::open(cpath.as_ptr(), oflag, pmode)
+            retry_eintr(|| libc::open(cpath.as_ptr(), oflag, pmode))
         }
     }
 
@@ -573,8 +666,8 @@ pub mod io_ops {
 
         // SAFETY: FFI: path is a valid NUL-terminated string with valid flags
         unsafe {
-            let path = CString::new("/dev/tty").expect("static tty path");
-            let ret = libc::open(path.as_ptr(), flags);
+            let path = controlling_tty_path();
+            let ret = retry_eintr(|| libc::open(path.as_ptr(), flags));
             if ret < 0 {
                 let err = std::io::Error::last_os_error();
                 let msg = err.to_string();
@@ -592,6 +685,7 @@ pub mod io_ops {
 
     #[scheme(name = "term/close-fd")]
     pub fn term_close_fd(fd: i32) -> Value<'gc> {
+        reactor::fd_closed(fd);
         // SAFETY: FFI: fd is a valid open file descriptor
         unsafe {
             let ret = libc::close(fd);
@@ -735,7 +829,7 @@ pub mod io_ops {
         // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let ptr = buf.as_slice_mut_unchecked().as_mut_ptr().add(from) as *mut libc::c_void;
-            let ret = libc::read(fd, ptr, nbytes);
+            let ret = retry_eintr(|| libc::read(fd, ptr, nbytes));
             (ret).into_value(ctx)
         }
     }
@@ -766,7 +860,7 @@ pub mod io_ops {
         // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let ptr = buf.as_slice_mut_unchecked().as_mut_ptr().add(start) as *mut libc::c_void;
-            let ret = libc::read(fd, ptr, count);
+            let ret = retry_eintr(|| libc::read(fd, ptr, count));
             if ret < 0 {
                 let errno = errno::errno().0;
                 if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK {
@@ -807,7 +901,7 @@ pub mod io_ops {
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let ptr = buf.as_slice().as_ptr().add(from) as *mut libc::c_void;
-            let ret = libc::write(fd, ptr, nbytes);
+            let ret = retry_eintr(|| libc::write(fd, ptr, nbytes));
             (ret).into_value(ctx)
         }
     }
@@ -838,7 +932,7 @@ pub mod io_ops {
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let ptr = buf.as_slice().as_ptr().add(start) as *const libc::c_void;
-            let ret = libc::write(fd, ptr, count);
+            let ret = retry_eintr(|| libc::write(fd, ptr, count));
             if ret < 0 {
                 let err = std::io::Error::last_os_error();
                 let msg = err.to_string();
@@ -854,33 +948,80 @@ pub mod io_ops {
         }
     }
 
-    #[scheme(name = "term/sigwinch-version")]
-    pub fn term_sigwinch_version() -> u64 {
-        TERM_SIGWINCH_VERSION.load(Ordering::Relaxed)
+    /// Return the read end of the signal self-pipe, creating it on first use.
+    /// The descriptor is non-blocking and receives one byte (the signal
+    /// number) per delivered signal.
+    #[scheme(name = "signal/fd")]
+    pub fn signal_fd() -> Value<'gc> {
+        match open_signal_pipe() {
+            Ok(fd) => fd.into(),
+            Err(err) => {
+                let msg = err.to_string();
+                call.raise_io_error(err, IoOperation::Open, "signal/fd", &msg, Value::new(false))
+            }
+        }
     }
 
-    #[scheme(name = "term/install-sigwinch-handler!")]
-    pub fn term_install_sigwinch_handler() -> Value<'gc> {
-        // SAFETY: Preconditions verified by the surrounding code
+    /// Route `signo` into the self-pipe. Returns #f for signals the runtime
+    /// owns or that cannot be caught. Installing twice is a no-op.
+    #[scheme(name = "signal/install!")]
+    pub fn signal_install(signo: i32) -> Value<'gc> {
+        if signal_reserved(signo) || open_signal_pipe().is_err() {
+            return Value::new(false);
+        }
+        let mut previous = SIGNAL_PREVIOUS.lock().unwrap();
+        if previous.iter().any(|(s, _)| *s == signo) {
+            return Value::new(true);
+        }
+        // SAFETY: a zeroed sigaction is valid and the handler is async-signal-safe.
         unsafe {
             let mut action: libc::sigaction = std::mem::zeroed();
-            action.sa_sigaction = term_sigwinch_handler as *const () as usize;
-            action.sa_flags = 0;
+            let mut old: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = signal_handler as *const () as usize;
+            action.sa_flags = libc::SA_RESTART;
             libc::sigemptyset(&mut action.sa_mask);
-
-            if libc::sigaction(libc::SIGWINCH, &action, std::ptr::null_mut()) < 0 {
-                let err = std::io::Error::last_os_error();
-                let msg = err.to_string();
-                return call.raise_io_error(
-                    err,
-                    IoOperation::Stat,
-                    "term/install-sigwinch-handler!",
-                    &msg,
-                    Value::new(false),
-                );
+            if libc::sigaction(signo, &action, &mut old) < 0 {
+                return Value::new(false);
             }
-            (true).into()
+            previous.push((signo, old));
         }
+        Value::new(true)
+    }
+
+    /// The platform's number for the `index`th name in `(capy signal)`'s
+    /// table, or #f past its end.
+    #[scheme(name = "signal/number")]
+    pub fn signal_number(index: i32) -> Value<'gc> {
+        const NUMBERS: [i32; 11] = [
+            libc::SIGHUP,
+            libc::SIGINT,
+            libc::SIGQUIT,
+            libc::SIGTERM,
+            libc::SIGWINCH,
+            libc::SIGUSR1,
+            libc::SIGUSR2,
+            libc::SIGALRM,
+            libc::SIGCHLD,
+            libc::SIGPIPE,
+            libc::SIGCONT,
+        ];
+        match usize::try_from(index).ok().and_then(|i| NUMBERS.get(i)) {
+            Some(n) => (*n).into(),
+            None => Value::new(false),
+        }
+    }
+
+    /// Restore the action `signal/install!` replaced.
+    #[scheme(name = "signal/uninstall!")]
+    pub fn signal_uninstall(signo: i32) -> Value<'gc> {
+        let mut previous = SIGNAL_PREVIOUS.lock().unwrap();
+        let Some(at) = previous.iter().position(|(s, _)| *s == signo) else {
+            return Value::new(false);
+        };
+        let (_, old) = previous.swap_remove(at);
+        // SAFETY: `old` is the action the kernel returned when installing.
+        unsafe { libc::sigaction(signo, &old, std::ptr::null_mut()) };
+        Value::new(true)
     }
 
     #[scheme(name = "term/enable-raw-mode!")]
@@ -964,8 +1105,9 @@ pub mod io_ops {
         // SAFETY: FFI: path is a valid NUL-terminated string with valid flags
         unsafe {
             let tty_fd = {
-                let path = CString::new("/dev/tty").expect("static tty path");
-                let fd = libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+                let path = controlling_tty_path();
+                let fd =
+                    retry_eintr(|| libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC));
                 if fd < 0 { None } else { Some(fd) }
             };
             let fd = tty_fd.unwrap_or(1);
@@ -1021,7 +1163,7 @@ pub mod io_ops {
         // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let ptr = buf.as_slice_mut_unchecked().as_mut_ptr().add(from) as *mut libc::c_void;
-            let ret = libc::pread(fd, ptr, nbytes, offset);
+            let ret = retry_eintr(|| libc::pread(fd, ptr, nbytes, offset));
             (ret).into_value(ctx)
         }
     }
@@ -1130,13 +1272,14 @@ pub mod io_ops {
         unsafe {
             let cpath =
                 CString::new(filename.to_string()).expect("filename should not contain null bytes");
-            let ret = libc::open(cpath.as_ptr(), newflags | libc::O_NONBLOCK, mode);
+            let ret = retry_eintr(|| libc::open(cpath.as_ptr(), newflags | libc::O_NONBLOCK, mode));
             ret
         }
     }
 
     #[scheme(name = "syscall:close")]
     pub fn syscall_close(fd: i32) -> i32 {
+        reactor::fd_closed(fd);
         // SAFETY: FFI: fd is a valid open file descriptor
         unsafe {
             let ret = libc::close(fd);
@@ -1162,6 +1305,23 @@ pub mod io_ops {
                 3,
                 &[fd.into(), buf.into(), nbytes.into_value(ctx)],
             );
+        }
+
+        if let Some(cx) = current() {
+            let scope = RootScope::new(ctx);
+            let buf_root = scope.root(buf.into());
+            let (ctx, result) = virtual_thread_io(ctx, &cx, fd, Dir::Read, || {
+                let mut buf: Gc<'gc, ByteVector> = buf_root.get().downcast();
+                // SAFETY: the buffer is rooted and no collection runs between
+                // this attempt and the syscall
+                let ptr = unsafe {
+                    buf.as_slice_mut_unchecked().as_mut_ptr().add(start) as *mut libc::c_void
+                };
+                // SAFETY: FFI: the range is inside the buffer, checked above.
+                let ret = unsafe { libc::read(fd, ptr, nbytes) };
+                syscall_result(ret)
+            });
+            return io_result(ctx, result);
         }
 
         let mut buf = buf;
@@ -1204,6 +1364,19 @@ pub mod io_ops {
             );
         }
 
+        if let Some(cx) = current() {
+            let scope = RootScope::new(ctx);
+            let buf_root = scope.root(buf.into());
+            let (ctx, result) = virtual_thread_io(ctx, &cx, fd, Dir::Write, || {
+                let buf: Gc<'gc, ByteVector> = buf_root.get().downcast();
+                let ptr = buf.as_slice().as_ptr().wrapping_add(offset) as *const libc::c_void;
+                // SAFETY: FFI: the range is inside the buffer, checked above.
+                let ret = unsafe { libc::write(fd, ptr, nbytes) };
+                syscall_result(ret)
+            });
+            return io_result(ctx, result);
+        }
+
         let mut buf = buf;
         loop {
             // SAFETY: Preconditions verified by the surrounding code
@@ -1234,16 +1407,9 @@ pub mod io_ops {
             2 => libc::SEEK_END,
             _ => return -1,
         };
-        loop {
-            // SAFETY: FFI: fd is valid, whence is a valid seek origin
-            let ret = unsafe { libc::lseek(fd, offset, whence) };
-            if ret != -1
-                || (errno::errno().0 != libc::EAGAIN && errno::errno().0 != libc::EWOULDBLOCK)
-            {
-                return ret;
-            }
-            ctx.call_in_native(|| blocking_poll_write(fd));
-        }
+        // SAFETY: FFI: fd is valid, whence is a valid seek origin. Seeking never
+        // waits for I/O, so there is nothing to park on.
+        unsafe { libc::lseek(fd, offset, whence) }
     }
 
     #[scheme(name = "syscall:isatty")]
@@ -1261,7 +1427,7 @@ pub mod io_ops {
                 events: libc::POLLIN,
                 revents: 0,
             };
-            let ret = libc::poll(&mut fds as *mut libc::pollfd, 1, 0);
+            let ret = retry_eintr(|| libc::poll(&mut fds as *mut libc::pollfd, 1, 0));
             if ret > 0 && (fds.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR)) != 0 {
                 1
             } else {
@@ -1302,7 +1468,7 @@ pub mod io_ops {
         unsafe {
             let mut buf = std::mem::zeroed::<libc::stat>();
             let cpath = CString::new(path).expect("path should not contain null bytes");
-            let ret = libc::stat(cpath.as_ptr(), &mut buf);
+            let ret = retry_eintr(|| libc::stat(cpath.as_ptr(), &mut buf));
             if ret != 0 {
                 return -1;
             }
@@ -1343,7 +1509,7 @@ pub mod io_ops {
             CString::new(filename.to_string()).expect("filename should not contain null bytes");
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
-            let ret = libc::access(cpath.as_ptr(), rmode);
+            let ret = retry_eintr(|| libc::access(cpath.as_ptr(), rmode));
             ret
         }
     }
@@ -1364,6 +1530,20 @@ pub mod io_ops {
                 3,
                 &[fd.into(), buf.into(), nbytes.into_value(ctx)],
             );
+        }
+
+        if let Some(cx) = current() {
+            let scope = RootScope::new(ctx);
+            let buf_root = scope.root(buf.into());
+            let (ctx, result) = virtual_thread_io(ctx, &cx, fd, Dir::Read, || {
+                let mut buf: Gc<'gc, ByteVector> = buf_root.get().downcast();
+                // SAFETY: as in `syscall:read`.
+                let ptr = unsafe { buf.as_slice_mut_unchecked().as_mut_ptr() as *mut libc::c_void };
+                // SAFETY: FFI: the range is inside the buffer, checked above.
+                let ret = unsafe { libc::recv(fd, ptr, nbytes, flags) };
+                syscall_result(ret)
+            });
+            return io_result(ctx, result);
         }
 
         let mut buf = buf;
@@ -1403,6 +1583,19 @@ pub mod io_ops {
             );
         }
 
+        if let Some(cx) = current() {
+            let scope = RootScope::new(ctx);
+            let buf_root = scope.root(buf.into());
+            let (ctx, result) = virtual_thread_io(ctx, &cx, fd, Dir::Write, || {
+                let buf: Gc<'gc, ByteVector> = buf_root.get().downcast();
+                let ptr = buf.as_slice().as_ptr() as *const libc::c_void;
+                // SAFETY: FFI: the range is inside the buffer, checked above.
+                let ret = unsafe { libc::send(fd, ptr, nbytes, flags) };
+                syscall_result(ret)
+            });
+            return io_result(ctx, result);
+        }
+
         let mut buf = buf;
         loop {
             // SAFETY: Preconditions verified by the surrounding code
@@ -1425,7 +1618,7 @@ pub mod io_ops {
     #[scheme(name = "process-environment->alist")]
     pub fn process_environment_to_alist() -> Value<'gc> {
         let mut alist = Value::null();
-        for (key, value) in std::env::vars() {
+        for (key, value) in crate::utils::flags::vars() {
             let key_str = Str::new(ctx, &key, true);
             let value_str = Str::new(ctx, &value, true);
             let pair = Value::cons(ctx, key_str.into(), value_str.into());
@@ -1439,25 +1632,25 @@ pub mod io_ops {
     pub fn system(command: Gc<'gc, Str<'gc>>) -> Value<'gc> {
         let ccommand =
             CString::new(command.to_string()).expect("command should not contain null bytes");
-        // SAFETY: Preconditions verified by the surrounding code
-        unsafe {
-            let ret = libc::system(ccommand.as_ptr());
-            if ret != -1 {
-                if libc::WIFEXITED(ret) {
-                    (libc::WEXITSTATUS(ret)).into()
-                } else if libc::WIFSIGNALED(ret) {
-                    (-libc::WTERMSIG(ret)).into()
-                } else {
-                    (-1).into()
-                }
+        // A thread waits for the child on the blocking pool, so its worker
+        // keeps running.
+        let (ret, errno_code) = match current() {
+            Some(cx) => blocking::run(ctx, &cx, move || run_system(&ccommand))
+                .1
+                .unwrap_or_else(|killed| killed.unwind()),
+            None => run_system(&ccommand),
+        };
+        if ret != -1 {
+            if libc::WIFEXITED(ret) {
+                (libc::WEXITSTATUS(ret)).into()
+            } else if libc::WIFSIGNALED(ret) {
+                (-libc::WTERMSIG(ret)).into()
             } else {
-                let errno = ::errno::errno();
-
-                let message = format!("system() failed: {errno}");
-                let errno_code = errno.0;
-
-                call.raise_error("system", &message, &[errno_code.into(), command.into()])
+                (-1).into()
             }
+        } else {
+            let message = format!("system() failed: {}", errno::Errno(errno_code));
+            call.raise_error("system", &message, &[errno_code.into(), command.into()])
         }
     }
 
@@ -1473,13 +1666,15 @@ pub mod io_ops {
         let wait = wait.unwrap_or(true);
         // SAFETY: FFI: path is a valid NUL-terminated string with valid flags
         let fd = unsafe {
-            libc::open(
-                CString::new(path.to_string())
-                    .expect("path should not contain null bytes")
-                    .as_ptr(),
-                libc::O_CREAT,
-                (libc::S_IRUSR | libc::S_IWUSR) as libc::c_uint,
-            )
+            retry_eintr(|| {
+                libc::open(
+                    CString::new(path.to_string())
+                        .expect("path should not contain null bytes")
+                        .as_ptr(),
+                    libc::O_CREAT,
+                    (libc::S_IRUSR | libc::S_IWUSR) as libc::c_uint,
+                )
+            })
         };
 
         if fd < 0 {
@@ -1495,7 +1690,10 @@ pub mod io_ops {
         }
 
         // SAFETY: FFI: fd is valid, operation follows POSIX flock semantics
-        if unsafe { libc::flock(fd, libc::LOCK_EX | if wait { 0 } else { libc::LOCK_NB }) } != 0 {
+        if unsafe {
+            retry_eintr(|| libc::flock(fd, libc::LOCK_EX | if wait { 0 } else { libc::LOCK_NB }))
+        } != 0
+        {
             let err = std::io::Error::last_os_error();
             let error = err.to_string();
             return call.raise_io_error(
@@ -1590,30 +1788,124 @@ pub mod io_ops {
 
     #[scheme(name = "%process-wait")]
     pub fn process_wait(pid: i32) -> Value<'gc> {
-        // SAFETY: Preconditions verified by the surrounding code
-        unsafe {
-            let mut status: i32 = 0;
-            let ret = libc::waitpid(pid, &mut status as *mut i32, 0);
-            if ret == -1 {
-                let err = std::io::Error::last_os_error();
+        let outcome = match current() {
+            Some(cx) => blocking::run(ctx, &cx, move || wait_child(pid))
+                .1
+                .unwrap_or_else(|killed| killed.unwind()),
+            None => wait_child(pid),
+        };
+        match outcome {
+            Ok(code) => code.into(),
+            Err(err) => {
                 let error = err.to_string();
-                return call.raise_io_error(
-                    err,
-                    IoOperation::Read,
-                    "%process-wait",
-                    &error,
-                    pid.into(),
-                );
-            }
-
-            if libc::WIFEXITED(status) {
-                (libc::WEXITSTATUS(status)).into()
-            } else if libc::WIFSIGNALED(status) {
-                (-libc::WTERMSIG(status)).into()
-            } else {
-                (-1).into()
+                call.raise_io_error(err, IoOperation::Read, "%process-wait", &error, pid.into())
             }
         }
+    }
+
+    /// Park the calling thread until `fd` is readable. Returns `#t` when
+    /// it is, and raises when the fd is closed while waiting.
+    #[scheme(name = "%await-readable")]
+    pub fn await_readable(fd: i32) -> Value<'gc> {
+        match await_native(ctx, fd, Dir::Read) {
+            (_, Ok(())) => Value::new(true),
+            (_, Err(errno)) => {
+                let err = std::io::Error::from_raw_os_error(errno);
+                let msg = err.to_string();
+                call.raise_io_error(
+                    err,
+                    IoOperation::Read,
+                    "%await-readable",
+                    &msg,
+                    Value::new(false),
+                )
+            }
+        }
+    }
+
+    /// Park the calling thread until `fd` is writable.
+    #[scheme(name = "%await-writable")]
+    pub fn await_writable(fd: i32) -> Value<'gc> {
+        match await_native(ctx, fd, Dir::Write) {
+            (_, Ok(())) => Value::new(true),
+            (_, Err(errno)) => {
+                let err = std::io::Error::from_raw_os_error(errno);
+                let msg = err.to_string();
+                call.raise_io_error(
+                    err,
+                    IoOperation::Write,
+                    "%await-writable",
+                    &msg,
+                    Value::new(false),
+                )
+            }
+        }
+    }
+
+    /// Park the calling thread until `fd` is ready for `events` (1 readable,
+    /// 2 writable, 3 both), or until `timeout-ms` milliseconds have passed.
+    /// `timeout-ms` is a non-negative integer, or `#f` for no deadline.
+    ///
+    /// Returns 0 when the fd is ready, 1 on timeout, and 2 when the fd is
+    /// closed while waiting or was never open. An fd that cannot be polled,
+    /// such as a regular file, counts as ready. Outside a thread this blocks
+    /// the thread in `poll`.
+    #[scheme(name = "%await-fd-timeout")]
+    pub fn await_fd_timeout(fd: i32, events: i32, timeout_ms: Value<'gc>) -> Value<'gc> {
+        let (read, write) = match events {
+            1 => (true, false),
+            2 => (false, true),
+            3 => (true, true),
+            _ => {
+                let irritant = Value::from_i32(events);
+                return call.raise_error(
+                    "%await-fd-timeout",
+                    "events must be 1 (readable), 2 (writable) or 3 (both)",
+                    &[irritant],
+                );
+            }
+        };
+        let deadline = if timeout_ms.is_bool() && !timeout_ms.as_bool() {
+            None
+        } else {
+            match timeout_ms.int32() {
+                Some(ms) if ms >= 0 => {
+                    Some(std::time::Instant::now() + std::time::Duration::from_millis(ms as u64))
+                }
+                _ => {
+                    return call.raise_error(
+                        "%await-fd-timeout",
+                        "timeout must be a non-negative integer or #f",
+                        &[timeout_ms],
+                    );
+                }
+            }
+        };
+        let (_, code) = await_fd_timed(ctx, fd, read, write, deadline);
+        Value::from_i32(code)
+    }
+
+    /// Park the calling thread for `microseconds`. Other threads keep
+    /// the worker. An interrupt runs its handler, then the sleep resumes for
+    /// the time that is left.
+    #[scheme(name = "%sleep")]
+    pub fn sleep_micros(microseconds: u64) -> Value<'gc> {
+        let duration = std::time::Duration::from_micros(microseconds);
+        let Some(cx) = current() else {
+            ctx.call_in_native(|| std::thread::sleep(duration));
+            return Value::new(true);
+        };
+        let deadline = std::time::Instant::now() + duration;
+        let mut ctx = ctx;
+        while std::time::Instant::now() < deadline {
+            let (next, woken) = cx.sleep_until(ctx, deadline);
+            ctx = next;
+            let woken = woken.unwrap_or_else(|killed| killed.unwind());
+            if let Woken::Interrupted = woken {
+                crate::runtime::vm::interrupts::deliver_pending_interrupts(ctx);
+            }
+        }
+        Value::new(true)
     }
 
     /* polling primitives */
@@ -1633,10 +1925,12 @@ pub mod io_ops {
                 );
             }
         };
-        let poller = ctx.allocate_with_header_word(
-            Poller { inner },
+        let poller = ctx.allocate_in(
+            Space::Los,
+            Poller {
+                inner: Arc::new(inner),
+            },
             poller_header_word(),
-            crate::heap::mmtk::AllocationSemantics::Los,
         );
 
         (poller).into()
@@ -1855,51 +2149,38 @@ pub mod io_ops {
     }
 
     #[scheme(name = "poller-wait")]
-    /// Waits for at least one I/O event and returns a list of events.
+    /// Waits for at least one I/O event and returns a list of events. A
+    /// thread waits on the blocking pool, so its worker keeps running.
     pub fn poller_wait(poller: Gc<'gc, Poller>, timeout: Option<u64>) -> Value<'gc> {
         let timeout = timeout.map(std::time::Duration::from_micros);
-        // Poller is NonMoving, root for liveness across wait.
-        let scope = RootScope::new(ctx);
-        let poller_root = scope.root(poller.into());
-        let poller_ptr = Gc::as_ptr(poller);
-        let wait_outcome = ctx.call_in_native(|| {
-            // SAFETY: Poller is NonMoving and rooted for the wait.
-            let poller = unsafe { &*poller_ptr };
-            let mut events = polling::Events::new();
-            let res = poller.inner.wait(&mut events, timeout);
-            let mut collected = Vec::new();
-            if res.is_ok() {
-                for event in events.iter() {
-                    collected.push((event.key, event_to_flags(event)));
-                }
+        // The wait owns an `Arc` to the poller, so it touches no heap object.
+        let inner = poller.inner.clone();
+        let (ctx, wait_outcome) = match current() {
+            Some(cx) => {
+                let (next, outcome) =
+                    blocking::run(ctx, &cx, move || wait_for_events(&inner, timeout));
+                (next, outcome.unwrap_or_else(|killed| killed.unwind()))
             }
-            (
-                res.is_ok(),
-                res.err().and_then(|e| e.raw_os_error()),
-                collected,
-            )
-        });
-        let _ = poller_root.get();
-        drop(scope);
+            None => (ctx, ctx.call_in_native(|| wait_for_events(&inner, timeout))),
+        };
 
-        let (ok, os_error, events) = wait_outcome;
-        if ok {
-            let mut ls = Value::null();
-            for (key, flags) in events {
-                ls = Value::cons(
-                    ctx,
-                    Value::cons(ctx, key.into_value(ctx), flags.into_value(ctx)),
-                    ls,
-                );
+        match wait_outcome {
+            Ok(events) => {
+                let mut ls = Value::null();
+                for (key, flags) in events {
+                    ls = Value::cons(
+                        ctx,
+                        Value::cons(ctx, key.into_value(ctx), flags.into_value(ctx)),
+                        ls,
+                    );
+                }
+                ls
             }
-            ls
-        } else {
-            let err = os_error.unwrap_or(i32::MAX);
-            call.raise_error(
+            Err(err) => call.raise_error(
                 "poller-wait",
                 "failed to wait for events",
                 &[err.into_value(ctx)],
-            )
+            ),
         }
     }
 
@@ -2043,14 +2324,10 @@ pub fn init_io<'gc>(ctx: MutationContext<'gc>) {
     export_term_primitive!("term/nonblocking!", make_static_closure_term_nonblocking);
     export_term_primitive!("term/read-fd", make_static_closure_term_read_fd);
     export_term_primitive!("term/write-fd", make_static_closure_term_write_fd);
-    export_term_primitive!(
-        "term/sigwinch-version",
-        make_static_closure_term_sigwinch_version
-    );
-    export_term_primitive!(
-        "term/install-sigwinch-handler!",
-        make_static_closure_term_install_sigwinch_handler
-    );
+    export_term_primitive!("signal/fd", make_static_closure_signal_fd);
+    export_term_primitive!("signal/install!", make_static_closure_signal_install);
+    export_term_primitive!("signal/number", make_static_closure_signal_number);
+    export_term_primitive!("signal/uninstall!", make_static_closure_signal_uninstall);
     export_term_primitive!(
         "term/enable-raw-mode!",
         make_static_closure_term_enable_raw_mode
@@ -2137,7 +2414,7 @@ pub fn init_io<'gc>(ctx: MutationContext<'gc>) {
 
 #[repr(C)]
 pub struct Poller {
-    inner: polling::Poller,
+    inner: Arc<polling::Poller>,
 }
 
 fn poller_header_word() -> u64 {
@@ -2175,20 +2452,361 @@ pub const EEDGE: i32 = 0x04;
 pub const EEDGEONESHOT: i32 = 0x08;
 
 fn blocking_poll_read(fd: i32) {
-    // SAFETY: Preconditions verified by the surrounding code
-    unsafe {
-        let mut readfs = [rustix::event::FdSetElement::default(); 1];
-        rustix::event::fd_set_insert(&mut readfs, fd);
-        let _ = rustix::event::select(readfs.len() as _, Some(&mut readfs), None, None, None);
-    }
+    blocking_select(fd, Dir::Read);
 }
 
 fn blocking_poll_write(fd: i32) {
-    // SAFETY: Preconditions verified by the surrounding code
+    blocking_select(fd, Dir::Write);
+}
+
+/// Block in select(2) until `fd` is ready.
+fn blocking_select(fd: i32, dir: Dir) {
+    use rustix::event::{FdSetElement, fd_set_insert, fd_set_num_elements, select};
+    let nfds = fd + 1;
+    let mut set = vec![FdSetElement::default(); fd_set_num_elements(1, nfds)];
+    fd_set_insert(&mut set, fd);
+    let (read, write) = match dir {
+        Dir::Read => (Some(&mut set[..]), None),
+        Dir::Write => (None, Some(&mut set[..])),
+    };
+    // SAFETY: `set` holds `nfds` bits and `fd` is below that.
+    let _ = unsafe { select(nfds, read, write, None, None) };
+}
+
+/// Map a raw syscall return to `Ok(bytes)` or the errno of a `-1` return.
+fn syscall_result(ret: isize) -> Result<isize, i32> {
+    if ret < 0 {
+        Err(errno::errno().0)
+    } else {
+        Ok(ret)
+    }
+}
+
+fn io_result<'gc>(ctx: MutationContext<'gc>, result: Result<isize, i32>) -> Value<'gc> {
+    match result {
+        Ok(n) => n.into_value(ctx),
+        Err(errno) => {
+            errno::set_errno(errno::Errno(errno));
+            (-1isize).into_value(ctx)
+        }
+    }
+}
+
+const STDIO_FDS: usize = 3;
+
+static STDIO_FLAGS: [AtomicI32; STDIO_FDS] = [const { AtomicI32::new(-1) }; STDIO_FDS];
+static STDIO_RESTORE: Once = Once::new();
+
+extern "C" fn restore_stdio_flags() {
+    for (fd, flags) in STDIO_FLAGS.iter().enumerate() {
+        let original = flags.load(Ordering::SeqCst);
+        if original >= 0 {
+            // SAFETY: FFI: fcntl on a descriptor number is always safe to call.
+            unsafe { libc::fcntl(fd as i32, libc::F_SETFL, original) };
+        }
+    }
+}
+
+//
+fn ensure_nonblocking(fd: i32) {
+    // SAFETY: FFI: fcntl on a descriptor number is always safe to call. A bad
+    // descriptor makes it fail, which leaves the descriptor unchanged.
     unsafe {
-        let mut writefs = [rustix::event::FdSetElement::default(); 1];
-        rustix::event::fd_set_insert(&mut writefs, fd);
-        let _ = rustix::event::select(writefs.len() as _, None, Some(&mut writefs), None, None);
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags < 0 || flags & libc::O_NONBLOCK != 0 {
+            return;
+        }
+        if let Some(slot) = STDIO_FLAGS.get(fd as usize) {
+            let _ = slot.compare_exchange(-1, flags, Ordering::SeqCst, Ordering::SeqCst);
+            STDIO_RESTORE.call_once(|| {
+                libc::atexit(restore_stdio_flags);
+            });
+        }
+        libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+    }
+}
+
+fn run_system(command: &std::ffi::CStr) -> (i32, i32) {
+    static ACTIVE: parking_lot::Mutex<(usize, [bool; STDIO_FDS])> =
+        parking_lot::Mutex::new((0, [false; STDIO_FDS]));
+    {
+        let mut active = ACTIVE.lock();
+        if active.0 == 0 {
+            active.1 = stdio_blocking_for_child();
+        }
+        active.0 += 1;
+    }
+    // SAFETY: FFI: `command` is a valid NUL-terminated string.
+    let ret = unsafe { libc::system(command.as_ptr()) };
+    let errno = errno::errno().0;
+    {
+        let mut active = ACTIVE.lock();
+        active.0 -= 1;
+        if active.0 == 0 {
+            restore_stdio_nonblocking(std::mem::take(&mut active.1));
+        }
+    }
+    (ret, errno)
+}
+
+/// Clear `O_NONBLOCK` on the stdio descriptors this process changed, and
+/// report which ones it cleared.
+fn stdio_blocking_for_child() -> [bool; STDIO_FDS] {
+    let mut changed = [false; STDIO_FDS];
+    for (fd, flag) in changed.iter_mut().enumerate() {
+        if STDIO_FLAGS[fd].load(Ordering::SeqCst) < 0 {
+            continue;
+        }
+        // SAFETY: FFI: fcntl on a descriptor number is always safe to call.
+        unsafe {
+            let flags = libc::fcntl(fd as i32, libc::F_GETFL);
+            if flags >= 0 && flags & libc::O_NONBLOCK != 0 {
+                libc::fcntl(fd as i32, libc::F_SETFL, flags & !libc::O_NONBLOCK);
+                *flag = true;
+            }
+        }
+    }
+    changed
+}
+
+fn restore_stdio_nonblocking(changed: [bool; STDIO_FDS]) {
+    for (fd, was_changed) in changed.into_iter().enumerate() {
+        if was_changed {
+            // SAFETY: FFI: fcntl on a descriptor number is always safe to call.
+            unsafe {
+                let flags = libc::fcntl(fd as i32, libc::F_GETFL);
+                if flags >= 0 {
+                    libc::fcntl(fd as i32, libc::F_SETFL, flags | libc::O_NONBLOCK);
+                }
+            }
+        }
+    }
+}
+
+/// Whether `fd` is ready in `dir` right now, without waiting.
+fn poll_ready(fd: i32, dir: Dir) -> bool {
+    let events = match dir {
+        Dir::Read => libc::POLLIN,
+        Dir::Write => libc::POLLOUT,
+    };
+    let mut pfd = libc::pollfd {
+        fd,
+        events,
+        revents: 0,
+    };
+    // SAFETY: FFI: one valid pollfd, zero timeout.
+    let n = unsafe { retry_eintr(|| libc::poll(&mut pfd, 1, 0)) };
+    n > 0
+}
+
+/// Whether `fd` has been closed. A waiter woken `Ready` checks this before it
+/// registers again, so it does not re-arm an fd that is being torn down.
+fn fd_is_closed(fd: i32) -> bool {
+    // SAFETY: FFI: F_GETFD only queries the descriptor.
+    let ret = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    ret == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EBADF)
+}
+
+/// One I/O attempt from a thread.
+fn virtual_thread_io<'gc>(
+    ctx: MutationContext<'gc>,
+    cx: &crate::runtime::sched::scheduler::SchedCtx,
+    fd: i32,
+    dir: Dir,
+    mut attempt: impl FnMut() -> Result<isize, i32>,
+) -> (MutationContext<'gc>, Result<isize, i32>) {
+    ensure_nonblocking(fd);
+    let would_block = |errno: i32| errno == libc::EAGAIN || errno == libc::EWOULDBLOCK;
+    let mut ctx = ctx;
+    loop {
+        match attempt() {
+            Err(libc::EINTR) => continue,
+            Err(errno) if would_block(errno) => {}
+            done => return (ctx, done),
+        }
+        let (next, woken) = cx.await_fd_in(ctx, fd, dir, || match attempt() {
+            Err(errno) if would_block(errno) => None,
+            done => Some(done),
+        });
+        ctx = next;
+        let woken = woken.unwrap_or_else(|killed| killed.unwind());
+        match woken {
+            // The reactor cannot watch this fd (kqueue refuses a tty such as
+            // macOS's /dev/tty). Like Go, wait for it on a blocking thread
+            // and retry.
+            Err(errno) if errno != libc::EBADF => {
+                let (next, waited) = blocking::run(ctx, cx, move || match dir {
+                    Dir::Read => blocking_poll_read(fd),
+                    Dir::Write => blocking_poll_write(fd),
+                });
+                ctx = next;
+                waited.unwrap_or_else(|killed| killed.unwind());
+            }
+            Err(errno) => return (ctx, Err(errno)),
+            Ok(Woken::Ready) if fd_is_closed(fd) => return (ctx, Err(libc::EBADF)),
+            Ok(Woken::Done(Err(libc::EINTR))) | Ok(Woken::Ready) => continue,
+            Ok(Woken::Done(done)) => return (ctx, done),
+            Ok(Woken::Closed) => return (ctx, Err(libc::EBADF)),
+            Ok(Woken::Interrupted) => {
+                crate::runtime::vm::interrupts::deliver_pending_interrupts(ctx);
+            }
+        }
+    }
+}
+
+/// `%await-readable` and `%await-writable`. Outside a thread this blocks
+/// the calling thread, as the other blocking primitives do.
+/// Returns the refreshed context and `Err(errno)` when the fd is closed while
+/// waiting or cannot be polled.
+fn await_native<'gc>(
+    ctx: MutationContext<'gc>,
+    fd: i32,
+    dir: Dir,
+) -> (MutationContext<'gc>, Result<(), i32>) {
+    let Some(cx) = current() else {
+        ctx.call_in_native(|| {
+            if !poll_ready(fd, dir) {
+                match dir {
+                    Dir::Read => blocking_poll_read(fd),
+                    Dir::Write => blocking_poll_write(fd),
+                }
+            }
+        });
+        return (ctx, Ok(()));
+    };
+    let mut ctx = ctx;
+    loop {
+        let (next, woken) = cx.await_fd_in(ctx, fd, dir, || poll_ready(fd, dir).then_some(()));
+        ctx = next;
+        let woken = woken.unwrap_or_else(|killed| killed.unwind());
+        match woken {
+            Ok(Woken::Done(())) => return (ctx, Ok(())),
+            Ok(Woken::Ready) if fd_is_closed(fd) => return (ctx, Err(libc::EBADF)),
+            Ok(Woken::Ready) => continue,
+            Ok(Woken::Interrupted) => {
+                crate::runtime::vm::interrupts::deliver_pending_interrupts(ctx);
+            }
+            Ok(Woken::Closed) => return (ctx, Err(libc::EBADF)),
+            Err(errno) => return (ctx, Err(errno)),
+        }
+    }
+}
+
+/// Poll `fd` for the directions set in `read` and `write`, until `deadline`
+/// (`None` waits forever). Returns `Some(code)` on an event: 0 when the fd can
+/// be used, 2 when the fd is not open. `None` when the deadline passes first.
+fn poll_fd_until(
+    fd: i32,
+    read: bool,
+    write: bool,
+    deadline: Option<std::time::Instant>,
+) -> Option<i32> {
+    let mut events = 0;
+    if read {
+        events |= libc::POLLIN;
+    }
+    if write {
+        events |= libc::POLLOUT;
+    }
+    loop {
+        let timeout_ms = match deadline {
+            None => -1,
+            Some(d) => {
+                let left_us = d
+                    .saturating_duration_since(std::time::Instant::now())
+                    .as_micros();
+                i32::try_from(left_us.div_ceil(1000)).unwrap_or(i32::MAX)
+            }
+        };
+        let mut pfd = libc::pollfd {
+            fd,
+            events,
+            revents: 0,
+        };
+        // SAFETY: FFI: one valid pollfd.
+        let n = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+        if n < 0 {
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            // Cannot be polled, so the caller retries the operation.
+            return Some(0);
+        }
+        if n == 0 {
+            return None;
+        }
+        return Some(if pfd.revents & libc::POLLNVAL != 0 {
+            2
+        } else {
+            0
+        });
+    }
+}
+
+fn await_fd_timed<'gc>(
+    ctx: MutationContext<'gc>,
+    fd: i32,
+    read: bool,
+    write: bool,
+    deadline: Option<std::time::Instant>,
+) -> (MutationContext<'gc>, i32) {
+    let Some(cx) = current() else {
+        let code = ctx.call_in_native(|| poll_fd_until(fd, read, write, deadline).unwrap_or(1));
+        return (ctx, code);
+    };
+    let mut ctx = ctx;
+    loop {
+        let (next, woken) = cx.await_fd_dirs_in(ctx, fd, read, write, deadline, || {
+            poll_fd_until(fd, read, write, Some(std::time::Instant::now()))
+        });
+        ctx = next;
+        let woken = woken.unwrap_or_else(|killed| killed.unwind());
+        match woken {
+            // Registration failed: EBADF means the fd is not open, and any
+            // other errno means it cannot be polled, which counts as ready.
+            Err(errno) => return (ctx, if errno == libc::EBADF { 2 } else { 0 }),
+            Ok(Woken::Done(code)) => return (ctx, code),
+            Ok(Woken::Closed) => return (ctx, 2),
+            Ok(Woken::Ready) if fd_is_closed(fd) => return (ctx, 2),
+            Ok(Woken::Ready) if deadline.is_some_and(|d| std::time::Instant::now() >= d) => {
+                return (ctx, 1);
+            }
+            Ok(Woken::Ready) => continue,
+            Ok(Woken::Interrupted) => {
+                crate::runtime::vm::interrupts::deliver_pending_interrupts(ctx);
+            }
+        }
+    }
+}
+
+/// Wait on a child process
+fn wait_child(pid: i32) -> std::io::Result<i32> {
+    let mut status: i32 = 0;
+    // SAFETY: FFI: waitpid writes one int through a valid pointer.
+    let ret = unsafe { libc::waitpid(pid, &mut status as *mut i32, 0) };
+    if ret == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(if libc::WIFEXITED(status) {
+        libc::WEXITSTATUS(status)
+    } else if libc::WIFSIGNALED(status) {
+        -libc::WTERMSIG(status)
+    } else {
+        -1
+    })
+}
+
+fn wait_for_events(
+    poller: &polling::Poller,
+    timeout: Option<std::time::Duration>,
+) -> Result<Vec<(usize, i32)>, i32> {
+    let mut events = polling::Events::new();
+    match poller.wait(&mut events, timeout) {
+        Ok(_) => Ok(events
+            .iter()
+            .map(|event| (event.key, event_to_flags(event)))
+            .collect()),
+        Err(err) => Err(err.raw_os_error().unwrap_or(i32::MAX)),
     }
 }
 

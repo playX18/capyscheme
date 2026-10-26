@@ -5,7 +5,8 @@ use crate::{prelude::*, runtime::vm::threading::ThreadObject};
 
 pub(crate) fn deliver_pending_interrupts<'gc>(ctx: MutationContext<'gc>) {
     let thread = ctx.state().thread_object;
-    if thread.interrupt_level() != 0 {
+    // A dying thread ignores interrupts
+    if thread.interrupt_level() != 0 || crate::runtime::sched::scheduler::is_dying() {
         return;
     }
     thread.mask_interrupts();
@@ -20,14 +21,14 @@ pub(crate) fn deliver_pending_interrupts<'gc>(ctx: MutationContext<'gc>) {
 
 #[scheme(path = capy)]
 pub mod interrupt_ops {
-    #[scheme(name = "%thread-interrupt!")]
+    #[scheme(name = "%native-thread-interrupt!")]
     pub fn thread_interrupt(
         thread: Gc<'gc, ThreadObject<'gc>>,
         thunk: Gc<'gc, Closure<'gc>>,
     ) -> Value<'gc> {
-        if thread.runtime_thread().is_none() {
+        if !thread.is_bound() {
             return call.raise_error(
-                "%thread-interrupt!",
+                "%native-thread-interrupt!",
                 "thread has not started",
                 &[thread.into()],
             );

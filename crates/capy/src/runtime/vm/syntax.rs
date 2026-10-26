@@ -41,8 +41,7 @@ impl<'gc> Syntax<'gc> {
         source: Value<'gc>,
         properties: Value<'gc>,
     ) -> Gc<'gc, Self> {
-        Gc::new_with_header_word(
-            ctx,
+        ctx.allocate_with(
             Self {
                 expr,
                 wrap,
@@ -422,8 +421,7 @@ impl<'gc> SyntaxTransformer<'gc> {
         typ: Value<'gc>,
         binding: Value<'gc>,
     ) -> Gc<'gc, Self> {
-        Gc::new_with_header_word(
-            ctx,
+        ctx.allocate_with(
             Self { name, typ, binding },
             syntax_transformer_header_word(),
         )

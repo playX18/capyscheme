@@ -1,6 +1,7 @@
 //! Closure heap objects and closure metadata helpers.
 
 use super::*;
+use crate::heap::Space;
 
 #[repr(C)]
 pub struct Closure<'gc> {
@@ -148,11 +149,11 @@ impl<'gc> Closure<'gc> {
         // The closure class hooks ensure proper tracing. We initialize all fields before returning
         // the Gc handle.
         unsafe {
-            let ptr = ctx.raw_allocate_with_header_word(
+            let ptr = ctx.allocate_raw(
                 size,
                 align_of::<Self>(),
                 closure_header_word(is_cont),
-                AllocationSemantics::Default,
+                Space::Default,
             );
             let this = ptr.to_address().as_mut_ref::<Self>();
             this.code = Self::closure_entry(code_block);

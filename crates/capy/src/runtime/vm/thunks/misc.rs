@@ -1,5 +1,4 @@
 use super::make_assertion_violation;
-use crate::heap::Gc;
 use crate::runtime::interp::markers;
 use crate::runtime::interp::stack;
 use crate::runtime::vm::control;
@@ -223,8 +222,7 @@ pub fn integer_to_char<'gc>(ctx: MutationContext<'gc>, n: Value<'gc>) -> Value<'
 pub fn current_continuation_marks<'gc>(ctx: MutationContext<'gc>) -> Value<'gc> {
     let marks = ctx.state().current_marks();
 
-    let obj = Gc::new_with_header_word(
-        ctx,
+    let obj = ctx.allocate_with(
         ContinuationMarks { cmarks: marks },
         crate::runtime::vm::control::continuation_marks_header_word(),
     );

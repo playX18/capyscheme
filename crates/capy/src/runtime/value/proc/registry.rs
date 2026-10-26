@@ -1,7 +1,6 @@
 //! Registry and builders for native closures.
 
 use super::*;
-use crate::utils::flags;
 
 type StaticClosureMap<'gc> = HashMap<Address, Gc<'gc, Closure<'gc>>>;
 type RootedProcedureRegistry = crate::Rootable!(ProcedureRegistry<'_>);
@@ -199,9 +198,6 @@ impl<'gc> ProcedureRegistry<'gc> {
         captured: [Value<'gc>; 3],
         meta: Value<'gc>,
     ) -> Gc<'gc, Closure<'gc>> {
-        if !flags::native_closure_cache() {
-            return self.make_closure(ctx, f, captured, meta);
-        }
         let kind = NativeClosureKind::Procedure(f);
         let addr = kind.addr();
         let cached = {

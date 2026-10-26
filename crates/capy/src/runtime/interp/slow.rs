@@ -1118,16 +1118,13 @@ fn fill_slot_site<'gc>(
     if !WatchpointSet::add(hit.wp, ctx, Dependent::site(buffer, metadata_id.0, kind)) {
         return false;
     }
-    let entry = Gc::new(
-        ctx,
-        SlotIcEntry {
-            class_id: hit.class_id,
-            stamp: hit.stamp,
-            index: hit.index,
-            kind: SLOT_KIND_ACCESS,
-            effective: Value::empty(),
-        },
-    );
+    let entry = ctx.allocate(SlotIcEntry {
+        class_id: hit.class_id,
+        stamp: hit.stamp,
+        index: hit.index,
+        kind: SLOT_KIND_ACCESS,
+        effective: Value::empty(),
+    });
     let stored = site.fill(ctx, &Gc::write(ctx, buffer), entry);
     if hit.wp.is_invalid() {
         site.clear();

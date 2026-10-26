@@ -169,15 +169,12 @@ pub struct WatchpointSet<'gc> {
 
 impl<'gc> WatchpointSet<'gc> {
     pub fn new(ctx: MutationContext<'gc>) -> Gc<'gc, Self> {
-        Gc::new(
-            ctx,
-            Self {
-                state: Lock::new(CLEAR),
-                dependents: Lock::new(Array::with(ctx, 0, |_, _| {
-                    unreachable!("zero-length dependent arrays are never initialized")
-                })),
-            },
-        )
+        ctx.allocate(Self {
+            state: Lock::new(CLEAR),
+            dependents: Lock::new(Array::new(ctx, 0, |_, _| {
+                unreachable!("zero-length dependent arrays are never initialized")
+            })),
+        })
     }
 
     #[inline]
@@ -223,7 +220,7 @@ impl<'gc> WatchpointSet<'gc> {
             } else {
                 current.iter().copied().collect()
             };
-            let appended = Array::with(ctx, keep.len() + 1, |_, index| {
+            let appended = Array::new(ctx, keep.len() + 1, |_, index| {
                 if index < keep.len() {
                     keep[index]
                 } else {

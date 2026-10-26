@@ -40,7 +40,16 @@ mod dl_ops {
             unsafe { libc::dlopen(std::ptr::null(), flags) }
         } else if name.is::<Str>() {
             let s = name.downcast::<Str>().to_string();
-            let cstr = std::ffi::CString::new(s).expect("invariant holds");
+            let Ok(cstr) = std::ffi::CString::new(s) else {
+                return call.wrong_argument_violation(
+                    "dlopen",
+                    "expected string without NUL characters",
+                    None,
+                    None,
+                    2,
+                    &[name, flags.into()],
+                );
+            };
             // SAFETY: FFI: arguments follow POSIX dlopen requirements
             unsafe { libc::dlopen(cstr.as_ptr(), flags) }
         } else {
@@ -83,7 +92,7 @@ mod dl_ops {
                 flags,
             },
         );
-        let ptr = Gc::new_with_header_word(ctx, Pointer::new(handle as _), pointer_header_word());
+        let ptr = ctx.allocate_with(Pointer::new(handle as _), pointer_header_word());
         ptr.into()
     }
     #[scheme(name = "dlclose")]
@@ -123,7 +132,19 @@ mod dl_ops {
 
         let symbol_cstr = if symbol.is::<Str>() {
             let s = symbol.downcast::<Str>().to_string();
-            std::ffi::CString::new(s).expect("invariant holds")
+            match std::ffi::CString::new(s) {
+                Ok(cstr) => cstr,
+                Err(_) => {
+                    return call.wrong_argument_violation(
+                        "dlsym",
+                        "expected string without NUL characters",
+                        None,
+                        None,
+                        2,
+                        &[handle.into(), symbol],
+                    );
+                }
+            }
         } else {
             return call.wrong_argument_violation(
                 "dlsym",
@@ -158,21 +179,22 @@ mod dl_ops {
             );
         }
 
-        let ptr = Gc::new_with_header_word(ctx, Pointer::new(sym_ptr as _), pointer_header_word());
+        let ptr = ctx.allocate_with(Pointer::new(sym_ptr as _), pointer_header_word());
         ptr.into()
     }
 
     #[scheme(name = "load-native-extension")]
     pub fn load_native_extension(path: StringRef<'gc>) -> Result<Value<'gc>, Value<'gc>> {
-        // SAFETY: FFI: arguments follow POSIX dlopen requirements
-        let handle = unsafe {
-            libc::dlopen(
-                std::ffi::CString::new(path.to_string())
-                    .expect("invariant holds")
-                    .as_ptr(),
-                libc::RTLD_NOW | libc::RTLD_LOCAL,
-            )
+        let Ok(cpath) = std::ffi::CString::new(path.to_string()) else {
+            call.raise_error(
+                "load-native-extension",
+                &format!("path contains a NUL character: {path}"),
+                &[path.into()],
+            );
+            return Err(Value::undefined());
         };
+        // SAFETY: FFI: arguments follow POSIX dlopen requirements
+        let handle = unsafe { libc::dlopen(cpath.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
         if handle.is_null() {
             // SAFETY: FFI: dlerror call is safe after a failed dlopen/dlsym
             let dlerror = unsafe {

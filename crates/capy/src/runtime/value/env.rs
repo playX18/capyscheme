@@ -1,8 +1,7 @@
 //! Shared closure environment records (`EnvRecord`).
 
+use crate::heap::Space;
 use std::ops::Index;
-
-use mmtk::AllocationSemantics;
 
 use crate::IndexWrite;
 use crate::heap::object::{
@@ -82,14 +81,14 @@ impl<'gc> EnvRecord<'gc> {
         // GC allocator. The env-record class hooks ensure proper tracing. We
         // initialize all fields before returning the Gc handle.
         unsafe {
-            let ptr = ctx.raw_allocate_with_header_word(
+            let ptr = ctx.allocate_raw(
                 size,
                 align_of::<Self>(),
                 class_header_word(
                     ClassId::new(builtin_class_ids::ENV_RECORD)
                         .expect("builtin class id is nonzero"),
                 ),
-                AllocationSemantics::Default,
+                Space::Default,
             );
             let this = ptr.to_address().as_mut_ref::<Self>();
             this.length = length;

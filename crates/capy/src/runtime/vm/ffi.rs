@@ -7,7 +7,7 @@ use crate::heap::{
     Trace,
     finalizer::FinalizerQueue,
     mmtk::util::{Address, ObjectReference},
-    object::{ClassId, GcObject, builtin_class_ids, class_header_word},
+    object::{ClassId, builtin_class_ids, class_header_word},
 };
 use crate::{
     global,
@@ -26,6 +26,11 @@ use libffi::{
     middle::Type,
     raw::{ffi_arg, ffi_type},
 };
+
+// Not supported: `long double` and `__int128`. Neither has a `ForeignType` code, and
+// libffi's `longdouble` needs a 16-byte scalar path that the Scheme number conversions
+// do not provide. Callers can still move those values as byte vectors through
+// `pointer-ref`/`pointer-set!` and an opaque struct type such as `#(uint8 16)`.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
@@ -123,18 +128,72 @@ static_symbols!(
     SYM_NULL = "%null-pointer"
     SYM_NULL_POINTER_ERROR = "null-pointer-error"
     SYM_ARRAY = "array"
+    SYM_TYPED_ARGUMENT = "%typed-argument"
 );
 
+/// Rounds `len` up to a multiple of `align` (a power of two, or 0 for "no alignment").
+/// Wraps instead of panicking; callers that size user-controlled types use
+/// `checked_round_up`.
 const fn round_up(len: usize, align: usize) -> usize {
     if align != 0 {
-        ((len - 1) | (align - 1)) + 1
+        len.wrapping_add(align - 1) & !(align - 1)
     } else {
         len
     }
 }
 
+/// `round_up` that reports overflow instead of wrapping.
+fn checked_round_up(len: usize, align: usize) -> Option<usize> {
+    if align == 0 {
+        return Some(len);
+    }
+    len.checked_add(align - 1).map(|v| v & !(align - 1))
+}
+
+/// Largest element count accepted for an array or `#(type count)` aggregate. Anything
+/// bigger would need an enormous libffi type description.
+const MAX_AGGREGATE_ELEMENTS: usize = 1 << 20;
+
+/// Largest aggregate passed or returned by value. Keeps nested arrays from building
+/// libffi descriptions of gigabytes.
+const MAX_AGGREGATE_BYTES: usize = 1 << 30;
+
+fn size_overflow<'gc>(ftype: Value<'gc>) -> ConversionError<'gc> {
+    ConversionError::type_mismatch(0, "foreign type with a representable size", ftype)
+}
+
+fn check_aggregate_size<'gc>(
+    ctx: MutationContext<'gc>,
+    ftype: Value<'gc>,
+) -> Result<(), ConversionError<'gc>> {
+    if sizeof(ctx, ftype)? > MAX_AGGREGATE_BYTES {
+        return Err(ConversionError::type_mismatch(
+            0,
+            "foreign type no larger than 1 GiB",
+            ftype,
+        ));
+    }
+    Ok(())
+}
+
 fn null_pointer_error<'gc>(call: &Call<'_, 'gc>, who: &str) -> Value<'gc> {
     call.raise_undefined_violation(who, "null-pointer dereference", &[])
+}
+
+/// `pointer + offset`, or `None` when the sum would wrap around the address space.
+fn address_plus(pointer: Gc<'_, Pointer>, offset: usize) -> Option<usize> {
+    (pointer.value() as usize).checked_add(offset)
+}
+
+fn offset_overflow<'gc>(call: &Call<'_, 'gc>, who: &str) -> Value<'gc> {
+    call.wrong_argument_violation(
+        who,
+        "offset runs past the end of the address space",
+        None,
+        None,
+        2,
+        &[],
+    )
 }
 
 /// A wrapped C pointer. This allows us to protect
@@ -274,7 +333,7 @@ pub mod ffi_ops {
     #[scheme(name = "make-pointer")]
     pub fn make_pointer(addr: usize) -> Value<'gc> {
         let ptr = Pointer::new(addr as *mut std::ffi::c_void);
-        let ptr = Gc::new_with_header_word(ctx, ptr, pointer_header_word());
+        let ptr = ctx.allocate_with(ptr, pointer_header_word());
         ptr.into()
     }
 
@@ -292,7 +351,7 @@ pub mod ffi_ops {
     #[scheme(name = "scm->pointer")]
     pub fn value_to_pointer(v: Value<'gc>) -> Gc<'gc, Pointer> {
         let p = Pointer::new(v.bits() as *mut std::ffi::c_void);
-        let p = Gc::new_with_header_word(ctx, p, pointer_header_word());
+        let p = ctx.allocate_with(p, pointer_header_word());
         p
     }
 
@@ -314,9 +373,12 @@ pub mod ffi_ops {
             );
         }
 
-        let offset = offset.unwrap_or(0);
-        let ptr = pointer.value + offset;
-        let bvec = ByteVector::new_mapping(ctx, ptr, length);
+        let Some(at) = address_plus(pointer, offset.unwrap_or(0)) else {
+            return offset_overflow(call, "pointer->bytevector");
+        };
+        // SAFETY: mapping an arbitrary address is the caller's responsibility, as with
+        // `pointer-ref`.
+        let bvec = ByteVector::new_mapping(ctx, unsafe { Address::from_usize(at) }, length);
         (bvec).into()
     }
 
@@ -346,7 +408,7 @@ pub mod ffi_ops {
 
         let ptr = bv.contents() + offset;
         let p = Pointer::new(ptr.to_mut_ptr());
-        let p = Gc::new_with_header_word(ctx, p, pointer_header_word());
+        let p = ctx.allocate_with(p, pointer_header_word());
 
         // Ephemeron: keep the (NonMoving) bytevector alive while `p` is live.
         ptrs(ctx).put(ctx, p, bv);
@@ -449,7 +511,7 @@ pub mod ffi_ops {
         // SAFETY: Preconditions verified by the surrounding code
         let ptr = unsafe { *(p.value() as *const *mut std::ffi::c_void) };
         let new_ptr = Pointer::new(ptr);
-        let new_ptr = Gc::new_with_header_word(ctx, new_ptr, pointer_header_word());
+        let new_ptr = ctx.allocate_with(new_ptr, pointer_header_word());
         new_ptr.into()
     }
 
@@ -480,6 +542,16 @@ pub mod ffi_ops {
         let variadic = variadic.unwrap_or(false);
         // Assume foreign calls can block so they never stall the mutator.
         let blocking = blocking.unwrap_or(true);
+        if func_ptr.value().is_null() {
+            return call.wrong_argument_violation(
+                "pointer->procedure",
+                "null function pointer",
+                Some(func_ptr.into()),
+                None,
+                2,
+                &[func_ptr.into()],
+            );
+        }
         let cif = match make_cif(ctx, return_type, arg_types, variadic, blocking) {
             Ok(cif) => cif,
             Err(e) => return call.conversion_error("pointer->procedure", e),
@@ -502,6 +574,12 @@ pub mod ffi_ops {
         arg_types: Value<'gc>,
         proc: Gc<'gc, Closure<'gc>>,
     ) -> Value<'gc> {
+        if !parse_ffi_type(ctx, return_type, true, &mut 0, &mut 0) {
+            return call.conversion_error(
+                "procedure->callback-pointer",
+                ConversionError::type_mismatch(0, "foreign type", return_type),
+            );
+        }
         let rtype = match make_ffi_type(ctx, return_type) {
             Ok(rtype) => rtype,
             Err(e) => return call.conversion_error("procedure->callback-pointer", e),
@@ -510,7 +588,19 @@ pub mod ffi_ops {
             Ok(args) => args,
             Err(e) => return call.conversion_error("procedure->callback-pointer", e),
         };
-        let cif = libffi::middle::Cif::new(args, rtype);
+        let cif = match libffi::middle::Cif::try_new(args, rtype) {
+            Ok(cif) => cif,
+            Err(_) => {
+                return call.conversion_error(
+                    "procedure->callback-pointer",
+                    ConversionError::type_mismatch(
+                        1,
+                        "foreign function signature libffi accepts",
+                        arg_types,
+                    ),
+                );
+            }
+        };
         let (closure, code) = low::closure_alloc();
         let mut owner = Box::new(CallbackOwner {
             cif,
@@ -524,7 +614,7 @@ pub mod ffi_ops {
 
         // SAFETY: The boxed owner keeps both the CIF and userdata alive until
         // `free-callback-pointer` drops it.
-        unsafe {
+        let prepared = unsafe {
             low::prep_closure(
                 owner.closure,
                 owner.cif.as_raw_ptr(),
@@ -532,14 +622,24 @@ pub mod ffi_ops {
                 &owner.data,
                 owner.code,
             )
-            .expect("libffi failed to prepare callback closure");
+        };
+        if prepared.is_err() {
+            // Dropping the owner frees the closure allocation.
+            drop(owner);
+            return call.conversion_error(
+                "procedure->callback-pointer",
+                ConversionError::type_mismatch(
+                    0,
+                    "callback closure libffi can prepare",
+                    proc.into(),
+                ),
+            );
         }
 
         let code = owner.code.as_mut_ptr();
         let owner = Box::into_raw(owner);
-        let ptr = Gc::new_with_header_word(ctx, Pointer::new(code), pointer_header_word());
-        let owner_ptr =
-            Gc::new_with_header_word(ctx, Pointer::new(owner.cast()), pointer_header_word());
+        let ptr = ctx.allocate_with(Pointer::new(code), pointer_header_word());
+        let owner_ptr = ctx.allocate_with(Pointer::new(owner.cast()), pointer_header_word());
         ptrs(ctx).put(ctx, ptr, owner_ptr);
         ptr.into()
     }
@@ -571,6 +671,172 @@ pub mod ffi_ops {
     pub fn errno() -> i32 {
         let err = ::errno::errno();
         err.0
+    }
+
+    #[scheme(name = "errno-set!")]
+    pub fn errno_set(value: i32) -> Value<'gc> {
+        ::errno::set_errno(::errno::Errno(value));
+        Value::undefined()
+    }
+
+    /// Reads a scalar of `ftype` at `pointer + offset`.
+    #[scheme(name = "pointer-ref")]
+    pub fn pointer_ref(
+        ftype: ForeignType,
+        pointer: Gc<'gc, Pointer>,
+        offset: Option<usize>,
+    ) -> Value<'gc> {
+        if pointer.value().is_null() {
+            return null_pointer_error(call, "pointer-ref");
+        }
+        let Some(at) = address_plus(pointer, offset.unwrap_or(0)) else {
+            return offset_overflow(call, "pointer-ref");
+        };
+        // SAFETY: the caller vouches that `pointer + offset` addresses a live
+        // value of `ftype`; reads are unaligned-safe.
+        unsafe {
+            match ftype {
+                ForeignType::Uint8 => Value::new((at as *const u8).read_unaligned() as i32),
+                ForeignType::Int8 => Value::new((at as *const i8).read_unaligned() as i32),
+                ForeignType::Uint16 => Value::new((at as *const u16).read_unaligned() as i32),
+                ForeignType::Int16 => Value::new((at as *const i16).read_unaligned() as i32),
+                ForeignType::Uint32 => (at as *const u32).read_unaligned().into_value(ctx),
+                ForeignType::Int32 => Value::new((at as *const i32).read_unaligned()),
+                ForeignType::Uint64 => (at as *const u64).read_unaligned().into_value(ctx),
+                ForeignType::Int64 => (at as *const i64).read_unaligned().into_value(ctx),
+                ForeignType::Float => Value::new((at as *const f32).read_unaligned() as f64),
+                ForeignType::Double => Value::new((at as *const f64).read_unaligned()),
+                ForeignType::Void | ForeignType::ComplexFloat | ForeignType::ComplexDouble => call
+                    .wrong_argument_violation(
+                        "pointer-ref",
+                        "unsupported type",
+                        Some(Value::new(ftype as i32)),
+                        None,
+                        1,
+                        &[],
+                    ),
+            }
+        }
+    }
+
+    /// Writes `value` as a scalar of `ftype` at `pointer + offset`.
+    #[scheme(name = "pointer-set!")]
+    pub fn pointer_set(
+        ftype: ForeignType,
+        pointer: Gc<'gc, Pointer>,
+        offset: usize,
+        value: Value<'gc>,
+    ) -> Value<'gc> {
+        if pointer.value().is_null() {
+            return null_pointer_error(call, "pointer-set!");
+        }
+        let Some(at) = address_plus(pointer, offset) else {
+            return offset_overflow(call, "pointer-set!");
+        };
+        let bad = |why: &str| {
+            call.wrong_argument_violation("pointer-set!", why, Some(value), None, 4, &[])
+        };
+
+        if matches!(ftype, ForeignType::Float | ForeignType::Double) {
+            let Some(n) = real_argument(ctx, value) else {
+                return bad("expected a real number");
+            };
+            // SAFETY: see `pointer-ref`.
+            unsafe {
+                if ftype == ForeignType::Float {
+                    (at as *mut f32).write_unaligned(n as f32);
+                } else {
+                    (at as *mut f64).write_unaligned(n);
+                }
+            }
+            return Value::undefined();
+        }
+
+        let (min, max) = match ftype {
+            ForeignType::Uint8 => (0, u8::MAX as i128),
+            ForeignType::Int8 => (i8::MIN as i128, i8::MAX as i128),
+            ForeignType::Uint16 => (0, u16::MAX as i128),
+            ForeignType::Int16 => (i16::MIN as i128, i16::MAX as i128),
+            ForeignType::Uint32 => (0, u32::MAX as i128),
+            ForeignType::Int32 => (i32::MIN as i128, i32::MAX as i128),
+            ForeignType::Uint64 => (0, u64::MAX as i128),
+            ForeignType::Int64 => (i64::MIN as i128, i64::MAX as i128),
+            _ => return bad("unsupported type"),
+        };
+        let Some(n) = value
+            .number()
+            .and_then(exact_integer_to_i128)
+            .filter(|n| (min..=max).contains(n))
+        else {
+            return bad("integer out of range for type");
+        };
+        // SAFETY: see `pointer-ref`; `n` was range-checked for `ftype`.
+        unsafe {
+            match ftype {
+                ForeignType::Uint8 | ForeignType::Int8 => (at as *mut u8).write_unaligned(n as u8),
+                ForeignType::Uint16 | ForeignType::Int16 => {
+                    (at as *mut u16).write_unaligned(n as u16)
+                }
+                ForeignType::Uint32 | ForeignType::Int32 => {
+                    (at as *mut u32).write_unaligned(n as u32)
+                }
+                _ => (at as *mut u64).write_unaligned(n as u64),
+            }
+        }
+        Value::undefined()
+    }
+
+    /// Reads a pointer-sized value at `pointer + offset` as a new pointer.
+    #[scheme(name = "pointer-ref/pointer")]
+    pub fn pointer_ref_pointer(pointer: Gc<'gc, Pointer>, offset: Option<usize>) -> Value<'gc> {
+        if pointer.value().is_null() {
+            return null_pointer_error(call, "pointer-ref/pointer");
+        }
+        let Some(at) = address_plus(pointer, offset.unwrap_or(0)) else {
+            return offset_overflow(call, "pointer-ref/pointer");
+        };
+        // SAFETY: see `pointer-ref`.
+        let target = unsafe { (at as *const *mut std::ffi::c_void).read_unaligned() };
+        ctx.allocate_with(Pointer::new(target), pointer_header_word())
+            .into()
+    }
+
+    /// Writes `value` (a pointer) at `pointer + offset`.
+    #[scheme(name = "pointer-set/pointer!")]
+    pub fn pointer_set_pointer(
+        pointer: Gc<'gc, Pointer>,
+        offset: usize,
+        value: Gc<'gc, Pointer>,
+    ) -> Value<'gc> {
+        if pointer.value().is_null() {
+            return null_pointer_error(call, "pointer-set/pointer!");
+        }
+        let Some(at) = address_plus(pointer, offset) else {
+            return offset_overflow(call, "pointer-set/pointer!");
+        };
+        // SAFETY: see `pointer-ref`.
+        unsafe { (at as *mut *mut std::ffi::c_void).write_unaligned(value.value()) };
+        Value::undefined()
+    }
+
+    /// Allocates `size` zeroed bytes with `calloc`. Release with `foreign-free`.
+    #[scheme(name = "foreign-alloc")]
+    pub fn foreign_alloc(size: usize) -> Value<'gc> {
+        // SAFETY: calloc has no preconditions; a null result is surfaced as #f.
+        let mem = unsafe { libc::calloc(1, size.max(1)) };
+        if mem.is_null() {
+            return Value::new(false);
+        }
+        ctx.allocate_with(Pointer::new(mem), pointer_header_word())
+            .into()
+    }
+
+    /// Frees memory from `foreign-alloc` (or any C `malloc`-family allocation).
+    #[scheme(name = "foreign-free")]
+    pub fn foreign_free(pointer: Gc<'gc, Pointer>) -> Value<'gc> {
+        // SAFETY: the caller owns `pointer` and does not use it afterwards.
+        unsafe { libc::free(pointer.value()) };
+        Value::undefined()
     }
 }
 
@@ -655,18 +921,22 @@ pub fn sizeof<'gc>(
             };
             let size = sizeof(ctx, typ)?;
             let align = alignof(ctx, typ)?;
-            return Ok(round_up(size * n, align));
+            let total = size.checked_mul(n).ok_or_else(|| size_overflow(ftype))?;
+            return checked_round_up(total, align).ok_or_else(|| size_overflow(ftype));
         }
         let mut off = 0;
         let align = alignof(ctx, ftype)?;
         let mut current = ftype;
         while current.is_pair() {
-            off = round_up(off, alignof(ctx, current.car())?);
-            off += sizeof(ctx, current.car())?;
+            off = checked_round_up(off, alignof(ctx, current.car())?)
+                .ok_or_else(|| size_overflow(ftype))?;
+            off = off
+                .checked_add(sizeof(ctx, current.car())?)
+                .ok_or_else(|| size_overflow(ftype))?;
             current = current.cdr();
         }
 
-        Ok(round_up(off, align))
+        checked_round_up(off, align).ok_or_else(|| size_overflow(ftype))
     } else if ftype.is::<Vector>() {
         let v = ftype.downcast::<Vector>();
         if v.len() != 2 {
@@ -694,7 +964,10 @@ pub fn sizeof<'gc>(
         }
 
         let size = sizeof(ctx, typ)?;
-        Ok(round_up(size * (count as usize), alignof(ctx, typ)?))
+        let total = size
+            .checked_mul(count as usize)
+            .ok_or_else(|| size_overflow(ftype))?;
+        checked_round_up(total, alignof(ctx, typ)?).ok_or_else(|| size_overflow(ftype))
     } else {
         Err(ConversionError::type_mismatch(0, "foreign type", ftype))
     }
@@ -778,6 +1051,7 @@ fn make_ffi_type<'gc>(
     } else if ftype == Value::new(sym_asterisk(ctx)) {
         Ok(Type::pointer())
     } else if ftype.is_pair() {
+        check_aggregate_size(ctx, ftype)?;
         let len = ftype.list_length();
         let mut elts = Vec::with_capacity(len);
         let mut typ = ftype;
@@ -810,7 +1084,15 @@ fn make_ffi_type<'gc>(
                 count.into(),
             ));
         }
+        if count as usize > MAX_AGGREGATE_ELEMENTS {
+            return Err(ConversionError::type_mismatch(
+                1,
+                "fixnum no larger than 1048576",
+                count.into(),
+            ));
+        }
 
+        check_aggregate_size(ctx, ftype)?;
         let elem = make_ffi_type(ctx, elem_typ)?;
         Ok(Type::structure(vec![elem; count as usize]))
     } else {
@@ -878,64 +1160,6 @@ unsafe impl<'gc> Trace for Cif<'gc> {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn make_cif_at<'gc>(
-    ctx: MutationContext<'gc>,
-    obj: GcObject,
-    arg_types: Value<'gc>,
-    return_type: Value<'gc>,
-    variadic: bool,
-    blocking: bool,
-) -> Result<(), ConversionError<'gc>> {
-    if !arg_types.is_list() {
-        return Err(ConversionError::type_mismatch(1, "list", arg_types));
-    }
-
-    if !parse_ffi_type(ctx, return_type, true, &mut 0, &mut 0) {
-        return Err(ConversionError::type_mismatch(
-            0,
-            "foreign type",
-            return_type,
-        ));
-    }
-
-    let rtype = make_ffi_type(ctx, return_type)?;
-
-    let mut walk = arg_types;
-    let mut args = Vec::with_capacity(arg_types.list_length());
-    while walk.is_pair() {
-        let atype = walk.car();
-        if !parse_ffi_type(ctx, atype, false, &mut 0, &mut 0) {
-            return Err(ConversionError::type_mismatch(1, "foreign type", atype));
-        }
-        args.push(make_ffi_type(ctx, atype)?);
-        walk = walk.cdr();
-    }
-
-    let cif = if !variadic {
-        libffi::middle::Cif::new(args, rtype)
-    } else {
-        let nargs = args.len();
-        libffi::middle::Cif::new_variadic(args, nargs, rtype)
-    };
-
-    let cif = Cif {
-        cif,
-        nargs: arg_types.list_length() as u32,
-        variadic,
-        blocking,
-        args: arg_types,
-        return_type,
-    };
-
-    // SAFETY: Preconditions verified by the surrounding code
-    unsafe {
-        obj.to_address().to_mut_ptr::<Cif>().write(cif);
-    }
-
-    Ok(())
-}
-
 fn make_cif<'gc>(
     ctx: MutationContext<'gc>,
     return_type: Value<'gc>,
@@ -968,12 +1192,16 @@ fn make_cif<'gc>(
         walk = walk.cdr();
     }
 
-    let cif = if !variadic {
-        libffi::middle::Cif::new(args, rtype)
+    // `try_new` reports libffi's preparation failures; `new` would panic on them.
+    let prepared = if !variadic {
+        libffi::middle::Cif::try_new(args, rtype)
     } else {
         let nargs = args.len();
-        libffi::middle::Cif::new_variadic(args, nargs, rtype)
+        libffi::middle::Cif::try_new_variadic(args, nargs, rtype)
     };
+    let cif = prepared.map_err(|_| {
+        ConversionError::type_mismatch(1, "foreign function signature libffi accepts", arg_types)
+    })?;
 
     let cif = Cif {
         cif,
@@ -984,7 +1212,19 @@ fn make_cif<'gc>(
         return_type,
     };
 
-    Ok(Gc::new_with_header_word(ctx, cif, cif_header_word()))
+    Ok(ctx.allocate_with(cif, cif_header_word()))
+}
+
+/// Raise `condition` as a Scheme exception so `guard` and handlers see it.
+fn raise_condition<'gc>(
+    call: &Call<'_, 'gc>,
+    ctx: MutationContext<'gc>,
+    condition: Value<'gc>,
+) -> Value<'gc> {
+    match ctx.globals().root_module().get_str(ctx, "raise") {
+        Some(raise) => call.tail(raise, &[condition]),
+        None => call.err(condition),
+    }
 }
 
 fn foreign_call<'gc>(
@@ -1009,13 +1249,19 @@ fn foreign_call<'gc>(
                 + (*(*raw).arg_types.add(i).read()).alignment as usize
                 - 1;
         }
+        // Types of the variadic arguments: explicit for `(typed TYPE VALUE)`
+        // wrappers, guessed from the value otherwise.
+        let mut guessed: Vec<*mut ffi_type> = Vec::new();
+        let mut variadic_values: Vec<Value<'gc>> = Vec::new();
         if cif.variadic {
             for rand in rands[cif.nargs as usize..].iter() {
-                let ftype = match guess_ffi_type(ctx, *rand) {
+                let (ftype, value) = match variadic_argument(ctx, *rand) {
                     Ok(t) => t,
-                    Err(e) => return call.err(e),
+                    Err(e) => return raise_condition(call, ctx, e),
                 };
                 arg_size += (*ftype).size + (*ftype).alignment as usize - 1;
+                guessed.push(ftype);
+                variadic_values.push(value);
             }
         }
 
@@ -1038,19 +1284,13 @@ fn foreign_call<'gc>(
                 false,
             ) {
                 Ok(()) => (),
-                Err(e) => return call.err(e),
+                Err(e) => return raise_condition(call, ctx, e),
             }
             off = args[i] - data_ptr as usize + (*(*raw).arg_types.add(i).read()).size;
         }
 
         if cif.variadic {
-            for rand in rands[cif.nargs as usize..].iter() {
-                let ftype = match guess_ffi_type(ctx, *rand) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        return call.err(e);
-                    }
-                };
+            for (value, ftype) in variadic_values.iter().copied().zip(guessed.iter().copied()) {
                 args.push(round_up(
                     data_ptr.add(off) as usize,
                     (*ftype).alignment as usize,
@@ -1058,12 +1298,12 @@ fn foreign_call<'gc>(
                 match unpack(
                     ctx,
                     ftype,
-                    *rand,
+                    value,
                     args.last().copied().expect("args non-empty") as *mut (),
                     false,
                 ) {
                     Ok(()) => (),
-                    Err(e) => return call.err(e),
+                    Err(e) => return raise_condition(call, ctx, e),
                 }
                 off = args.last().copied().expect("args non-empty") - data_ptr as usize
                     + (*ftype).size;
@@ -1075,11 +1315,44 @@ fn foreign_call<'gc>(
             size_of::<usize>().max((*(*raw).rtype).alignment as usize),
         ) as *mut ();
 
+        // The prepared CIF only describes the fixed parameters. A variadic call needs one
+        // describing every argument actually passed, prepared with `ffi_prep_cif_var` so the
+        // platform's variadic convention (stack slots on Apple arm64) is used.
+        let mut var_types: Vec<*mut ffi_type> = Vec::new();
+        let mut var_cif: libffi::low::ffi_cif = std::mem::zeroed();
+        let raw = if cif.variadic {
+            for i in 0..cif.nargs as usize {
+                var_types.push((*raw).arg_types.add(i).read());
+            }
+            var_types.extend_from_slice(&guessed);
+            if libffi::low::prep_cif_var(
+                &mut var_cif,
+                libffi::low::ffi_abi_FFI_DEFAULT_ABI,
+                cif.nargs as usize,
+                var_types.len(),
+                (*raw).rtype,
+                var_types.as_mut_ptr(),
+            )
+            .is_err()
+            {
+                return call.err(make_assertion_violation(
+                    ctx,
+                    Value::new(false),
+                    Str::from_str(ctx, "cannot prepare variadic foreign call").into(),
+                    &[],
+                ));
+            }
+            &mut var_cif as *mut libffi::low::ffi_cif
+        } else {
+            raw
+        };
+
         if cif.blocking {
-            let raw = cif.cif.as_raw_ptr();
             let target: *mut () = pointer.cast();
             let mut args = args;
-            ctx.call_in_native(|| {
+            // Capture errno on this thread right after the foreign call; leaving native
+            // mode and packing the result may overwrite it.
+            let errno_after_call = ctx.call_in_native(|| {
                 libffi::raw::ffi_call(
                     raw,
                     // SAFETY: Invariants are upheld at this call site
@@ -1089,8 +1362,14 @@ fn foreign_call<'gc>(
                     rvalue.cast(),
                     args.as_mut_ptr().cast(),
                 );
+                ::errno::errno()
             });
-            return pack(ctx, (*raw).rtype, rvalue, true);
+            let result = pack(ctx, (*raw).rtype, rvalue, true);
+            ::errno::set_errno(errno_after_call);
+            return match result {
+                Ok(value) => value,
+                Err(e) => raise_condition(call, ctx, e),
+            };
         }
 
         libffi::raw::ffi_call(
@@ -1104,12 +1383,74 @@ fn foreign_call<'gc>(
             args.as_mut_ptr().cast(),
         );
 
-        /*ThunkResult {
-            code: 0,
-            value: pack(ctx, (*raw).rtype, rvalue, true),
-        }*/
-        pack(ctx, (*raw).rtype, rvalue, true)
+        let errno_after_call = ::errno::errno();
+        let result = pack(ctx, (*raw).rtype, rvalue, true);
+        ::errno::set_errno(errno_after_call);
+        match result {
+            Ok(value) => value,
+            Err(e) => raise_condition(call, ctx, e),
+        }
     }
+}
+
+/// Foreign type and value of one variadic argument.
+///
+/// `(%typed-argument TYPE VALUE)`, as built by `typed` in `(core foreign)`, names the
+/// C type explicitly. Any other value has its type guessed by `guess_ffi_type`.
+fn variadic_argument<'gc>(
+    ctx: MutationContext<'gc>,
+    val: Value<'gc>,
+) -> Result<(*mut ffi_type, Value<'gc>), Value<'gc>> {
+    if val.is_pair() && val.car() == Value::new(sym_typed_argument(ctx)) {
+        let rest = val.cdr();
+        if rest.is_pair() && rest.cdr().is_pair() && rest.cdr().cdr().is_null() {
+            let ftype = typed_argument_ffi_type(ctx, rest.car())?;
+            return Ok((ftype, rest.cdr().car()));
+        }
+        return Err(make_assertion_violation(
+            ctx,
+            Value::new(false),
+            Str::from_str(ctx, "malformed typed foreign argument").into(),
+            &[val],
+        ));
+    }
+
+    Ok((guess_ffi_type(ctx, val)?, val))
+}
+
+/// libffi type for an explicitly typed variadic argument. Only scalar codes and `'*`
+/// are accepted; the returned types are libffi's static descriptors.
+fn typed_argument_ffi_type<'gc>(
+    ctx: MutationContext<'gc>,
+    ftype: Value<'gc>,
+) -> Result<*mut ffi_type, Value<'gc>> {
+    let typ = if ftype == Value::new(sym_asterisk(ctx)) {
+        Type::pointer()
+    } else {
+        match ForeignType::try_from_value(ctx, ftype).ok() {
+            // C default argument promotions: a variadic callee reads
+            // `double` and `int`, never `float` or a narrower integer.
+            Some(ForeignType::Float | ForeignType::Double) => Type::f64(),
+            Some(
+                ForeignType::Uint8 | ForeignType::Int8 | ForeignType::Uint16 | ForeignType::Int16,
+            ) => Type::i32(),
+            Some(ForeignType::Uint32) => Type::u32(),
+            Some(ForeignType::Int32) => Type::i32(),
+            Some(ForeignType::Uint64) => Type::u64(),
+            Some(ForeignType::Int64) => Type::i64(),
+            Some(ForeignType::Void | ForeignType::ComplexFloat | ForeignType::ComplexDouble)
+            | None => {
+                return Err(make_assertion_violation(
+                    ctx,
+                    Value::new(false),
+                    Str::from_str(ctx, "unsupported foreign type for typed variadic argument")
+                        .into(),
+                    &[ftype],
+                ));
+            }
+        }
+    };
+    Ok(typ.as_raw_ptr())
 }
 
 /// Given a value, try to guess its foreign type. Used for variadic functions.
@@ -1132,7 +1473,7 @@ fn guess_ffi_type<'gc>(
         }
     }
 
-    if val.is::<Pointer>() || val.is::<ByteVector>() {
+    if val.is::<Pointer>() || val.is::<ByteVector>() || val == Value::new(false) {
         return Ok(libffi::middle::Type::pointer().as_raw_ptr());
     }
 
@@ -1140,6 +1481,141 @@ fn guess_ffi_type<'gc>(
         ctx,
         Value::new(false),
         Str::from_str(ctx, "cannot guess foreign type for variadic argument").into(),
+        &[val],
+    ))
+}
+
+/// Exact integer value of `n`, or `None` when it is not an exact integer
+/// or does not fit in 64 bits of magnitude.
+fn exact_integer_to_i128(n: Number<'_>) -> Option<i128> {
+    match n {
+        Number::Fixnum(i) => Some(i as i128),
+        Number::BigInt(b) => {
+            if b.count() == 0 {
+                return Some(0);
+            }
+            if b.count() > 1 {
+                return None;
+            }
+            let magnitude = b[0] as i128;
+            Some(if b.negative() { -magnitude } else { magnitude })
+        }
+        _ => None,
+    }
+}
+
+/// Inclusive range of values representable by the integer `ffi_type` `t`.
+fn integer_range(t: u16) -> Option<(&'static str, i128, i128)> {
+    // SAFETY: the libffi `types` statics are initialized descriptors that are only read
+    unsafe {
+        if t == types::uint8.type_ {
+            Some(("uint8", 0, u8::MAX as i128))
+        } else if t == types::sint8.type_ {
+            Some(("int8", i8::MIN as i128, i8::MAX as i128))
+        } else if t == types::uint16.type_ {
+            Some(("uint16", 0, u16::MAX as i128))
+        } else if t == types::sint16.type_ {
+            Some(("int16", i16::MIN as i128, i16::MAX as i128))
+        } else if t == types::uint32.type_ {
+            Some(("uint32", 0, u32::MAX as i128))
+        } else if t == types::sint32.type_ {
+            Some(("int32", i32::MIN as i128, i32::MAX as i128))
+        } else if t == types::uint64.type_ {
+            Some(("uint64", 0, u64::MAX as i128))
+        } else if t == types::sint64.type_ {
+            Some(("int64", i64::MIN as i128, i64::MAX as i128))
+        } else {
+            None
+        }
+    }
+}
+
+/// `val` as an f64 when it is a real number. Complex numbers with a nonzero imaginary
+/// part are rejected here; `Number::real_to_f64` would panic on them.
+fn real_argument<'gc>(ctx: MutationContext<'gc>, val: Value<'gc>) -> Option<f64> {
+    let n = val.number()?;
+    n.is_real_valued().then(|| n.real_to_f64(ctx))
+}
+
+/// Address passed for a pointer-typed argument. Accepts a Pointer (NULL included),
+/// `#f` for NULL, and a bytevector whose storage cannot move while the call runs
+/// (mapped, or allocated NonMoving).
+fn pointer_argument<'gc>(
+    ctx: MutationContext<'gc>,
+    val: Value<'gc>,
+) -> Result<*mut std::ffi::c_void, Value<'gc>> {
+    if val == Value::new(false) {
+        return Ok(std::ptr::null_mut());
+    }
+    if val.is::<Pointer>() {
+        return Ok(val.downcast::<Pointer>().value());
+    }
+    if val.is::<ByteVector>() {
+        let bv = val.downcast::<ByteVector>();
+        if bv.is_mapping() || bv.is_nonmoving(&ctx) {
+            return Ok(bv.contents().to_mut_ptr());
+        }
+        return Err(make_assertion_violation(
+            ctx,
+            Value::new(false),
+            Str::from_str(
+                ctx,
+                "movable bytevector passed to FFI pointer; use make-bytevector/nonmoving or bytevector->pointer",
+            )
+            .into(),
+            &[val],
+        ));
+    }
+    Err(make_assertion_violation(
+        ctx,
+        Value::new(false),
+        Str::from_str(ctx, "wrong type of argument for FFI pointer").into(),
+        &[val],
+    ))
+}
+
+/// Source bytes for a struct passed by value of `size` bytes: a non-NULL Pointer, or a
+/// bytevector at least `size` bytes long.
+fn struct_argument<'gc>(
+    ctx: MutationContext<'gc>,
+    val: Value<'gc>,
+    size: usize,
+) -> Result<*const u8, Value<'gc>> {
+    if val.is::<Pointer>() {
+        let p = val.downcast::<Pointer>().value();
+        if p.is_null() {
+            return Err(make_assertion_violation(
+                ctx,
+                Value::new(false),
+                Str::from_str(ctx, "null pointer passed as FFI struct").into(),
+                &[val],
+            ));
+        }
+        return Ok(p.cast::<u8>());
+    }
+    if val.is::<ByteVector>() {
+        let bv = val.downcast::<ByteVector>();
+        if bv.len() < size {
+            return Err(make_assertion_violation(
+                ctx,
+                Value::new(false),
+                Str::from_str(
+                    ctx,
+                    &format!(
+                        "bytevector of {} bytes is too short for FFI struct of {size} bytes",
+                        bv.len()
+                    ),
+                )
+                .into(),
+                &[val],
+            ));
+        }
+        return Ok(bv.contents().to_ptr::<u8>());
+    }
+    Err(make_assertion_violation(
+        ctx,
+        Value::new(false),
+        Str::from_str(ctx, "wrong type of argument for FFI struct").into(),
         &[val],
     ))
 }
@@ -1162,8 +1638,29 @@ unsafe fn unpack<'gc>(
             return Ok(());
         }
 
+        // Reject out-of-range integers up front so the per-type branches
+        // below can truncate safely.
+        if let Some((name, min, max)) = integer_range(t) {
+            let in_range = val
+                .number()
+                .and_then(exact_integer_to_i128)
+                .is_some_and(|v| (min..=max).contains(&v));
+            if !in_range {
+                return Err(make_assertion_violation(
+                    ctx,
+                    Value::new(false),
+                    Str::from_str(
+                        ctx,
+                        &format!("argument out of range or wrong type for FFI {name}"),
+                    )
+                    .into(),
+                    &[val],
+                ));
+            }
+        }
+
         if t == types::float.type_ {
-            let Some(n) = val.number() else {
+            let Some(n) = real_argument(ctx, val) else {
                 return Err(make_assertion_violation(
                     ctx,
                     Value::new(false),
@@ -1172,12 +1669,11 @@ unsafe fn unpack<'gc>(
                 ));
             };
 
-            let n = n.real_to_f64(ctx) as f32;
-            loc.cast::<f32>().write(n);
+            loc.cast::<f32>().write(n as f32);
         }
 
         if t == types::double.type_ {
-            let Some(n) = val.number() else {
+            let Some(n) = real_argument(ctx, val) else {
                 return Err(make_assertion_violation(
                     ctx,
                     Value::new(false),
@@ -1186,7 +1682,6 @@ unsafe fn unpack<'gc>(
                 ));
             };
 
-            let n = n.real_to_f64(ctx);
             loc.cast::<f64>().write(n);
         }
         /* For integer return values smaller than `int', libffi expects the
@@ -1283,7 +1778,7 @@ unsafe fn unpack<'gc>(
             if return_value {
                 loc.cast::<ffi_arg>().write(n as ffi_arg);
             } else {
-                loc.cast::<u32>().write(val.as_int32() as u32);
+                loc.cast::<u32>().write(n);
             }
         }
 
@@ -1367,31 +1862,14 @@ unsafe fn unpack<'gc>(
         }
 
         if t == types::pointer.type_ {
-            if !val.is::<Pointer>() {
-                return Err(make_assertion_violation(
-                    ctx,
-                    Value::new(false),
-                    Str::from_str(ctx, "wrong type of argument for FFI pointer").into(),
-                    &[val],
-                ));
-            }
-            let p = val.downcast::<Pointer>().value();
+            let p = pointer_argument(ctx, val)?;
             loc.cast::<*mut std::ffi::c_void>().write(p);
         }
 
         if t == type_tag::STRUCT {
-            if !val.is::<Pointer>() {
-                return Err(make_assertion_violation(
-                    ctx,
-                    Value::new(false),
-                    Str::from_str(ctx, "wrong type of argument for FFI struct").into(),
-                    &[val],
-                ));
-            }
-
-            let ptr = val.downcast::<Pointer>().value();
             let size: usize = (*orig).size;
-            std::ptr::copy_nonoverlapping(ptr.cast::<u8>(), loc.cast::<u8>(), size);
+            let src = struct_argument(ctx, val, size)?;
+            std::ptr::copy_nonoverlapping(src, loc.cast::<u8>(), size);
         }
     }
 
@@ -1404,88 +1882,88 @@ unsafe fn pack<'gc>(
     typ: *mut ffi_type,
     loc: *mut (),
     return_value: bool,
-) -> Value<'gc> {
+) -> Result<Value<'gc>, Value<'gc>> {
     // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         let t = (*typ).type_;
 
         if t == types::void.type_ {
-            return Value::undefined();
+            return Ok(Value::undefined());
         }
 
         if t == types::uint8.type_ {
             if return_value {
-                return Value::new(loc.cast::<ffi_arg>().read() as u8 as u32 as i32);
+                return Ok(Value::new(loc.cast::<ffi_arg>().read() as u8 as u32 as i32));
             } else {
-                return Value::new(loc.cast::<u8>().read() as u32 as i32);
+                return Ok(Value::new(loc.cast::<u8>().read() as u32 as i32));
             }
         }
 
         if t == types::sint8.type_ {
             if return_value {
-                return Value::new(loc.cast::<ffi_arg>().read() as i8 as i32);
+                return Ok(Value::new(loc.cast::<ffi_arg>().read() as i8 as i32));
             } else {
-                return Value::new(loc.cast::<i8>().read() as i32);
+                return Ok(Value::new(loc.cast::<i8>().read() as i32));
             }
         }
 
         if t == types::uint16.type_ {
             if return_value {
-                return Value::new(loc.cast::<ffi_arg>().read() as u16 as u32 as i32);
+                return Ok(Value::new(loc.cast::<ffi_arg>().read() as u16 as u32 as i32));
             } else {
-                return Value::new(loc.cast::<u16>().read() as u32 as i32);
+                return Ok(Value::new(loc.cast::<u16>().read() as u32 as i32));
             }
         }
 
         if t == types::sint16.type_ {
             if return_value {
-                return Value::new(loc.cast::<ffi_arg>().read() as i16 as i32);
+                return Ok(Value::new(loc.cast::<ffi_arg>().read() as i16 as i32));
             } else {
-                return Value::new(loc.cast::<i16>().read() as i32);
+                return Ok(Value::new(loc.cast::<i16>().read() as i32));
             }
         }
 
         if t == types::uint32.type_ {
             if return_value {
-                return Value::new(loc.cast::<ffi_arg>().read() as u32 as i32);
+                return Ok((loc.cast::<ffi_arg>().read() as u32 as u64).into_value(ctx));
             } else {
-                return Value::new(loc.cast::<u32>().read() as i32);
+                return Ok((loc.cast::<u32>().read() as u64).into_value(ctx));
             }
         }
 
         if t == types::sint32.type_ {
             if return_value {
-                return Value::new(loc.cast::<ffi_arg>().read() as i32);
+                return Ok(Value::new(loc.cast::<ffi_arg>().read() as i32));
             } else {
-                return Value::new(loc.cast::<i32>().read());
+                return Ok(Value::new(loc.cast::<i32>().read()));
             }
         }
 
         if t == types::uint64.type_ {
-            return loc.cast::<u64>().read().into_value(ctx);
+            return Ok(loc.cast::<u64>().read().into_value(ctx));
         }
 
         if t == types::sint64.type_ {
-            return loc.cast::<i64>().read().into_value(ctx);
+            return Ok(loc.cast::<i64>().read().into_value(ctx));
         }
 
         if t == types::double.type_ {
             let n = loc.cast::<f64>().read();
-            return Value::new(n);
+            return Ok(Value::new(n));
         }
 
         if t == types::float.type_ {
             let n = loc.cast::<f32>().read();
-            return Value::new(n as f64);
+            return Ok(Value::new(n as f64));
         }
 
         if t == types::pointer.type_ {
-            return Gc::new_with_header_word(
-                ctx,
-                Pointer::new(loc.cast::<*mut std::ffi::c_void>().read()),
-                pointer_header_word(),
-            )
-            .into();
+            return Ok(ctx
+                .allocate_with(
+                    Pointer::new(loc.cast::<*mut std::ffi::c_void>().read()),
+                    pointer_header_word(),
+                )
+                .into());
         }
 
         if t == type_tag::STRUCT {
@@ -1496,13 +1974,18 @@ unsafe fn pack<'gc>(
                 (*typ).size,
             );
             let ptr = Pointer::new(arr.contents().to_mut_ptr());
-            let ptr = Gc::new_with_header_word(ctx, ptr, pointer_header_word());
+            let ptr = ctx.allocate_with(ptr, pointer_header_word());
             // keep bytevector alive as long as pointer is alive.
             ptrs(ctx).put(ctx, ptr, arr);
-            return ptr.into();
+            return Ok(ptr.into());
         }
 
-        panic!("unsupported FFI type tag in pack: {t}");
+        Err(make_assertion_violation(
+            ctx,
+            Value::new(false),
+            Str::from_str(ctx, &format!("unsupported FFI type tag: {t}")).into(),
+            &[],
+        ))
     }
 }
 
@@ -1515,9 +1998,21 @@ unsafe extern "C" fn scheme_callback(
     use crate::heap::sync::thread::{Thread, ThreadState, current_thread};
     use crate::runtime::sni::LocalFrame;
 
-    // SAFETY: Callback data is created from a live Capy context and is only
-    // valid for callbacks invoked by C during that context's lifetime.
-    let ctx = unsafe { MutationContext::from_ptr(userdata.ctx) };
+    // Use the mutator of whichever thread the callback fires on: it can differ
+    // from the one that created the callback (workers migrate, qsort may run on a
+    // blocking thread). A thread Capy never registered has no mutator at all.
+    if !crate::heap::sync::thread::is_current_thread_registed() {
+        eprintln!("capy: FFI callback invoked from a thread unknown to the runtime");
+        // SAFETY: libffi gives us the return slot for this CIF.
+        unsafe { *result = 0 };
+        return;
+    }
+    // SAFETY: the registered thread's thread outlives this callback.
+    let ctx = unsafe {
+        MutationContext::from_ptr(
+            crate::heap::sync::thread::current_virtual_thread() as *const _ as *const (),
+        )
+    };
 
     let was_native = matches!(
         current_thread().get_exec_status(),
@@ -1549,7 +2044,17 @@ unsafe extern "C" fn scheme_callback(
         // SAFETY: `arg_types` belongs to the live CIF passed by libffi.
         let arg_type = unsafe { *cif.arg_types.add(i) };
         // SAFETY: libffi argument locations match the CIF argument types.
-        let arg = unsafe { pack(ctx, arg_type, arg_loc, false) };
+        let arg = match unsafe { pack(ctx, arg_type, arg_loc, false) } {
+            Ok(arg) => arg,
+            Err(err) => {
+                // An exception cannot unwind through C frames, and the callback has no
+                // way to return one. Report it and return zeroes to the caller.
+                eprintln!("capy: FFI callback argument could not be converted: {err}");
+                // SAFETY: libffi gives us the return slot for this CIF.
+                unsafe { *result = 0 };
+                return;
+            }
+        };
         arg_slots.push(frame.new_local_ref(arg).as_ptr());
     }
 
@@ -1562,7 +2067,10 @@ unsafe extern "C" fn scheme_callback(
             .collect();
         match crate::runtime::sni::call_function(ctx, proc, scheme_args) {
             ExecutionResult::Ok(value) => value,
-            ExecutionResult::Err(_) => {
+            ExecutionResult::Err(err) => {
+                // An exception cannot unwind through C frames. Report it rather than
+                // silently returning 0 to the foreign caller.
+                eprintln!("capy: uncaught exception in FFI callback: {err}");
                 *result = 0;
                 return;
             }
@@ -1572,7 +2080,7 @@ unsafe extern "C" fn scheme_callback(
     let value = unsafe { std::mem::transmute::<Value<'static>, Value<'_>>(*value_slot) };
 
     // SAFETY: libffi provided `result` as the return storage for this CIF.
-    let _ = unsafe {
+    let converted = unsafe {
         unpack(
             ctx,
             cif.rtype,
@@ -1581,6 +2089,16 @@ unsafe extern "C" fn scheme_callback(
             true,
         )
     };
+    if let Err(err) = converted {
+        eprintln!("capy: FFI callback returned a value of the wrong type: {err}");
+        // Return zeroes rather than whatever libffi left in the slot. libffi sizes the slot
+        // to at least `ffi_arg`, and to the aggregate's size for struct returns.
+        // SAFETY: see above; the slot covers `len` bytes.
+        unsafe {
+            let len = (*cif.rtype).size.max(size_of::<ffi_arg>());
+            std::ptr::write_bytes(result as *mut ffi_arg as *mut u8, 0, len);
+        }
+    }
 }
 
 pub(crate) extern "C" fn c_foreign_call<'gc>(
@@ -1616,7 +2134,7 @@ pub(crate) extern "C" fn c_foreign_call<'gc>(
                 &[],
             );
 
-            return call.run(|_| err);
+            return call.run(|call| raise_condition(call, ctx, err));
         }
 
         call.run(|call| foreign_call(call, ctx, cif.into(), pointer.into(), call.args))
@@ -1685,11 +2203,11 @@ pub(crate) fn init_ffi<'gc>(ctx: MutationContext<'gc>) {
     }
 
     if size_of::<libc::ssize_t>() == 2 {
-        define(ctx, "ssize_t", ForeignType::Int16);
-        define(ctx, "size_t", ForeignType::Uint16);
+        define(ctx, "%ssize_t", ForeignType::Int16);
+        define(ctx, "%size_t", ForeignType::Uint16);
     } else if size_of::<libc::ssize_t>() == 4 {
-        define(ctx, "ssize_t", ForeignType::Int32);
-        define(ctx, "size_t", ForeignType::Uint32);
+        define(ctx, "%ssize_t", ForeignType::Int32);
+        define(ctx, "%size_t", ForeignType::Uint32);
     } else if size_of::<libc::ssize_t>() == 8 {
         define(ctx, "%ssize_t", ForeignType::Int64);
         define(ctx, "%size_t", ForeignType::Uint64);
@@ -1709,11 +2227,7 @@ pub(crate) fn init_ffi<'gc>(ctx: MutationContext<'gc>) {
         define(ctx, "%ptrdiff_t", ForeignType::Int64);
     }
 
-    let nullp = Gc::new_with_header_word(
-        ctx,
-        Pointer::new(std::ptr::null_mut()),
-        pointer_header_word(),
-    );
+    let nullp = ctx.allocate_with(Pointer::new(std::ptr::null_mut()), pointer_header_word());
 
     define(ctx, "%null-pointer", nullp);
 

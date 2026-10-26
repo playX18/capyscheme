@@ -1,5 +1,6 @@
 //! Pair and list operations for Scheme values.
 
+use crate::heap::Space;
 use crate::heap::{
     Trace, barrier,
     cell::Lock,
@@ -36,8 +37,7 @@ impl<'gc> Pair<'gc> {
     /// Allocates a moving pair.
     #[inline(always)]
     pub fn new(mc: MutationContext<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Gc<'gc, Self> {
-        Gc::new_with_header_word(
-            mc,
+        mc.allocate_with(
             Self {
                 car: Lock::new(car),
                 cdr: Lock::new(cdr),
@@ -52,13 +52,13 @@ impl<'gc> Pair<'gc> {
         car: Value<'gc>,
         cdr: Value<'gc>,
     ) -> Gc<'gc, Self> {
-        mc.allocate_with_header_word(
+        mc.allocate_in(
+            Space::NonMoving,
             Self {
                 car: Lock::new(car),
                 cdr: Lock::new(cdr),
             },
             pair_header_word(),
-            crate::heap::mmtk::AllocationSemantics::NonMoving,
         )
     }
 

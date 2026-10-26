@@ -23,10 +23,9 @@
 //! place, a one-shot continuation is resumed in place once and is then
 //! shot.
 
+use crate::heap::Space;
 use std::cell::Cell;
 use std::sync::atomic::Ordering::Relaxed;
-
-use mmtk::AllocationSemantics;
 
 use super::frame::CallFrame;
 use super::markers;
@@ -43,6 +42,11 @@ use crate::runtime::{MutationContext, Tc};
 use crate::{WeakProcessor, Write};
 
 pub const DEFAULT_STACK_SIZE: usize = 64 * 1024;
+/// Slots of the first stack of a spawned thread. Most threads are
+/// shallow, and a full-size stack is a large object that costs a page-zeroing
+/// pass and the large-object space lock. A deeper one grows through
+/// [`overflow`], which allocates at least [`DEFAULT_STACK_SIZE`].
+const THREAD_STACK_SIZE: usize = 4 * 1024;
 /// Slots kept free above `esp`, for native argument staging
 /// and for the frame pushed to run an exception handler.
 pub const STACK_SLOP: usize = DEFAULT_STACK_SIZE / 64;
@@ -548,11 +552,11 @@ impl<'gc> Continuation<'gc> {
         // SAFETY: the allocation is `size_of::<Continuation>()` bytes and is fully
         // written, as an empty continuation, before it can be traced.
         unsafe {
-            let object = ctx.raw_allocate_with_header_word(
+            let object = ctx.allocate_raw(
                 size_of::<Self>(),
                 align_of::<Self>(),
                 continuation_header_word(),
-                AllocationSemantics::Default,
+                Space::Default,
             );
             object
                 .to_address()
@@ -710,7 +714,7 @@ unsafe fn split_and_resize<'gc>(
         // conservative. The 2 is the returning frame's header.
         let n = k.clength.get() as usize + 2 + value_count + STACK_SLOP;
         if n >= ctx.tc().stack.scheme_stack_size.get() {
-            reset_scheme_stack(ctx, n);
+            reset_scheme_stack(ctx, n, DEFAULT_STACK_SIZE);
         }
     }
 }
@@ -845,10 +849,104 @@ unsafe fn cache_stack<'gc>(tc: &Tc<'gc>, segment: Value<'gc>, stack: Slot<'gc>, 
     }
 }
 
+/// Most stacks a [`StackPool`] keeps.
+const STACK_POOL_CAP: usize = 64;
+
+/// Stacks of finished threads, kept for the next thread the same worker
+/// starts. Starting a thread otherwise allocates a non-moving bytevector.
+pub struct StackPool {
+    head: Cell<Slot<'static>>,
+    len: Cell<usize>,
+}
+
+unsafe impl Sync for StackPool {}
+unsafe impl Send for StackPool {}
+
+impl StackPool {
+    pub const fn new() -> Self {
+        Self {
+            head: Cell::new(std::ptr::null_mut()),
+            len: Cell::new(0),
+        }
+    }
+
+    /// Forget every stack. The collector calls this with the world stopped.
+    pub fn clear(&self) {
+        self.head.set(std::ptr::null_mut());
+        self.len.set(0);
+    }
+
+    /// Keep the stack `[stack, stack + size)` of `segment` for reuse.
+    ///
+    /// # Safety
+    ///
+    /// Nothing uses the stack, and no collection runs before it is taken.
+    unsafe fn put<'gc>(&self, segment: Value<'gc>, stack: Slot<'gc>, size: usize) {
+        unsafe {
+            if size <= CACHED_STACK_SEGMENT || self.len.get() >= STACK_POOL_CAP {
+                return;
+            }
+            *stack.add(CACHED_STACK_SIZE) = Value::from_raw(size as u64);
+            *stack.add(CACHED_STACK_LINK) = Value::from_raw(self.head.get() as u64);
+            *stack.add(CACHED_STACK_SEGMENT) =
+                std::mem::transmute::<Value<'gc>, Value<'static>>(segment);
+            self.head.set(stack.cast());
+            self.len.set(self.len.get() + 1);
+        }
+    }
+
+    /// The most recently kept stack when it has at least `min` slots.
+    unsafe fn take<'gc>(&self, min: usize) -> Option<(Value<'gc>, Slot<'gc>, usize)> {
+        unsafe {
+            let stack = self.head.get().cast::<Value<'gc>>();
+            if stack.is_null() || (*stack.add(CACHED_STACK_SIZE)).bits() as usize <= min - 1 {
+                return None;
+            }
+            let size = (*stack.add(CACHED_STACK_SIZE)).bits() as usize;
+            self.head
+                .set((*stack.add(CACHED_STACK_LINK)).bits() as usize as Slot<'static>);
+            self.len.set(self.len.get() - 1);
+            Some((*stack.add(CACHED_STACK_SEGMENT), stack, size))
+        }
+    }
+}
+
+/// Give the stacks of a finished thread to `pool`: the live one and the
+/// cached ones. The thread has no stack afterwards.
+///
+/// # Safety
+///
+/// The thread's last activation has ended and it is mutating, so no
+/// collection has dropped its stacks.
+pub unsafe fn retire_stacks<'gc>(tc: &Tc<'gc>, pool: &StackPool) {
+    unsafe {
+        let stack = &tc.stack;
+        let mut cached = stack.stack_cache.get();
+        stack.stack_cache.set(std::ptr::null_mut());
+        while !cached.is_null() {
+            let size = (*cached.add(CACHED_STACK_SIZE)).bits() as usize;
+            let next = (*cached.add(CACHED_STACK_LINK)).bits() as usize as Slot;
+            pool.put(*cached.add(CACHED_STACK_SEGMENT), cached, size);
+            cached = next;
+        }
+        let live = stack.scheme_stack.get();
+        if !live.is_null() {
+            pool.put(stack.segment.get(), live, stack.scheme_stack_size.get());
+        }
+        stack.scheme_stack.set(std::ptr::null_mut());
+        stack.scheme_stack_size.set(0);
+        stack.segment.set(Value::new(false));
+        stack.fp.set(std::ptr::null_mut());
+        stack.sp.set(std::ptr::null_mut());
+        stack.stack_link.set(Value::new(false));
+        stack.cached_frame.set(Value::new(false));
+    }
+}
+
 /// Make the live stack one of at least
 /// `n` slots, from the stack cache or freshly allocated. The old live stack
 /// is dropped.
-unsafe fn reset_scheme_stack<'gc>(ctx: MutationContext<'gc>, n: usize) {
+unsafe fn reset_scheme_stack<'gc>(ctx: MutationContext<'gc>, n: usize, floor: usize) {
     unsafe {
         let tc = ctx.tc();
         let stack = &tc.stack;
@@ -858,8 +956,17 @@ unsafe fn reset_scheme_stack<'gc>(ctx: MutationContext<'gc>, n: usize) {
         let mut x = stack.stack_cache.get();
         loop {
             if x.is_null() {
-                if n < DEFAULT_STACK_SIZE {
-                    n = DEFAULT_STACK_SIZE;
+                if n < floor {
+                    n = floor;
+                }
+                if let Some(pool) = crate::runtime::sched::scheduler::stack_pool() {
+                    if let Some((segment, base, size)) = pool.take(n) {
+                        stack.segment.set(segment);
+                        stack.scheme_stack.set(base);
+                        stack.scheme_stack_size.set(size);
+                        set_esp(tc);
+                        return;
+                    }
                 }
                 // stacks are non-moving bytevectors
                 let bytes = ByteVector::new::<false>(ctx, n * size_of::<Value>(), false);
@@ -894,7 +1001,15 @@ pub fn ensure_stack<'gc>(ctx: MutationContext<'gc>) {
     }
     // SAFETY: the thread has no stack yet, so nothing refers to one.
     unsafe {
-        reset_scheme_stack(ctx, 0);
+        reset_scheme_stack(
+            ctx,
+            0,
+            if crate::runtime::sched::scheduler::is_spawned_virtual_thread() {
+                THREAD_STACK_SIZE
+            } else {
+                DEFAULT_STACK_SIZE
+            },
+        );
     }
     stack.sp.set(stack.scheme_stack.get());
     stack.stack_link.set(Value::new(false));
@@ -984,7 +1099,7 @@ pub unsafe fn overflow<'gc>(ctx: MutationContext<'gc>, frame_request: usize) -> 
         // allocate a new stack, retaining same relative sfp
         let sfp_offset = sfp.offset_from(split_point) as usize;
         let sp_offset = stack.sp.get().offset_from(split_point) as usize;
-        reset_scheme_stack(ctx, above_split_size + frame_request);
+        reset_scheme_stack(ctx, above_split_size + frame_request, DEFAULT_STACK_SIZE);
         let new_stack = stack.scheme_stack.get();
         let fp = new_stack.add(sfp_offset);
         stack.fp.set(fp);
@@ -1157,7 +1272,7 @@ pub unsafe fn call1cc<'gc>(ctx: MutationContext<'gc>, fp: Slot<'gc>, sp: Slot<'g
             xp.length.set(stack.scheme_stack_size.get() as isize);
             // The first cached stack is taken whatever its size, because the
             // native frame is copied and needs room for it.
-            reset_scheme_stack(ctx, live);
+            reset_scheme_stack(ctx, live, DEFAULT_STACK_SIZE);
             stack.scheme_stack.get()
         };
         // The carved branch copies from `fp` to `fp + ONE_SHOT_HEADROOM`, so
@@ -1359,7 +1474,7 @@ pub unsafe fn push_activation<'gc>(
         stack.activation.set(record);
 
         if !stack.fp.get().is_null() || stack.scheme_stack.get().add(need) > tc.real_esp.get() {
-            reset_scheme_stack(ctx, need);
+            reset_scheme_stack(ctx, need, DEFAULT_STACK_SIZE);
         }
         let fp = stack.scheme_stack.get();
         stack.stack_link.set(Value::new(false));

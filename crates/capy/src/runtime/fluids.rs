@@ -44,13 +44,10 @@ pub struct Cache<'gc> {
 
 impl<'gc> Cache<'gc> {
     pub fn new(mc: MutationContext<'gc>) -> Gc<'gc, Self> {
-        Gc::new(
-            mc,
-            Self {
-                entries: [const { Lock::new(CacheEntry::empty()) }; CACHE_SIZE],
-                clock: Cell::new(1),
-            },
-        )
+        mc.allocate(Self {
+            entries: [const { Lock::new(CacheEntry::empty()) }; CACHE_SIZE],
+            clock: Cell::new(1),
+        })
     }
 
     /// Hash a key to determine its slot in the cache
@@ -83,9 +80,8 @@ impl<'gc> Cache<'gc> {
 
             if entry.key == key {
                 Gc::write(mc, self)[index].unlock().set(CacheEntry {
-                    key: entry.key,
-                    value: entry.value,
                     access_time: self.next_time(),
+                    ..entry
                 });
                 return Some(entry.value);
             }
@@ -290,6 +286,28 @@ impl<'gc> DynamicState<'gc> {
         }
     }
 
+    /// Whether a thread that is finishing can hand this state to the next
+    /// one. Only the thread-local table is private to the thread, and
+    /// [`restore`](Self::restore) replaces everything else.
+    pub(crate) fn is_reusable(&self) -> bool {
+        self.thread_local_values.is_empty()
+    }
+
+    /// A second handle on the same tables, for the worker's pool.
+    ///
+    /// # Safety
+    ///
+    /// The original must not be used again, and the copy must be dropped from
+    /// the pool before the next collection (pooled states are not roots).
+    pub(crate) unsafe fn duplicate(&self) -> Self {
+        Self {
+            thread_local_values: self.thread_local_values,
+            values: Lock::new(self.values.get()),
+            cache: self.cache,
+            has_aliased_values: Cell::new(self.has_aliased_values.get()),
+        }
+    }
+
     pub fn save(&self, ctx: MutationContext<'gc>) -> Value<'gc> {
         let mut saved = Value::from(self.values.get());
 
@@ -320,19 +338,17 @@ impl<'gc> DynamicState<'gc> {
 
     pub fn restore(&self, ctx: MutationContext<'gc>, mut saved: Value<'gc>) {
         for slot in 0..CACHE_SIZE {
-            let entry = &Gc::write(ctx, self.cache)[slot];
-            if saved.is_pair() {
-                let key = saved.caar();
-                let value = saved.cdar();
-                saved = saved.cdr();
-                entry.unlock().set(CacheEntry {
-                    key,
-                    value,
-                    access_time: self.cache.next_time(),
-                });
-            } else {
-                entry.unlock().set(CacheEntry::empty());
-            }
+            Gc::write(ctx, self.cache)[slot]
+                .unlock()
+                .set(CacheEntry::empty());
+        }
+
+        // Lookups probe from the key's hashed slot and stop at the first empty
+        // one, so entries must go back through `insert`, not into slot order.
+        // At most CACHE_SIZE entries were saved, so none is evicted.
+        while saved.is_pair() {
+            self.cache.insert(ctx, saved.caar(), saved.cdar());
+            saved = saved.cdr();
         }
 
         // SAFETY: No concurrent access to this `Lock` cell exists at this point
@@ -355,8 +371,7 @@ fn fluid_header_word() -> u64 {
 
 impl<'gc> Fluid<'gc> {
     pub fn new(mc: MutationContext<'gc>, default_value: Value<'gc>) -> Gc<'gc, Self> {
-        Gc::new_with_header_word(
-            mc,
+        mc.allocate_with(
             Self {
                 value: default_value,
                 thread_local: false,
@@ -366,8 +381,7 @@ impl<'gc> Fluid<'gc> {
     }
 
     pub fn new_thread_local(mc: MutationContext<'gc>, default_value: Value<'gc>) -> Gc<'gc, Self> {
-        Gc::new_with_header_word(
-            mc,
+        mc.allocate_with(
             Self {
                 value: default_value,
                 thread_local: true,
@@ -584,8 +598,7 @@ pub mod fluid_ops {
     #[scheme(name = "current-dynamic-state")]
     pub fn current_dynamic_state() -> Value<'gc> {
         let dynamic_state = ctx.state().dynamic_state.save(ctx);
-        let val = Value::from(Gc::new_with_header_word(
-            ctx,
+        let val = Value::from(ctx.allocate_with(
             DynamicStateObject {
                 saved: dynamic_state,
             },
@@ -602,8 +615,7 @@ pub mod fluid_ops {
     #[scheme(name = "set-current-dynamic-state!")]
     pub fn set_current_dynamic_state(state_obj: Gc<'gc, DynamicStateObject<'gc>>) -> Value<'gc> {
         let prev = ctx.state().dynamic_state.save(ctx);
-        let prev = Value::from(Gc::new_with_header_word(
-            ctx,
+        let prev = Value::from(ctx.allocate_with(
             DynamicStateObject { saved: prev },
             dynamic_state_header_word(),
         ));

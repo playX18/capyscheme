@@ -1,17 +1,18 @@
+use crate::heap::Space;
 use crate::heap::{
     ObjectSlot,
-    mmtk::{AllocationSemantics, MutatorContext, util::ObjectReference},
+    mmtk::{MutatorContext, util::ObjectReference},
 };
 use crate::runtime::{MutationContext, value::Value};
 
 /// Block for a pending GC / interrupt at a compiled Scheme entry yieldpoint.
-///
-/// Compiled code must store ABI roots into [`State::gc_save`](crate::runtime::State::gc_save)
-/// before calling this thunk, then reload those slots afterward and clear the
-/// save area. GC relocates the `gc_save` slots in place (they are not pinned).
+
 pub fn yieldpoint_block<'gc>(ctx: MutationContext<'gc>) {
     crate::heap::sync::thread::Thread::yieldpoint();
+    unsafe { crate::runtime::sched::scheduler::kill_at_yieldpoint(ctx) };
     crate::runtime::vm::interrupts::deliver_pending_interrupts(ctx);
+    crate::runtime::sched::scheduler::preempt_at_yieldpoint();
+    unsafe { crate::runtime::sched::scheduler::kill_at_yieldpoint(ctx) };
 }
 
 pub fn pre_write_barrier_at_slot<'gc>(
@@ -20,7 +21,6 @@ pub fn pre_write_barrier_at_slot<'gc>(
     slot: ObjectSlot,
     target: ObjectReference,
 ) {
-    // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         log::debug!(
             "pre write barrier: src={:?}, slot={:?}, target={:?}",
@@ -28,6 +28,7 @@ pub fn pre_write_barrier_at_slot<'gc>(
             slot,
             target
         );
+
         ctx.thread_unchecked()
             .mutator_unchecked()
             .barrier()
@@ -49,6 +50,7 @@ pub fn post_write_barrier_at_slot<'gc>(
             slot,
             target
         );
+
         ctx.thread_unchecked()
             .mutator_unchecked()
             .barrier()
@@ -70,6 +72,7 @@ pub fn post_write_barrier_slow<'gc>(
             offset,
             target
         );
+
         ctx.thread_unchecked()
             .mutator_unchecked()
             .barrier()
@@ -88,12 +91,7 @@ pub fn alloc_with_header_word<'gc>(
 ) -> Value<'gc> {
     // SAFETY: Preconditions verified by the surrounding code
     unsafe {
-        let val = ctx.raw_allocate_with_header_word(
-            size,
-            8,
-            header_word as u64,
-            AllocationSemantics::Default,
-        );
+        let val = ctx.allocate_raw(size, 8, header_word as u64, Space::Default);
 
         Value::from_raw(val.to_address().as_usize() as u64)
     }

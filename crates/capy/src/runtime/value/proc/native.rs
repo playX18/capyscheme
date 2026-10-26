@@ -27,7 +27,7 @@ fn native_proc_header_word(is_k: bool) -> u64 {
 
 impl NativeProc {
     pub fn new<'gc>(ctx: MutationContext<'gc>, proc: Address, is_k: bool) -> Gc<'gc, Self> {
-        Gc::new_with_header_word(ctx, NativeProc { proc }, native_proc_header_word(is_k))
+        ctx.allocate_with(NativeProc { proc }, native_proc_header_word(is_k))
     }
 }
 

@@ -1,11 +1,11 @@
 //! Vector, bytevector, and tuple heap objects.
 
+use crate::heap::Space;
 use crate::heap::{
     Gc, Mutation, WeakProcessor,
     barrier::{AsRefWrite, IndexWrite},
     cell::Lock,
     collection::Visitor,
-    mmtk::AllocationSemantics,
     object::{
         AllocationHooks, ClassId, builtin_class_ids, class_header_word,
         class_header_word_with_private_variant_flag,
@@ -94,11 +94,11 @@ impl<'gc> Vector<'gc> {
     ) -> Gc<'gc, Self> {
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
-            let alloc = mc.raw_allocate_with_header_word(
+            let alloc = mc.allocate_raw(
                 size_of::<Self>() + size_of::<Value>() * length,
                 align_of::<Self>(),
                 vector_header_word(IMMUTABLE),
-                AllocationSemantics::Default,
+                Space::Default,
             );
 
             let vec = alloc.to_address().as_mut_ref::<Self>();
@@ -351,19 +351,19 @@ impl ByteVector {
         length: usize,
         movable: bool,
     ) -> Gc<'gc, Self> {
-        let semantics = if movable {
-            AllocationSemantics::Default
+        let space = if movable {
+            Space::Default
         } else {
-            AllocationSemantics::NonMoving
+            Space::NonMoving
         };
 
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
-            let alloc = mc.raw_allocate_with_header_word(
+            let alloc = mc.allocate_raw(
                 size_of::<Self>() + size_of::<u8>() * length,
                 align_of::<Self>(),
                 bytevector_header_word(IMMUTABLE),
-                semantics,
+                space,
             );
 
             let vec = alloc.to_address().as_mut_ref::<Self>();
@@ -384,11 +384,11 @@ impl ByteVector {
     ) -> Gc<'gc, Self> {
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
-            let alloc = mc.raw_allocate_with_header_word(
+            let alloc = mc.allocate_raw(
                 size_of::<Self>(),
                 align_of::<Self>(),
                 mapped_bytevector_header_word(),
-                AllocationSemantics::Default,
+                Space::Default,
             );
 
             let vec = alloc.to_address().as_mut_ref::<Self>();
@@ -601,11 +601,11 @@ impl<'gc> Tuple<'gc> {
     pub fn new(mc: MutationContext<'gc>, length: usize, init: Value<'gc>) -> Gc<'gc, Self> {
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
-            let alloc = mc.raw_allocate_with_header_word(
+            let alloc = mc.allocate_raw(
                 size_of::<Self>() + size_of::<Value>() * length,
                 align_of::<Self>(),
                 tuple_header_word(),
-                AllocationSemantics::Default,
+                Space::Default,
             );
 
             let tuple = alloc.to_address().as_mut_ref::<Self>();
