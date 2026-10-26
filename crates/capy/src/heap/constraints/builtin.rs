@@ -28,7 +28,7 @@ pub fn add_core_constraints(set: &mut MarkingConstraintSet) {
 
     set.add(Box::new(SimpleMarkingConstraint::new(
         "Gr",
-        "Goroutine Registry",
+        "VirtualThread Registry",
         ConstraintVolatility::GreyedByExecution,
         |_visitor| {},
     )));

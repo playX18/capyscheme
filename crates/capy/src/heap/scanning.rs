@@ -54,7 +54,7 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
         let mut sv = RootSlotVisitor::new();
         let mut visitor = unsafe { Visitor::new(VisitorKind::Slot(&mut sv), None) };
 
-        let home = thread.home_goroutine();
+        let home = thread.home_virtual_thread();
         unsafe {
             if home.sched.state_ready.get() {
                 (*home.state_ptr()).trace(&mut visitor);
@@ -97,7 +97,7 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
             let mut sv = RootSlotVisitor::new();
             let mut visitor = unsafe { Visitor::new(VisitorKind::Slot(&mut sv), None) };
             unsafe {
-                let home = thread.home_goroutine();
+                let home = thread.home_virtual_thread();
                 if home.sched.state_ready.get() {
                     (*home.state_ptr()).trace(&mut visitor);
                     (*home.tc_ptr()).trace(&mut visitor);
@@ -119,7 +119,7 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
         }
 
         unsafe {
-            crate::runtime::sched::scheduler::trace_registered_goroutines(|g| {
+            crate::runtime::sched::scheduler::trace_registered_virtual_threads(|g| {
                 let mut sv = RootSlotVisitor::new();
                 let mut visitor = Visitor::new(VisitorKind::Slot(&mut sv), None);
                 if g.sched.state_ready.get() {

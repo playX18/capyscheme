@@ -2,7 +2,7 @@ use crate::heap::{
     GarbageCollector, mm::MemoryManager, mutator::MutatorState, sync::monitor::Monitor,
     traits::Trace,
 };
-use crate::runtime::sched::scheduler::GoroutineSched;
+use crate::runtime::sched::scheduler::VirtualThreadSched;
 use crate::runtime::{State, Tc};
 use crate::utils::easy_bitfield::*;
 use mmtk::{
@@ -195,13 +195,13 @@ impl Thread {
             .map_or(0, |flag| flag.load(Ordering::Relaxed))
     }
 
-    /// The yieldpoint flag of the bound thread's goroutine, `None` while
+    /// The yieldpoint flag of the bound thread's thread, `None` while
     /// the thread is unbound.
     fn yieldpoint_flag(&self) -> Option<&AtomicI32> {
         // SAFETY: a non-null pointer refers to the owner's thread-local slot,
         // which outlives the pointer (cleared before the slot is torn down).
         unsafe { self.native_data.load(Ordering::Acquire).as_ref() }
-            .map(|nd| unsafe { &(*nd.current_goroutine).take_yieldpoint })
+            .map(|nd| unsafe { &(*nd.current_virtual_thread).take_yieldpoint })
     }
 
     pub fn request_yieldpoint(&self, kind: YieldpointKind) {
@@ -244,28 +244,28 @@ impl Thread {
         guard.notify_all();
     }
 
-    /// Make `gp` the goroutine this worker is running, or the worker's home
+    /// Make `gp` the thread this worker is running, or the worker's home
     /// context when it is null-task. .
-    pub(crate) fn publish_current_goroutine(&self, gp: *mut Goroutine) {
+    pub(crate) fn publish_current_virtual_thread(&self, gp: *mut VirtualThread) {
         let guard = self.monitor.lock();
         if let Some(nd) = unsafe { self.native_data_mut_ptr().as_mut() } {
-            nd.current_goroutine = gp;
+            nd.current_virtual_thread = gp;
         }
         drop(guard);
     }
 
-    /// Sysmon entry point: if the goroutine running on this worker passes
+    /// Sysmon entry point: if the thread running on this worker passes
     /// `wanted`, set its preempt flag and request a yieldpoint.
     ///
     /// Returns whether the request was made.
-    pub(crate) fn preempt_running(&self, wanted: impl FnOnce(&Goroutine) -> bool) -> bool {
+    pub(crate) fn preempt_running(&self, wanted: impl FnOnce(&VirtualThread) -> bool) -> bool {
         let guard = self.monitor.lock();
         let Some(nd) = (unsafe { self.native_data_mut_ptr().as_ref() }) else {
             return false;
         };
-        // SAFETY: under `monitor` the published goroutine is alive: its worker
+        // SAFETY: under `monitor` the published thread is alive: its worker
         // unpublishes it under the same lock before it can free it.
-        let g = unsafe { &*nd.current_goroutine };
+        let g = unsafe { &*nd.current_virtual_thread };
         if !wanted(g) {
             return false;
         }
@@ -278,7 +278,7 @@ impl Thread {
                 nd.preempt_epoch
                     .store(g.sched.epoch.get(), Ordering::Release);
                 // SAFETY: `pthread` is this worker's own thread, which is
-                // alive while the goroutine is published (see above).
+                // alive while the thread is published (see above).
                 unsafe {
                     libc::pthread_kill(
                         pthread as libc::pthread_t,
@@ -303,7 +303,7 @@ impl Thread {
         // slot with a built `Tc`, and `esp` is atomic precisely for this
         // cross-thread poke.
         if let Some(nd) = unsafe { self.native_data.load(Ordering::Acquire).as_ref() } {
-            unsafe { &*(*nd.current_goroutine).tc.get() }
+            unsafe { &*(*nd.current_virtual_thread).tc.get() }
                 .esp
                 .store(std::ptr::null_mut(), Ordering::Release);
         }
@@ -474,14 +474,14 @@ impl Thread {
         let _no_preempt = crate::runtime::sched::preempt::NoPreempt::enter();
         let nd = current_native_data();
         let thread = nd.thread();
-        let goroutine = nd.goroutine();
+        let virtual_thread = nd.virtual_thread();
 
         thread.status_word.update::<AtYieldpoint>(true);
 
         let mut guard = thread.monitor.lock();
 
-        if goroutine.take_yieldpoint.load(Ordering::Relaxed) != 0 {
-            goroutine.take_yieldpoint.store(0, Ordering::Relaxed);
+        if virtual_thread.take_yieldpoint.load(Ordering::Relaxed) != 0 {
+            virtual_thread.take_yieldpoint.store(0, Ordering::Relaxed);
             thread.check_block(&mut guard);
         }
 
@@ -699,46 +699,46 @@ impl Thread {
         self.native_data.load(Ordering::Acquire)
     }
 
-    /// The goroutine the bound thread runs. Only valid once bound.
-    pub(crate) fn goroutine(&self) -> &Goroutine {
-        self.native_data().goroutine()
+    /// The thread the bound thread runs. Only valid once bound.
+    pub(crate) fn virtual_thread(&self) -> &VirtualThread {
+        self.native_data().virtual_thread()
     }
 
-    /// Mutable pointer to the goroutine the bound thread runs.
-    pub(crate) fn goroutine_mut_ptr(&self) -> *mut Goroutine {
-        self.native_data().current_goroutine
+    /// Mutable pointer to the thread the bound thread runs.
+    pub(crate) fn virtual_thread_mut_ptr(&self) -> *mut VirtualThread {
+        self.native_data().current_virtual_thread
     }
 
-    /// The thread's own goroutine header, whatever goroutine it runs now.
+    /// The thread's own thread header, whatever thread it runs now.
     /// Only valid once bound.
-    pub(crate) fn home_goroutine(&self) -> &Goroutine {
+    pub(crate) fn home_virtual_thread(&self) -> &VirtualThread {
         // SAFETY: set at bind to this thread's slot, which outlives the binding.
-        unsafe { &*self.native_data().home_goroutine }
+        unsafe { &*self.native_data().home_virtual_thread }
     }
 
     pub fn is_thread_state_initialized(&self) -> bool {
-        self.goroutine().sched.state_ready.get()
+        self.virtual_thread().sched.state_ready.get()
     }
 
     pub(crate) unsafe fn initialize_state<'gc>(&self, state: State<'gc>) {
         unsafe {
             assert!(!self.is_thread_state_initialized());
-            let goroutine = self.goroutine_mut_ptr();
-            let state_ptr = (*goroutine).state.get();
+            let thread = self.virtual_thread_mut_ptr();
+            let state_ptr = (*thread).state.get();
             state_ptr.write(MaybeUninit::new(std::mem::transmute::<
                 State<'gc>,
                 State<'static>,
             >(state)));
-            (*goroutine).sched.state_ready.set(true);
+            (*thread).sched.state_ready.set(true);
         }
     }
 
     pub(crate) fn state_ptr(&self) -> *mut State<'static> {
-        self.goroutine().state_ptr()
+        self.virtual_thread().state_ptr()
     }
 
     pub(crate) fn tc_ptr(&self) -> *mut Tc<'static> {
-        self.goroutine().tc_ptr()
+        self.virtual_thread().tc_ptr()
     }
 
     /// Create a new thread handle. The returned value
@@ -895,10 +895,10 @@ impl Thread {
     }
 
     pub(crate) fn flush_tlab(&self) {
-        // The spare window is returned even when the running goroutine has none.
+        // The spare window is returned even when the running thread has none.
         // SAFETY: called by the collector with this thread blocked.
         unsafe { self.native_data().return_spare_lab() };
-        let (cursor, limit) = unsafe { (*self.goroutine_mut_ptr()).lab_take() };
+        let (cursor, limit) = unsafe { (*self.virtual_thread_mut_ptr()).lab_take() };
 
         if cursor.is_zero() {
             debug_assert!(limit.is_zero());
@@ -912,8 +912,8 @@ impl Thread {
 
         match selector {
             AllocatorSelector::Immix(_) => unsafe {
-                // SAFETY: a worker touches its mutator for one goroutine at a
-                // time, and a goroutine runs on one worker at a time, so this borrow is the
+                // SAFETY: a worker touches its mutator for one thread at a
+                // time, and a thread runs on one worker at a time, so this borrow is the
                 // only live one.
                 let allocator = self
                     .mutator_unchecked()
@@ -922,8 +922,8 @@ impl Thread {
             },
 
             AllocatorSelector::BumpPointer(_) => unsafe {
-                // SAFETY: a worker touches its mutator for one goroutine at a
-                // time, and a goroutine runs on one worker at a time, so this borrow is the
+                // SAFETY: a worker touches its mutator for one thread at a
+                // time, and a thread runs on one worker at a time, so this borrow is the
                 // only live one.
                 let allocator = self
                     .mutator_unchecked()
@@ -949,7 +949,7 @@ pub enum AllocFastPath {
 /// The per-worker part of what a bound OS thread owns: the MMTk mutator,
 /// barrier and allocation selectors, the GC handle and the native stack
 /// bounds. Lives in this thread's `#[thread_local]` slot. Scheme
-/// execution state lives in [`Goroutine`].
+/// execution state lives in [`VirtualThread`].
 pub struct NativeCtx {
     pub mutator: Option<Box<Mutator<MemoryManager>>>,
     pub(crate) mutator_state: Option<NonNull<MutatorState<dyn Trace>>>,
@@ -959,16 +959,16 @@ pub struct NativeCtx {
     pub(crate) nonmoving_semantics: AllocationSemantics,
     pub(crate) stack_low: Address,
     pub(crate) stack_high: Address,
-    /// The goroutine this worker runs. Fixed for the thread's lifetime while
-    /// there is one goroutine per worker.
-    pub(crate) current_goroutine: *mut Goroutine,
-    /// This thread's own goroutine header, the one bound with the thread.
-    pub(crate) home_goroutine: *mut Goroutine,
+    /// The thread this worker runs. Fixed for the thread's lifetime while
+    /// there is one thread per worker.
+    pub(crate) current_virtual_thread: *mut VirtualThread,
+    /// This thread's own thread header, the one bound with the thread.
+    pub(crate) home_virtual_thread: *mut VirtualThread,
     /// Switch-in counter of this worker, bumped by the scheduler each time it
-    /// installs a goroutine.
+    /// installs a thread.
     pub(crate) epoch: u64,
-    /// Allocation window taken back from a parked goroutine, waiting for the
-    /// next goroutine that has none. Only the worker touches it while running.
+    /// Allocation window taken back from a parked thread, waiting for the
+    /// next thread that has none. Only the worker touches it while running.
     pub(crate) lab_spare: Cell<(Address, Address)>,
     /// Nonzero while a runtime-critical section on this worker (allocator slow
     /// path, GC handshake, scheduler code) is running. The `SIGURG` handler
@@ -985,15 +985,15 @@ pub struct NativeCtx {
     thread: Option<Arc<Thread>>,
 }
 
-/// The execution context of one Scheme goroutine. The `TC` register points
+/// The execution context of one Scheme thread. The `TC` register points
 /// here
 #[repr(C)]
-pub struct Goroutine {
+pub struct VirtualThread {
     /// Local allocation buffer cursor and limit: compiled code bumps `ap`
     /// against `eap`.
     pub(crate) ap: Address,
     pub(crate) eap: Address,
-    /// The [`NativeCtx`] of the worker running this goroutine. Refreshed at
+    /// The [`NativeCtx`] of the worker running this thread. Refreshed at
     /// switch-in, so slow paths reach the current worker's allocator.
     pub(crate) mutation_ptr: *const NativeCtx,
     /// Yieldpoint request flag, written by other threads.
@@ -1001,12 +1001,12 @@ pub struct Goroutine {
     pub(crate) tc: UnsafeCell<Tc<'static>>,
     pub(crate) state: UnsafeCell<MaybeUninit<State<'static>>>,
     /// Scheduler state: saved context, task, stack, mutator, debug counters.
-    pub(crate) sched: GoroutineSched,
+    pub(crate) sched: VirtualThreadSched,
 }
 
 const _: () = assert!(std::mem::size_of::<Address>() == std::mem::size_of::<usize>());
 
-impl Goroutine {
+impl VirtualThread {
     pub(crate) fn state_ptr(&self) -> *mut State<'static> {
         self.state.get() as *mut State<'static>
     }
@@ -1015,11 +1015,11 @@ impl Goroutine {
         self.tc.get()
     }
 
-    /// The worker context this goroutine currently runs on.
+    /// The worker context this thread currently runs on.
     #[inline(always)]
     pub(crate) fn native(&self) -> &NativeCtx {
         // SAFETY: set at construction to the owning thread's slot, which
-        // outlives the goroutine.
+        // outlives the thread.
         unsafe { &*self.mutation_ptr }
     }
 }
@@ -1032,11 +1032,11 @@ impl NativeCtx {
         unsafe { self.thread.as_deref().unwrap_unchecked() }
     }
 
-    /// The goroutine this worker runs.
+    /// The thread this worker runs.
     #[inline(always)]
-    pub(crate) fn goroutine(&self) -> &Goroutine {
-        // SAFETY: see `current_goroutine`.
-        unsafe { &*self.current_goroutine }
+    pub(crate) fn virtual_thread(&self) -> &VirtualThread {
+        // SAFETY: see `current_virtual_thread`.
+        unsafe { &*self.current_virtual_thread }
     }
 
     pub fn alloc_fastpath(&self) -> AllocFastPath {
@@ -1082,14 +1082,14 @@ impl NativeCtx {
 struct NativeSlot {
     bound: Cell<bool>,
     ctx: UnsafeCell<MaybeUninit<NativeCtx>>,
-    goroutine: UnsafeCell<MaybeUninit<Goroutine>>,
+    thread: UnsafeCell<MaybeUninit<VirtualThread>>,
 }
 
 #[thread_local]
 static SLOT: NativeSlot = NativeSlot {
     bound: Cell::new(false),
     ctx: UnsafeCell::new(MaybeUninit::uninit()),
-    goroutine: UnsafeCell::new(MaybeUninit::uninit()),
+    thread: UnsafeCell::new(MaybeUninit::uninit()),
 };
 
 #[inline(always)]
@@ -1108,14 +1108,14 @@ pub(crate) fn current_native_data() -> &'static NativeCtx {
     try_current_native_data().expect("Thread is not initialized")
 }
 
-/// The guard page of the goroutine running on this thread, if bound.
+/// The guard page of the thread running on this thread, if bound.
 pub(crate) fn current_guard_range() -> Option<(Address, Address)> {
     crate::runtime::sched::scheduler::current_guard_range()
 }
 
 #[inline(always)]
-pub(crate) fn current_goroutine() -> &'static Goroutine {
-    current_native_data().goroutine()
+pub(crate) fn current_virtual_thread() -> &'static VirtualThread {
+    current_native_data().virtual_thread()
 }
 
 pub fn current_thread<'a>() -> &'a Thread {
@@ -1133,7 +1133,7 @@ pub(crate) fn init_current_thread(thread: Arc<Thread>) {
         .get_plan()
         .constraints()
         .barrier;
-    let goroutine_ptr = SLOT.goroutine.get() as *mut Goroutine;
+    let virtual_thread_ptr = SLOT.thread.get() as *mut VirtualThread;
     let ctx_ptr = SLOT.ctx.get();
     let ctx = NativeCtx {
         mutator: None,
@@ -1144,8 +1144,8 @@ pub(crate) fn init_current_thread(thread: Arc<Thread>) {
         nonmoving_semantics: AllocationSemantics::NonMoving,
         stack_low: Address::ZERO,
         stack_high: Address::ZERO,
-        current_goroutine: goroutine_ptr,
-        home_goroutine: goroutine_ptr,
+        current_virtual_thread: virtual_thread_ptr,
+        home_virtual_thread: virtual_thread_ptr,
         epoch: 0,
         lab_spare: Cell::new((Address::ZERO, Address::ZERO)),
         no_preempt: AtomicU32::new(0),
@@ -1155,14 +1155,14 @@ pub(crate) fn init_current_thread(thread: Arc<Thread>) {
     };
     // SAFETY: the slot is unbound, so nothing reads it.
     unsafe {
-        goroutine_ptr.write(Goroutine {
+        virtual_thread_ptr.write(VirtualThread {
             ap: Address::ZERO,
             eap: Address::ZERO,
             mutation_ptr: ctx_ptr as *const NativeCtx,
             take_yieldpoint: AtomicI32::new(0),
             tc: UnsafeCell::new(Tc::new()),
             state: UnsafeCell::new(MaybeUninit::uninit()),
-            sched: GoroutineSched::home(),
+            sched: VirtualThreadSched::home(),
         });
         ctx_ptr.write(MaybeUninit::new(ctx));
     }
@@ -1192,7 +1192,7 @@ pub(crate) fn deinit_current_thread() {
     // SAFETY: unbound and unpublished, nobody can reach the data anymore.
     unsafe {
         std::ptr::drop_in_place(ptr);
-        std::ptr::drop_in_place(SLOT.goroutine.get() as *mut Goroutine);
+        std::ptr::drop_in_place(SLOT.thread.get() as *mut VirtualThread);
     }
 }
 

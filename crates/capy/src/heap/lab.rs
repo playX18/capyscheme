@@ -2,10 +2,10 @@
 
 use mmtk::util::{Address, conversions::raw_align_up};
 
-use crate::heap::sync::thread::Goroutine;
+use crate::heap::sync::thread::VirtualThread;
 use crate::utils::align_allocation_no_fill;
 
-impl Goroutine {
+impl VirtualThread {
     pub(crate) fn lab_allocate(&mut self, size: usize, alignment: usize, offset: usize) -> Address {
         let size = raw_align_up(size, alignment);
         let result = align_allocation_no_fill(self.ap, alignment, offset);
@@ -73,7 +73,7 @@ impl crate::heap::sync::thread::NativeCtx {
         }
     }
 
-    pub(crate) fn donate_lab(&self, g: &mut Goroutine) {
+    pub(crate) fn donate_lab(&self, g: &mut VirtualThread) {
         if !g.ap.is_zero() {
             return;
         }
@@ -84,13 +84,13 @@ impl crate::heap::sync::thread::NativeCtx {
     }
 
     /// Give `g`'s window back to this worker's allocator before `g` switches
-    /// out, so a goroutine that is not running never holds one.
+    /// out, so a thread that is not running never holds one.
     ///
     /// # Safety
     ///
     /// The caller must be in the mutating state on this worker, and `g` must
-    /// be the goroutine running on it.
-    pub(crate) unsafe fn flush_lab(&self, g: &mut Goroutine) {
+    /// be the thread running on it.
+    pub(crate) unsafe fn flush_lab(&self, g: &mut VirtualThread) {
         debug_assert!(
             matches!(
                 crate::heap::sync::thread::current_thread().get_exec_status(),

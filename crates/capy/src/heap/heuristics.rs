@@ -33,10 +33,15 @@ use crate::{
 mod adaptive;
 mod aggressive;
 mod compact;
+mod generational;
 
 const DEFAULT_MAX_HEAP_BYTES: usize = 2 * 1024 * 1024 * 1024;
 const DEFAULT_MIN_FREE_THRESHOLD_PERCENT: usize = 10;
-const DEFAULT_INIT_FREE_THRESHOLD_PERCENT: usize = 70;
+const DEFAULT_INIT_FREE_THRESHOLD_PERCENT: usize = 50;
+const DEFAULT_HEAP_GROWTH_FREE_PERCENT: usize = 50;
+const HEAP_GROWTH_MIN_STEP_PERCENT: usize = 25;
+const HEAP_SHRINK_AFTER_CYCLES: usize = 3;
+const HEADROOM_FLOOR_BYTES: usize = 1024 * 1024;
 const DEFAULT_ALLOCATION_THRESHOLD_PERCENT: usize = 0;
 const DEFAULT_ALLOC_SPIKE_FACTOR_PERCENT: usize = 5;
 const DEFAULT_LEARNING_STEPS: usize = 5;
@@ -49,6 +54,9 @@ static DEFAULT_MAX_HEAP_OVERRIDE: AtomicUsize = AtomicUsize::new(0);
 pub(crate) enum HeuristicMode {
     /// Shenandoah-style predictor using GC-time and allocation-rate history.
     Adaptive,
+    /// Generational Shenandoah-style scheduling: adaptive young triggers with
+    /// expedited promotion/mixed work plus idle-gated old triggers.
+    Generational,
     /// Minimum-free plus guaranteed-interval trigger only.
     Static,
     /// Small-heap mode with a fixed allocation-since-GC threshold.
@@ -63,6 +71,7 @@ impl HeuristicMode {
     fn from_word(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
             "adaptive" => Some(Self::Adaptive),
+            "generational" => Some(Self::Generational),
             "static" => Some(Self::Static),
             "compact" => Some(Self::Compact),
             "aggressive" => Some(Self::Aggressive),
@@ -76,6 +85,7 @@ impl fmt::Display for HeuristicMode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Adaptive => "adaptive",
+            Self::Generational => "generational",
             Self::Static => "static",
             Self::Compact => "compact",
             Self::Aggressive => "aggressive",
@@ -104,6 +114,8 @@ impl fmt::Display for TriggerDecision {
 pub(crate) struct HeuristicConfig {
     pub(crate) mode: HeuristicMode,
     pub(crate) max_heap_bytes: usize,
+    pub(crate) initial_heap_bytes: usize,
+    pub(crate) heap_growth_free_percent: usize,
     pub(crate) min_free_threshold_percent: usize,
     pub(crate) init_free_threshold_percent: usize,
     pub(crate) allocation_threshold_percent: usize,
@@ -116,6 +128,13 @@ pub(crate) struct HeuristicConfig {
     pub(crate) acceleration_sample_count: usize,
     pub(crate) momentary_spike_sample_count: usize,
     pub(crate) guaranteed_gc_interval: Option<Duration>,
+    pub(crate) expedite_promotion_threshold_percent: usize,
+    pub(crate) expedite_mixed_threshold: usize,
+    pub(crate) old_garbage_threshold_percent: usize,
+    pub(crate) minimum_old_time: Duration,
+    pub(crate) old_growth_allowance_percent: usize,
+    pub(crate) old_growth_ignore_percent: usize,
+    pub(crate) old_growth_ignore_young_cycles: usize,
 }
 
 impl HeuristicConfig {
@@ -123,6 +142,8 @@ impl HeuristicConfig {
         let mut config = Self {
             mode,
             max_heap_bytes: configured_max_heap_bytes(),
+            initial_heap_bytes: usize::MAX,
+            heap_growth_free_percent: DEFAULT_HEAP_GROWTH_FREE_PERCENT,
             min_free_threshold_percent: DEFAULT_MIN_FREE_THRESHOLD_PERCENT,
             init_free_threshold_percent: DEFAULT_INIT_FREE_THRESHOLD_PERCENT,
             allocation_threshold_percent: DEFAULT_ALLOCATION_THRESHOLD_PERCENT,
@@ -135,6 +156,14 @@ impl HeuristicConfig {
             acceleration_sample_count: adaptive::DEFAULT_ACCELERATION_SAMPLE_COUNT,
             momentary_spike_sample_count: adaptive::DEFAULT_MOMENTARY_SPIKE_SAMPLE_COUNT,
             guaranteed_gc_interval: Some(DEFAULT_GUARANTEED_GC_INTERVAL),
+            expedite_promotion_threshold_percent:
+                generational::EXPEDITE_PROMOTION_THRESHOLD_PERCENT,
+            expedite_mixed_threshold: generational::EXPEDITE_MIXED_THRESHOLD,
+            old_garbage_threshold_percent: generational::OLD_GARBAGE_THRESHOLD_PERCENT,
+            minimum_old_time: generational::MINIMUM_OLD_TIME,
+            old_growth_allowance_percent: generational::OLD_GROWTH_ALLOWANCE_PERCENT,
+            old_growth_ignore_percent: generational::OLD_GROWTH_IGNORE_PERCENT,
+            old_growth_ignore_young_cycles: generational::OLD_GROWTH_IGNORE_YOUNG_CYCLES,
         };
 
         if mode == HeuristicMode::Compact {
@@ -152,6 +181,12 @@ impl HeuristicConfig {
 
         if flags::is_set(FlagId::gc_max_heap) {
             config.max_heap_bytes = flags::gc_max_heap();
+        }
+        // A zero initial size means "fixed at max"; the policy clamps to max.
+        let initial = flags::gc_init_heap();
+        config.initial_heap_bytes = if initial == 0 { usize::MAX } else { initial };
+        if flags::is_set(FlagId::gc_heap_growth_free_percent) {
+            config.heap_growth_free_percent = flags::gc_heap_growth_free_percent();
         }
         if flags::is_set(FlagId::gc_min_free_percent) {
             config.min_free_threshold_percent = flags::gc_min_free_percent();
@@ -205,7 +240,10 @@ impl HeuristicConfig {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct HeapSnapshot {
+    /// Current (growable) heap size.
     pub(crate) total_bytes: usize,
+    /// Upper bound the heap may grow to.
+    pub(crate) max_bytes: usize,
     pub(crate) available_bytes: usize,
     pub(crate) free_bytes: usize,
     pub(crate) allocated_since_gc: usize,
@@ -337,6 +375,7 @@ impl DecayingSequence {
 struct ActiveCycle {
     started_at: Instant,
     depth: usize,
+    kind: Option<generational::GenerationalCycleKind>,
 }
 
 #[derive(Clone, Debug)]
@@ -360,6 +399,7 @@ pub(crate) struct HeuristicState {
     acceleration_rate_history: adaptive::RateSampleHistory,
     last_allocation_sample: Option<(Instant, usize)>,
     last_acceleration_sample: Option<Instant>,
+    generational: generational::GenerationalState,
 }
 
 impl HeuristicState {
@@ -376,6 +416,9 @@ impl HeuristicState {
             free_at_end_history: DecayingSequence::new(config.adaptive_decay_factor),
             adaptive_confidence: config.adaptive_confidence,
             adaptive_spike_threshold: config.adaptive_spike_threshold,
+            generational: generational::GenerationalState::new(
+                config.old_garbage_threshold_percent,
+            ),
             config,
             start_gc_is_pending: false,
             declined_trigger_count: 0,
@@ -428,6 +471,9 @@ impl HeuristicState {
             HeuristicMode::Adaptive => {
                 self.adaptive_should_start(snapshot, now, planned_sleep_interval)
             }
+            HeuristicMode::Generational => {
+                self.generational_should_start(snapshot, now, planned_sleep_interval)
+            }
         }
     }
 
@@ -436,9 +482,17 @@ impl HeuristicState {
         if let Some(active_cycle) = self.active_cycle.as_mut() {
             active_cycle.depth = active_cycle.depth.saturating_add(1);
         } else {
+            let kind = self.generational.pending_cycle_kind.take();
+            if self.config.mode == HeuristicMode::Generational
+                && kind == Some(generational::GenerationalCycleKind::Old)
+            {
+                self.generational.old_cycle_in_progress = true;
+                self.generational.old_cycle_started_at = Some(now);
+            }
             self.active_cycle = Some(ActiveCycle {
                 started_at: now,
                 depth: 1,
+                kind,
             });
         }
     }
@@ -456,6 +510,7 @@ impl HeuristicState {
             return None;
         }
         let cycle_started_at = active_cycle.started_at;
+        let cycle_kind = active_cycle.kind;
 
         self.active_cycle = None;
         let cycle_time_seconds = cycle_time.as_secs_f64();
@@ -466,6 +521,11 @@ impl HeuristicState {
         );
         self.gc_times_learned = self.gc_times_learned.saturating_add(1);
         self.adjust_penalty(-1);
+        if self.config.mode == HeuristicMode::Generational {
+            if let Some(snapshot) = snapshot {
+                self.record_generational_cycle_end(cycle_kind, snapshot);
+            }
+        }
         if let Some(snapshot) = snapshot {
             // Post-GC free memory tells adaptive mode whether the previous
             // trigger was too early or too late.
@@ -555,8 +615,10 @@ impl HeuristicState {
     }
 
     pub(super) fn headroom_adjustment(&self, capacity: usize) -> usize {
+        // The floor keeps the spike reserve meaningful while the heap is small.
         percent_of(capacity, self.config.alloc_spike_factor_percent)
             .saturating_add(percent_of(capacity, self.gc_time_penalties))
+            .max(HEADROOM_FLOOR_BYTES.min(capacity / 4))
     }
 
     pub(super) fn accept_trigger(
@@ -595,6 +657,9 @@ impl HeuristicState {
 pub(crate) struct CapyTriggerPolicy {
     state: Mutex<HeuristicState>,
     max_heap_pages: usize,
+    initial_heap_pages: usize,
+    current_heap_pages: AtomicUsize,
+    shrink_streak: AtomicUsize,
     pending_pages: AtomicUsize,
     used_at_last_gc_end: AtomicUsize,
 }
@@ -606,12 +671,60 @@ impl CapyTriggerPolicy {
 
     fn with_config(config: HeuristicConfig) -> Self {
         let max_heap_pages = bytes_to_pages_up(config.max_heap_bytes);
+        let initial_heap_pages = bytes_to_pages_up(config.initial_heap_bytes)
+            .min(max_heap_pages)
+            .max(1);
         Self {
             state: Mutex::new(HeuristicState::new(config)),
             max_heap_pages,
+            initial_heap_pages,
+            current_heap_pages: AtomicUsize::new(initial_heap_pages),
+            shrink_streak: AtomicUsize::new(0),
             pending_pages: AtomicUsize::new(0),
             used_at_last_gc_end: AtomicUsize::new(0),
         }
+    }
+
+    fn current_heap_bytes(&self) -> usize {
+        pages_to_bytes(self.current_heap_pages.load(Ordering::Relaxed))
+    }
+
+    fn snapshot_with(
+        &self,
+        available_bytes: usize,
+        free_bytes: usize,
+        allocated_since_gc: usize,
+    ) -> HeapSnapshot {
+        HeapSnapshot {
+            total_bytes: self.current_heap_bytes(),
+            max_bytes: pages_to_bytes(self.max_heap_pages),
+            available_bytes,
+            free_bytes,
+            allocated_since_gc,
+        }
+    }
+
+    /// Resizes the heap from post-GC live data; returns `(old, new)` pages on change.
+    fn resize_after_gc(
+        &self,
+        used_pages: usize,
+        free_percent: usize,
+        min_free_percent: usize,
+    ) -> Option<(usize, usize)> {
+        let current = self.current_heap_pages.load(Ordering::Relaxed);
+        let streak = self.shrink_streak.load(Ordering::Relaxed);
+        let (next, streak) = next_heap_pages(
+            used_pages,
+            current,
+            self.initial_heap_pages,
+            self.max_heap_pages,
+            free_percent,
+            min_free_percent,
+            streak,
+        );
+        self.shrink_streak.store(streak, Ordering::Relaxed);
+        self.current_heap_pages.store(next, Ordering::Relaxed);
+        (next != current).then_some((current, next))
     }
 
     fn lock_state(&self) -> std::sync::MutexGuard<'_, HeuristicState> {
@@ -665,12 +778,30 @@ impl GCTriggerPolicy<MemoryManager> for CapyTriggerPolicy {
         crate::runtime::gc_stats::mark_gc_end(used_bytes);
         self.used_at_last_gc_end
             .store(used_bytes, Ordering::Relaxed);
-        let snapshot = HeapSnapshot {
-            total_bytes: pages_to_bytes(self.max_heap_pages),
-            available_bytes: pages_to_bytes(plan.get_available_pages()),
-            free_bytes: pages_to_bytes(plan.get_free_pages()),
-            allocated_since_gc: 0,
+        let (growth_free, min_free) = {
+            let state = self.lock_state();
+            (
+                state.config.heap_growth_free_percent,
+                state.config.min_free_threshold_percent,
+            )
         };
+        if let Some((old, new)) = self.resize_after_gc(plan.get_used_pages(), growth_free, min_free)
+        {
+            log::info!(
+                target: GC_LOG_TARGET,
+                "heap resized {} -> {} (live={}, max={})",
+                FormattedSize(pages_to_bytes(old)),
+                FormattedSize(pages_to_bytes(new)),
+                FormattedSize(used_bytes),
+                FormattedSize(pages_to_bytes(self.max_heap_pages)),
+            );
+        }
+        // Built after the resize so available/free reflect the new size.
+        let snapshot = self.snapshot_with(
+            pages_to_bytes(plan.get_available_pages()),
+            pages_to_bytes(plan.get_free_pages()),
+            0,
+        );
 
         // Feed post-GC plan accounting back into the heuristic.  Adaptive mode
         // uses this to adjust how early rate/spike triggers should fire.
@@ -703,18 +834,12 @@ impl GCTriggerPolicy<MemoryManager> for CapyTriggerPolicy {
         // reserved them yet, but the trigger decision must make room for them.
         let pending_bytes = pages_to_bytes(self.pending_pages.load(Ordering::Relaxed));
         let used_bytes = pages_to_bytes(plan.get_used_pages()).saturating_add(pending_bytes);
-        let total_bytes = pages_to_bytes(self.max_heap_pages);
         let available_bytes =
             pages_to_bytes(plan.get_available_pages()).saturating_sub(pending_bytes);
         let free_bytes = pages_to_bytes(plan.get_free_pages()).saturating_sub(pending_bytes);
         let allocated_since_gc =
             used_bytes.saturating_sub(self.used_at_last_gc_end.load(Ordering::Relaxed));
-        let snapshot = HeapSnapshot {
-            total_bytes,
-            available_bytes,
-            free_bytes,
-            allocated_since_gc,
-        };
+        let snapshot = self.snapshot_with(available_bytes, free_bytes, allocated_since_gc);
 
         self.lock_state()
             .should_start_gc(snapshot, Instant::now(), Duration::ZERO)
@@ -723,11 +848,12 @@ impl GCTriggerPolicy<MemoryManager> for CapyTriggerPolicy {
 
     fn is_heap_full(&self, plan: &dyn Plan<VM = MemoryManager>) -> bool {
         let pending_pages = self.pending_pages.load(Ordering::Relaxed);
-        plan.get_reserved_pages().saturating_add(pending_pages) > self.max_heap_pages
+        let current = self.current_heap_pages.load(Ordering::Relaxed);
+        plan.get_reserved_pages().saturating_add(pending_pages) > current
     }
 
     fn get_current_heap_size_in_pages(&self) -> usize {
-        self.max_heap_pages
+        self.current_heap_pages.load(Ordering::Relaxed)
     }
 
     fn get_max_heap_size_in_pages(&self) -> usize {
@@ -735,7 +861,7 @@ impl GCTriggerPolicy<MemoryManager> for CapyTriggerPolicy {
     }
 
     fn can_heap_size_grow(&self) -> bool {
-        false
+        self.current_heap_pages.load(Ordering::Relaxed) < self.max_heap_pages
     }
 }
 
@@ -764,6 +890,42 @@ pub(crate) fn configured_max_heap_bytes() -> usize {
     }
 }
 
+/// Computes the heap size for the next cycle from post-GC live pages.
+///
+/// Grows immediately toward `used / (1 - free%)`, steps by at least 25% when the
+/// post-GC free share is under the minimum, and shrinks only after the target
+/// has stayed under half the current size for `HEAP_SHRINK_AFTER_CYCLES`
+/// cycles.  Returns the new size and the updated shrink streak.
+fn next_heap_pages(
+    used: usize,
+    current: usize,
+    initial: usize,
+    max: usize,
+    free_percent: usize,
+    min_free_percent: usize,
+    shrink_streak: usize,
+) -> (usize, usize) {
+    let live_percent = 100 - free_percent.min(99);
+    let target = used.saturating_mul(100) / live_percent;
+    let free_pages = current.saturating_sub(used);
+
+    let mut next = current;
+    let mut streak = 0;
+    if target > current {
+        next = target;
+    }
+    if free_pages < current / 100 * min_free_percent {
+        next = next.max(current + current / 100 * HEAP_GROWTH_MIN_STEP_PERCENT);
+    } else if target < current / 2 {
+        streak = shrink_streak + 1;
+        if streak >= HEAP_SHRINK_AFTER_CYCLES {
+            next = target;
+            streak = 0;
+        }
+    }
+    (next.clamp(initial.min(max), max), streak)
+}
+
 fn percent_of(total: usize, percent: usize) -> usize {
     total / 100 * percent
 }
@@ -774,4 +936,33 @@ fn pages_to_bytes(pages: usize) -> usize {
 
 fn elapsed_seconds(start: Instant, end: Instant) -> f64 {
     end.saturating_duration_since(start).as_secs_f64()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_heap_pages;
+
+    #[test]
+    fn grows_to_target_and_caps_at_max() {
+        assert_eq!(next_heap_pages(60, 100, 10, 1000, 50, 10, 0).0, 120);
+        assert_eq!(next_heap_pages(900, 100, 10, 1000, 50, 10, 0).0, 1000);
+    }
+
+    #[test]
+    fn near_full_steps_by_at_least_a_quarter() {
+        assert_eq!(next_heap_pages(95, 100, 10, 1000, 10, 10, 0).0, 125);
+    }
+
+    #[test]
+    fn shrinks_only_after_streak_and_not_below_initial() {
+        let (n, s) = next_heap_pages(10, 400, 100, 1000, 50, 10, 0);
+        assert_eq!((n, s), (400, 1));
+        let (n, s) = next_heap_pages(10, 400, 100, 1000, 50, 10, 2);
+        assert_eq!((n, s), (100, 0));
+    }
+
+    #[test]
+    fn initial_at_or_above_max_is_fixed() {
+        assert_eq!(next_heap_pages(10, 1000, 1000, 1000, 50, 10, 2).0, 1000);
+    }
 }

@@ -7,8 +7,8 @@ use crate::{
         ptr::Gc,
         space::Space,
         sync::thread::{
-            AllocFastPath, Goroutine, NativeCtx, Thread, current_goroutine, current_thread,
-            is_current_thread_registed,
+            AllocFastPath, NativeCtx, Thread, VirtualThread, current_thread,
+            current_virtual_thread, is_current_thread_registed,
         },
         traits::Trace,
     },
@@ -301,11 +301,11 @@ where
 #[derive(Copy, Clone)]
 #[repr(transparent)]
 pub struct Mutation<'gc> {
-    /// The running [`Goroutine`]. This is the value the `TC` register holds,
+    /// The running [`VirtualThread`]. This is the value the `TC` register holds,
     /// and native procs receive it as `ctx` (`NativeFn` takes a `Mutation` by
     /// value), so the representation must stay the bare pointer. The worker
-    /// context is reached through [`Goroutine::native`].
-    nd: NonNull<Goroutine>,
+    /// context is reached through [`VirtualThread::native`].
+    nd: NonNull<VirtualThread>,
     _gc: PhantomData<&'gc ()>,
 }
 
@@ -330,32 +330,32 @@ impl<'gc> Deref for Mutation<'gc> {
 use mmtk::util::alloc::AllocationOptions;
 
 impl<'gc> Mutation<'gc> {
-    pub const OFFSET_OF_STATE: usize = std::mem::offset_of!(Goroutine, state);
+    pub const OFFSET_OF_STATE: usize = std::mem::offset_of!(VirtualThread, state);
 
-    /// The running goroutine.
+    /// The running thread.
     #[inline(always)]
-    fn g(&self) -> &'gc Goroutine {
+    fn g(&self) -> &'gc VirtualThread {
         // SAFETY: the slot outlives every `Mutation` handed out for it.
         unsafe { &*self.nd.as_ptr() }
     }
 
-    /// The worker context of the running goroutine.
+    /// The worker context of the running thread.
     #[inline(always)]
     fn nd(&self) -> &'gc NativeCtx {
         self.g().native()
     }
 
-    /// The running goroutine, mutable. Only the owning thread touches it.
+    /// The running thread, mutable. Only the owning thread touches it.
     #[inline(always)]
-    fn goroutine_ptr(&self) -> *mut Goroutine {
+    fn virtual_thread_ptr(&self) -> *mut VirtualThread {
         self.nd.as_ptr()
     }
 
     #[inline(always)]
     unsafe fn post_alloc(&self, object: GcObject, bytes: usize, semantics: AllocationSemantics) {
         unsafe {
-            // SAFETY: a worker touches its mutator for one goroutine at a
-            // time, and a goroutine runs on one worker at a time, so this borrow is the
+            // SAFETY: a worker touches its mutator for one thread at a
+            // time, and a thread runs on one worker at a time, so this borrow is the
             // only live one.
             mmtk::memory_manager::post_alloc(
                 self.nd().mutator_unchecked(),
@@ -456,8 +456,8 @@ impl<'gc> Mutation<'gc> {
     /// whose lifetime is valid for the returned mutation handle.
     pub unsafe fn from_ptr(ptr: *const ()) -> Self {
         Mutation {
-            // SAFETY: `ptr` is a live goroutine, see `as_ptr`.
-            nd: unsafe { NonNull::new_unchecked(ptr as *mut Goroutine) },
+            // SAFETY: `ptr` is a live thread, see `as_ptr`.
+            nd: unsafe { NonNull::new_unchecked(ptr as *mut VirtualThread) },
             _gc: PhantomData,
         }
     }
@@ -607,7 +607,7 @@ impl<'gc> Mutation<'gc> {
             if semantics == AllocationSemantics::Default
                 && self.nd().alloc_fastpath() == AllocFastPath::TLAB
             {
-                let lab = &mut *self.goroutine_ptr();
+                let lab = &mut *self.virtual_thread_ptr();
 
                 let object_start = lab.lab_allocate(
                     size + size_of::<HeapObjectHeader>(),
@@ -645,8 +645,8 @@ impl<'gc> Mutation<'gc> {
 
         unsafe {
             self.flush_tlab();
-            // MMTk exclusivity: a worker touches its mutator for one goroutine at a
-            // time, and a goroutine runs on one worker at a time, so this borrow is the
+            // MMTk exclusivity: a worker touches its mutator for one thread at a
+            // time, and a thread runs on one worker at a time, so this borrow is the
             // only live one.
             let mutator = self.nd().mutator_unchecked();
             let bytes = size + size_of::<HeapObjectHeader>();
@@ -685,7 +685,7 @@ impl<'gc> Mutation<'gc> {
     /// This function is safe only if TLAB is flushed *before* call into MMTK API such as
     /// [`allocate_out_of_line`](Self::allocate_out_of_line).
     pub unsafe fn flush_tlab(&self) {
-        let (cursor, limit) = unsafe { (*self.goroutine_ptr()).lab_take() };
+        let (cursor, limit) = unsafe { (*self.virtual_thread_ptr()).lab_take() };
 
         if cursor.is_zero() {
             debug_assert!(limit.is_zero());
@@ -699,8 +699,8 @@ impl<'gc> Mutation<'gc> {
 
         match selector {
             AllocatorSelector::Immix(_) => unsafe {
-                // SAFETY: a worker touches its mutator for one goroutine at a
-                // time, and a goroutine runs on one worker at a time, so this borrow is the
+                // SAFETY: a worker touches its mutator for one thread at a
+                // time, and a thread runs on one worker at a time, so this borrow is the
                 // only live one.
                 let allocator = self
                     .nd()
@@ -710,8 +710,8 @@ impl<'gc> Mutation<'gc> {
             },
 
             AllocatorSelector::BumpPointer(_) => unsafe {
-                //SAFETY: a worker touches its mutator for one goroutine at a
-                // time, and a goroutine runs on one worker at a time, so this borrow is the
+                //SAFETY: a worker touches its mutator for one thread at a
+                // time, and a thread runs on one worker at a time, so this borrow is the
                 // only live one.
                 let allocator = self
                     .nd()
@@ -762,7 +762,7 @@ impl<'gc> Mutation<'gc> {
 
         let (cursor, limit) = (window.cursor, window.limit);
         window.reset(Address::ZERO, Address::ZERO);
-        unsafe { (*self.goroutine_ptr()).lab_rebind(cursor, limit) };
+        unsafe { (*self.virtual_thread_ptr()).lab_rebind(cursor, limit) };
     }
 
     /// Raw weak reference load barrier.
@@ -775,8 +775,8 @@ impl<'gc> Mutation<'gc> {
             return;
         }
 
-        // SAFETY: a worker touches its mutator for one goroutine at a
-        // time, and a goroutine runs on one worker at a time, so this borrow is the
+        // SAFETY: a worker touches its mutator for one thread at a
+        // time, and a thread runs on one worker at a time, so this borrow is the
         // only live one.
         unsafe {
             self.nd().mutator_unchecked().barrier().load_weak_reference(
@@ -806,8 +806,8 @@ impl<'gc> Mutation<'gc> {
                 let shift = (addr >> 3) & 0b111;
                 let byte_val = meta_addr.load::<u8>();
 
-                // SAFETY: a worker touches its mutator for one goroutine at a
-                // time, and a goroutine runs on one worker at a time, so this borrow is the
+                // SAFETY: a worker touches its mutator for one thread at a
+                // time, and a thread runs on one worker at a time, so this borrow is the
                 // only live one.
                 if (byte_val >> shift) & 1 == 1 {
                     self.nd()
@@ -827,8 +827,8 @@ impl<'gc> Mutation<'gc> {
                 let shift = (addr >> 3) & 0b111;
                 let byte_val = unsafe { meta_addr.load::<u8>() };
                 if (byte_val >> shift) & 1 == 1 {
-                    // SAFETY: a worker touches its mutator for one goroutine at a
-                    // time, and a goroutine runs on one worker at a time, so this borrow is the
+                    // SAFETY: a worker touches its mutator for one thread at a
+                    // time, and a thread runs on one worker at a time, so this borrow is the
                     // only live one.
                     unsafe {
                         self.nd()
@@ -899,7 +899,7 @@ impl<'gc> Mutation<'gc> {
 
 impl<'gc> Mutation<'gc> {
     pub(crate) unsafe fn new() -> Self {
-        let g = current_goroutine();
+        let g = current_virtual_thread();
 
         Thread::leave_native();
 
@@ -912,7 +912,7 @@ impl<'gc> Mutation<'gc> {
     /// A handle for a mutation scope that is already open on this thread.
     pub(crate) unsafe fn new_nested() -> Self {
         Self {
-            nd: NonNull::from(current_goroutine()),
+            nd: NonNull::from(current_virtual_thread()),
             _gc: PhantomData,
         }
     }
