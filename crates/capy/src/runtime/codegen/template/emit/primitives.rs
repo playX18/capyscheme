@@ -2,6 +2,7 @@
 
 use onlineasm::onlineasm;
 
+use super::memory;
 use crate::bytecode::def::{
     OpCallPrimitive0, OpCallPrimitive1, OpCallPrimitive2, OpCallPrimitive3,
 };
@@ -12,7 +13,6 @@ use crate::runtime::codegen::template::{
     Operand, PrimSlowId, SlowPath, TemplateContext, ftmp, tmp,
 };
 use crate::runtime::prims::def::Primitive;
-use super::memory;
 use crate::runtime::sabi::{self, builtin_class_ids, regs};
 use crate::runtime::value::Value;
 
@@ -345,15 +345,15 @@ pub fn op_call_primitive3<C: TemplateContext>(masm: &mut Masm, context: &mut C) 
             _ => {
                 if !memory::emit_primitive3(masm, context, id) {
                     context.prim_direct(
-                    masm,
-                    id,
-                    &[
-                        OpCallPrimitive3::OPERAND_A,
-                        OpCallPrimitive3::OPERAND_B,
-                        OpCallPrimitive3::OPERAND_C,
-                    ],
-                    OpCallPrimitive3::OPERAND_DST,
-                );
+                        masm,
+                        id,
+                        &[
+                            OpCallPrimitive3::OPERAND_A,
+                            OpCallPrimitive3::OPERAND_B,
+                            OpCallPrimitive3::OPERAND_C,
+                        ],
+                        OpCallPrimitive3::OPERAND_DST,
+                    );
                 }
             }
         },
@@ -1104,10 +1104,9 @@ prim2_fx_ovf!(prim2_fx_add_ovf, PRIM_FX_ADD_OVF, fixnum_add_checked);
 prim2_fx_ovf!(prim2_fx_sub_ovf, PRIM_FX_SUB_OVF, fixnum_sub_checked);
 prim2_fx_ovf!(prim2_fx_mul_ovf, PRIM_FX_MUL_OVF, fixnum_mul_checked);
 
-/// Wrapping fixnum arithmetic (`fx+`, `fx-`, `fx*`) and bitwise logic
-/// (`fxand`, `fxior`, `fxxor`): the arms wrap, so the unchecked op on
-/// the unboxed values followed by `box_int32` (which keeps only the
-/// low 32 bits) is exact. Only non-fixnums take the slow call.
+/// Bitwise logic (`fxand`, `fxior`, `fxxor`): the result always fits,
+/// so the unchecked op on the unboxed values followed by `box_int32`
+/// is exact. Only non-fixnums take the slow call.
 macro_rules! prim2_fx_wrap {
     ($name:ident, $id:expr, $op:ident) => {
         fn $name<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
@@ -1134,9 +1133,33 @@ macro_rules! prim2_fx_wrap {
     };
 }
 
-prim2_fx_wrap!(prim2_fx_add, PRIM_FX_ADD, addq);
-prim2_fx_wrap!(prim2_fx_sub, PRIM_FX_SUB, subq);
-prim2_fx_wrap!(prim2_fx_mul, PRIM_FX_MUL, mulq);
+/// Overflow-raising `fx+`, `fx-`, `fx*`: the checked op jumps to the slow
+/// call on signed 32-bit overflow, and the out-of-line prim raises the
+/// implementation-restriction condition the arm raises.
+macro_rules! prim2_fx_raising {
+    ($name:ident, $id:expr, $checked:ident) => {
+        fn $name<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
+            let slow = masm.label();
+            context.load_register(masm, OpCallPrimitive2::OPERAND_A, tmp::T1);
+            context.load_register(masm, OpCallPrimitive2::OPERAND_B, tmp::T2);
+            masm.check_fixnums(tmp::T1, tmp::T2, tmp::T0, slow);
+            masm.$checked(tmp::T0, tmp::T1, tmp::T2, tmp::T3, slow);
+            context.store_register(masm, OpCallPrimitive2::OPERAND_DST, tmp::T0, tmp::T1);
+            context.next(masm);
+            context.prim_slow(
+                masm,
+                slow,
+                PrimSlowId::Immediate($id as u16),
+                &[OpCallPrimitive2::OPERAND_A, OpCallPrimitive2::OPERAND_B],
+                OpCallPrimitive2::OPERAND_DST,
+            );
+        }
+    };
+}
+
+prim2_fx_raising!(prim2_fx_add, PRIM_FX_ADD, fixnum_add_checked);
+prim2_fx_raising!(prim2_fx_sub, PRIM_FX_SUB, fixnum_sub_checked);
+prim2_fx_raising!(prim2_fx_mul, PRIM_FX_MUL, fixnum_mul_checked);
 prim2_fx_wrap!(prim2_fx_and, PRIM_FX_AND, andq);
 prim2_fx_wrap!(prim2_fx_ior, PRIM_FX_IOR, orq);
 prim2_fx_wrap!(prim2_fx_xor, PRIM_FX_XOR, xorq);
@@ -1162,13 +1185,6 @@ fn prim1_fx_not<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     );
 }
 
-/// `fxarithmetic-shift-left/right`: the arms are `wrapping_shl/shr`,
-/// which mask the count to 5 bits. The `q` shifts lower to 64-bit
-/// hardware shifts, which mask to 6 bits (the reference's `<5:0>` note
-/// is wrong for the `q` forms, read `x86.rs::shift`, not the
-/// reference), so the mask is explicit, and negative counts agree with
-/// the `as u32` cast for free. No tmp is `rcx`, so the x86-64
-/// variable-count dance never rejects these.
 macro_rules! prim2_fx_shift {
     ($name:ident, $id:expr, $op:ident) => {
         fn $name<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
@@ -1197,7 +1213,37 @@ macro_rules! prim2_fx_shift {
     };
 }
 
-prim2_fx_shift!(prim2_fx_ashl, PRIM_FX_ASHL, lshiftq);
+/// `fxarithmetic-shift-left`: counts outside 0..32 and results that do
+/// not round-trip through 32 bits take the slow call, which raises.
+fn prim2_fx_ashl<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
+    let slow = masm.label();
+    context.load_register(masm, OpCallPrimitive2::OPERAND_A, tmp::T1);
+    context.load_register(masm, OpCallPrimitive2::OPERAND_B, tmp::T2);
+    masm.check_fixnums(tmp::T1, tmp::T2, tmp::T0, slow);
+    masm.unbox_int32(tmp::T1, tmp::T1);
+    masm.unbox_int32(tmp::T2, tmp::T2);
+    onlineasm!(*masm.assembler();
+        bqlt {tmp::T2}, 0, {slow};
+        bqgt {tmp::T2}, 31, {slow};
+        move {tmp::T0}, {tmp::T1};
+        lshiftq {tmp::T0}, {tmp::T2};
+    );
+    masm.box_int32(tmp::T3, tmp::T0);
+    masm.unbox_int32(tmp::T3, tmp::T3);
+    onlineasm!(*masm.assembler();
+        bqneq {tmp::T0}, {tmp::T3}, {slow};
+    );
+    masm.box_int32(tmp::T0, tmp::T0);
+    context.store_register(masm, OpCallPrimitive2::OPERAND_DST, tmp::T0, tmp::T1);
+    context.next(masm);
+    context.prim_slow(
+        masm,
+        slow,
+        PrimSlowId::Immediate(PRIM_FX_ASHL as u16),
+        &[OpCallPrimitive2::OPERAND_A, OpCallPrimitive2::OPERAND_B],
+        OpCallPrimitive2::OPERAND_DST,
+    );
+}
 prim2_fx_shift!(prim2_fx_ashr, PRIM_FX_ASHR, rshiftq);
 
 /// Flonum arithmetic (`fl+`, `fl-`, `fl*`, `fl/`): the flonum-only leaf

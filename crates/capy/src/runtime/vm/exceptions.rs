@@ -21,6 +21,7 @@ pub enum RaiseKind {
     WrongNumberOfArgumentsVariableBound = 10,
     CarNotPair = 11,
     CdrNotPair = 12,
+    FixnumOverflow = 13,
 }
 
 impl RaiseKind {
@@ -43,6 +44,7 @@ impl RaiseKind {
             10 => Some(Self::WrongNumberOfArgumentsVariableBound),
             11 => Some(Self::CarNotPair),
             12 => Some(Self::CdrNotPair),
+            13 => Some(Self::FixnumOverflow),
             _ => None,
         }
     }
@@ -530,6 +532,18 @@ fn make_raise_condition_impl<'gc>(
                     .assertion()
                     .message_value(ctx.str("attempt to call non-procedure"))
                     .irritants(&[subr])
+                    .marks(),
+                source,
+            )
+        }
+        RaiseKind::FixnumOverflow => {
+            let value = values.first().copied().unwrap_or(Value::new(false));
+            finish_condition(
+                ConditionBuilder::new(ctx)
+                    .implementation_restriction()
+                    .who("fixnum arithmetic")
+                    .message("integer overflow")
+                    .irritants(&[value])
                     .marks(),
                 source,
             )

@@ -305,6 +305,13 @@ macro_rules! check_fl {
     };
 }
 
+fn fx_overflow<'gc>(irritant: Value<'gc>) -> PrimError<'gc> {
+    PrimError {
+        kind: RaiseKind::FixnumOverflow,
+        irritant,
+    }
+}
+
 fn ovf<'gc>(result: Option<i32>) -> Value<'gc> {
     match result {
         Some(value) => fx(value),
@@ -1445,7 +1452,10 @@ pub(crate) unsafe fn prim_fx_add<'gc>(
     b: Value<'gc>,
 ) -> PrimResult<'gc> {
     check_fx!(a, b);
-    Ok(fx(fxv(a).wrapping_add(fxv(b))))
+    match fxv(a).checked_add(fxv(b)) {
+        Some(v) => Ok(fx(v)),
+        None => Err(fx_overflow(a)),
+    }
 }
 
 #[inline(always)]
@@ -1455,7 +1465,10 @@ pub(crate) unsafe fn prim_fx_sub<'gc>(
     b: Value<'gc>,
 ) -> PrimResult<'gc> {
     check_fx!(a, b);
-    Ok(fx(fxv(a).wrapping_sub(fxv(b))))
+    match fxv(a).checked_sub(fxv(b)) {
+        Some(v) => Ok(fx(v)),
+        None => Err(fx_overflow(a)),
+    }
 }
 
 #[inline(always)]
@@ -1465,7 +1478,10 @@ pub(crate) unsafe fn prim_fx_mul<'gc>(
     b: Value<'gc>,
 ) -> PrimResult<'gc> {
     check_fx!(a, b);
-    Ok(fx(fxv(a).wrapping_mul(fxv(b))))
+    match fxv(a).checked_mul(fxv(b)) {
+        Some(v) => Ok(fx(v)),
+        None => Err(fx_overflow(a)),
+    }
 }
 
 #[inline(always)]
@@ -1584,7 +1600,14 @@ pub(crate) unsafe fn prim_fx_ashl<'gc>(
     b: Value<'gc>,
 ) -> PrimResult<'gc> {
     check_fx!(a, b);
-    Ok(fx(fxv(a).wrapping_shl(fxv(b) as u32)))
+    let (x, n) = (fxv(a) as i64, fxv(b) as i64);
+    if (0..32).contains(&n) {
+        let r = x << n;
+        if r >= i32::MIN as i64 && r <= i32::MAX as i64 {
+            return Ok(fx(r as i32));
+        }
+    }
+    Err(fx_overflow(a))
 }
 
 #[inline(always)]
@@ -1905,27 +1928,27 @@ pub(crate) unsafe fn prim_fl_exp<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>) 
 }
 
 #[inline(always)]
-pub(crate) unsafe fn prim_fl_log<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>) -> PrimResult<'gc> {
+pub(crate) unsafe fn prim_fl_log<'gc>(_ctx: MutationContext<'gc>, a: Value<'gc>) -> PrimResult<'gc> {
     check_fl!(a);
-    Ok(thunks::log(ctx, a))
+    Ok(fl(flv(a).ln()))
 }
 
 #[inline(always)]
 pub(crate) unsafe fn prim_fl_asin<'gc>(
-    ctx: MutationContext<'gc>,
+    _ctx: MutationContext<'gc>,
     a: Value<'gc>,
 ) -> PrimResult<'gc> {
     check_fl!(a);
-    Ok(thunks::asin(ctx, a))
+    Ok(fl(flv(a).asin()))
 }
 
 #[inline(always)]
 pub(crate) unsafe fn prim_fl_acos<'gc>(
-    ctx: MutationContext<'gc>,
+    _ctx: MutationContext<'gc>,
     a: Value<'gc>,
 ) -> PrimResult<'gc> {
     check_fl!(a);
-    Ok(thunks::acos(ctx, a))
+    Ok(fl(flv(a).acos()))
 }
 
 #[inline(always)]
