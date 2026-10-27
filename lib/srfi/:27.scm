@@ -22,13 +22,17 @@
         (bitwise-and sum #xffffffffffffffff)))
 
     ;; splitmix64 prng: used to seed xoshiro256
+    ;; All arithmetic wraps at 64 bits, as with uint64_t: without the
+    ;; masks the state words grow a few bits per draw, so every draw
+    ;; allocates ever-larger bignums and the live state bloats forever.
     (define (%split-mix-next state)
       (let ([state (fx64/wrapping+ state #x9e3779b97f4a7c15)])
         (let* ([z (bitwise-xor state (bitwise-arithmetic-shift-right state 30))]
-               [z (* z #xbf58476d1ce4e5b9)]
+               [z (bitwise-and (* z #xbf58476d1ce4e5b9) #xffffffffffffffff)]
                [z (bitwise-xor z (bitwise-arithmetic-shift-right z 27))]
-               [z (* z #x94d049bb133111eb)]
-               [result (bitwise-xor z (bitwise-arithmetic-shift-right z 31))])
+               [z (bitwise-and (* z #x94d049bb133111eb) #xffffffffffffffff)]
+               [result (bitwise-and (bitwise-xor z (bitwise-arithmetic-shift-right z 31))
+                                    #xffffffffffffffff)])
           (values result state))))
 
     (define-record-type <split-mix>
@@ -60,12 +64,13 @@
 
     ;; Output next random 64-bit integer and update state
     (define (xoshiro256-next state)
-      (let* ((s0 (tuple-ref state 1))
-             (s1 (tuple-ref state 2))
-             (s2 (tuple-ref state 3))
-             (s3 (tuple-ref state 4))
+      (let* ((s0 (bitwise-and (tuple-ref state 1) #xffffffffffffffff))
+             (s1 (bitwise-and (tuple-ref state 2) #xffffffffffffffff))
+             (s2 (bitwise-and (tuple-ref state 3) #xffffffffffffffff))
+             (s3 (bitwise-and (tuple-ref state 4) #xffffffffffffffff))
              (result (rol64 (fx64/wrapping+ s0 s3) 23)))
-        (let* ((t (bitwise-arithmetic-shift-left s1 17))
+        (let* ((t (bitwise-and (bitwise-arithmetic-shift-left s1 17)
+                               #xffffffffffffffff))
                (s2 (bitwise-xor s2 s0))
                (s3 (bitwise-xor s3 s1))
                (s1 (bitwise-xor s1 s2))
