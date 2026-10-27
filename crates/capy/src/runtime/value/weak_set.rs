@@ -32,8 +32,18 @@ pub(crate) struct WeakEntry<'gc> {
 }
 
 impl<'gc> WeakEntry<'gc> {
-    fn is_broken(&self, mc: MutationContext<'gc>) -> bool {
-        self.get(mc).is_bwp()
+    /// Raw value bits for internal probing, without the weak load barrier.
+    /// Probing with [`get`](Self::get) would retain every dead entry it
+    /// touches while a concurrent collection is marking (SATB treats each
+    /// weak load as a new root), so dead entries could never break.
+    fn raw(&self) -> Value<'gc> {
+        self.value
+    }
+
+    /// Whether the entry is already known broken (cleared by the GC),
+    /// without the weak load barrier. Same retention hazard as [`raw`](Self::raw).
+    fn is_broken_raw(&self) -> bool {
+        self.value.is_bwp()
     }
 
     fn broken() -> Self {
@@ -160,7 +170,7 @@ impl<'gc> WeakSetInner<'gc> {
 
         loop {
             empty = (empty + 1) % size;
-            let value = entries[empty].get().get(mc);
+            let value = entries[empty].get().raw();
             if value.is_bwp() {
                 break;
             }
@@ -194,7 +204,7 @@ impl<'gc> WeakSetInner<'gc> {
             if hash == 0 || hash_to_index(hash, size) == next {
                 break;
             }
-            let value = next_entry.get(mc);
+            let value = next_entry.raw();
             if value.is_bwp() {
                 self.give_to_poor(mc, next);
                 self.n_items.set(self.n_items.get() - 1);
@@ -298,7 +308,7 @@ impl<'gc> WeakSetInner<'gc> {
 
             let entry = old_entries[old_k].get();
 
-            if entry.is_broken(mc) {
+            if entry.is_broken_raw() {
                 continue;
             }
 
@@ -332,7 +342,7 @@ impl<'gc> WeakSetInner<'gc> {
 
         for k in 0..size {
             let entry = entries[k].get();
-            if entry.hash != 0 && entry.is_broken(mc) {
+            if entry.hash != 0 && entry.is_broken_raw() {
                 Self::give_to_poor(this, mc, k);
                 this.n_items.set(this.n_items.get().saturating_sub(1));
             }
@@ -367,15 +377,17 @@ impl<'gc> WeakSetInner<'gc> {
                 if hash == other_hash {
                     let entry = entries[k].get();
 
-                    if entry.is_broken(mc) {
+                    if entry.is_broken_raw() {
                         this.give_to_poor(mc, k);
                         this.n_items.set(this.n_items.get() - 1);
                         other_hash = entries[k].get().hash;
                         continue 'retry;
                     }
-                    let value = entry.get(mc);
+                    let value = entry.raw();
                     if pred(mc, value) {
-                        return Some(value);
+                        // Escapes to the caller: load with the barrier so a
+                        // concurrent collection retains the value.
+                        return Some(entry.get(mc));
                     }
                 }
 
@@ -416,17 +428,18 @@ impl<'gc> WeakSetInner<'gc> {
 
                 if other_hash == hash {
                     let entry = entries[k].get();
-                    let value = entry.get(mc);
-                    if entry.is_broken(mc) {
+                    if entry.is_broken_raw() {
                         this.give_to_poor(mc, k);
                         this.n_items.set(this.n_items.get() - 1);
 
                         continue 'retry;
                     }
 
+                    let value = entry.raw();
                     if pred(mc, value) {
-                        // Found an entry with this key.
-                        return value;
+                        // Found an entry with this key; it escapes to the
+                        // caller, so load it with the barrier.
+                        return entry.get(mc);
                     }
                 }
 
@@ -481,15 +494,16 @@ impl<'gc> WeakSetInner<'gc> {
 
                 if other_hash == hash {
                     let entry = entries[k].get();
-                    let value = entry.get(mc);
-                    if entry.is_broken(mc) {
+                    if entry.is_broken_raw() {
                         this.give_to_poor(mc, k);
                         this.n_items.set(this.n_items.get().saturating_sub(1));
                         other_hash = entries[k].get().hash;
                         continue 'retry;
                     }
 
-                    if pred(mc, value) {
+                    // No escape: the entry is unlinked below, so compare
+                    // without the weak load barrier.
+                    if pred(mc, entry.raw()) {
                         // Found an entry with this key.
                         Gc::write(mc, entries)[k].unlock().set(WeakEntry {
                             value: Value::bwp(),

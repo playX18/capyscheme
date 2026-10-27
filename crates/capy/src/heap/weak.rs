@@ -142,6 +142,8 @@ impl<'gc, T> Default for Weak<'gc, T> {
 
 pub struct WeakProcessor<'a> {
     pub(crate) tracer: &'a mut dyn ObjectTracer,
+    /// Set when processing marked an object that was not reachable before, so
+    /// the caller must run another round to trace through it.
     pub(crate) has_any: bool,
 }
 
@@ -215,6 +217,12 @@ impl<'a> SlotVisitor<ObjectSlot> for WeakProcessor<'a> {
         let Some(obj) = slot.load() else {
             return;
         };
+
+        // Only newly marked objects count as work: re-visiting an already
+        // reachable one must not keep weak processing from converging.
+        if !obj.is_reachable() {
+            self.has_any = true;
+        }
 
         let new = self.tracer.trace_object(obj);
         slot.store(new);

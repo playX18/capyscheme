@@ -809,11 +809,11 @@ impl Thread {
     /// The semantics an allocation with `semantics` really gets. MMTk 0.33's
     /// non-moving space is an `ImmixSpace`. SemiSpace and MarkSweep trace it
     /// with a trace kind it rejects (`unreachable!` in
-    /// `ImmixSpace::trace_object`), and under ConcurrentImmix objects in it
-    /// are lost (a code buffer read from a FASL file is found corrupt, the
-    /// large object space does not show it). Under those plans non-moving
-    /// objects go where nothing moves them either: the large object space,
-    /// or mark-sweep's own default space.
+    /// `ImmixSpace::trace_object`). Under those plans non-moving objects go
+    /// where nothing moves them either: the large object space, or
+    /// mark-sweep's own default space. ConcurrentImmix needs no remap as long
+    /// as the vendored mmtk-core resets the non-moving allocator at each
+    /// pause (see the `[patch]` in the workspace `Cargo.toml`).
     #[inline(always)]
     pub fn map_semantics(&self, semantics: AllocationSemantics) -> AllocationSemantics {
         if semantics == AllocationSemantics::NonMoving {
@@ -838,8 +838,7 @@ impl Thread {
         native_data.max_non_los_default_alloc_bytes = constraints.max_non_los_default_alloc_bytes;
         native_data.barrier_selector = constraints.barrier;
         native_data.nonmoving_semantics = match *gc.mmtk.get_options().plan {
-            mmtk::util::options::PlanSelector::SemiSpace
-            | mmtk::util::options::PlanSelector::ConcurrentImmix => AllocationSemantics::Los,
+            mmtk::util::options::PlanSelector::SemiSpace => AllocationSemantics::Los,
             // Mark-sweep never moves its default space.
             mmtk::util::options::PlanSelector::MarkSweep => AllocationSemantics::Default,
             _ => AllocationSemantics::NonMoving,

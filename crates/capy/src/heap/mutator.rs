@@ -597,7 +597,13 @@ impl<'gc> Mutation<'gc> {
     ) -> UnpublishedAllocation {
         let mut semantics = self.nd().map_semantics(space.to_semantics());
         unsafe {
-            if size + size_of::<HeapObjectHeader>() >= LOS_THRESHOLD_BYTES {
+            // The 8 KiB cutoff is for the default space, which the JIT mirrors.
+            // The non-moving space only spills to Los at the plan's own limit.
+            let cutoff = match semantics {
+                AllocationSemantics::NonMoving => self.nd().max_non_los_alloc_bytes(),
+                _ => LOS_THRESHOLD_BYTES,
+            };
+            if size + size_of::<HeapObjectHeader>() >= cutoff {
                 semantics = AllocationSemantics::Los;
             }
 

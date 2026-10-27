@@ -3,7 +3,10 @@
 use std::{
     cell::Cell,
     hash::Hasher,
-    sync::{Arc, Once, OnceLock},
+    sync::{
+        Arc, Once, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use crate::heap::{
@@ -19,7 +22,10 @@ use crate::heap::{
 };
 use simplehash::MurmurHasher64;
 
-use crate::runtime::MutationContext;
+use crate::runtime::{
+    MutationContext,
+    vmthread::{Command, VM_THREAD},
+};
 
 use super::{WeakValue, *};
 
@@ -124,8 +130,29 @@ impl<'gc> WeakEntry<'gc> {
         self._key.get(mc)
     }
 
-    fn value(&self, _mc: MutationContext<'gc>) -> Value<'gc> {
-        self._value.get()
+    /// Raw key bits for internal probe comparison, without the weak load
+    /// barrier. Probing with [`key`](Self::key) would retain every dead key
+    /// it touches while a concurrent collection is marking (SATB treats
+    /// each weak load as a new root), so dead entries could never break.
+    fn raw_key(&self) -> Value<'gc> {
+        self._key.as_value()
+    }
+
+    /// Value of this entry, for callers that let it escape the table. The
+    /// value is only kept alive through its key, so it needs the weak load
+    /// barrier to be retained under a concurrent mark.
+    fn value(&self, mc: MutationContext<'gc>) -> Value<'gc> {
+        let value = self._value.get();
+        if value.is_bwp() || !value.is_cell() {
+            return value;
+        }
+
+        // SAFETY: The value descriptor contains a valid GC object pointer
+        unsafe {
+            mc.raw_weak_reference_load(value.desc.ptr());
+        }
+
+        value
     }
 }
 
@@ -148,6 +175,7 @@ unsafe impl<'gc> Trace for WeakEntry<'gc> {
         }
 
         if self._key.is_broken() {
+            VACUUM_PENDING.store(true, Ordering::Relaxed);
             // SAFETY: No concurrent access to this `Lock` cell exists at this point
             unsafe { self._value.unlock_unchecked().set(Value::bwp()) };
         } else {
@@ -335,7 +363,7 @@ impl<'gc> WeakTable<'gc> {
 
                 let index = (entry.hash % new_capacity as u64) as usize;
                 let wentry = Gc::write(ctx, entry);
-                let key = entry.key(ctx);
+                let key = entry.raw_key();
                 if key.is_bwp() || !key.is_cell() {
                     continue;
                 }
@@ -392,7 +420,7 @@ impl<'gc> WeakTable<'gc> {
         let mut e = guard.entries.get()[index].get();
 
         while let Some(entry) = e {
-            let ekey = entry.key(ctx);
+            let ekey = entry.raw_key();
             if entry.hash == hash && ekey == key {
                 let old_value = entry.value(ctx);
                 barrier::field!(Gc::write(ctx, entry), WeakEntry, _value)
@@ -431,7 +459,7 @@ impl<'gc> WeakTable<'gc> {
         let mut prev: Option<Gc<'gc, WeakEntry<'gc>>> = None;
 
         while let Some(entry) = e {
-            let ekey = entry.key(ctx);
+            let ekey = entry.raw_key();
             if entry.hash == hash && ekey == key {
                 if let Some(prev_entry) = prev {
                     barrier::field!(Gc::write(ctx, prev_entry), WeakEntry, next)
@@ -444,7 +472,7 @@ impl<'gc> WeakTable<'gc> {
                 }
                 guard.count.set(guard.count.get() - 1);
                 guard.mod_count.set(guard.mod_count.get() + 1);
-                return Some(entry._value.get());
+                return Some(entry.value(ctx));
             }
             prev = Some(entry);
             e = entry.next.get();
@@ -461,7 +489,7 @@ impl<'gc> WeakTable<'gc> {
             let mut e = table[i].get();
             let mut prev = None;
             while let Some(entry) = e {
-                let ekey = entry.key(mc);
+                let ekey = entry.raw_key();
                 if ekey.is_bwp() || !ekey.is_cell() {
                     if let Some(prev_entry) = prev {
                         barrier::field!(Gc::write(mc, prev_entry), WeakEntry, next)
@@ -502,7 +530,7 @@ impl<'gc> WeakTable<'gc> {
         let mut e = guard.entries.get()[index].get();
 
         while let Some(entry) = e {
-            let ekey = entry.key(ctx);
+            let ekey = entry.raw_key();
             if entry.hash == hash && ekey == key {
                 return Some(entry.value(ctx));
             }
@@ -681,10 +709,18 @@ pub fn vacuum_weak_tables<'gc>(mc: MutationContext<'gc>) {
     }
 }
 
+/// Set by weak processing when an entry's key broke; cleared when a vacuum is
+/// queued, so at most one is outstanding per collection.
+static VACUUM_PENDING: AtomicBool = AtomicBool::new(false);
+
 impl FinalizationNotify for WeakTableCleanup {
     fn notify_in_processing(&self) {}
 
-    fn schedule(&self) {}
+    fn schedule(&self) {
+        if VACUUM_PENDING.swap(false, Ordering::Relaxed) {
+            VM_THREAD.schedule_task(Command::VacuumWeakTables);
+        }
+    }
 }
 
 static ONCE: Once = Once::new();

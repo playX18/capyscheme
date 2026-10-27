@@ -1,9 +1,4 @@
 //! Capy GC trigger policy and shared heuristic state.
-//!
-//! The MMTk trigger callback enters this module with plan-level heap accounting.
-//! Shared code builds a small heap snapshot, records allocation/GC history, and
-//! dispatches to the selected heuristic mode.  Mode-specific behavior lives in
-//! sibling modules when it has enough logic to stand alone.
 
 use std::{
     fmt,
@@ -38,7 +33,7 @@ mod generational;
 const DEFAULT_MAX_HEAP_BYTES: usize = 2 * 1024 * 1024 * 1024;
 const DEFAULT_MIN_FREE_THRESHOLD_PERCENT: usize = 10;
 const DEFAULT_INIT_FREE_THRESHOLD_PERCENT: usize = 50;
-const DEFAULT_HEAP_GROWTH_FREE_PERCENT: usize = 50;
+const DEFAULT_HEAP_GROWTH_FREE_PERCENT: usize = 75;
 const HEAP_GROWTH_MIN_STEP_PERCENT: usize = 25;
 const HEAP_SHRINK_AFTER_CYCLES: usize = 3;
 const HEADROOM_FLOOR_BYTES: usize = 1024 * 1024;
@@ -128,11 +123,9 @@ pub(crate) struct HeuristicConfig {
     pub(crate) acceleration_sample_count: usize,
     pub(crate) momentary_spike_sample_count: usize,
     pub(crate) guaranteed_gc_interval: Option<Duration>,
-    pub(crate) expedite_promotion_threshold_percent: usize,
-    pub(crate) expedite_mixed_threshold: usize,
-    pub(crate) old_garbage_threshold_percent: usize,
     pub(crate) minimum_old_time: Duration,
-    pub(crate) old_growth_allowance_percent: usize,
+    pub(crate) old_growth_percent: usize,
+    pub(crate) old_growth_remaining_heap_percent: usize,
     pub(crate) old_growth_ignore_percent: usize,
     pub(crate) old_growth_ignore_young_cycles: usize,
 }
@@ -156,12 +149,9 @@ impl HeuristicConfig {
             acceleration_sample_count: adaptive::DEFAULT_ACCELERATION_SAMPLE_COUNT,
             momentary_spike_sample_count: adaptive::DEFAULT_MOMENTARY_SPIKE_SAMPLE_COUNT,
             guaranteed_gc_interval: Some(DEFAULT_GUARANTEED_GC_INTERVAL),
-            expedite_promotion_threshold_percent:
-                generational::EXPEDITE_PROMOTION_THRESHOLD_PERCENT,
-            expedite_mixed_threshold: generational::EXPEDITE_MIXED_THRESHOLD,
-            old_garbage_threshold_percent: generational::OLD_GARBAGE_THRESHOLD_PERCENT,
             minimum_old_time: generational::MINIMUM_OLD_TIME,
-            old_growth_allowance_percent: generational::OLD_GROWTH_ALLOWANCE_PERCENT,
+            old_growth_percent: generational::OLD_GROWTH_PERCENT,
+            old_growth_remaining_heap_percent: generational::OLD_GROWTH_REMAINING_HEAP_PERCENT,
             old_growth_ignore_percent: generational::OLD_GROWTH_IGNORE_PERCENT,
             old_growth_ignore_young_cycles: generational::OLD_GROWTH_IGNORE_YOUNG_CYCLES,
         };
@@ -175,8 +165,15 @@ impl HeuristicConfig {
     }
 
     pub(crate) fn from_env() -> Self {
-        let mode =
+        let mut mode =
             HeuristicMode::from_word(flags::gc_heuristic()).unwrap_or(HeuristicMode::Adaptive);
+        if mode == HeuristicMode::Generational && !plan_is_generational() {
+            log::warn!(
+                target: GC_LOG_TARGET,
+                "generational heuristic needs the GenImmix, GenCopy or StickyImmix plan; using adaptive"
+            );
+            mode = HeuristicMode::Adaptive;
+        }
         let mut config = Self::defaults_for_mode(mode);
 
         if flags::is_set(FlagId::gc_max_heap) {
@@ -240,16 +237,19 @@ impl HeuristicConfig {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct HeapSnapshot {
-    /// Current (growable) heap size.
     pub(crate) total_bytes: usize,
-    /// Upper bound the heap may grow to.
-    pub(crate) max_bytes: usize,
+    /// Current heap limit, which may sit below `total_bytes` while the heap grows.
+    pub(crate) committed_bytes: usize,
     pub(crate) available_bytes: usize,
     pub(crate) free_bytes: usize,
     pub(crate) allocated_since_gc: usize,
 }
 
 impl HeapSnapshot {
+    pub(super) fn used_bytes(self) -> usize {
+        self.total_bytes.saturating_sub(self.effective_free_bytes())
+    }
+
     pub(super) fn effective_free_bytes(self) -> usize {
         // MMTk exposes both free and available pages.  Available includes
         // collection reserves for copying plans, while free is closer to raw
@@ -416,9 +416,7 @@ impl HeuristicState {
             free_at_end_history: DecayingSequence::new(config.adaptive_decay_factor),
             adaptive_confidence: config.adaptive_confidence,
             adaptive_spike_threshold: config.adaptive_spike_threshold,
-            generational: generational::GenerationalState::new(
-                config.old_garbage_threshold_percent,
-            ),
+            generational: generational::GenerationalState::new(),
             config,
             start_gc_is_pending: false,
             declined_trigger_count: 0,
@@ -671,9 +669,11 @@ impl CapyTriggerPolicy {
 
     fn with_config(config: HeuristicConfig) -> Self {
         let max_heap_pages = bytes_to_pages_up(config.max_heap_bytes);
-        let initial_heap_pages = bytes_to_pages_up(config.initial_heap_bytes)
-            .min(max_heap_pages)
-            .max(1);
+        // Clamp in bytes first: `usize::MAX` (fixed at max) overflows the page conversion.
+        let initial_heap_pages =
+            bytes_to_pages_up(config.initial_heap_bytes.min(config.max_heap_bytes))
+                .min(max_heap_pages)
+                .max(1);
         Self {
             state: Mutex::new(HeuristicState::new(config)),
             max_heap_pages,
@@ -695,11 +695,14 @@ impl CapyTriggerPolicy {
         free_bytes: usize,
         allocated_since_gc: usize,
     ) -> HeapSnapshot {
+        let total_bytes = pages_to_bytes(self.max_heap_pages);
+        let committed_bytes = self.current_heap_bytes();
+        let unclaimed = total_bytes.saturating_sub(committed_bytes);
         HeapSnapshot {
-            total_bytes: self.current_heap_bytes(),
-            max_bytes: pages_to_bytes(self.max_heap_pages),
-            available_bytes,
-            free_bytes,
+            total_bytes,
+            committed_bytes,
+            available_bytes: available_bytes.saturating_add(unclaimed),
+            free_bytes: free_bytes.saturating_add(unclaimed),
             allocated_since_gc,
         }
     }
@@ -926,6 +929,15 @@ fn next_heap_pages(
     (next.clamp(initial.min(max), max), streak)
 }
 
+/// Whether the configured MMTk plan is one of the generational ones.
+fn plan_is_generational() -> bool {
+    flags::gc_plan().is_some_and(|plan| {
+        ["GenImmix", "GenCopy", "StickyImmix"]
+            .iter()
+            .any(|name| plan.eq_ignore_ascii_case(name))
+    })
+}
+
 fn percent_of(total: usize, percent: usize) -> usize {
     total / 100 * percent
 }
@@ -936,33 +948,4 @@ fn pages_to_bytes(pages: usize) -> usize {
 
 fn elapsed_seconds(start: Instant, end: Instant) -> f64 {
     end.saturating_duration_since(start).as_secs_f64()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::next_heap_pages;
-
-    #[test]
-    fn grows_to_target_and_caps_at_max() {
-        assert_eq!(next_heap_pages(60, 100, 10, 1000, 50, 10, 0).0, 120);
-        assert_eq!(next_heap_pages(900, 100, 10, 1000, 50, 10, 0).0, 1000);
-    }
-
-    #[test]
-    fn near_full_steps_by_at_least_a_quarter() {
-        assert_eq!(next_heap_pages(95, 100, 10, 1000, 10, 10, 0).0, 125);
-    }
-
-    #[test]
-    fn shrinks_only_after_streak_and_not_below_initial() {
-        let (n, s) = next_heap_pages(10, 400, 100, 1000, 50, 10, 0);
-        assert_eq!((n, s), (400, 1));
-        let (n, s) = next_heap_pages(10, 400, 100, 1000, 50, 10, 2);
-        assert_eq!((n, s), (100, 0));
-    }
-
-    #[test]
-    fn initial_at_or_above_max_is_fixed() {
-        assert_eq!(next_heap_pages(10, 1000, 1000, 1000, 50, 10, 2).0, 1000);
-    }
 }

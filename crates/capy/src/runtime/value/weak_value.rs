@@ -43,6 +43,12 @@ impl<'gc> WeakValue<'gc> {
         self.as_value().raw_i64() == Value::bwp().raw_i64()
     }
 
+    /// Load the value, applying the weak reference load barrier.
+    ///
+    /// Use this when the value escapes to the mutator (it becomes a root
+    /// that a concurrent collection must retain). Internal hash-table
+    /// probes must compare with [`as_value`](Self::as_value) instead: the
+    /// barrier would retain every dead entry they touch.
     pub fn get(&self, mc: impl Into<Mutation<'gc>>) -> Value<'gc> {
         let mc = mc.into();
         if !self.as_value().is_cell() {
