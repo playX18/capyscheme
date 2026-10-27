@@ -16,6 +16,11 @@
     size_t
     ssize_t
     ptrdiff_t
+    wchar_t
+    bool
+    bool->boolean
+    boolean->bool
+    typed
     int8
     uint8
     uint16
@@ -46,6 +51,35 @@
     pointer->string
 
     pointer->procedure
+    procedure->callback-pointer
+    free-callback-pointer
+
+    pointer-ref
+    pointer-set!
+    pointer-ref/pointer
+    pointer-set/pointer!
+    pointer-ref/u8
+    pointer-set!/u8
+    pointer-ref/s8
+    pointer-set!/s8
+    pointer-ref/u16
+    pointer-set!/u16
+    pointer-ref/s16
+    pointer-set!/s16
+    pointer-ref/u32
+    pointer-set!/u32
+    pointer-ref/s32
+    pointer-set!/s32
+    pointer-ref/u64
+    pointer-set!/u64
+    pointer-ref/s64
+    pointer-set!/s64
+    pointer-ref/f32
+    pointer-set!/f32
+    pointer-ref/f64
+    pointer-set!/f64
+    foreign-alloc
+    foreign-free
 
     read-c-struct
     write-c-struct
@@ -56,6 +90,7 @@
     struct-size
     struct-alignment
     errno
+    errno-set!
     ioctl/pointer
     dll-suffix)
   (import
@@ -81,6 +116,10 @@
     (define size_t %size_t)
     (define ssize_t %ssize_t)
     (define ptrdiff_t %ptrdiff_t)
+    ;; wchar_t is int32 on unix-like platforms.
+    (define wchar_t %int32)
+    ;; C has no bool code in ForeignType; a bool is a uint8 holding 0 or 1.
+    (define bool %uint8)
     (define int8 %int8)
     (define uint8 %uint8)
     (define int16 %int16)
@@ -107,6 +146,17 @@ The resulting pointer stays valid while the returned pointer object is live
 
   (define (null-pointer? x)
     (= (pointer-address x) 0))
+
+  (define (bool->boolean x)
+    (not (eqv? x 0)))
+
+  (define (boolean->bool b)
+    (if b 1 0))
+
+  ;; Wraps VALUE so a variadic foreign call passes it with the C type TYPE, e.g.
+  ;; (typed int64 n) or (typed size_t n). Without it the type is guessed from the value.
+  (define (typed type value)
+    (list '%typed-argument type value))
 
   ;;;
   ;;; Packed structures.

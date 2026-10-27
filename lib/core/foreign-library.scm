@@ -88,6 +88,8 @@
                          (search-system-paths? #t)
                          (lazy? #t)
                          (global? #f))
+      (when filename
+        (check-c-string 'load-foreign-library filename))
       (define (error-not-found)
         (error 'load-foreign-library
           (format #f "Could not find foreign library '~a'" filename)))
@@ -129,8 +131,15 @@
     (if (foreign-library? lib)
       lib
       (load-foreign-library lib)))
+      
+  (define (check-c-string who s)
+    (unless (string? s)
+      (assertion-violation who "expected a string" s))
+    (when (string-contains s (string (integer->char 0)))
+      (assertion-violation who "string contains a NUL character" s)))
 
   (define (foreign-library-pointer lib name)
+    (check-c-string 'foreign-library-pointer name)
     (let ([handle (foreign-library-handle (->foreign-library lib))])
       (dlsym handle name)))
   (define (foreign-library-function lib name #:return [return void] #:arguments [arguments '()]

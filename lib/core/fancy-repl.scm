@@ -19,7 +19,7 @@
     (core exceptions)
     (core parameters)
     (core primitives)
-    (core repl)
+    (only (core repl) current-exception-printer)
     (rnrs)
     (srfi 8))
 

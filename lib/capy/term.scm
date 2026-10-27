@@ -73,6 +73,7 @@
     enable-raw-mode!
     disable-raw-mode!
     raw-mode-enabled?
+    with-raw-mode
     terminal-size
     terminal-window-size
     window-size?
@@ -121,6 +122,10 @@
     disable-bracketed-paste
     push-keyboard-enhancement-flags
     pop-keyboard-enhancement-flags
+    make-terminal
+    terminal?
+    terminal-events
+    terminal-close!
     poll-event
     read-event
     try-read-event
@@ -129,6 +134,7 @@
     copy-to-clipboard
     tty?
     ansi-supported?
+    open-tty-input-port
     open-tty-input-fd
     open-tty-output-fd
     open-tty-fd

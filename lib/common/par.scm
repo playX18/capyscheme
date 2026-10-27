@@ -2,7 +2,7 @@
 #!r6rs
 (library (common par)
   (export parmap)
-  (import (core threading) (srfi 1))
+  (import (rnrs) (only (capy) format) (core thread) (srfi 1))
 
   (define (parmap n proc lst)
     "Parallel map using N threads over lst1 ... lstN"
@@ -33,9 +33,9 @@
             (cdr chs)
             (+ start (length (car chs)))
             (cons
-              (call-with-new-thread
+              (go
                 (lambda () (worker (car chs) start)))
               ths)))))
 
-    (for-each join-thread threads)
+    (for-each thread-join threads)
     (vector->list results)))
