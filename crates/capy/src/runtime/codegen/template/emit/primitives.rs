@@ -1,5 +1,4 @@
-//! Primitives: `primitive0` through `primitive_n`.
-
+//! Primitives
 use onlineasm::onlineasm;
 
 use super::memory;
@@ -608,9 +607,6 @@ fn prim0_unspec<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     context.next(masm);
 }
 
-/// Total heap-class predicates: `pair?`, `procedure?`, `string?`,
-/// `symbol?`, `vector?`, `tuple?`. Each is `branch_not_heap_class` with a
-/// boolean result, so there is no slow path.
 macro_rules! pred_heap_class {
     ($name:ident, $class:expr) => {
         fn $name<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
@@ -639,8 +635,6 @@ pred_heap_class!(prim1_symbol, builtin_class_ids::SYMBOL);
 pred_heap_class!(prim1_vector, builtin_class_ids::VECTOR);
 pred_heap_class!(prim1_tuple, builtin_class_ids::TUPLE);
 
-/// Total immediate-equality predicates: `null?`, `eof-object?`,
-/// `unspecified?`. One compare against the singleton, no slow path.
 macro_rules! pred_const {
     ($name:ident, $const:expr) => {
         fn $name<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
@@ -827,8 +821,6 @@ fn prim1_not<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     context.next(masm);
 }
 
-/// `car`/`cdr`: the pair's words. Non-pairs raise through the slow call,
-/// which packs the same `CarNotPair`/`CdrNotPair` error as the arm.
 macro_rules! prim1_pair_accessor {
     ($name:ident, $id:expr, $off:expr) => {
         fn $name<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
@@ -927,9 +919,6 @@ fn prim2_tuple_ref<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     );
 }
 
-/// Fixnum binary predicates (`fx=?`, `fx<?`, ...): both fixnums compare
-/// by `$op` (unboxed, so the 64-bit compare is exact), anything else takes
-/// the slow call, which raises like the arm.
 macro_rules! prim2_fx_cmp {
     ($name:ident, $id:expr, $op:ident) => {
         fn $name<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
@@ -963,8 +952,6 @@ prim2_fx_cmp!(prim2_fx_le, PRIM_FX_LE, cqlteq);
 prim2_fx_cmp!(prim2_fx_gt, PRIM_FX_GT, cqgt);
 prim2_fx_cmp!(prim2_fx_ge, PRIM_FX_GE, cqgteq);
 
-/// Fixnum unary tests (`fxzero?`, `fxpositive?`, ...): one unbox and a
-/// comparison against zero. Non-fixnums take the slow call.
 macro_rules! prim1_fx_test {
     ($name:ident, $id:expr, $op:ident) => {
         fn $name<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
@@ -996,8 +983,6 @@ prim1_fx_test!(prim1_fx_positive, PRIM_FX_POSITIVE, cqgt);
 prim1_fx_test!(prim1_fx_negative, PRIM_FX_NEGATIVE, cqlt);
 prim1_fx_test!(prim1_is_zero, PRIM_IS_ZERO, cqeq);
 
-/// Fixnum parity (`fxodd?`, `fxeven?`, ...): the low bit, tested after
-/// the unbox (the boxed tag bit is not the value bit).
 macro_rules! prim1_fx_parity {
     ($name:ident, $id:expr, $want:expr) => {
         fn $name<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
@@ -1030,8 +1015,6 @@ prim1_fx_parity!(prim1_fx_even, PRIM_FX_EVEN, 0);
 prim1_fx_parity!(prim1_is_odd, PRIM_IS_ODD, 1);
 prim1_fx_parity!(prim1_is_even, PRIM_IS_EVEN, 0);
 
-/// `fxmin`/`fxmax`: the lesser/greater unboxed value, reboxed. Equal
-/// inputs agree, so either side is correct.
 macro_rules! prim2_fx_minmax {
     ($name:ident, $id:expr, $branch:ident) => {
         fn $name<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
@@ -1068,9 +1051,6 @@ macro_rules! prim2_fx_minmax {
 prim2_fx_minmax!(prim2_fx_min, PRIM_FX_MIN, bqlt);
 prim2_fx_minmax!(prim2_fx_max, PRIM_FX_MAX, bqgt);
 
-/// Checked fixnum arithmetic (`fx+/overflow`, ...): the checked op boxes
-/// on success, overflow answers `#f` inline, exactly like the arm's
-/// `ovf` helper. Only non-fixnums take the slow call.
 macro_rules! prim2_fx_ovf {
     ($name:ident, $id:expr, $checked:ident) => {
         fn $name<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
@@ -1104,9 +1084,6 @@ prim2_fx_ovf!(prim2_fx_add_ovf, PRIM_FX_ADD_OVF, fixnum_add_checked);
 prim2_fx_ovf!(prim2_fx_sub_ovf, PRIM_FX_SUB_OVF, fixnum_sub_checked);
 prim2_fx_ovf!(prim2_fx_mul_ovf, PRIM_FX_MUL_OVF, fixnum_mul_checked);
 
-/// Bitwise logic (`fxand`, `fxior`, `fxxor`): the result always fits,
-/// so the unchecked op on the unboxed values followed by `box_int32`
-/// is exact. Only non-fixnums take the slow call.
 macro_rules! prim2_fx_wrap {
     ($name:ident, $id:expr, $op:ident) => {
         fn $name<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
@@ -1133,9 +1110,6 @@ macro_rules! prim2_fx_wrap {
     };
 }
 
-/// Overflow-raising `fx+`, `fx-`, `fx*`: the checked op jumps to the slow
-/// call on signed 32-bit overflow, and the out-of-line prim raises the
-/// implementation-restriction condition the arm raises.
 macro_rules! prim2_fx_raising {
     ($name:ident, $id:expr, $checked:ident) => {
         fn $name<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
@@ -1246,9 +1220,6 @@ fn prim2_fx_ashl<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
 }
 prim2_fx_shift!(prim2_fx_ashr, PRIM_FX_ASHR, rshiftq);
 
-/// Flonum arithmetic (`fl+`, `fl-`, `fl*`, `fl/`): the flonum-only leaf
-/// of `arith.rs`, minus profiling (prims carry no metadata). Division
-/// by zero stays a flonum, so only non-flonums take the slow call.
 macro_rules! prim2_fl_arith {
     ($name:ident, $id:expr, $flonum:ident) => {
         fn $name<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
@@ -1278,8 +1249,6 @@ prim2_fl_arith!(prim2_fl_sub, PRIM_FL_SUB, flonum_sub);
 prim2_fl_arith!(prim2_fl_mul, PRIM_FL_MUL, flonum_mul);
 prim2_fl_arith!(prim2_fl_div, PRIM_FL_DIV, flonum_div);
 
-/// Flonum comparisons: `flonum_cmp_bool` answers `#f` for NaN under
-/// every condition, exactly like the arms' Rust operators.
 macro_rules! prim2_fl_cmp {
     ($name:ident, $id:expr, $cond:ident) => {
         fn $name<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
@@ -1310,8 +1279,6 @@ prim2_fl_cmp!(prim2_fl_gt, PRIM_FL_GT, Gt);
 prim2_fl_cmp!(prim2_fl_ge, PRIM_FL_GE, Ge);
 prim2_fl_cmp!(prim2_fl_eq, PRIM_FL_EQ, Eq);
 
-/// `flzero?`/`flpositive?`/`flnegative?`: compare against a zeroed
-/// `+0.0` (`-0.0 == +0.0`, NaN compares false, all matching Rust).
 macro_rules! prim1_fl_cmp0 {
     ($name:ident, $id:expr, $cond:ident) => {
         fn $name<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
@@ -1401,12 +1368,6 @@ fn prim1_fl_finite<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     );
 }
 
-/// `flmin`/`flmax`: unordered (NaN) takes the slow call, which answers
-/// the canonical NaN. There is no pure unordered branch (`bdnequn`
-/// also fires on ordered-not-equal), so each side self-compares.
-/// Ordered ties (`-0.0` vs `+0.0`) pick by the sign bit, matching
-/// `fl_min`/`fl_max`: `min` keeps the negative zero, `max` the
-/// positive one.
 macro_rules! prim2_fl_minmax {
     ($name:ident, $id:expr, $take_a:ident, $sign_takes_a:ident) => {
         fn $name<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
@@ -1451,8 +1412,6 @@ macro_rules! prim2_fl_minmax {
 prim2_fl_minmax!(prim2_fl_min, PRIM_FL_MIN, bdlt, bqlt);
 prim2_fl_minmax!(prim2_fl_max, PRIM_FL_MAX, bdgt, bqgteq);
 
-/// Unary float leaves (`flabs`, `flfloor`, `flceiling`, `fltruncate`,
-/// `flround`, `flsqrt`): unbox, hardware op, canonicalizing box.
 macro_rules! prim1_fl_unary {
     ($name:ident, $id:expr, $flonum:ident) => {
         fn $name<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
@@ -1549,9 +1508,6 @@ fn prim1_is_real<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     context.next(masm);
 }
 
-/// Predicates with constant answers on both inline types (`exact?`,
-/// `inexact?`, `exact-integer?`): fixnums and flonums never reach the
-/// wrapper, heap numbers and (for the raising two) non-numbers do.
 macro_rules! prim1_fixfl_const {
     ($name:ident, $id:expr, $fix_yes:expr, $fl_yes:expr) => {
         fn $name<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
@@ -1963,8 +1919,6 @@ fn prim3_tuple_set<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     );
 }
 
-/// `floor`/`ceiling`/`truncate`: fixnums are identity, flonums round
-/// through hardware, heap numbers and non-numbers take the generic path.
 macro_rules! prim1_round {
     ($name:ident, $round:ident, $id:expr) => {
         fn $name<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
@@ -2050,8 +2004,6 @@ fn prim1_inexact_to_exact<C: TemplateContext>(masm: &mut Masm, context: &mut C) 
     );
 }
 
-/// `flfloor`/`flceiling`/`fltruncate`/`flround`/`flabs`: flonums compute
-/// through hardware, anything else raises through the generic path.
 macro_rules! prim1_fl_unary {
     ($name:ident, $op:ident, $id:expr) => {
         fn $name<C: TemplateContext>(masm: &mut Masm, context: &mut C) {

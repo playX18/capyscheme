@@ -1084,7 +1084,10 @@ static SLOT: NativeSlot = NativeSlot {
     thread: UnsafeCell::new(MaybeUninit::uninit()),
 };
 
-#[inline(always)]
+/// Never inlined: a thread can resume on a different worker after a park or
+/// yield, and an inlined read of the `#[thread_local]` slot lets the compiler
+/// reuse the previous worker's slot address after the switch.
+#[inline(never)]
 pub(crate) fn try_current_native_data() -> Option<&'static NativeCtx> {
     if SLOT.bound.get() {
         // SAFETY: `bound` is set after the data is written and cleared before
