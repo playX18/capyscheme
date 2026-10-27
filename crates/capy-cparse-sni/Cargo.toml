@@ -1,0 +1,14 @@
+[package]
+name = "capy-cparse-sni"
+version.workspace = true
+edition.workspace = true
+description = "Native extension exposing the C preprocessor/parser to Scheme (loaded on demand by (capy c))"
+
+[lib]
+name = "capy_cparse"
+crate-type = ["cdylib"]
+
+[dependencies]
+capy-cparse = { path = "../capy-cparse" }
+capy-sni = { path = "../capy-sni" }
+capy-sni-sys = { path = "../capy-sni-sys" }

@@ -57,40 +57,44 @@ pub fn run_cli(default_entry: &'static str) -> i32 {
     let (entry_name, args) = select_entrypoint(args, default_entry);
     let scm = Scm::new();
     let args_failed = Cell::new(false);
-    scm.call_named(
-        "boot cli",
-        entry_name,
-        |env, out_args| {
-            match env.init_program_arguments(&args) {
-                Ok(_) => (),
-                Err(err) => {
-                    eprintln!(
-                        "Failed to initialize VM arguments: {err}",
-                        err = env.value_to_utf8(err).expect("not a string")
-                    );
-                    args_failed.set(true);
+    let code = Cell::new(1);
+    // The program runs as the main thread, so top-level code can block.
+    scm.run_main(|| {
+        code.set(scm.call_named(
+            "boot cli",
+            entry_name,
+            |env, out_args| {
+                match env.init_program_arguments(&args) {
+                    Ok(_) => (),
+                    Err(err) => {
+                        eprintln!(
+                            "Failed to initialize VM arguments: {err}",
+                            err = env.value_to_utf8(err).expect("not a string")
+                        );
+                        args_failed.set(true);
+                    }
                 }
-            }
-            let prog_args = env.program_arguments();
-            let null = env.null();
-            *out_args = env.cons(prog_args, null);
-        },
-        |env, success, result| {
-            if args_failed.get() {
-                return 1;
-            }
-            if !success {
-                // Last-resort reporter: reachable only when no Scheme-level
-                // exception handler printed the condition (e.g. a boot-time
-                // failure before the CLI/REPL handlers are installed).
-                match env.value_to_utf8(result) {
-                    Ok(message) => eprintln!("{message}"),
-                    Err(_) => eprintln!("Unhandled exception (value not printable)"),
+                let prog_args = env.program_arguments();
+                let null = env.null();
+                *out_args = env.cons(prog_args, null);
+            },
+            |env, success, result| {
+                if args_failed.get() {
+                    return 1;
                 }
-            }
-            i32::from(!success)
-        },
-    )
+                if !success {
+                    match env.value_to_utf8(result) {
+                        Ok(message) => eprintln!("{message}"),
+                        Err(_) => eprintln!("Unhandled exception (value not printable)"),
+                    }
+                }
+                i32::from(!success)
+            },
+        ))
+    });
+
+    std::mem::forget(scm);
+    code.get()
 }
 
 fn select_entrypoint(
@@ -117,9 +121,7 @@ fn apply_flag_args(args: Vec<OsString>) -> Result<Vec<OsString>, String> {
     let table = flag_table();
     let (sets, output) = translate(args, &table)?;
     for (env, value) in sets {
-        unsafe {
-            std::env::set_var(env, value);
-        }
+        Scm::flags_set(std::ffi::OsStr::new(env), &value)?;
     }
     Ok(output)
 }

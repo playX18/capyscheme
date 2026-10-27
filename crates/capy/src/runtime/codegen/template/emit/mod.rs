@@ -4,6 +4,7 @@ mod arith;
 pub(crate) mod call;
 mod control;
 mod entry;
+mod memory;
 mod moves;
 mod primitives;
 mod rest;

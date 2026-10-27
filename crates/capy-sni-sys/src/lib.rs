@@ -128,6 +128,7 @@ unsafe extern "C" {
     /// Flag introspection for the thin CLI (`capy --help-flags`), no VM init.
     pub fn capy_flags_help() -> *const c_char;
     pub fn capy_flags_cli_aliases() -> *const c_char;
+    pub fn capy_flags_set(name: *const c_char, value: *const c_char) -> c_int;
 
     pub fn sni_push_local_frame(env: *mut SniEnv, capacity: c_int) -> c_int;
     pub fn sni_pop_local_frame(env: *mut SniEnv, result: ScmRef) -> ScmRef;
@@ -170,6 +171,11 @@ unsafe extern "C" {
         data2: *mut c_void,
     ) -> c_int;
     pub fn sni_call_in_native(env: *mut SniEnv, callback: NativeCallback, data: *mut c_void);
+    pub fn scm_run_main(
+        scm: *mut Scm,
+        body: unsafe extern "C" fn(*mut c_void),
+        data: *mut c_void,
+    ) -> c_int;
 
     pub fn sni_throw(env: *mut SniEnv, obj: ScmRef) -> c_int;
     pub fn sni_exception_check(env: *mut SniEnv) -> bool;
@@ -239,6 +245,7 @@ unsafe extern "C" {
     pub fn sni_uint32(env: *mut SniEnv, value: u32) -> ScmRef;
     pub fn sni_uint64(env: *mut SniEnv, value: u64) -> ScmRef;
     pub fn sni_int64(env: *mut SniEnv, value: i64) -> ScmRef;
+    pub fn sni_int128(env: *mut SniEnv, hi: i64, lo: u64) -> ScmRef;
     pub fn sni_to_u8(env: *mut SniEnv, value: ScmRef, res: *mut u8) -> bool;
     pub fn sni_to_u16(env: *mut SniEnv, value: ScmRef, res: *mut u16) -> bool;
     pub fn sni_to_u32(env: *mut SniEnv, value: ScmRef, res: *mut u32) -> bool;

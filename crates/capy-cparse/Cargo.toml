@@ -1,0 +1,7 @@
+[package]
+name = "capy-cparse"
+version.workspace = true
+edition.workspace = true
+description = "C99-C26 preprocessor and parser used by Capy to generate FFI bindings"
+
+[dependencies]

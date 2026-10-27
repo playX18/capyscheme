@@ -12,6 +12,7 @@ use crate::runtime::codegen::template::{
     Operand, PrimSlowId, SlowPath, TemplateContext, ftmp, tmp,
 };
 use crate::runtime::prims::def::Primitive;
+use super::memory;
 use crate::runtime::sabi::{self, builtin_class_ids, regs};
 use crate::runtime::value::Value;
 
@@ -305,12 +306,16 @@ pub fn op_call_primitive2<C: TemplateContext>(masm: &mut Masm, context: &mut C) 
             PRIM_LOGIOR => prim2_logior(masm, context),
             PRIM_VECTOR_REF => prim2_vector_ref(masm, context),
             PRIM_BYTEVECTOR_U8_REF => prim2_bytevector_u8_ref(masm, context),
-            _ => context.prim_direct(
-                masm,
-                id,
-                &[OpCallPrimitive2::OPERAND_A, OpCallPrimitive2::OPERAND_B],
-                OpCallPrimitive2::OPERAND_DST,
-            ),
+            _ => {
+                if !memory::emit_primitive2(masm, context, id) {
+                    context.prim_direct(
+                        masm,
+                        id,
+                        &[OpCallPrimitive2::OPERAND_A, OpCallPrimitive2::OPERAND_B],
+                        OpCallPrimitive2::OPERAND_DST,
+                    );
+                }
+            }
         },
         // As `primitive0`: every id takes the indexed slow call.
         Operand::Register(id) => {
@@ -337,16 +342,20 @@ pub fn op_call_primitive3<C: TemplateContext>(masm: &mut Masm, context: &mut C) 
         Operand::Immediate(id) => match id {
             PRIM_TUPLE_SET => prim3_tuple_set(masm, context),
             PRIM_VECTOR_SET => prim3_vector_set(masm, context),
-            _ => context.prim_direct(
-                masm,
-                id,
-                &[
-                    OpCallPrimitive3::OPERAND_A,
-                    OpCallPrimitive3::OPERAND_B,
-                    OpCallPrimitive3::OPERAND_C,
-                ],
-                OpCallPrimitive3::OPERAND_DST,
-            ),
+            _ => {
+                if !memory::emit_primitive3(masm, context, id) {
+                    context.prim_direct(
+                    masm,
+                    id,
+                    &[
+                        OpCallPrimitive3::OPERAND_A,
+                        OpCallPrimitive3::OPERAND_B,
+                        OpCallPrimitive3::OPERAND_C,
+                    ],
+                    OpCallPrimitive3::OPERAND_DST,
+                );
+                }
+            }
         },
         Operand::Register(id) => {
             let slow = masm.label();

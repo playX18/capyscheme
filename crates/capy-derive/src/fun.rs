@@ -426,9 +426,10 @@ in CPS with `call.tail`."
                         Value::new(line!() as i32),
                         Value::new(column!() as i32)
                     );
+
                     let props = list!(ctx,
-                        Value::cons(ctx, ctx.str("source"), loc.into()),
-                        Value::cons(ctx, ctx.str("documentation"), ctx.str(#doc))
+                        Value::cons(ctx, ctx.intern("source"), loc.into()),
+                        Value::cons(ctx, ctx.intern("documentation"), ctx.str(#doc))
                     );
 
                     props

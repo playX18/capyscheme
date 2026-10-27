@@ -74,6 +74,7 @@ pub const TUPLE_DATA: usize = offset_of!(Tuple<'static>, data);
 pub const STRING_LENGTH: usize = offset_of!(Str<'static>, length);
 pub const BYTEVECTOR_LENGTH: usize = offset_of!(ByteVector, len);
 pub const BYTEVECTOR_CONTENTS: usize = offset_of!(ByteVector, contents);
+pub const POINTER_VALUE: usize = offset_of!(crate::runtime::vm::ffi::Pointer, value);
 pub const VECTOR_SIZE: usize = size_of::<Vector<'static>>();
 pub const ENV_DATA: usize = EnvRecord::DATA_OFFSET as usize;
 pub const ENV_LENGTH: usize = offset_of!(EnvRecord<'static>, length);
@@ -359,6 +360,7 @@ const _: () = {
     assert!(STRING_LENGTH == 2 * size_of::<usize>());
     assert!(BYTEVECTOR_LENGTH == 0);
     assert!(BYTEVECTOR_CONTENTS == size_of::<usize>());
+    assert!(POINTER_VALUE == 0);
     assert!(VECTOR_SIZE == VECTOR_DATA);
     assert!(HEADER_OFFSET == -8);
     assert!(OBJECT_HEADER_BYTES as isize == -HEADER_OFFSET as isize);

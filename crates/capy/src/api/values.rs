@@ -540,6 +540,21 @@ define_scm_from_numeric! {
     sni_int64, i64;
 }
 
+/// The integer `hi * 2^64 + lo`, a bignum when it does not fit a fixnum.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sni_int128(env: *mut SniEnv<'static>, hi: i64, lo: u64) -> ScmRef {
+    if env.is_null() {
+        return SCM_REF_NULL;
+    }
+    let e = unsafe { env_mut(env) };
+    let ctx = e.ctx;
+    let two_32 = Number::from_u64(ctx, 1 << 32);
+    let two_64 = Number::mul(ctx, two_32, two_32);
+    let high = Number::mul(ctx, Number::from_i64(ctx, hi), two_64);
+    let n = Number::add(ctx, high, Number::from_u64(ctx, lo));
+    e.make_local(n.into_value(ctx))
+}
+
 macro_rules! define_scm_to_numeric {
     ($($fn_name:ident, $ty:ty);* $(;)?) => {
         $(

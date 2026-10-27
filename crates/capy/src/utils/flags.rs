@@ -409,10 +409,10 @@ define_flags! {
     gc_max_heap: Size, "CAPY_GC_MAX_HEAP", Some("--gc-max-heap"), "2G", "gc",
         "Maximum heap size with optional K/M/G suffix (e.g. 2G).";
 
-    gc_init_heap: Size, "CAPY_GC_INIT_HEAP", Some("--gc-init-heap"), "64M", "gc",
+    gc_init_heap: Size, "CAPY_GC_INIT_HEAP", Some("--gc-init-heap"), "0", "gc",
         "Initial heap size with optional K/M/G suffix; the heap grows up to --gc-max-heap (0 = fixed at max).";
 
-    gc_heap_growth_free_percent: Usize(0, Some(99)), "CAPY_GC_HEAP_GROWTH_FREE_PERCENT", Some("--gc-heap-growth-free-percent"), "50", "gc",
+    gc_heap_growth_free_percent: Usize(0, Some(99)), "CAPY_GC_HEAP_GROWTH_FREE_PERCENT", Some("--gc-heap-growth-free-percent"), "75", "gc",
         "Target free share of the heap after a GC when resizing (clamped to 0-99).";
 
     gc_min_free_percent: Usize(0, Some(100)), "CAPY_GC_MIN_FREE_PERCENT", Some("--gc-min-free-percent"), "10", "gc",

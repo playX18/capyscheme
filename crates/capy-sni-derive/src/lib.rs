@@ -196,6 +196,27 @@ fn return_conv(
     }
 }
 
+/// Rewrites every lifetime to `'_`. The trampoline closure unpacks arguments
+/// under its own `for<'env>` brand, so a lifetime the fn declares (`Ref<'env>`)
+/// is not nameable there and has to be inferred.
+struct EraseLifetimes;
+
+impl syn::visit_mut::VisitMut for EraseLifetimes {
+    fn visit_lifetime_mut(&mut self, lt: &mut syn::Lifetime) {
+        *lt = syn::Lifetime::new("'_", lt.apostrophe);
+    }
+}
+
+fn erase_lifetimes(tys: Vec<Type>) -> Vec<Type> {
+    use syn::visit_mut::VisitMut;
+    tys.into_iter()
+        .map(|mut ty| {
+            EraseLifetimes.visit_type_mut(&mut ty);
+            ty
+        })
+        .collect()
+}
+
 struct SplitInputs {
     has_env: bool,
     arg_tys: Vec<Type>,
@@ -298,6 +319,7 @@ fn handle_fn(attrs: Attrs, mut fun: ItemFn) -> TokenStream {
         Ok(v) => v,
         Err(e) => return e,
     };
+    let arg_tys = erase_lifetimes(arg_tys);
 
     let leaf_doc = if is_cps {
         quote! {

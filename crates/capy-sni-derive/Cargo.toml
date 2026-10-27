@@ -8,6 +8,6 @@ description = "#[scheme], #[cps], and #[onload] macros for capy-sni embedders"
 proc-macro = true
 
 [dependencies]
-syn = { version = "2", features = ["full", "extra-traits", "visit"] }
+syn = { version = "2", features = ["full", "extra-traits", "visit", "visit-mut"] }
 quote = "1"
 proc-macro2 = "1"

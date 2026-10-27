@@ -63,6 +63,23 @@ impl Scm {
             .expect("CLI alias table is UTF-8")
     }
 
+    /// Set a flag's environment variable through `libcapy`. Call it before
+    /// any other thread starts. Fails if the name or value is not valid text
+    /// for the environment.
+    pub fn flags_set(name: &std::ffi::OsStr, value: &std::ffi::OsStr) -> Result<(), String> {
+        let text = |s: &std::ffi::OsStr| {
+            s.to_str()
+                .and_then(|s| std::ffi::CString::new(s).ok())
+                .ok_or_else(|| format!("{s:?} is not valid environment text"))
+        };
+        let (name_c, value_c) = (text(name)?, text(value)?);
+        // SAFETY: both are NUL-terminated and outlive the call.
+        match unsafe { sys::capy_flags_set(name_c.as_ptr(), value_c.as_ptr()) } {
+            0 => Ok(()),
+            _ => Err(format!("cannot set {name:?}")),
+        }
+    }
+
     /// Enter the mutator and run `f` with an [`Env`].
     ///
     /// The env is branded with an anonymous lifetime so neither it nor any
@@ -214,6 +231,44 @@ impl Scm {
             resume_unwind(p);
         }
         data.code
+    }
+
+    /// Run `f` as the main thread of this runtime. The calling thread becomes
+    /// the first scheduler worker and is blocked until `f` returns. Scheme calls
+    /// made from `f` run on that thread, so blocking calls park the thread
+    /// and let the worker run other threads.
+    pub fn run_main<F: FnOnce()>(&self, f: F) {
+        struct Data<F> {
+            f: Option<F>,
+            panic: Option<Box<dyn Any + Send + 'static>>,
+        }
+
+        unsafe extern "C" fn body_cb<F: FnOnce()>(data: *mut libc::c_void) {
+            // SAFETY: data is the `&mut Data` passed to scm_run_main below, and
+            // scm_run_main calls this exactly once, synchronously.
+            let data = unsafe { &mut *(data as *mut Data<F>) };
+            if let Some(f) = data.f.take() {
+                if let Err(panicked) = catch_unwind(AssertUnwindSafe(f)) {
+                    data.panic = Some(panicked);
+                }
+            }
+        }
+
+        let mut data = Data {
+            f: Some(f),
+            panic: None,
+        };
+        // SAFETY: data is stack-local and scm_run_main returns only after body_cb.
+        unsafe {
+            sys::scm_run_main(
+                self.ptr,
+                body_cb::<F>,
+                &mut data as *mut _ as *mut libc::c_void,
+            );
+        }
+        if let Some(p) = data.panic {
+            resume_unwind(p);
+        }
     }
 
     pub fn load_file(&self, path: &str) -> Result<(), i32> {
@@ -933,6 +988,28 @@ impl<'env> Env<'env> {
         } else {
             Ok(())
         }
+    }
+
+    pub fn int128(&mut self, value: i128) -> Ref<'env> {
+        unsafe {
+            Ref::from_raw(sys::sni_int128(
+                self.ptr,
+                (value >> 64) as i64,
+                value as u64,
+            ))
+        }
+    }
+
+    /// A fresh bytevector holding a copy of `bytes`.
+    pub fn bytevector_from(&mut self, bytes: &[u8]) -> Result<Ref<'env>, Ref<'env>> {
+        let bv = self.make_pod_bytevector(bytes.len());
+        if !bytes.is_empty() {
+            let data = self.bytevector_data(bv)?;
+            // SAFETY: data points to bytes.len() writable bytes of the bytevector just made,
+            // and nothing allocates between the lookup and the copy.
+            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), data, bytes.len()) };
+        }
+        Ok(bv)
     }
 
     pub fn make_pod_bytevector(&mut self, len: usize) -> Ref<'env> {

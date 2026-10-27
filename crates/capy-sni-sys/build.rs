@@ -1,3 +1,6 @@
+// Cargo-provided build environment, not runtime configuration.
+#![allow(clippy::disallowed_methods)]
+
 use std::env;
 use std::path::PathBuf;
 
