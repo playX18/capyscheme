@@ -47,7 +47,7 @@
 ($primitive-load "boot/eval.scm")
 ($primitive-load "boot/time.scm")
 
-(when (getenv "CAPY_TIME_LOADS")
+(when (equal? (getenv "CAPY_TIME_LOADS") "1")
   (%time-loads? #t))
 
 ; load file containing base macros
