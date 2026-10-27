@@ -13,6 +13,7 @@
     enable-raw-mode!
     disable-raw-mode!
     raw-mode-enabled?
+    with-raw-mode
     terminal-size
     terminal-window-size
     window-size?
@@ -96,6 +97,14 @@
 
   (define (raw-mode-enabled?)
     (raw-raw-mode-enabled?))
+
+  ;; Runs THUNK in raw mode and puts the terminal back as it was on any exit.
+  (define (with-raw-mode thunk)
+    (let ([was-raw? (raw-mode-enabled?)])
+      (dynamic-wind
+        (lambda () (unless was-raw? (enable-raw-mode!)))
+        thunk
+        (lambda () (unless was-raw? (disable-raw-mode!))))))
 
   (define (terminal-size)
     (let ([size (raw-terminal-size-list)])

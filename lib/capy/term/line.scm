@@ -506,6 +506,10 @@
   (define (finish-input-line port)
     (display "\r\n" port))
 
+  ;; A closed terminal reads as Ctrl-D, like end of input.
+  (define (ctrl-d-event)
+    (key-event '(char #\d) '(control) 'press '()))
+
   (define (read-line/edit editor . args)
     (let* ([prompt (if (null? args) "> " (car args))]
            [source (if (or (null? args) (null? (cdr args))) #f (cadr args))]
@@ -529,9 +533,12 @@
           (redraw-line port state))
         (lambda ()
           (let loop ([state state])
-            (let ([event (if source (read-event source) (read-event))])
+            (let ([event (or (if source (read-event source) (read-event))
+                          (ctrl-d-event))])
               (call-with-values
-                (lambda () (line-edit-step state event))
+                (lambda () (if (resize-event? event)
+                            (values state 'resize)
+                            (line-edit-step state event)))
                 (lambda (next status)
                   (cond
                     [(eq? status 'accept)
@@ -556,6 +563,9 @@
                       (redraw-line/completions port next (cadr status) (caddr status))
                       (loop next)]
                     [(eq? status 'ignore)
+                      (loop next)]
+                    [(eq? status 'resize)
+                      (redraw-line port next)
                       (loop next)]
                     [else
                       (clear-completion-line-if-visible port state)

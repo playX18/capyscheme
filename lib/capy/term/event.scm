@@ -35,22 +35,23 @@
     disable-bracketed-paste
     push-keyboard-enhancement-flags
     pop-keyboard-enhancement-flags
+    make-terminal
+    terminal?
+    terminal-events
+    terminal-close!
     poll-event
     read-event
     try-read-event)
   (import (rnrs)
-    (rename (capy)
-      (term/open-tty raw-open-tty)
-      (term/read-fd raw-read-fd)
-      (term/nonblocking! raw-nonblocking!)
-      (term/raw-mode-enabled? raw-mode-enabled?)
-      (term/sigwinch-version raw-sigwinch-version)
-      (term/install-sigwinch-handler! raw-install-sigwinch-handler!)
-      (term/terminal-size-list raw-terminal-size-list)
-      (syscall:pollinput raw-pollinput))
+    (core thread)
+    (capy channel)
+    (capy select)
+    (capy signal)
     (capy term private ansi)
     (capy term command)
-    (capy term event-parser))
+    (capy term event-parser)
+    (capy term terminal)
+    (capy term tty))
 
   (define (focus-gained-event)
     '(focus-gained))
@@ -200,58 +201,26 @@
   (define (pop-keyboard-enhancement-flags)
     (command 'pop-keyboard-enhancement-flags (csi "<u")))
 
-  (define event-buffers '())
-  (define default-event-fd #f)
-  (define resize-handler-installed? #f)
-  (define last-sigwinch-version #f)
-  (define pending-resize-event #f)
+;; A terminal turns raw input and window resizes into one stream of events
+  ;; on a channel. Two threads feed it:
+  ;;
+  ;;   reader   blocks on the input port and forwards each chunk of bytes;
+  ;;   decoder  buffers chunks, decodes them with `parse-event`, and sends
+  ;;            events (a lone Escape is told from the start of a sequence
+  ;;            by waiting `escape-timeout` seconds for more bytes);
+  ;;   resizer  waits for SIGWINCH on a channel from (capy signal) and sends a
+  ;;            `resize` event carrying the new size.
+  ;;
+  ;; Reading from the port parks only the thread that does it. Closing a
+  ;; terminal stops delivery at once; the reader notices at its next read.
+  (define-record-type (terminal make-terminal* terminal?)
+    (fields events winch (mutable peeked) (mutable closed?)))
 
-  (define (ensure-resize-handler!)
-    (unless resize-handler-installed?
-      (raw-install-sigwinch-handler!)
-      (set! last-sigwinch-version (raw-sigwinch-version))
-      (set! resize-handler-installed? #t)))
+  (define event-capacity 64)
+  (define escape-timeout 0.05)
 
-  (define (read-terminal-resize-event)
-    (let ([size (raw-terminal-size-list)])
-      (resize-event (car size) (cadr size))))
-
-  (define (update-resize-event!)
-    (ensure-resize-handler!)
-    (let ([version (raw-sigwinch-version)])
-      (when (and last-sigwinch-version
-             (not (= version last-sigwinch-version))
-             (not pending-resize-event))
-        (set! last-sigwinch-version version)
-        (set! pending-resize-event (read-terminal-resize-event)))
-      pending-resize-event))
-
-  (define (take-resize-event!)
-    (let ([event (update-resize-event!)])
-      (when event
-        (set! pending-resize-event #f))
-      event))
-
-  (define (source->fd source)
-    (cond
-      [(not source)
-        (unless default-event-fd
-          (set! default-event-fd (raw-open-tty #t #f))
-          (raw-nonblocking! default-event-fd #t))
-        default-event-fd]
-      [(integer? source) source]
-      [(port? source) (port-fileno source)]
-      [else (assertion-violation 'source->fd "expected fd or port" source)]))
-
-  (define (fd-buffer fd)
-    (let ([cell (assv fd event-buffers)])
-      (if cell (cdr cell) (make-bytevector 0))))
-
-  (define (set-fd-buffer! fd bytes)
-    (let ([cell (assv fd event-buffers)])
-      (if cell
-        (set-cdr! cell bytes)
-        (set! event-buffers (cons (cons fd bytes) event-buffers)))))
+  ;; End of input reads as Ctrl-D, which is what a line editor expects.
+  (define eof-bytes (u8-list->bytevector '(4)))
 
   (define (bytevector-append a b)
     (let* ([a-len (bytevector-length a)]
@@ -262,77 +231,139 @@
       out))
 
   (define (bytevector-drop bytes count)
-    (let* ([n (- (bytevector-length bytes) count)]
-           [out (make-bytevector n)])
-      (bytevector-copy! bytes count out 0 n)
+    (let* ([rest (- (bytevector-length bytes) count)]
+           [out (make-bytevector rest)])
+      (bytevector-copy! bytes count out 0 rest)
       out))
 
-  (define (fd-ready? fd timeout-ms)
-    (let loop ([remaining timeout-ms])
-      (cond
-        [(update-resize-event!) #t]
-        [(= (raw-pollinput fd) 1) #t]
-        [(or (not remaining) (= remaining 0)) #f]
-        [else (loop (- remaining 1))])))
+  ;; Sends EVENT unless the terminal is closed. Returns #f once it is.
+  (define (emit! t event)
+    (and (not (terminal-closed? t))
+      (guard (c [(closed-channel-violation? c) #f])
+        (channel-send (terminal-events t) event)
+        #t)))
 
-  (define (read-available! fd)
-    (let ([buf (make-bytevector 4096)])
-      (let ([n (raw-read-fd fd buf 0 4096)])
-        (if (> n 0)
-          (let ([chunk (make-bytevector n)])
-            (bytevector-copy! buf 0 chunk 0 n)
-            (set-fd-buffer! fd (bytevector-append (fd-buffer fd) chunk))
-            #t)
-          #f))))
-
-  (define (parse-buffer fd input-available?)
-    (call-with-values
-      (lambda () (parse-event (fd-buffer fd) input-available? (raw-mode-enabled?)))
-      (lambda (status event consumed)
+  (define (read-chunks! port chunks)
+    (let loop ()
+      (let ([chunk (get-bytevector-some port)])
         (cond
-          [(eq? status 'complete)
-            (set-fd-buffer! fd (bytevector-drop (fd-buffer fd) consumed))
-            event]
-          [(eq? status 'invalid)
-            (set-fd-buffer! fd (bytevector-drop (fd-buffer fd) consumed))
-            #f]
-          [else #f]))))
+          [(eof-object? chunk)
+            (channel-send chunks eof-bytes)
+            (channel-close chunks)]
+          [else
+            (channel-send chunks chunk)
+            (loop)]))))
 
-  (define (poll-event . args)
-    (let* ([timeout-ms (if (null? args) 0 (car args))]
-           [source (if (or (null? args) (null? (cdr args))) #f (cadr args))]
-           [fd (source->fd source)])
-      (or (and (update-resize-event!) #t)
-        (and (> (bytevector-length (fd-buffer fd)) 0)
-          (parse-buffer fd (fd-ready? fd 0))
-          #t)
-        (and (fd-ready? fd timeout-ms)
-          (begin
-            (read-available! fd)
-            #t)))))
+  (define (decode! t chunks)
+    (let loop ([buffer (make-bytevector 0)])
+      (define (more)
+        (let-values ([(chunk ok?) (channel-recv/ok chunks)])
+          (and ok? (loop (bytevector-append buffer chunk)))))
+      (define (lone-escape?)
+        (and (= (bytevector-length buffer) 1) (= (bytevector-ref buffer 0) #x1b)))
+      (cond
+        [(terminal-closed? t) #f]
+        [(= (bytevector-length buffer) 0) (more)]
+        [else
+          (let-values ([(status event consumed) (parse-event buffer #t (raw-mode-enabled?))])
+            (case status
+              [(complete)
+                (and (emit! t event) (loop (bytevector-drop buffer consumed)))]
+              [(invalid) (loop (bytevector-drop buffer consumed))]
+              [else
+                (if (lone-escape?)
+                  (select
+                    [(recv chunks) =>
+                      (lambda (chunk ok?)
+                        (and ok? (loop (bytevector-append buffer chunk))))]
+                    [(timeout escape-timeout)
+                      (let-values ([(status event consumed)
+                                    (parse-event buffer #f (raw-mode-enabled?))])
+                        (if (eq? status 'complete)
+                          (and (emit! t event)
+                            (loop (bytevector-drop buffer consumed)))
+                          ;; Nothing decodable after the timeout: discard the
+                          ;; buffer so the loop makes progress.
+                          (loop (make-bytevector 0))))])
+                  (more))]))])))
 
-  (define (read-event . args)
-    (let* ([source (if (null? args) #f (car args))]
-           [fd (source->fd source)])
-      (let loop ()
-        (let ([event (or (take-resize-event!)
-                      (and (> (bytevector-length (fd-buffer fd)) 0)
-                        (parse-buffer fd (fd-ready? fd 0))))])
-          (if event
-            event
-            (begin
-              (unless (read-available! fd)
-                (fd-ready? fd #f)
-                (read-available! fd))
+  (define (watch-resizes! t)
+    (let loop ()
+      (let-values ([(signal ok?) (channel-recv/ok (terminal-winch t))])
+        (when ok?
+          ;; Without a controlling terminal there is no size to report.
+          (let ([size (guard (c [#t #f])
+                       (let-values ([(columns rows) (terminal-size)])
+                         (resize-event columns rows)))])
+            (when (or (not size) (emit! t size))
               (loop)))))))
 
+  ;; (make-terminal [port]) starts delivering events from PORT, a binary input
+  ;; port that defaults to the controlling terminal.
+  (define (make-terminal . args)
+    (let* ([port (if (null? args) (open-tty-input-port) (car args))]
+           [chunks (make-channel 16)]
+           [t (make-terminal* (make-channel event-capacity)
+               (signal-notify (make-channel 1) 'winch)
+               #f
+               #f)])
+      (go (lambda () (read-chunks! port chunks)))
+      (go (lambda () (decode! t chunks)))
+      (go (lambda () (watch-resizes! t)))
+      t))
+
+  (define (terminal-close! t)
+    (unless (terminal-closed? t)
+      (terminal-closed?-set! t #t)
+      (signal-stop (terminal-winch t))
+      (channel-close (terminal-winch t))
+      (channel-close (terminal-events t))))
+
+  (define default-terminal #f)
+  (define default-lock (make-mutex))
+
+  (define (terminal-for source)
+    (cond
+      [(terminal? source) source]
+      [(not source)
+        (with-mutex default-lock
+          (unless (and default-terminal (not (terminal-closed? default-terminal)))
+            (set! default-terminal (make-terminal)))
+          default-terminal)]
+      [else (assertion-violation 'read-event "expected a terminal" source)]))
+
+  (define (optional args index default)
+    (if (> (length args) index) (list-ref args index) default))
+
+  ;; (read-event [terminal]) waits for the next event; #f once the terminal
+  ;; is closed.
+  (define (read-event . args)
+    (let ([t (terminal-for (optional args 0 #f))])
+      (cond
+        [(terminal-peeked t) => (lambda (e) (terminal-peeked-set! t #f) e)]
+        [else
+          (let-values ([(event ok?) (channel-recv/ok (terminal-events t))])
+            (and ok? event))])))
+
+  ;; (try-read-event [terminal]) returns the next event or #f without waiting.
   (define (try-read-event . args)
-    (let* ([source (if (null? args) #f (car args))]
-           [fd (source->fd source)])
-      (or (take-resize-event!)
-        (and (> (bytevector-length (fd-buffer fd)) 0)
-          (parse-buffer fd (fd-ready? fd 0)))
-        (and (fd-ready? fd 0)
-          (begin
-            (read-available! fd)
-            (parse-buffer fd (fd-ready? fd 0))))))))
+    (let ([t (terminal-for (optional args 0 #f))])
+      (cond
+        [(terminal-peeked t) => (lambda (e) (terminal-peeked-set! t #f) e)]
+        [else
+          (let-values ([(status event) (channel-try-recv (terminal-events t))])
+            (and (eq? status 'value) event))])))
+
+  ;; (poll-event [timeout-ms [terminal]]) is #t when an event can be read
+  ;; within TIMEOUT-MS, without consuming it.
+  (define (poll-event . args)
+    (let ([t (terminal-for (optional args 1 #f))]
+          [timeout-ms (optional args 0 0)])
+      (or (and (terminal-peeked t) #t)
+        (let ([event
+               (if (eqv? timeout-ms 0)
+                 (try-read-event t)
+                 (select
+                   [(recv (terminal-events t)) => (lambda (e ok?) (and ok? e))]
+                   [(timeout (/ timeout-ms 1000.0)) #f]))])
+          (and event (begin (terminal-peeked-set! t event) #t)))))))
