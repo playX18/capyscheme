@@ -207,6 +207,8 @@ ScmRef sni_uint32(SniEnv *env, uint32_t value);
 ScmRef sni_uint64(SniEnv *env, uint64_t value);
 /* Exact integer from an int64. */
 ScmRef sni_int64(SniEnv *env, int64_t value);
+/* The integer hi * 2^64 + lo. */
+ScmRef sni_int128(SniEnv *env, int64_t hi, uint64_t lo);
 /* Extract `value` as u8. False if not an exact integer in range. */
 bool sni_to_u8(SniEnv *env, ScmRef value, uint8_t *res);
 /* Extract `value` as u16. False if not an exact integer in range. */

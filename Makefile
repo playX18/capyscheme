@@ -48,8 +48,10 @@ UNAME_S := $(shell uname -s)
 # File name of the libcapy shared library for $(TARGET).
 ifneq ($(findstring apple,$(TARGET)),)
 LIBCAPY := libcapy.dylib
+CPARSE_LIB := libcapy_cparse.dylib
 else
 LIBCAPY := libcapy.so
+CPARSE_LIB := libcapy_cparse.so
 endif
 COMPILED_SCM_EXT := fasl
 
@@ -85,11 +87,15 @@ CARGO_BIN := cross
 endif
 endif
 
+# cargo's build scripts (libffi-sys runs `make install`) inherit MAKEFLAGS with
+# --jobserver-auth fds that GNU make does not keep open for non-recursive
+# recipes, which breaks them under `make -jN`.
+CARGO_RUN := env -u MAKEFLAGS -u MAKELEVEL -u MFLAGS $(CARGO_BIN)
+
 PORTABLE ?= 1
 
 # Environment used when invoking capy/capyc.
-# Optional dump flags (pass on the make command line), e.g.:
-#   make PROFILE=release stage-0 CAPY_COMPILE_DUMP=bytecode CAPY_COMPILE_DUMP_DIR=capy-dumps/bytecode
+
 MMTK_PLAN ?= GenImmix
 XDG_CACHE_HOME = stage-0/cache
 CAPY_LOAD_PATH ?= ./lib
@@ -98,17 +104,16 @@ RUST_MIN_STACK ?= 134217728
 CAPY_COMPILE_DUMP ?=
 CAPY_COMPILE_DUMP_DIR ?=
 CAPY_DUMP_DIR ?=
-CAPY_BARRIER_KIND ?=
 CAPY_ENV = \
 	MMTK_PLAN="$(MMTK_PLAN)" \
 	XDG_CACHE_HOME="$(XDG_CACHE_HOME)" \
 	CAPY_LOAD_PATH="$(CAPY_LOAD_PATH)" \
+	CAPY_CPARSE_LIB="$(abspath $(TARGET_PATH))/$(CPARSE_LIB)" \
 	CAPY_GC_MAX_HEAP="$(CAPY_GC_MAX_HEAP)" \
 	RUST_MIN_STACK="$(RUST_MIN_STACK)" \
 	$(if $(CAPY_COMPILE_DUMP),CAPY_COMPILE_DUMP="$(CAPY_COMPILE_DUMP)") \
 	$(if $(CAPY_COMPILE_DUMP_DIR),CAPY_COMPILE_DUMP_DIR="$(CAPY_COMPILE_DUMP_DIR)") \
-	$(if $(CAPY_DUMP_DIR),CAPY_DUMP_DIR="$(CAPY_DUMP_DIR)") \
-	$(if $(CAPY_BARRIER_KIND),CAPY_BARRIER_KIND="$(CAPY_BARRIER_KIND)")
+	$(if $(CAPY_DUMP_DIR),CAPY_DUMP_DIR="$(CAPY_DUMP_DIR)")
 
 # Per-load timing during bootstrap stages (Chez-style `time` in load/compile).
 # Override with `make TIME_ENV= stage-0` to disable.
@@ -190,13 +195,14 @@ CORE_SRCS := \
 	lib/core/enums.scm \
 	lib/core/struct.scm \
 	lib/core/unicode.scm \
+	lib/core/suggest.scm \
 	lib/core/repl.scm \
 	lib/core/fancy-repl.scm \
 	lib/core/io/assistants.scm \
 	lib/core/io/process.scm \
 	lib/core/foreign.scm \
 	lib/core/foreign-library.scm \
-	lib/core/threading.scm
+	lib/core/thread.scm
 
 RNRS_SRCS := \
 	lib/rnrs/base.scm \
@@ -220,7 +226,9 @@ RNRS_SRCS := \
 	lib/rnrs/syntax-case.scm \
 	lib/rnrs/hashtables.scm \
 	lib/rnrs/enums.scm \
-	lib/rnrs/mutable-pairs.scm
+	lib/rnrs/mutable-pairs.scm \
+	lib/rnrs/r5rs.scm \
+	lib/rnrs/eval.scm
 
 CAPY_SRCS := \
 	lib/capy/prelims.scm \
@@ -230,6 +238,13 @@ CAPY_SRCS := \
 	lib/capy/persistent-map.scm \
 	lib/capy/persistent-set.scm \
 	lib/capy/channel.scm \
+	lib/capy/signal.scm \
+	lib/capy/select.scm \
+	lib/capy/sync.scm \
+	lib/capy/timer.scm \
+	lib/capy/context.scm \
+	lib/capy/pool.scm \
+	lib/capy/concurrency.scm \
 	lib/capy/term/private/ansi.scm \
 	lib/capy/term/command.scm \
 	lib/capy/term/style.scm \
@@ -356,7 +371,7 @@ COMMON_OUTS = $(patsubst lib/common/%.scm,$(OUT)/common/%.$(COMPILED_SCM_EXT),$(
 CAPY_ARGS_OUTS = $(patsubst lib/capy/%.scm,$(OUT)/capy/%.$(COMPILED_SCM_EXT),$(CAPY_ARGS_SRCS))
 LIB_FILE_COUNT = $(words $(sort $(BOOT_OUTS) $(CORE_OUTS) $(RNRS_OUTS) $(CAPY_OUTS) $(SRFI_OUTS) $(R7RS_OUTS) $(COMMON_OUTS) $(CAPY_ARGS_OUTS)))
 
-.PHONY: all help build build-runtime build-runtime-fhs build-runtime-portable install-scm test stage-0 stage-1 stage-2 \
+.PHONY: all help build build-runtime build-runtime-fhs build-runtime-portable build-cparse install-scm test stage-0 stage-1 stage-2 \
 	compile-cli compile-boot compile-core compile-rnrs compile-capy compile-capy-args compile-srfi compile-r7rs compile-common\
 	install-portable dist-portable install install-cross dist-deb dist-rpm
 
@@ -379,8 +394,8 @@ build-runtime-bootstrap:
 	@echo "Version: $(VERSION)"
 	@echo "Target path: $(TARGET_PATH)"
 	@echo "Building CapyScheme with profile '$(PROFILE)' for target '$(TARGET)'"
-	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable,bootstrap
-	CAPY_LIB_DIR=$(TARGET_PATH) $(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy-cli
+	$(CARGO_RUN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable,bootstrap
+	CAPY_LIB_DIR=$(TARGET_PATH) $(CARGO_RUN) build --profile $(PROFILE) --target $(TARGET) -p capy-cli
 	@echo "Built $(TARGET_PATH)/{$(LIBCAPY),capy,capyc}"
 
 
@@ -393,16 +408,21 @@ build:
 	@echo "Build complete: runtime and bootstrap stages 0-2"
 
 build-runtime:
-	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable --no-default-features
-	CAPY_LIB_DIR=$(TARGET_PATH) $(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy-cli
+	$(CARGO_RUN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable --no-default-features
+	CAPY_LIB_DIR=$(TARGET_PATH) $(CARGO_RUN) build --profile $(PROFILE) --target $(TARGET) -p capy-cli
 
 build-runtime-fhs:
-	CAPY_SYSROOT=$(PREFIX) $(CARGO_BIN) build --no-default-features --profile $(PROFILE) --target $(TARGET) -p capy
-	CAPY_LIB_DIR=$(TARGET_PATH) CAPY_SYSROOT=$(PREFIX) $(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy-cli
+	CAPY_SYSROOT=$(PREFIX) $(CARGO_RUN) build --no-default-features --profile $(PROFILE) --target $(TARGET) -p capy
+	CAPY_LIB_DIR=$(TARGET_PATH) CAPY_SYSROOT=$(PREFIX) $(CARGO_RUN) build --profile $(PROFILE) --target $(TARGET) -p capy-cli
 
 build-runtime-portable: 
-	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable --no-default-features
-	CAPY_LIB_DIR=$(TARGET_PATH) $(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy-cli
+	$(CARGO_RUN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable --no-default-features
+	CAPY_LIB_DIR=$(TARGET_PATH) $(CARGO_RUN) build --profile $(PROFILE) --target $(TARGET) -p capy-cli
+
+# The C header parser behind (c-include ...), a separate native extension that is loaded
+# only when a binding cache misses. Needs libcapy in $(TARGET_PATH) already.
+build-cparse:
+	CAPY_LIB_DIR=$(TARGET_PATH) $(CARGO_RUN) build --profile $(PROFILE) --target $(TARGET) -p capy-cparse-sni
 
 install-scm:
 	mkdir -p $(PREFIX)/capy/$(VERSION)
@@ -429,9 +449,10 @@ test:
 		echo "Run 'make stage-0' or set CAPY=/path/to/capy" >&2; \
 		exit 1; \
 	fi; \
+	$(MAKE) build-cparse >/dev/null 2>&1 || echo "note: libcapy_cparse not built; c-include tests will be skipped"; \
 	status=0; \
 	count=0; \
-	for test in $$(find tests/lib -type f -name '*.scm' | sort); do \
+	for test in $$(find tests/lib -type f -name '*.scm' -print | sort); do \
 		count=$$((count + 1)); \
 		log=$$(mktemp); \
 		echo "Running $$test"; \
@@ -479,7 +500,7 @@ stage-0: build-runtime-bootstrap
 	$(TIME_ENV) $(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base))'
 	$(TIME_ENV) $(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 1))'
 	$(TIME_ENV) $(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 13))'
-	$(TIME_ENV) $(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (core threading) (srfi 64))'
+	$(TIME_ENV) $(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (core thread) (srfi 64))'
 ifeq ($(COMPILE_PSYNTAX),1)
 	$(TIME_ENV) $(CAPY_ENV) stage-0/capy -L lib -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
 	$(TIME_ENV) $(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base) (rnrs))'
@@ -488,7 +509,18 @@ endif
 
 	@echo "Stage-0 CapyScheme created in stage-0/ directory"
 
-compile-all: compile-boot compile-core compile-rnrs compile-srfi compile-r7rs compile-capy-args compile-cli compile-capy compile-common
+# The groups run one after another (files inside a group still build in parallel):
+# they share the stage-0 auto-compile cache, and concurrent groups race on it.
+compile-all:
+	$(MAKE) compile-boot
+	$(MAKE) compile-core
+	$(MAKE) compile-rnrs
+	$(MAKE) compile-srfi
+	$(MAKE) compile-r7rs
+	$(MAKE) compile-capy-args
+	$(MAKE) compile-cli
+	$(MAKE) compile-capy
+	$(MAKE) compile-common
 
 stage-1:
 	$(call check-fasl-stamp,stage-1/compiled)
@@ -640,6 +672,7 @@ compile-common:
 # -------------------------
 
 install-portable: build build-runtime-portable
+	$(MAKE) build-cparse
 	@echo "Installing CapyScheme to $(PREFIX)/capy/$(VERSION)"
 	mkdir -p $(PREFIX)/capy/$(VERSION)/extensions
 	rsync --checksum -r lib $(PREFIX)/capy/$(VERSION)
@@ -647,6 +680,7 @@ install-portable: build build-runtime-portable
 	rm -f $(PREFIX)/capy/$(VERSION)/capyc && cp $(TARGET_PATH)/capyc $(PREFIX)/capy/$(VERSION)/capyc
 	chmod +x $(PREFIX)/capy/$(VERSION)/capy $(PREFIX)/capy/$(VERSION)/capyc
 	rm -f $(PREFIX)/capy/$(VERSION)/$(LIBCAPY) && cp $(TARGET_PATH)/$(LIBCAPY) $(PREFIX)/capy/$(VERSION)/$(LIBCAPY) 2>/dev/null || true
+	rm -f $(PREFIX)/capy/$(VERSION)/$(CPARSE_LIB) && cp $(TARGET_PATH)/$(CPARSE_LIB) $(PREFIX)/capy/$(VERSION)/$(CPARSE_LIB)
 	cp c/capy.h $(PREFIX)/capy/$(VERSION)/capy.h
 	ln -sf $(PREFIX)/capy/$(VERSION)/capy $(PREFIX)/capy/$(VERSION)/capy-$(VERSION)
 	cp -r stage-2/compiled $(PREFIX)/capy/$(VERSION)/
@@ -659,6 +693,7 @@ dist-portable: build
 	# Must run after `build`, not alongside it under `make -j`: both write
 	# the same libcapy with different features, and stage-0 needs bootstrap.
 	$(MAKE) build-runtime-portable
+	$(MAKE) build-cparse
 	set -euxo pipefail; \
 	outdir=$${OUTDIR:-dist}; \
 	stagedir=$${STAGEDIR:-stage-dist}; \
@@ -676,6 +711,7 @@ dist-portable: build
 	cp "$(TARGET_PATH)/capyc" "$$stage_install_dir/capyc"; \
 	chmod +x "$$stage_install_dir/capy" "$$stage_install_dir/capyc"; \
 	cp "$(TARGET_PATH)/$(LIBCAPY)" "$$stage_install_dir/$(LIBCAPY)" 2>/dev/null || true; \
+	cp "$(TARGET_PATH)/$(CPARSE_LIB)" "$$stage_install_dir/$(CPARSE_LIB)"; \
 	cp c/capy.h "$$stage_install_dir/capy.h"; \
 	cp -r stage-2/compiled "$$stage_install_dir/"; \
 	cp LICENSE "$$stage_install_dir/"; \
@@ -686,6 +722,7 @@ dist-portable: build
 
 install: build
 	$(MAKE) PREFIX=$(PREFIX) build-runtime-fhs
+	$(MAKE) build-cparse
 	@echo "Installing CapyScheme (FHS) to $(PREFIX)"
 	if [ -z "$(PREFIX)" ] || [ "$(PREFIX)" = "/" ]; then echo "error: refusing to install to empty or root PREFIX"; exit 1; fi; \
 	rm -rf "$(PREFIX)/lib/capy/compiled" "$(PREFIX)/share/capy/lib"; \
@@ -702,6 +739,7 @@ install: build
 	# Thin CLI RUNPATH includes $$ORIGIN/; keep a copy next to the binaries for FHS.
 	cp "$(TARGET_PATH)/$(LIBCAPY)" "$(PREFIX)/bin/$(LIBCAPY)" 2>/dev/null || true; \
 	cp c/capy.h "$(PREFIX)/include/capy.h"; \
+	cp "$(TARGET_PATH)/$(CPARSE_LIB)" "$(PREFIX)/lib/capy/$(CPARSE_LIB)"; \
 	cp -r stage-2/compiled "$(PREFIX)/lib/capy/"; \
 	echo "Installation complete."
 
@@ -728,6 +766,7 @@ dist-deb: build
 	@echo "Building .deb package in $(DIST_DIR)/"
 	@# Build FHS runtime binaries (linked against /usr/lib)
 	$(MAKE) PREFIX=/usr build-runtime-fhs
+	$(MAKE) build-cparse
 	rm -rf "$(PKG_ROOT)/deb"
 	mkdir -p "$(PKG_ROOT)/deb/usr/bin" "$(PKG_ROOT)/deb/usr/lib" "$(PKG_ROOT)/deb/usr/lib/capy" "$(PKG_ROOT)/deb/usr/share/capy" "$(PKG_ROOT)/deb/DEBIAN" "$(DIST_DIR)"
 	cp "$(TARGET_PATH)/capy" "$(PKG_ROOT)/deb/usr/bin/capy"
@@ -739,6 +778,7 @@ dist-deb: build
 	cp c/capy.h "$(PKG_ROOT)/deb/usr/include/capy.h"
 	cp -r lib "$(PKG_ROOT)/deb/usr/share/capy/"
 	cp -r stage-2/compiled "$(PKG_ROOT)/deb/usr/lib/capy/"
+	cp "$(TARGET_PATH)/$(CPARSE_LIB)" "$(PKG_ROOT)/deb/usr/lib/capy/$(CPARSE_LIB)"
 	installed_size_kb=$$(du -sk "$(PKG_ROOT)/deb/usr" | awk '{print $$1}'); \
 	arch=$$(dpkg --print-architecture 2>/dev/null || echo amd64); \
 	pkgver="$(VERSION)"; \
@@ -770,6 +810,7 @@ dist-rpm: build
 	@echo "Building .rpm package in $(DIST_DIR)/"
 	@# Build FHS runtime binaries (linked against /usr/lib)
 	$(MAKE) PREFIX=/usr build-runtime-fhs
+	$(MAKE) build-cparse
 	rm -rf "$(PKG_ROOT)/rpm"
 	mkdir -p \
 		"$(PKG_ROOT)/rpm/root/usr/bin" "$(PKG_ROOT)/rpm/root/usr/lib" "$(PKG_ROOT)/rpm/root/usr/lib/capy" "$(PKG_ROOT)/rpm/root/usr/share/capy" \
@@ -784,6 +825,7 @@ dist-rpm: build
 	cp c/capy.h "$(PKG_ROOT)/rpm/root/usr/include/capy.h"
 	cp -r lib "$(PKG_ROOT)/rpm/root/usr/share/capy/"
 	cp -r stage-2/compiled "$(PKG_ROOT)/rpm/root/usr/lib/capy/"
+	cp "$(TARGET_PATH)/$(CPARSE_LIB)" "$(PKG_ROOT)/rpm/root/usr/lib/capy/$(CPARSE_LIB)"
 	rm -rf "$(PKG_ROOT)/rpm/rpmbuild/BUILD/$(PKG_NAME)-$(VERSION)"
 	mkdir -p "$(PKG_ROOT)/rpm/rpmbuild/BUILD/$(PKG_NAME)-$(VERSION)"
 	cp -a "$(PKG_ROOT)/rpm/root/usr" "$(PKG_ROOT)/rpm/rpmbuild/BUILD/$(PKG_NAME)-$(VERSION)/"
@@ -821,6 +863,7 @@ dist-rpm: build
 		"/usr/lib/libcapy.so" \
 		"/usr/include/capy.h" \
 		"/usr/lib/capy/compiled" \
+		"/usr/lib/capy/$(CPARSE_LIB)" \
 		"/usr/share/capy/lib" \
 		"" \
 		"%changelog" \

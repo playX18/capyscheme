@@ -806,14 +806,7 @@ impl Thread {
         self.native_data().barrier_selector
     }
 
-    /// The semantics an allocation with `semantics` really gets. MMTk 0.33's
-    /// non-moving space is an `ImmixSpace`. SemiSpace and MarkSweep trace it
-    /// with a trace kind it rejects (`unreachable!` in
-    /// `ImmixSpace::trace_object`). Under those plans non-moving objects go
-    /// where nothing moves them either: the large object space, or
-    /// mark-sweep's own default space. ConcurrentImmix needs no remap as long
-    /// as the vendored mmtk-core resets the non-moving allocator at each
-    /// pause (see the `[patch]` in the workspace `Cargo.toml`).
+    /// The semantics an allocation with `semantics` really gets.
     #[inline(always)]
     pub fn map_semantics(&self, semantics: AllocationSemantics) -> AllocationSemantics {
         if semantics == AllocationSemantics::NonMoving {

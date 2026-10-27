@@ -47,8 +47,7 @@ depending on plan). `ctx.alloc_in(space, T)` selects:
 | `Space::NonMoving` | Addresses exposed to C / FFI interiors |
 | `Space::Los` | Large objects |
 
-Objects of `size + header >= 8 KiB` are automatically promoted to `Los` in
-`heap/mutator.rs`. The default-space fast path bumps a per-thread TLAB
+The default-space fast path bumps a per-thread TLAB
 (`heap/lab.rs`). Slow paths flush and refill it around MMTk calls.
 
 Allocation uses `at_safepoint: false`: it may **schedule** a collection but
@@ -68,7 +67,7 @@ Anything whose raw address escapes into C must not move:
   (`runtime/vm/strings.rs`)
 - `string->pointer` builds a NUL-terminated bytevector via
   `make-bytevector/nonmoving`
-- Mutexes, conditions, and the poller are allocated NonMoving because their
+- Mutexes, conditions, and the poller are allocated in `Los` because their
   interior addresses are held across blocking waits
 
 `Mutation::is_in_nonmoving_space` / `ByteVector::is_nonmoving` test whether an
@@ -180,8 +179,8 @@ Barrier kinds by plan:
 
 Allowed MMTk plans:
 StickyImmix, ConcurrentImmix, MarkSweep, Immix, SemiSpace, GenImmix, GenCopy.
-The plan is selected with `--gc-plan` (default StickyImmix). An unsupported
-plan falls back to StickyImmix at init.
+The plan is selected with `--gc-plan` (default GenImmix). An unsupported
+plan also falls back to GenImmix.
 
 ## Heuristics and tuning
 
@@ -191,13 +190,14 @@ MMTk `create_gc_trigger` hook. When `MMTK_GC_TRIGGER` is unset the trigger is
 
 | Variable | Meaning | Default |
 |----------|---------|---------|
-| `CAPY_GC_HEURISTIC` | `adaptive`, `static`, `compact`, `aggressive`, `passive` | `adaptive` |
+| `CAPY_GC_HEURISTIC` | `adaptive`, `static`, `compact`, `aggressive`, `passive`, `generational` (only with `MMTK_PLAN=GenImmix`, `GenCopy` or `StickyImmix`; otherwise falls back to `adaptive`) | `adaptive` |
 | `CAPY_GC_MAX_HEAP` | Max heap size (`2G`, `512M`, …) | 2 GiB |
+| `CAPY_GC_INIT_HEAP` | Initial heap limit; grows up to the max (`0` = fixed at max). Triggers always use the max as capacity. | 0 |
+| `CAPY_GC_HEAP_GROWTH_FREE_PERCENT` | Target free share after a GC when the heap is growing | 75 |
 | `CAPY_GC_MIN_FREE_PERCENT` | Min free heap threshold | 10 |
 | `CAPY_GC_INIT_FREE_PERCENT` | Initial free heap threshold | 70 |
 | `CAPY_GC_GUARANTEED_INTERVAL_MS` | Force a GC at least this often (0 = off) | 5 min |
 | `MMTK_GC_TRIGGER` | MMTk trigger override (disables Capy heuristics) | unset |
-| `CAPY_BARRIER_KIND` | Compile-time barrier kind override | unset |
 
 `--log-trace` (before `--`) enables GC trace logging and per-collection
 summary lines on stderr. CLI flags `--gc-plan`, `--gc-trigger`,

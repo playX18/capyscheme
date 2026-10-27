@@ -227,7 +227,7 @@ pub(crate) fn mmtk_builder() -> MMTKBuilder {
         builder
             .options
             .plan
-            .set(mmtk::util::options::PlanSelector::ConcurrentImmix);
+            .set(mmtk::util::options::PlanSelector::GenImmix);
     }
 
     builder

@@ -1,0 +1,9 @@
+disallowed-methods = [
+    { path = "std::env::var", reason = "read the environment through capy::utils::flags" },
+    { path = "std::env::var_os", reason = "read the environment through capy::utils::flags" },
+    { path = "std::env::vars", reason = "read the environment through capy::utils::flags" },
+    { path = "std::env::vars_os", reason = "read the environment through capy::utils::flags" },
+    { path = "std::env::home_dir", reason = "read the environment through capy::utils::flags" },
+    { path = "std::env::set_var", reason = "set the environment through capy::utils::flags" },
+    { path = "std::env::remove_var", reason = "set the environment through capy::utils::flags" },
+]

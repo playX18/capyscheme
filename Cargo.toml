@@ -7,6 +7,8 @@ members = [
     "crates/capy-sni",
     "crates/capy-sni-derive",
     "crates/capy-cli",
+    "crates/capy-cparse",
+    "crates/capy-cparse-sni",
 ]
 
 exclude = ["vendor"]

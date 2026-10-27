@@ -49,7 +49,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential clang libclang-dev cmake pkg-config \
-            autoconf automake libtool rsync python3 \
+            autoconf automake libtool rsync python3 zlib1g-dev \
             dpkg-dev fakeroot rpm
 
       - name: Install macOS dependencies

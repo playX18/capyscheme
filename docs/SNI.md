@@ -14,7 +14,7 @@ A Rust extension uses `capy-sni` (safe API), which sits on `capy-sni-sys`
 `c/capy.h` function table, implemented by `libcapy`
 (`crates/capy/src/api/`).
 
-Code inside `libcapy` itself (the runtime) does not use SNI. 
+Code inside `libcapy` itself (the runtime) does not use SNI.
 
 ## Handles and rooting
 
@@ -83,7 +83,8 @@ int SNI_OnLoad(SniEnv *env, void *reserved);   // return 0 on success
 ```
 
 The load function typically registers procedures with the module `define`
-functions in `api/native.rs`. A native procedure has type
+functions in `api/native.rs`. `crates/capy-cparse-sni` is an in-tree example:
+it exposes the C header parser behind `c-include`. A native procedure has type
 `SniNativeFn`: `ScmRef f(SniEnv *env, int argc, const ScmRef *argv)`.
 
 ## Rust API
@@ -104,6 +105,17 @@ fn init(env: &mut Env<'_>) {
   arguments with `TryFromScm` and results with `IntoScm`
   (`conversions.rs`). It generates a `scheme_register_<fn>` function. The
   attribute also accepts structs.
+- A `#[scheme]` fn may take `&mut Env` anywhere in its parameter list.
+  ```rust
+  #[scheme(name = "pair-of", module = "smoke")]
+  fn pair_of<'env>(env: &mut Env<'env>, a: Ref<'env>, b: Ref<'env>)
+      -> Result<Ref<'env>, Ref<'env>> {
+      Ok(env.cons(a, b))
+  }
+  ```
+
+  An `Err(Ref)` is raised as the exception object. Like every non-`cps`
+  `#[scheme]` fn, it must not call back into Scheme.
 - `#[onload]` emits the C `SNI_OnLoad` symbol and runs your function with an
   `Env`.
 - `#[cps]` and `#[scheme(cps)]` rewrite `cps::call`, `cps::raise`, and

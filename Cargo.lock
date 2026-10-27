@@ -321,6 +321,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "capy-cparse"
+version = "3.0.2"
+
+[[package]]
+name = "capy-cparse-sni"
+version = "3.0.2"
+dependencies = [
+ "capy-cparse",
+ "capy-sni",
+ "capy-sni-sys",
+]
+
+[[package]]
 name = "capy-derive"
 version = "3.0.2"
 dependencies = [
@@ -1429,7 +1442,7 @@ dependencies = [
 [[package]]
 name = "mmtk"
 version = "0.33.0"
-source = "git+https://github.com/mmtk/mmtk-core#083766699982d573307e3b54848b61cbf24f447a"
+source = "git+https://github.com/mmtk/mmtk-core#ed897119648ef3f6dad762cb35fd4cfa8b79b97a"
 dependencies = [
  "atomic",
  "atomic-traits",
@@ -1464,7 +1477,7 @@ dependencies = [
 [[package]]
 name = "mmtk-macros"
 version = "0.33.0"
-source = "git+https://github.com/mmtk/mmtk-core#083766699982d573307e3b54848b61cbf24f447a"
+source = "git+https://github.com/mmtk/mmtk-core#ed897119648ef3f6dad762cb35fd4cfa8b79b97a"
 dependencies = [
  "proc-macro-error",
  "proc-macro2",

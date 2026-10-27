@@ -183,7 +183,7 @@
       (help "Force a GC at least this often; 0 = off."))
     (add-option! parser
       "gc-plan"
-      (defaults-to "ConcurrentImmix")
+      (defaults-to "GenImmix")
       (allowed (list "StickyImmix" "ConcurrentImmix" "MarkSweep" "Immix" "SemiSpace" "GenImmix" "GenCopy"))
       (value-help "PLAN")
       (help "MMTk GC plan."))
