@@ -540,8 +540,11 @@
                 (let ((next-char (lookahead-char p)))
                   (cond ((and (= (reader-saved-line p) 1) (memv next-char '(#\/ #\space)))
                          (let ((line (reader-saved-line p))
-                               (column (reader-saved-column p)))
-                           (values 'shebang `(,line ,column ,(get-line p)))))
+                               (column (reader-saved-column p))
+                               (text (get-line p)))
+                           (if keep-atmosphere?
+                             (values 'shebang `(,line ,column ,text))
+                             (reader:get-token* p keep-atmosphere?))))
                     ((and (char? next-char) (char-alphabetic? next-char))
                       (receive (type id) (get-token p)
                         (cond

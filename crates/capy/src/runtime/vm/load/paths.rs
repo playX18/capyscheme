@@ -340,17 +340,23 @@ pub fn compiled_is_fresh(
 fn source_candidates<'gc>(ctx: MutationContext<'gc>, filename: &Path) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
-    if filename.extension().is_some() {
-        candidates.push(filename.to_owned());
-    }
+    // Always try the exact path first so extensionless scripts (e.g. `./main`)
+    // resolve. Extension-based lookups follow as fallbacks.
+    candidates.push(filename.to_owned());
+
+    let mut push_unique = |candidate: PathBuf| {
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    };
 
     let mut extensions = ctx.globals().loc_load_extensions().get();
     if extensions.is_null() {
-        candidates.push(filename.with_extension("scm"));
+        push_unique(filename.with_extension("scm"));
     } else {
         while extensions.is_pair() {
             let extension = extensions.car().downcast::<Str>().to_string();
-            candidates.push(filename.with_extension(&extension));
+            push_unique(filename.with_extension(&extension));
             extensions = extensions.cdr();
         }
     }
