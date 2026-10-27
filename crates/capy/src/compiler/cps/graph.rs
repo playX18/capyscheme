@@ -5,7 +5,6 @@
 //! summarizes it. The `Pretty*` wrappers at the bottom render nodes for
 //! dumps and tests (see also [`pretty`](super::pretty)).
 
-use serde::{Deserialize, Serialize};
 use std::{
     fmt,
     hash::Hash,
@@ -53,7 +52,7 @@ impl<'gc> From<LVarRef<'gc>> for Atom<'gc> {
 /// A branch hint given to `if` term in CPS code.
 ///
 /// This is mainly used to generate efficient code for type-checks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BranchHint {
     /// Normal branch, block will be reordered as needed.
     Normal,

@@ -40,11 +40,9 @@ petgraph = "0.8.2"
 log = "0.4.27"
 backtrace = "0.3.75"
 libffi = { version = "5.0.0" }
-tinyvec = "1.6.0"
 unicode-general-category = "1.1.0"
 unicode-normalization = "0.1.25"
 capy-derive = { path = "crates/capy-derive" }
-serde = { version = "1.0.228", features = ["derive"] }
 
 [profile.release]
 incremental = true
