@@ -1,6 +1,6 @@
 (import (rnrs)
         (srfi 64)
-        (core threading))
+        (capy concurrency))
 
 (test-begin "capy thread interrupts")
 
@@ -27,39 +27,39 @@
   (let* ([started #f]
          [release? #f]
          [mutex (make-mutex)]
-         [cv (make-condition)]
+         [cv (make-condition-variable)]
          [events '()]
-         [worker (call-with-new-thread
+         [worker (go
                    (lambda ()
                      (call-without-interrupts
                        (lambda ()
                          (mutex-acquire mutex)
                          (set! started #t)
-                         (condition-broadcast cv)
+                         (condition-variable-broadcast cv)
                          (let loop ()
                            (unless release?
-                             (condition-wait cv mutex)
+                             (condition-variable-wait cv mutex)
                              (loop)))
                          (mutex-release mutex)))
                      (set! events (cons 'done events))))])
     (mutex-acquire mutex)
     (let loop ()
       (unless started
-        (condition-wait cv mutex)
+        (condition-variable-wait cv mutex)
         (loop)))
     (thread-interrupt! worker (lambda () (set! events (cons 'first events))))
     (thread-interrupt! worker (lambda () (set! events (cons 'second events))))
     (set! release? #t)
-    (condition-broadcast cv)
+    (condition-variable-broadcast cv)
     (mutex-release mutex)
-    (join-thread worker)
+    (thread-join worker)
     (reverse events))
   '(first second done))
 
 (test-equal "masked interrupts wait until unmasked"
   (let* ([started #f]
          [events '()]
-         [worker (call-with-new-thread
+         [worker (go
                    (lambda ()
                      (call-without-interrupts
                        (lambda ()
@@ -72,25 +72,25 @@
                      (set! events (cons 'after events))))])
     (wait-until (lambda () started))
     (thread-interrupt! worker (lambda () (set! events (cons 'interrupt events))))
-    (join-thread worker)
+    (thread-join worker)
     (reverse events))
   '(masked unmasking interrupt after))
 
 (test-equal "blocked condition wait accepts interrupt"
   (let* ([mutex (make-mutex)]
-         [cv (make-condition)]
+         [cv (make-condition-variable)]
          [events '()]
-         [worker (call-with-new-thread
+         [worker (go
                    (lambda ()
                      (mutex-acquire mutex)
                      (set! events (cons 'waiting events))
-                     (condition-wait cv mutex)
+                     (condition-variable-wait cv mutex)
                      (set! events (cons 'resumed events))
                      (mutex-release mutex)))])
     (wait-until (lambda () (memq 'waiting events)))
     (thread-interrupt! worker (lambda () (set! events (cons 'interrupt events))))
-    (condition-broadcast cv)
-    (join-thread worker)
+    (condition-variable-broadcast cv)
+    (thread-join worker)
     (reverse events))
   '(waiting interrupt resumed))
 

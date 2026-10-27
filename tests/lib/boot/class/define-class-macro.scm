@@ -48,9 +48,9 @@
     (set! macro-post-initialize-events
       (cons
         (list (class-name class)
-              (macro-initarg-ref initargs #:name)
-              (map macro-slot-spec-name (macro-initarg-ref initargs #:slots))
-              (macro-initarg-ref initargs #:applicable))
+              (macro-initarg-ref initargs '#:name)
+              (map macro-slot-spec-name (macro-initarg-ref initargs '#:slots))
+              (macro-initarg-ref initargs '#:applicable))
         macro-post-initialize-events))
     #f)
   (define-class macro-post-initialized ()
@@ -141,7 +141,7 @@
   (test-equal "define-class supports Gauche colon allocation values"
     (slot-definition-allocation
       (class-slot-definition macro-defined-gauche-options 'shared))
-    #:class)
+    '#:class)
   (test-equal "define-class class slots accept Gauche colon allocation values"
     (class-slot-ref macro-defined-gauche-options 'shared)
     'gauche-shared)
@@ -295,7 +295,7 @@
                                      (list #:hidden 12)))
   (test-error "slot-initialize-using-accessor! rejects malformed initargs"
     &assertion-violation
-    (slot-initialize-using-accessor! configured options-x-accessor (list #:x)))
+    (slot-initialize-using-accessor! configured options-x-accessor (list '#:x)))
   (test-equal "slot-set-using-accessor! writes ordinary slots"
     (begin
       (slot-set-using-accessor! accessor-instance macro-x-accessor 4)
@@ -323,10 +323,10 @@
     (slot-bound-using-class? macro-defined-custom-slot custom-slot 'visible))
   (test-equal "slot-definition-allocation reports instance allocation"
     (slot-definition-allocation (class-slot-definition macro-defined-options 'x))
-    #:instance)
+    '#:instance)
   (test-equal "slot-definition-allocation reports class allocation"
     (slot-definition-allocation (class-slot-definition macro-defined-options 'shared))
-    #:class)
+    '#:class)
   (test-assert "class-slot-ref has a setter procedure"
     (has-setter? class-slot-ref))
   (test-equal "class-slot-ref reads class-allocated slots"
@@ -361,16 +361,16 @@
     (memq #:init-value
           (slot-definition-options (class-slot-definition macro-defined-options 'x))))
   (test-equal "slot-definition-option exposes init values"
-    (slot-definition-option (class-slot-definition macro-defined-options 'x) #:init-value)
+    (slot-definition-option (class-slot-definition macro-defined-options 'x) '#:init-value)
     7)
   (test-equal "slot-definition-option accepts Gauche colon keys"
     (slot-definition-option (class-slot-definition macro-defined-options 'x) ':init-value)
     7)
   (test-equal "slot-definition-option exposes immutable state"
-    (slot-definition-option (class-slot-definition macro-defined-options 'locked) #:immutable)
+    (slot-definition-option (class-slot-definition macro-defined-options 'locked) '#:immutable)
     #t)
   (test-equal "slot-definition-option returns explicit defaults for missing options"
-    (slot-definition-option (class-slot-definition macro-defined-options 'x) #:unknown 'fallback)
+    (slot-definition-option (class-slot-definition macro-defined-options 'x) '#:unknown 'fallback)
     'fallback)
   (test-equal "slot-definition-option returns defaults for unknown Gauche colon keys"
     (slot-definition-option (class-slot-definition macro-defined-options 'x) ':unknown 'fallback)
@@ -390,7 +390,7 @@
   (test-assert "slot-definition-option exposes Scheme reader hooks"
     (eq? (slot-definition-option
            (class-slot-definition macro-defined-custom-slot 'visible)
-           #:slot-ref)
+           '#:slot-ref)
          macro-custom-slot-ref))
   (test-assert "slot-definition-option accepts Gauche colon hook keys"
     (eq? (slot-definition-option
@@ -416,7 +416,7 @@
   (test-assert "slot-accessor-option exposes Scheme reader hooks"
     (eq? (slot-accessor-option
            (class-slot-accessor macro-defined-custom-slot 'visible)
-           #:slot-ref)
+           '#:slot-ref)
          macro-custom-slot-ref))
   (test-assert "slot-accessor-option accepts Gauche colon hook keys"
     (eq? (slot-accessor-option
@@ -448,7 +448,7 @@
   (test-equal "slot-definition-option exposes accessor option names"
     (slot-definition-option
       (class-slot-definition macro-defined-accessors 'x)
-      #:accessor)
+      '#:accessor)
     'macro-defined-accessor-x)
   (test-equal "slot-accessor-accessor exposes accessor option names"
     (slot-accessor-accessor

@@ -50,7 +50,7 @@
   (test-assert "method-options expose supported option keys"
     (memq #:specializers (method-options describe-method)))
   (test-equal "method-option exposes specializers"
-    (method-option describe-method #:specializers)
+    (method-option describe-method '#:specializers)
     (list point))
   (test-equal "method-option accepts Gauche colon keys"
     (method-option describe-method ':required-arg-count)

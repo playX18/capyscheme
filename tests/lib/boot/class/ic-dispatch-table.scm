@@ -1,7 +1,8 @@
 (import (srfi 64)
         (srfi 1)
         (rnrs)
-        (capy))
+        (capy)
+        (only (capy concurrency) go))
 
 (test-begin "boot class ic dispatch table")
 
@@ -137,10 +138,10 @@
   (finish!))
 
 (test-group "readers vs. method replacement"
-  (fork-thread (reader 0))
-  (fork-thread (reader 3))
-  (fork-thread (reader 11))
-  (fork-thread writer)
+  (go (reader 0))
+  (go (reader 3))
+  (go (reader 11))
+  (go writer)
   (let wait ([spins 0])
     (cond
       [(= (begin (mutex-acquire lock) (let ([d done]) (mutex-release lock) d)) 4) #t]

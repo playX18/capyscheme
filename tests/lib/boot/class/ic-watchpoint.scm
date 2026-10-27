@@ -1,6 +1,7 @@
 (import (srfi 64)
         (rnrs)
-        (capy))
+        (capy)
+        (only (capy concurrency) go))
 
 (test-begin "boot class ic watchpoints")
 
@@ -34,7 +35,7 @@
   (mutex-acquire lock)
   (let ([s stop]) (mutex-release lock) s))
 
-(fork-thread
+(go
  (lambda ()
    (let loop ([n 0])
      (let ([v (read-x a)])

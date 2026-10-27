@@ -1,6 +1,7 @@
 (import (srfi 64)
         (rnrs)
-        (capy))
+        (capy)
+        (only (capy concurrency) go))
 
 (test-begin "boot class ic stress")
 
@@ -55,9 +56,9 @@
   (bump-done!))
 
 (test-group "readers vs. method replacement"
-  (fork-thread reader)
-  (fork-thread reader)
-  (fork-thread writer)
+  (go reader)
+  (go reader)
+  (go writer)
   (let wait ([n 0])
     (when (and (< (done-count) 3) (< n 20000))
       (usleep 1000)
@@ -92,7 +93,7 @@
               (unless (eqv? (slot-ref inst 'kept) 42)
                 (set! redef-failures (+ redef-failures 1))))
             (loop (+ n 1))))))
-  (fork-thread reader-loop)
+  (go reader-loop)
   (do ([i 0 (+ i 1)]) ((= i 400))
     (set! cls
       (redefine-class! cls 'st-redef

@@ -20,7 +20,7 @@
   (test-assert "class-options expose supported option keys"
     (memq #:direct-supers (class-options colored-point)))
   (test-equal "class-option exposes direct supers"
-    (class-option colored-point #:direct-supers)
+    (class-option colored-point '#:direct-supers)
     (list point <object>))
   (test-equal "class-option accepts Gauche colon keys"
     (class-option colored-point ':name)

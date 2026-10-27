@@ -93,7 +93,7 @@
   (test-assert "define-method records locked qualifier"
     (method-locked? (car (generic-methods macro-locked))))
   (test-assert "method-option exposes locked qualifier"
-    (method-option (car (generic-methods macro-locked)) #:locked))
+    (method-option (car (generic-methods macro-locked)) '#:locked))
   (test-equal "define-method accepts keyword locked qualifier"
     (macro-keyword-locked p)
     '(keyword-locked 9))
@@ -143,7 +143,7 @@
   (test-assert "generic-options expose supported option keys"
     (memq #:fallback (generic-options macro-fallback-option)))
   (test-assert "generic-option exposes fallback procedures"
-    (procedure? (generic-option macro-fallback-option #:fallback)))
+    (procedure? (generic-option macro-fallback-option '#:fallback)))
   (test-equal "generic-option exposes dispatch arg counts"
     (generic-option macro-option-dispatch ':required-dispatch-arg-count)
     2)

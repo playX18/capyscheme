@@ -1,6 +1,7 @@
 (import (srfi 64)
         (rnrs)
-        (capy))
+        (capy)
+        (only (capy concurrency) go))
 
 (test-begin "boot class ic poly stress")
 
@@ -38,7 +39,7 @@
         (loop (+ i 1) (+ k 1 (modulo i 3)))))
     (mutex-acquire lock) (set! finished (+ finished 1)) (mutex-release lock)))
 
-(do ([t 0 (+ t 1)]) ((= t 4)) (fork-thread (worker t)))
+(do ([t 0 (+ t 1)]) ((= t 4)) (go (worker t)))
 
 (let wait ()
   (mutex-acquire lock)

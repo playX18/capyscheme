@@ -54,7 +54,7 @@
 
 (test-group "make argument errors"
   (test-error (make <de-a> #:nope 1))
-  (test-error (make <de-a> #:v))
+  (test-error (make <de-a> '#:v))
   (test-error (make 42)))
 
 (test-end "boot class dispatch entry")
