@@ -55,8 +55,8 @@
   (make-parameter #f (lambda (x) (output-port? x))))
 
 
-(define (current-error-port)
-  (console-error-port))
+(define current-error-port
+  (make-parameter #f (lambda (x) (output-port? x))))
 
 (define (console-input-port)
   ((console-input-port-factory)))
@@ -80,6 +80,7 @@
   (console/initialize)
   (current-input-port (console-input-port))
   (current-output-port (console-output-port))
+  (current-error-port (console-error-port))
   (unspecified))
 
 (define (shutdown-io-system)
