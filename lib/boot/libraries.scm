@@ -1363,7 +1363,36 @@
     set-pointer-finalizer!
     dereference-pointer
     pointer->procedure
+    procedure->callback-pointer
+    free-callback-pointer
     errno
+    errno-set!
+    pointer-ref
+    pointer-set!
+    pointer-ref/pointer
+    pointer-set/pointer!
+    pointer-ref/u8
+    pointer-set!/u8
+    pointer-ref/s8
+    pointer-set!/s8
+    pointer-ref/u16
+    pointer-set!/u16
+    pointer-ref/s16
+    pointer-set!/s16
+    pointer-ref/u32
+    pointer-set!/u32
+    pointer-ref/s32
+    pointer-set!/s32
+    pointer-ref/u64
+    pointer-set!/u64
+    pointer-ref/s64
+    pointer-set!/s64
+    pointer-ref/f32
+    pointer-set!/f32
+    pointer-ref/f64
+    pointer-set!/f64
+    foreign-alloc
+    foreign-free
     ioctl/pointer
     dlopen
     dlsym
@@ -1401,11 +1430,29 @@
     %search-load-path
 
     ;; threading
-    fork-thread
-    %thread-interrupt!
+    %native-fork-thread
+    %native-thread-join
+    %native-thread-id
+    %thread-id
+    %thread-yield
+    %thread-worker
+    %thread-worker-count
+    %thread-pinned
+    %thread-pin!
+    %thread-priority-levels
+    %thread-priority
+    %thread-set-priority!
+    %thread-sleep
+    %await-fd-timeout
+    %native-thread-interrupt!
+    %native-thread-kill!
+    %native-thread-killed?
+    %native-set-thread-unwind-k!
+    %native-thread?
+    %native-current-thread
+    %mutex-acquire-status
     %call-without-interrupts
     current-interrupt-level
-    thread?
     make-condition
     thread-condition?
     condition-wait
@@ -1419,8 +1466,6 @@
     mutex-release
     make-thread-parameter
     with-mutex
-    thread?
-    current-thread
 
     make-enumeration
     enum-set?

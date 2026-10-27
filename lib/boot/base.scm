@@ -1633,22 +1633,29 @@
           (string->symbol (substring name 1 (string-length name))))]
       [else datum])))
 
+
+(define-for-syntax (%define-class-quote-keyword stx)
+  (if (keyword? (syntax->datum stx))
+    #`'#,stx
+    stx))
+
 (define-for-syntax (%define-class-runtime-slot-option option)
-  (case (%define-class-option-name option)
-    [(init-value) #'#:init-value]
-    [(init-keyword) #'#:init-keyword]
-    [(init-thunk) #'#:init-thunk]
-    [(slot-ref) #'#:slot-ref]
-    [(slot-set!) #'#:slot-set!]
-    [(slot-bound?) #'#:slot-bound?]
-    [(allocation) #'#:allocation]
-    [(getter) #'#:getter]
-    [(setter) #'#:setter]
-    [(accessor) #'#:accessor]
-    [(immutable) #'#:immutable]
-    [(initializable) #'#:initializable]
-    [(settable) #'#:settable]
-    [else option]))
+  (%define-class-quote-keyword
+    (case (%define-class-option-name option)
+      [(init-value) #'#:init-value]
+      [(init-keyword) #'#:init-keyword]
+      [(init-thunk) #'#:init-thunk]
+      [(slot-ref) #'#:slot-ref]
+      [(slot-set!) #'#:slot-set!]
+      [(slot-bound?) #'#:slot-bound?]
+      [(allocation) #'#:allocation]
+      [(getter) #'#:getter]
+      [(setter) #'#:setter]
+      [(accessor) #'#:accessor]
+      [(immutable) #'#:immutable]
+      [(initializable) #'#:initializable]
+      [(settable) #'#:settable]
+      [else option])))
 
 (define-for-syntax (%define-class-slot-option-pairs form options slot)
   (syntax-case options ()
@@ -1716,7 +1723,8 @@
             [(memq option-name '(initform init-form))
               (loop (cdr pairs)
                 (cons #`(lambda () #,value)
-                  (cons (datum->syntax (caar pairs) '#:init-thunk)
+                  (cons (%define-class-quote-keyword
+                          (datum->syntax (caar pairs) '#:init-thunk))
                     out)))]
             [(and (eq? option-name 'allocation)
                 (%define-class-colon-symbol? (syntax->datum value)))
@@ -1725,7 +1733,7 @@
                   (cons (%define-class-runtime-slot-option (caar pairs)) out)))]
             [else
               (loop (cdr pairs)
-                (cons value
+                (cons (%define-class-quote-keyword value)
                   (cons (%define-class-runtime-slot-option (caar pairs)) out)))]))])))
 
 (define-for-syntax (%process-slot-definition form slot)

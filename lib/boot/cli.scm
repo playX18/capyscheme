@@ -23,9 +23,17 @@
   (define (eval-string str)
     (eval-string/value str))
 
+
+  (define (install-core-in-user-module!)
+    (module-use! (resolve-module '(capy user) #f #t)
+      (resolve-interface '(core) #f '() #f)))
+
   (define (canonicalize-paths paths)
     (map canonicalize-path-string paths))
 
+  ;; Generated from FLAG_DEFS in crates/capy/src/utils/flags.rs. The launcher
+  ;; turns these into environment variables before Scheme starts, so the
+  ;; entries here only make the options appear in --help.
   (define (add-flag-options! parser)
     (argparser-add-separator! parser "Compiler tuning options:")
     (add-option! parser
@@ -41,55 +49,78 @@
     (add-flag! parser
       "share-order"
       (defaults-to #f)
-      (help "Restore the FCO stage-ordering gate for closure-sharing reuse sites."))
+      not-negatable
+      (help "Only share a closure environment when every use of the shared variables comes before every use of the member's own captures."))
     (add-flag! parser
       "share-dump"
       (defaults-to #f)
-      (help "Print per-site closure-sharing decisions and flow stats."))
+      not-negatable
+      (help "Print per-site closure-sharing decisions (allocate/reuse, record size, members) and flow stats. Toggles log target `capy::share`."))
     (add-flag! parser
       "closure-sharing"
       (defaults-to #t)
-      (help "Enable shared closure environments (EnvRecord); 0 disables sharing."))
+      (help "Let closures share environment records instead of each allocating its own."))
     (add-option! parser
       "gcps-contify"
       (defaults-to "dom")
+      (allowed (list "0" "off" "none" "false" "scc" "legacy" "both" "dom+scc" "dom-then-scc" "dom" "dominator" "dominators"))
       (value-help "MODE")
-      (help "Contification strategy: off, scc, dom, or both (dom+scc)."))
+      (help "Contification strategy: off (or 0), scc, dom, or both (dom+scc)."))
     (add-flag! parser
       "profile-passes"
       (defaults-to #f)
-      (help "Emit PERF (capy) phase-timing lines to stderr."))
-
+      not-negatable
+      (help "Emit `;; PERF (capy)` phase timing lines to stderr."))
+    (add-flag! parser
+      "strip-spans"
+      (defaults-to #f)
+      not-negatable
+      (help "Omit bytecode source maps from emitted FASLs (backtraces fall back to procedure metadata)."))
     (argparser-add-separator! parser "Dump options:")
     (add-option! parser
       "dump-compile"
-      (value-help "KINDS")
-      (help "Per-compilation artifact dumps (comma-separated): ir, graph, gcps, ssa, bytecode, noopt, or all."))
+      (allowed (list "ir" "graph" "gcps" "ssa" "bytecode" "bc" "asm" "disassembly" "noopt" "all" "1"))
+      (value-help "LIST")
+      (help "Per-compilation artifact dumps (comma-separated): ir, gcps, ssa, bytecode, noopt, or all."))
+    (add-flag! parser
+      "compile-dump-noopt"
+      (defaults-to #f)
+      not-negatable
+      (help "Also dump the unoptimized (pre-lowering) IR."))
+    (add-option! parser
+      "compile-dump-dir"
+      (value-help "PATH")
+      (help "Directory for CAPY_COMPILE_DUMP artifacts (fallback: CAPY_DUMP_DIR or ./capy-dumps)."))
+    (add-option! parser
+      "compile-dump-limit"
+      (defaults-to "max")
+      (value-help "N")
+      (help "Cap the number of compilations that dump artifacts (max = unlimited)."))
     (add-option! parser
       "dump-gcps-contify"
-      (value-help "SRC")
-      (help "GCPS contification dumps: scc, dom, or all."))
+      (allowed (list "0" "off" "none" "false" "1" "on" "true" "all" "scc" "legacy" "dom" "dominator" "dominators"))
+      (value-help "LIST")
+      (help "GCPS contification dumps: off/0, scc, dom, or all/1 for both sources."))
+    (add-option! parser
+      "gcps-dump-dir"
+      (value-help "PATH")
+      (help "Directory for CAPY_GCPS_DUMP_CONTIFY dumps (fallback: CAPY_DUMP_DIR or ./capy-dumps)."))
+    (add-option! parser
+      "gcps-dump-limit"
+      (defaults-to "max")
+      (value-help "N")
+      (help "Cap the number of GCPS contification dumps (max = unlimited)."))
     (add-option! parser
       "dump-dir"
-      (value-help "DIR")
-      (help "Shared fallback directory for dump artifacts (default ./capy-dumps)."))
-
+      (value-help "PATH")
+      (help "Shared fallback directory for all dump kinds (default: ./capy-dumps)."))
     (argparser-add-separator! parser "Garbage collection options:")
-    (add-option! parser
-      "gc-plan"
-      (defaults-to "ConcurrentImmix")
-      (value-help "PLAN")
-      (help "Select the MMTK GC plan (StickyImmix, ConcurrentImmix, MarkSweep, Immix, SemiSpace, GenImmix, GenCopy)."))
-    (add-option! parser
-      "gc-trigger"
-      (defaults-to "Delegated")
-      (value-help "TRIGGER")
-      (help "Set the MMTK GC trigger policy."))
     (add-option! parser
       "gc-heuristic"
       (defaults-to "adaptive")
+      (allowed (list "adaptive" "static" "compact" "aggressive" "passive" "generational"))
       (value-help "MODE")
-      (help "GC trigger heuristic: adaptive, static, compact, aggressive, or passive."))
+      (help "GC trigger heuristic: adaptive, static, compact, aggressive, passive, or generational."))
     (add-option! parser
       "gc-max-heap"
       (defaults-to "2G")
@@ -98,27 +129,27 @@
     (add-option! parser
       "gc-min-free-percent"
       (defaults-to "10")
-      (value-help "PERCENT")
-      (help "Minimum free heap threshold, percent of the heap (0-100)."))
+      (value-help "N")
+      (help "Minimum free heap threshold, percent of the heap (clamped to 0-100)."))
     (add-option! parser
       "gc-init-free-percent"
       (defaults-to "70")
-      (value-help "PERCENT")
-      (help "Initial free heap threshold, percent of the heap (0-100)."))
+      (value-help "N")
+      (help "Initial free heap threshold, percent of the heap (clamped to 0-100)."))
     (add-option! parser
       "gc-allocation-threshold-percent"
       (defaults-to "0")
-      (value-help "PERCENT")
-      (help "Allocation-since-GC threshold, percent of the heap (compact mode; 0-100)."))
+      (value-help "N")
+      (help "Allocation-since-GC threshold, percent of the heap (compact mode; clamped to 0-100)."))
     (add-option! parser
       "gc-alloc-spike-percent"
       (defaults-to "5")
-      (value-help "PERCENT")
-      (help "Allocation spike detection factor, percent (0-100)."))
+      (value-help "N")
+      (help "Allocation spike detection factor, percent (clamped to 0-100)."))
     (add-option! parser
       "gc-learning-steps"
       (defaults-to "5")
-      (value-help "STEPS")
+      (value-help "N")
       (help "History length used by the adaptive heuristic."))
     (add-option! parser
       "gc-adaptive-confidence"
@@ -133,7 +164,7 @@
     (add-option! parser
       "gc-acceleration-sample-period-ms"
       (defaults-to "15")
-      (value-help "MS")
+      (value-help "N")
       (help "Acceleration sampling period in milliseconds."))
     (add-option! parser
       "gc-acceleration-sample-count"
@@ -148,58 +179,174 @@
     (add-option! parser
       "gc-guaranteed-interval-ms"
       (defaults-to "300000")
-      (value-help "MS")
+      (value-help "N")
       (help "Force a GC at least this often; 0 = off."))
     (add-option! parser
-      "barrier-kind"
-      (value-help "KIND")
-      (help "Compile-time barrier override: nobarrier, objbarrier, satbbarrier, or fieldbarrier (unset = live plan)."))
-
+      "gc-plan"
+      (defaults-to "ConcurrentImmix")
+      (allowed (list "StickyImmix" "ConcurrentImmix" "MarkSweep" "Immix" "SemiSpace" "GenImmix" "GenCopy"))
+      (value-help "PLAN")
+      (help "MMTk GC plan."))
+    (add-option! parser
+      "gc-trigger"
+      (value-help "TEXT")
+      (help "MMTk GC trigger override; also read by MMTk itself, capy uses it for the default max heap."))
     (argparser-add-separator! parser "Engine options:")
     (add-option! parser
       "engine"
-      (value-help "ENGINE")
-      (help "Execution engine: rust or template (unset = template where supported, Rust elsewhere)."))
+      (allowed (list "rust" "template"))
+      (value-help "MODE")
+      (help "Execution engine: rust, template, or unset for the build default."))
+    (add-flag! parser
+      "template-alloc-stats"
+      (defaults-to #f)
+      not-negatable
+      (help "Count generated-code allocations (fast path vs capy_op_alloc) and report at exit."))
+    (add-flag! parser
+      "template-bail-stats"
+      (defaults-to #f)
+      not-negatable
+      (help "Report bailed-opcode counts of the template interpreter at exit."))
+    (add-flag! parser
+      "template-bail-oneway"
+      (defaults-to #f)
+      not-negatable
+      (help "Make capy_bail one-way: stay in the Rust engine after the first bail."))
+    (add-flag! parser
+      "template-op-stats"
+      (defaults-to #f)
+      not-negatable
+      (help "Count executed opcodes in the template interpreter (emitted at generation time) and report at exit."))
+    (add-option! parser
+      "template-bail"
+      (value-help "TEXT")
+      (help "Comma-separated opcode names forced to bail to the Rust engine."))
+    (add-flag! parser
+      "prim-stats"
+      (defaults-to #f)
+      not-negatable
+      (help "Count primitive calls and report at exit."))
+    (add-flag! parser
+      "fasl-debug"
+      (defaults-to #f)
+      not-negatable
+      (help "Load FASL files with debug entries."))
+    (add-option! parser
+      "profile-out"
+      (value-help "PATH")
+      (help "Arm the SIGPROF profiler at startup and write folded stacks to this file."))
+    (add-flag! parser
+      "ic-log"
+      (defaults-to #f)
+      not-negatable
+      (help "Log generic-dispatch slot-protocol fires (inline-cache invalidations). Toggles log target `capy::ic`."))
+    (add-option! parser
+      "rust-log"
+      (value-help "TEXT")
+      (help "Log filter in env_logger syntax (e.g. info, capy=debug); mmtk stays silent unless named."))
+    (add-option! parser
+      "compile-threads"
+      (defaults-to "0")
+      (value-help "N")
+      (help "Background compile service threads; 0 means one per core, at most 2."))
+    (add-option! parser
+      "compile-stack-kb"
+      (defaults-to "0")
+      (value-help "N")
+      (help "Stack size of compile service threads in KiB; 0 means 262144 (256 MiB)."))
+    (argparser-add-separator! parser "JIT options:")
     (add-flag! parser
       "jit"
-      (defaults-to #f)
-      (help "Tier up hot procedures to the baseline JIT (runs on the template interpreter)."))
+      (defaults-to #t)
+      (help "Enable Just In Time compilation."))
     (add-option! parser
       "jit-threshold"
-      (defaults-to "4096")
+      (defaults-to "10")
       (value-help "N")
-      (help "Entries or back-edges before a procedure compiles (minimum 2)."))
+      (help "Entries or back-edges before a procedure compiles."))
     (add-option! parser
       "jit-max-code"
       (defaults-to "max")
-      (value-help "BYTES")
+      (value-help "N")
       (help "Total live compiled code in bytes past which tier-up stops (max = unlimited)."))
     (add-option! parser
       "jit-max-code-per-block"
       (defaults-to "max")
-      (value-help "BYTES")
+      (value-help "N")
       (help "Largest single compiled code block in bytes; larger procedures stay interpreted (max = unlimited)."))
     (add-option! parser
       "jit-limit"
       (defaults-to "max")
       (value-help "N")
-      (help "Compile only the first N procedures, to bisect a miscompile (max = unlimited)."))
+      (help "Compile only the first n procedures, to bisect a miscompile (max = unlimited)."))
     (add-flag! parser
       "jit-log"
       (defaults-to #f)
+      not-negatable
       (help "Report compiles and returns to compiled code."))
+    (add-flag! parser
+      "jit-log-verbose"
+      (defaults-to #f)
+      not-negatable
+      (help "Add bulky per-procedure detail (bytecode dump, address maps, control-flow trace) to the JIT log."))
     (add-flag! parser
       "jit-log-resume"
       (defaults-to #f)
+      not-negatable
       (help "Report every resume into compiled code (very verbose)."))
     (add-flag! parser
       "jit-stats"
       (defaults-to #f)
+      not-negatable
       (help "Report compile, resume and slow-path counts at exit."))
     (add-option! parser
       "jit-dump-dir"
-      (value-help "DIR")
-      (help "Write each compiled procedure's listing and ELF to DIR.")))
+      (value-help "PATH")
+      (help "Write each compiled procedure's listing and ELF to this directory."))
+    (add-option! parser
+      "jit-workers"
+      (defaults-to "1")
+      (value-help "N")
+      (help "Tier-up worker threads; 0 compiles synchronously on the requesting thread."))
+    (add-option! parser
+      "jit-tiers"
+      (value-help "TEXT")
+      (help "Comma-separated tiers allowed to compile (default: baseline)."))
+    (add-flag! parser
+      "jit-gdb"
+      (defaults-to #f)
+      not-negatable
+      (help "Register every loaded image with GDB's JIT interface (copies all image code)."))
+    (add-option! parser
+      "jit-filter"
+      (value-help "TEXT")
+      (help "Compile only procedures whose metadata contains this text, to bisect a miscompile."))
+    (add-flag! parser
+      "perf-map"
+      (defaults-to #f)
+      not-negatable
+      (help "Append loaded image symbols to /tmp/perf-<pid>.map for perf."))
+    (argparser-add-separator! parser "Scheduler options:")
+    (add-option! parser
+      "workers"
+      (defaults-to "0")
+      (value-help "N")
+      (help "Thread scheduler worker threads; 0 means one per core."))
+    (add-option! parser
+      "thread-stack-kb"
+      (defaults-to "0")
+      (value-help "N")
+      (help "Thread stack size in KiB; 0 means 2048 (2 MiB)."))
+    (add-option! parser
+      "thread-quantum-ms"
+      (defaults-to "0")
+      (value-help "N")
+      (help "Thread preemption quantum in milliseconds; 0 means 10."))
+    (add-flag! parser
+      "signal-preempt"
+      (defaults-to #t)
+      (help "Send SIGURG to preempt long-running threads. Set to 0 to rely on the cooperative flag alone."))
+    (if #f #f))
 
   (define (parse-entrypoint str)
     (read (open-input-string str)))
@@ -273,6 +420,7 @@
           (set! %load-path (append %load-path (canonicalize-paths (reverse (arg-results-ref res "append-load-path")))))
           (set! %load-compiled-path (append (canonicalize-paths (reverse (arg-results-ref res "compiled-load-path"))) %load-compiled-path))
           (set! %load-extensions (append (reverse (arg-results-ref res "extensions")) %load-extensions))
+          (install-core-in-user-module!)
           (if (arg-results-ref res "fresh-auto-compile")
             (set! %fresh-auto-compile #t))
           (if (arg-results-ref res "debug")
@@ -291,6 +439,12 @@
           (when (arg-results-ref res "command")
             (set! interactive? #f)
             (set! out (cons `((|@@| (boot cli) eval-string) ,(arg-results-ref res "command")) out)))
+          (when (pair? (arg-results-ref res "doc-module"))
+            (set! interactive? #f)
+            (set! out (cons `((|@@| (capy docgen) docgen-main)
+                              (list ,@(arg-results-ref res "doc-module"))
+                              ,(arg-results-ref res "doc-output"))
+                            out)))
           ;; `capy file.scm args...`: run the first positional as a script, the
           ;; rest stay available as program arguments.
           (let ([files (arg-results-rest res)])
@@ -306,16 +460,20 @@
 
     (add-flag! parser
       "r7rs"
+      not-negatable
       (help "Run in R7RS compatibility mode"))
     (add-flag! parser
       "r6rs"
+      not-negatable
       (help "Run in R6RS compatibility mode"))
     (add-flag! parser
       "help"
+      not-negatable
       (help "Show this help message and exit"))
     (add-flag! parser
       "help-flags"
       (aliases '("dump-flags"))
+      not-negatable
       (help "List every flag (env var and CLI alias) with current value and exit"))
     (add-option! parser
       "script"
@@ -327,6 +485,16 @@
       (abbreviation "c")
       (help "Evaluate a command string")
       (value-help "STRING"))
+    (add-multi-option! parser
+      "doc-module"
+      (defaults-to '())
+      (value-help "MODULE")
+      split-commas
+      (help "Document a library module as JSON and exit (e.g. --doc-module '(core lists)'); repeatable"))
+    (add-option! parser
+      "doc-output"
+      (help "Write --doc-module JSON output to FILE instead of stdout")
+      (value-help "FILE"))
     (add-option! parser
       "load"
       (abbreviation "l")
@@ -369,34 +537,43 @@
     (add-flag! parser
       "fresh-auto-compile"
       (defaults-to #f)
+      not-negatable
       (help "Enable fresh auto compilation of loaded files"))
     (add-flag! parser
       "runtime-stats"
       (defaults-to #f)
+      not-negatable
       (help "Enable runtime timing/counter statistics"))
     (add-flag! parser
       "debug"
       (defaults-to #f)
+      not-negatable
       (help "Enable debug stack traces for FASL code (including stdlib)"))
     (add-flag-options! parser)
     (argparser-add-separator! parser "Logging options:")
     (add-flag! parser
       "log-trace"
+      not-negatable
       (help "Enable trace logging"))
     (add-flag! parser
       "log-info"
+      not-negatable
       (help "Enable info logging"))
     (add-flag! parser
       "log-debug"
+      not-negatable
       (help "Enable debug logging"))
     (add-flag! parser
       "log-warn"
+      not-negatable
       (help "Enable warn logging"))
     (add-flag! parser
       "log-error"
+      not-negatable
       (help "Enable error logging"))
     (add-flag! parser
       "version"
+      not-negatable
       (help "Show version and exit"))
 
     (run)))
@@ -475,6 +652,7 @@
     (set! %load-path (append %load-path (canonicalize-paths append-load-path)))
     (set! %load-compiled-path (append (canonicalize-paths (reverse compiled-load-path)) %load-compiled-path))
     (set! %load-extensions (append (reverse extensions) %load-extensions))
+    (install-core-in-user-module!)
     (define source-files (arg-results-rest res))
     (if (null? source-files)
       (print-help))
@@ -534,18 +712,22 @@
 
   (add-flag! parser
     "nobacktrace"
+    not-negatable
     (help "Deprecated compatibility flag; debug is controlled when FASL is loaded"))
 
   (add-flag! parser
     "r7rs"
+    not-negatable
     (help "Compile in R7RS mode"))
   (add-flag! parser
     "r6rs"
+    not-negatable
     (help "Compile in R6RS mode"))
 
   (add-flag! parser
     "verbose"
     (abbreviation "v")
+    not-negatable
     (help "Enable verbose output"))
 
   (add-option! parser
@@ -556,29 +738,35 @@
 
   (add-flag! parser
     "version"
+    not-negatable
     (help "Show version and exit"))
 
   (add-flag! parser
     "runtime-stats"
     (defaults-to #f)
+    not-negatable
     (help "Enable runtime timing/counter statistics"))
 
   (argparser-add-separator! parser "Compiler dump options:")
   (add-flag! parser
     "dump-graph"
     (defaults-to #f)
+    not-negatable
     (help "Dump graph CPS for each compiled file"))
   (add-flag! parser
     "dump-ssa"
     (defaults-to #f)
+    not-negatable
     (help "Dump SSA for each compiled file"))
   (add-flag! parser
     "dump-cranelift"
     (defaults-to #f)
+    not-negatable
     (help "Dump Cranelift IR for each compiled file"))
   (add-flag! parser
     "dump-disassembly"
     (defaults-to #f)
+    not-negatable
     (help "Dump native-code disassembly for each compiled file"))
 
   (add-flag-options! parser)
@@ -617,10 +805,12 @@
 
   (add-flag! parser
     "help"
+    not-negatable
     (help "Show this help message and exit"))
   (add-flag! parser
     "help-flags"
     (aliases '("dump-flags"))
+    not-negatable
     (help "List every flag (env var and CLI alias) with current value and exit"))
 
   (run))
