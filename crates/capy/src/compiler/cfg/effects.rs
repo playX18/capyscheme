@@ -542,6 +542,52 @@ pub fn primitive_effects(primitive: Primitive) -> Effects {
         Primitive::BytevectorU8Ref => {
             Effects::read(MemoryRegion::Heap, SemanticEffects::BYTEVECTOR).checked()
         }
+        Primitive::BvS8Ref
+        | Primitive::BvU16Ref
+        | Primitive::BvS16Ref
+        | Primitive::BvU32Ref
+        | Primitive::BvS32Ref
+        | Primitive::BvU64Ref
+        | Primitive::BvS64Ref
+        | Primitive::BvF32Ref
+        | Primitive::BvF64Ref => {
+            Effects::read(MemoryRegion::Heap, SemanticEffects::BYTEVECTOR).checked()
+        }
+        Primitive::BvU8Set
+        | Primitive::BvS8Set
+        | Primitive::BvU16Set
+        | Primitive::BvS16Set
+        | Primitive::BvU32Set
+        | Primitive::BvS32Set
+        | Primitive::BvU64Set
+        | Primitive::BvS64Set
+        | Primitive::BvF32Set
+        | Primitive::BvF64Set => {
+            Effects::write(MemoryRegion::Heap, SemanticEffects::BYTEVECTOR).checked_write()
+        }
+        // Raw foreign memory is invisible to the compiler: keep these in order and never drop them.
+        Primitive::PtrU8Ref
+        | Primitive::PtrU8Set
+        | Primitive::PtrS8Ref
+        | Primitive::PtrS8Set
+        | Primitive::PtrU16Ref
+        | Primitive::PtrU16Set
+        | Primitive::PtrS16Ref
+        | Primitive::PtrS16Set
+        | Primitive::PtrU32Ref
+        | Primitive::PtrU32Set
+        | Primitive::PtrS32Ref
+        | Primitive::PtrS32Set
+        | Primitive::PtrU64Ref
+        | Primitive::PtrU64Set
+        | Primitive::PtrS64Ref
+        | Primitive::PtrS64Set
+        | Primitive::PtrF32Ref
+        | Primitive::PtrF32Set
+        | Primitive::PtrF64Ref
+        | Primitive::PtrF64Set => {
+            Effects::for_call()
+        }
         Primitive::VectorSet => {
             Effects::write(MemoryRegion::Heap, SemanticEffects::VECTOR).checked_write()
         }

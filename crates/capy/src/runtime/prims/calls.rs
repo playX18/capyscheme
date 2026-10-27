@@ -1,6 +1,7 @@
 //! Out-of-line implementations of the compiler primitives.
 
 use super::def::Primitive;
+use super::memory::*;
 use crate::heap::Gc;
 use crate::heap::barrier;
 use crate::heap::object::builtin_class_ids;
@@ -2452,5 +2453,44 @@ prim_tables! {
     (AttachmentSet => attachment_set(175): 1);
     (AttachmentConsume => attachment_consume(176): 0);
     (AttachmentConsumeReify => attachment_consume_reify(177): 1);
-    (UpdateMark => update_mark(178): 3)
+    (UpdateMark => update_mark(178): 3);
+    (BvU8Set => bv_u8_set(179): 3);
+    (BvS8Ref => bv_s8_ref(180): 2);
+    (BvS8Set => bv_s8_set(181): 3);
+    (BvU16Ref => bv_u16_ref(182): 2);
+    (BvU16Set => bv_u16_set(183): 3);
+    (BvS16Ref => bv_s16_ref(184): 2);
+    (BvS16Set => bv_s16_set(185): 3);
+    (BvU32Ref => bv_u32_ref(186): 2);
+    (BvU32Set => bv_u32_set(187): 3);
+    (BvS32Ref => bv_s32_ref(188): 2);
+    (BvS32Set => bv_s32_set(189): 3);
+    (BvU64Ref => bv_u64_ref(190): 2);
+    (BvU64Set => bv_u64_set(191): 3);
+    (BvS64Ref => bv_s64_ref(192): 2);
+    (BvS64Set => bv_s64_set(193): 3);
+    (BvF32Ref => bv_f32_ref(194): 2);
+    (BvF32Set => bv_f32_set(195): 3);
+    (BvF64Ref => bv_f64_ref(196): 2);
+    (BvF64Set => bv_f64_set(197): 3);
+    (PtrU8Ref => ptr_u8_ref(198): 2);
+    (PtrU8Set => ptr_u8_set(199): 3);
+    (PtrS8Ref => ptr_s8_ref(200): 2);
+    (PtrS8Set => ptr_s8_set(201): 3);
+    (PtrU16Ref => ptr_u16_ref(202): 2);
+    (PtrU16Set => ptr_u16_set(203): 3);
+    (PtrS16Ref => ptr_s16_ref(204): 2);
+    (PtrS16Set => ptr_s16_set(205): 3);
+    (PtrU32Ref => ptr_u32_ref(206): 2);
+    (PtrU32Set => ptr_u32_set(207): 3);
+    (PtrS32Ref => ptr_s32_ref(208): 2);
+    (PtrS32Set => ptr_s32_set(209): 3);
+    (PtrU64Ref => ptr_u64_ref(210): 2);
+    (PtrU64Set => ptr_u64_set(211): 3);
+    (PtrS64Ref => ptr_s64_ref(212): 2);
+    (PtrS64Set => ptr_s64_set(213): 3);
+    (PtrF32Ref => ptr_f32_ref(214): 2);
+    (PtrF32Set => ptr_f32_set(215): 3);
+    (PtrF64Ref => ptr_f64_ref(216): 2);
+    (PtrF64Set => ptr_f64_set(217): 3)
 }
