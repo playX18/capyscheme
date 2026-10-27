@@ -236,6 +236,30 @@
       bytevector-u64-native-set!
       bytevector-s64-native-ref
       bytevector-s64-native-set!
+      bytevector-ieee-single-native-ref
+      bytevector-ieee-single-native-set!
+      bytevector-ieee-double-native-ref
+      bytevector-ieee-double-native-set!
+      pointer-ref/u8
+      pointer-set!/u8
+      pointer-ref/s8
+      pointer-set!/s8
+      pointer-ref/u16
+      pointer-set!/u16
+      pointer-ref/s16
+      pointer-set!/s16
+      pointer-ref/u32
+      pointer-set!/u32
+      pointer-ref/s32
+      pointer-set!/s32
+      pointer-ref/u64
+      pointer-set!/u64
+      pointer-ref/s64
+      pointer-set!/s64
+      pointer-ref/f32
+      pointer-set!/f32
+      pointer-ref/f64
+      pointer-set!/f64
       $winders
       call/cc
       call-with-current-continuation
@@ -846,6 +870,47 @@
   (define-primitive-expansion tuple-size (x) (tuple-size x))
   (define-primitive-expansion tuple-ref (x i) (tuple-ref x i))
   (define-primitive-expansion tuple-set! (x i v) (tuple-set! x i v))
+  (define-primitive-expansion bytevector-length (x) (bytevector-length x))
+  (define-primitive-expansion bytevector-u8-ref (x i) (bytevector-u8-ref x i))
+  (define-primitive-expansion bytevector-u8-set! (x i v) (bytevector-u8-set! x i v))
+  (define-primitive-expansion bytevector-s8-ref (x i) (bytevector-s8-ref x i))
+  (define-primitive-expansion bytevector-s8-set! (x i v) (bytevector-s8-set! x i v))
+  (define-primitive-expansion bytevector-u16-native-ref (x i) (bytevector-u16-native-ref x i))
+  (define-primitive-expansion bytevector-u16-native-set! (x i v) (bytevector-u16-native-set! x i v))
+  (define-primitive-expansion bytevector-s16-native-ref (x i) (bytevector-s16-native-ref x i))
+  (define-primitive-expansion bytevector-s16-native-set! (x i v) (bytevector-s16-native-set! x i v))
+  (define-primitive-expansion bytevector-u32-native-ref (x i) (bytevector-u32-native-ref x i))
+  (define-primitive-expansion bytevector-u32-native-set! (x i v) (bytevector-u32-native-set! x i v))
+  (define-primitive-expansion bytevector-s32-native-ref (x i) (bytevector-s32-native-ref x i))
+  (define-primitive-expansion bytevector-s32-native-set! (x i v) (bytevector-s32-native-set! x i v))
+  (define-primitive-expansion bytevector-u64-native-ref (x i) (bytevector-u64-native-ref x i))
+  (define-primitive-expansion bytevector-u64-native-set! (x i v) (bytevector-u64-native-set! x i v))
+  (define-primitive-expansion bytevector-s64-native-ref (x i) (bytevector-s64-native-ref x i))
+  (define-primitive-expansion bytevector-s64-native-set! (x i v) (bytevector-s64-native-set! x i v))
+  (define-primitive-expansion bytevector-ieee-single-native-ref (x i) (bytevector-ieee-single-native-ref x i))
+  (define-primitive-expansion bytevector-ieee-single-native-set! (x i v) (bytevector-ieee-single-native-set! x i v))
+  (define-primitive-expansion bytevector-ieee-double-native-ref (x i) (bytevector-ieee-double-native-ref x i))
+  (define-primitive-expansion bytevector-ieee-double-native-set! (x i v) (bytevector-ieee-double-native-set! x i v))
+  (define-primitive-expansion pointer-ref/u8 (x i) (pointer-ref/u8 x i))
+  (define-primitive-expansion pointer-set!/u8 (x i v) (pointer-set!/u8 x i v))
+  (define-primitive-expansion pointer-ref/s8 (x i) (pointer-ref/s8 x i))
+  (define-primitive-expansion pointer-set!/s8 (x i v) (pointer-set!/s8 x i v))
+  (define-primitive-expansion pointer-ref/u16 (x i) (pointer-ref/u16 x i))
+  (define-primitive-expansion pointer-set!/u16 (x i v) (pointer-set!/u16 x i v))
+  (define-primitive-expansion pointer-ref/s16 (x i) (pointer-ref/s16 x i))
+  (define-primitive-expansion pointer-set!/s16 (x i v) (pointer-set!/s16 x i v))
+  (define-primitive-expansion pointer-ref/u32 (x i) (pointer-ref/u32 x i))
+  (define-primitive-expansion pointer-set!/u32 (x i v) (pointer-set!/u32 x i v))
+  (define-primitive-expansion pointer-ref/s32 (x i) (pointer-ref/s32 x i))
+  (define-primitive-expansion pointer-set!/s32 (x i v) (pointer-set!/s32 x i v))
+  (define-primitive-expansion pointer-ref/u64 (x i) (pointer-ref/u64 x i))
+  (define-primitive-expansion pointer-set!/u64 (x i v) (pointer-set!/u64 x i v))
+  (define-primitive-expansion pointer-ref/s64 (x i) (pointer-ref/s64 x i))
+  (define-primitive-expansion pointer-set!/s64 (x i v) (pointer-set!/s64 x i v))
+  (define-primitive-expansion pointer-ref/f32 (x i) (pointer-ref/f32 x i))
+  (define-primitive-expansion pointer-set!/f32 (x i v) (pointer-set!/f32 x i v))
+  (define-primitive-expansion pointer-ref/f64 (x i) (pointer-ref/f64 x i))
+  (define-primitive-expansion pointer-set!/f64 (x i v) (pointer-set!/f64 x i v))
   (define-primitive-expansion current-module
     ()
     (current-module)
@@ -862,6 +927,68 @@
     ($winders)
     (x)
     ($winders x))
+
+
+  ;; Fixed-arity uses of the fixnum and flonum operations compile to primitives that the JIT
+  ;; inlines. Other arities stay calls to the (capy) procedure.
+  (define-primitive-expansion fx+ (x y) (fx+ x y))
+  (define-primitive-expansion fx- (x y) (fx- x y))
+  (define-primitive-expansion fx* (x y) (fx* x y))
+  (define-primitive-expansion fx+/ovf? (x y) (fx+/ovf? x y))
+  (define-primitive-expansion fx-/ovf? (x y) (fx-/ovf? x y))
+  (define-primitive-expansion fx*/ovf? (x y) (fx*/ovf? x y))
+  (define-primitive-expansion fx<? (x y) (fx<? x y))
+  (define-primitive-expansion fx<=? (x y) (fx<=? x y))
+  (define-primitive-expansion fx>? (x y) (fx>? x y))
+  (define-primitive-expansion fx>=? (x y) (fx>=? x y))
+  (define-primitive-expansion fx=? (x y) (fx=? x y))
+  (define-primitive-expansion fxand (x y) (fxand x y))
+  (define-primitive-expansion fxior (x y) (fxior x y))
+  (define-primitive-expansion fxxor (x y) (fxxor x y))
+  (define-primitive-expansion fxnot (x) (fxnot x))
+  (define-primitive-expansion fxlogand (x y) (fxlogand x y))
+  (define-primitive-expansion fxlogior (x y) (fxlogior x y))
+  (define-primitive-expansion fxlogxor (x y) (fxlogxor x y))
+  (define-primitive-expansion fxarithmetic-shift-left (x y) (fxarithmetic-shift-left x y))
+  (define-primitive-expansion fxarithmetic-shift-right (x y) (fxarithmetic-shift-right x y))
+  (define-primitive-expansion fxzero? (x) (fxzero? x))
+  (define-primitive-expansion fxpositive? (x) (fxpositive? x))
+  (define-primitive-expansion fxnegative? (x) (fxnegative? x))
+  (define-primitive-expansion fxodd? (x) (fxodd? x))
+  (define-primitive-expansion fxeven? (x) (fxeven? x))
+  (define-primitive-expansion fxmin (x y) (fxmin x y))
+  (define-primitive-expansion fxmax (x y) (fxmax x y))
+  (define-primitive-expansion fl+ (x y) (fl+ x y))
+  (define-primitive-expansion fl- (x y) (fl- x y))
+  (define-primitive-expansion fl* (x y) (fl* x y))
+  (define-primitive-expansion fl/ (x y) (fl/ x y))
+  (define-primitive-expansion fl<? (x y) (fl<? x y))
+  (define-primitive-expansion fl<=? (x y) (fl<=? x y))
+  (define-primitive-expansion fl>? (x y) (fl>? x y))
+  (define-primitive-expansion fl>=? (x y) (fl>=? x y))
+  (define-primitive-expansion fl=? (x y) (fl=? x y))
+  (define-primitive-expansion flzero? (x) (flzero? x))
+  (define-primitive-expansion flpositive? (x) (flpositive? x))
+  (define-primitive-expansion flnegative? (x) (flnegative? x))
+  (define-primitive-expansion flnan? (x) (flnan? x))
+  (define-primitive-expansion flinfinite? (x) (flinfinite? x))
+  (define-primitive-expansion flfinite? (x) (flfinite? x))
+  (define-primitive-expansion flmin (x y) (flmin x y))
+  (define-primitive-expansion flmax (x y) (flmax x y))
+  (define-primitive-expansion flabs (x) (flabs x))
+  (define-primitive-expansion flfloor (x) (flfloor x))
+  (define-primitive-expansion flceiling (x) (flceiling x))
+  (define-primitive-expansion fltruncate (x) (fltruncate x))
+  (define-primitive-expansion flround (x) (flround x))
+  (define-primitive-expansion flsin (x) (flsin x))
+  (define-primitive-expansion flcos (x) (flcos x))
+  (define-primitive-expansion fltan (x) (fltan x))
+  (define-primitive-expansion flexp (x) (flexp x))
+  (define-primitive-expansion fllog (x) (fllog x))
+  (define-primitive-expansion flasin (x) (flasin x))
+  (define-primitive-expansion flacos (x) (flacos x))
+  (define-primitive-expansion flsqrt (x) (flsqrt x))
+  (define-primitive-expansion flatan (x) (flatan x))
 
   (define-primitive-expansion unspecified () (unspecified))
   (define-primitive-expansion unspecified? (x) (unspecified? x))

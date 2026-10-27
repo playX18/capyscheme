@@ -33,6 +33,7 @@
     split-commas
     mandatory
     negatable
+    not-negatable
     hide
     hide-negated-usage
 
@@ -99,5 +100,6 @@
     (define split-commas (list 'split-commas?: #t))
     (define mandatory (list 'mandatory?: #t))
     (define negatable (list 'negatable?: #t))
+    (define not-negatable (list 'negatable?: #f))
     (define hide (list 'hide?: #t))
     (define hide-negated-usage (list 'hide-negated-usage?: #t))))

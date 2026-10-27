@@ -2,6 +2,7 @@
 
 (define-library (cc)
   (import (scheme base)
+    (only (capy) getenv rename-file string-split)
     (core io))
 
   (begin

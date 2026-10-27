@@ -23,6 +23,7 @@
     rope-find
     rope-rfind)
   (import (rnrs)
+    (only (rnrs r5rs) quotient)
     (only (capy) call-with-output-string)
     (srfi 8)
     (core control)
