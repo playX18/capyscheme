@@ -142,11 +142,15 @@
   (go (reader 3))
   (go (reader 11))
   (go writer)
-  (let wait ([spins 0])
-    (cond
-      [(= (begin (mutex-acquire lock) (let ([d done]) (mutex-release lock) d)) 4) #t]
-      [(> spins 200000) #f]
-      [else (wait (+ spins 1))]))
+  ;; Wait on the clock, not a spin count: a slow runner must not make us
+  ;; check the final body before the writer is done.
+  (let wait ([naps 0])
+    (mutex-acquire lock)
+    (let ([d done]) (mutex-release lock)
+      (cond
+        [(= d 4) #t]
+        [(> naps 15000) #f]
+        [else (usleep 2000) (wait (+ naps 1))])))
   (test-equal "no failures" '() failures)
   (test-eqv "final body" rounds (dt-g (list-ref objs 77))))
 
