@@ -252,8 +252,6 @@ pub fn lset<'gc>(
     })
 }
 
-// used by the linklet expander (milestone 3)
-#[allow(dead_code)]
 pub fn global_ref<'gc>(
     ctx: MutationContext<'gc>,
     key: Value<'gc>,
@@ -270,7 +268,6 @@ pub fn global_ref<'gc>(
     })
 }
 
-#[allow(dead_code)]
 pub fn global_set<'gc>(
     ctx: MutationContext<'gc>,
     key: Value<'gc>,
@@ -288,7 +285,6 @@ pub fn global_set<'gc>(
     })
 }
 
-#[allow(dead_code)]
 pub fn linklet_term<'gc>(
     ctx: MutationContext<'gc>,
     name: Value<'gc>,

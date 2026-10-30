@@ -19,22 +19,14 @@
 #[cfg(not(all(unix, any(target_arch = "x86_64", target_arch = "aarch64"))))]
 compile_error!("capy::runtime::sched supports only Unix on x86_64 and AArch64");
 
-#[allow(dead_code)]
 pub(crate) mod blocking;
-#[allow(dead_code)]
 pub(crate) mod context;
-#[allow(dead_code)]
 pub(crate) mod preempt;
-#[allow(dead_code)]
 pub(crate) mod queue;
-#[allow(dead_code)]
 pub(crate) mod reactor;
 pub(crate) mod scheduler;
-#[allow(dead_code)]
 pub(crate) mod stack;
-#[allow(dead_code)]
 pub(crate) mod sync;
-#[allow(dead_code)]
 pub(crate) mod sysmon;
 
 mod cabi;

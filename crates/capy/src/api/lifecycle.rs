@@ -9,7 +9,7 @@ use crate::{
     runtime::{MutationContext, Scheme, State, value::Value, vm::threading::ThreadObject},
 };
 
-use super::env::{SCM_REF_NULL, Scm, ScmPtr, ScmRef, SniEnv, env_mut, safe_cstr};
+use super::env::{SCM_REF_NULL, Scm, ScmPtr, ScmRef, SniEnv, env_mut};
 
 /// Create a new Scheme runtime instance (boots the VM).
 #[unsafe(no_mangle)]

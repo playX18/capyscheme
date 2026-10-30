@@ -67,7 +67,6 @@ pub fn lower_to_cps<'gc>(
     lower_expanded_to_cps(ctx, il, expand_primitive_calls, dump_graph, false)
 }
 
-#[allow(dead_code)]
 pub fn linklet_meta<'gc>(
     il: TermRef<'gc>,
 ) -> Option<(Value<'gc>, Value<'gc>, Value<'gc>, Value<'gc>)> {
