@@ -2,11 +2,7 @@
   (export
     module-name->filename
     find-bindings
-    fold-bindings
-    fold-exported-bindings
-    fold-all-bindings
-    make-fold-module
-    root-modules)
+    fold-bindings)
   (import (core primitives)
     (core files)
     (common pregexp)
@@ -26,68 +22,28 @@
       [(%search-load-path (in-vicinity dir-hint leaf)) => (lambda (ls) (list-ref ls 1))]
       [else #f]))
 
-  (define (fold-bindings proc init pat folder)
+  (define (fold-bindings proc init pat ns)
     (define match (pregexp pat))
     (define recorded (make-eq-hashtable))
-    (define (fold-module module data)
-      (define (obarray-filter name val data)
-        (if (and (pregexp-match match (symbol->string name))
-             (not (hashtable-contains? recorded name)))
-          (begin
-            (hashtable-set! recorded name #t)
-            (proc module name val data))
-          data))
-      (define (module-filter binding data)
-        (if (variable-bound? (cdr binding))
-          (obarray-filter (car binding)
-            (variable-ref (cdr binding))
-            data)
-          data))
-      (cond
-        [module
-          (fold module-filter data (core-hash->alist (module-obarray module)))]
-        [else data]))
-    (folder fold-module init))
-  (define (make-fold-module init-thunk traverse extract)
-    (lambda (fold-module init)
-      (define table (make-eq-hashtable))
-      (define (first? obj)
-        (cond
-          [(hashtable-contains? table obj) #f]
-          [else
-            (hashtable-set! table obj #t)
-            #t]))
-      (define (rec modules data)
-        (do ((modules modules (cdr modules))
-             (data data (if (first? (car modules))
-                         (rec (traverse (car modules))
-                           (fold-module (extract (car modules)) data))
-                         data)))
-          ((null? modules) data)))
-      (rec (init-thunk) init)))
+    (fold
+      (lambda (binding data)
+        (let ([name (car binding)]
+              [var (cdr binding)])
+          (if (and (variable-bound? var)
+               (pregexp-match match (symbol->string name))
+               (not (hashtable-contains? recorded name)))
+            (begin
+              (hashtable-set! recorded name #t)
+              (proc ns name (variable-ref var) data))
+            data)))
+      init
+      (namespace-bindings ns)))
 
-  (define (root-modules)
-    (submodules (resolve-module '() #f #f)))
-
-  (define (submodules mod)
-    (map (lambda (binding)
-          (cdr binding))
-      (core-hash->alist (module-submodules mod))))
-  (define fold-exported-bindings
-    (make-fold-module root-modules submodules module-public-interface))
-
-  (define fold-all-bindings
-    (make-fold-module root-modules submodules (lambda (x) x)))
-
-  (define (find-bindings pat module)
+  (define (find-bindings pat ns)
     (fold-bindings
-      (lambda (module name var data)
+      (lambda (ns name val data)
         (cons name data))
       '()
       pat
-      (fold-accessible module)))
-
-  (define (fold-accessible module)
-    (make-fold-module (lambda () (list module))
-      module-uses
-      (lambda (x) x))))
+      ns))
+)

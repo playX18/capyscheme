@@ -1,6 +1,6 @@
 ;; Tests for keyword arguments (lib/core/kw.scm): keyword-aware lambda, define,
 ;; |#%app| and apply as exported by (core).
-(import (core) (srfi 64))
+(import (core) (only (capy) expand) (srfi 64))
 
 (test-begin "kw")
 

@@ -17,6 +17,9 @@
 ;;; Creates a textual port over the binary port p, sharing p's
 ;;; underlying source and its buffers, then closes p without
 ;;; closing the underlying source (R6RS 8.2.6).
+(|#%require| (boot prim) (boot control) (boot records) (boot conditions) (boot violations) (boot raise) (boot exceptions) (boot expand) (boot interpreter) (boot enums) (boot sys) (boot osdep) (boot ports-core) (boot transcoder) (boot binary-ports) (late (boot port-api) current-input-port))
+(|#%provide| all-defined)
+
 (define (%ports/make-textual-port p t)
   (when (%ports/output-port? p)
     (%ports/flush-buffer p))

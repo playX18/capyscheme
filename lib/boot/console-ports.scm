@@ -6,6 +6,8 @@
 
 ;;; The console handler tracks a byte count so port-position works
 ;;; even though a terminal cannot be seeked.
+(|#%require| (boot prim) (boot control) (boot records) (boot conditions) (boot violations) (boot raise) (boot exceptions) (boot expand) (boot interpreter) (boot enums) (boot sys) (boot osdep) (boot ports-core) (boot transcoder) (boot binary-ports) (boot textual-ports) (boot custom-ports) (boot file-ports))
+(|#%provide| all-defined)
 
 (define (%console-handler fd)
   (define total 0)

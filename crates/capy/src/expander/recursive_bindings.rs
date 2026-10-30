@@ -3,7 +3,7 @@ use std::{collections::HashSet, rc::Rc};
 use crate::{
     compiler::cps::Map,
     expander::core::{
-        LVarRef, LetStyle, ProcRef, Term, TermKind, TermRef, constant, seq_from_slice,
+        GlobalSlot, LVarRef, LetStyle, ProcRef, Term, TermKind, TermRef, constant, seq_from_slice,
     },
     runtime::{MutationContext, value::Value},
 };
@@ -14,8 +14,7 @@ fn compute_ids<'gc>(t: &Term<'gc>) -> Map<LVarRef<'gc>, u32> {
             TermKind::Const(_)
             | TermKind::PrimRef(_)
             | TermKind::LRef(_)
-            | TermKind::ModuleRef(_, _, _)
-            | TermKind::ToplevelRef(_, _) => {}
+            | TermKind::GlobalRef(_, _, _) => {}
             TermKind::Let(l) => {
                 for &var in l.lhs.iter() {
                     let id = *counter;
@@ -82,9 +81,15 @@ fn compute_ids<'gc>(t: &Term<'gc>) -> Map<LVarRef<'gc>, u32> {
                 }
             }
 
-            TermKind::Define(_, _, val) => rec(&val, counter, map),
-            TermKind::ToplevelSet(_, _, val) => rec(&val, counter, map),
-            TermKind::ModuleSet(_, _, _, val) => rec(&val, counter, map),
+            TermKind::GlobalSet(_, _, _, val) => rec(&val, counter, map),
+            TermKind::Linklet(linklet) => {
+                for &var in linklet.slots.iter() {
+                    let id = *counter;
+                    map.insert(var, id);
+                    *counter += 1;
+                }
+                rec(&linklet.body, counter, map);
+            }
             TermKind::PrimCall(_, args) => {
                 for arg in args.iter() {
                     rec(arg, counter, map);
@@ -144,7 +149,9 @@ fn compute_referenced_and_assigned<'gc>(
 
     t.fold::<_>(
         |expr, (mut referenced, mut assigned)| match &expr.kind {
-            TermKind::LRef(var) => {
+            TermKind::LRef(var)
+            | TermKind::GlobalRef(_, _, GlobalSlot::Box(var))
+            | TermKind::GlobalSet(_, _, GlobalSlot::Box(var), _) => {
                 referenced.insert(*var);
                 (referenced, assigned)
             }
@@ -519,11 +526,10 @@ impl<'a, 'gc> ComputeFreeVariables<'gc, 'a> {
 
         match &t.kind {
             TermKind::Const(_)
-            | TermKind::ModuleRef(_, _, _)
             | TermKind::PrimRef(_)
-            | TermKind::ToplevelRef(_, _) => empty(),
+            | TermKind::GlobalRef(_, _, GlobalSlot::Variable(_)) => empty(),
 
-            TermKind::LRef(var) => adjoin(
+            TermKind::LRef(var) | TermKind::GlobalRef(_, _, GlobalSlot::Box(var)) => adjoin(
                 self.sym_id
                     .get(var)
                     .copied()
@@ -536,15 +542,21 @@ impl<'a, 'gc> ComputeFreeVariables<'gc, 'a> {
                 adjoin(self.sym_id[var], val_fv)
             }
 
-            TermKind::ToplevelSet(_, _, val) => self.visit(*val),
-            TermKind::ModuleSet(_, _, _, val) => self.visit(*val),
+            TermKind::GlobalSet(_, _, GlobalSlot::Box(var), val) => {
+                let val_fv = self.visit(*val);
+                adjoin(self.sym_id[var], val_fv)
+            }
+            TermKind::GlobalSet(_, _, GlobalSlot::Variable(_), val) => self.visit(*val),
+            TermKind::Linklet(linklet) => difference(
+                self.visit(linklet.body),
+                linklet.slots.iter().map(|var| self.sym_id[var]).collect(),
+            ),
             TermKind::Call(func, args) => args
                 .iter()
                 .fold(self.visit(*func), |acc, arg| union(acc, self.visit(*arg))),
             TermKind::PrimCall(_, args) => args
                 .iter()
                 .fold(empty(), |acc, arg| union(acc, self.visit(*arg))),
-            TermKind::Define(_, _, val) => self.visit(*val),
             TermKind::Seq(head, tail) => {
                 let head_fv = self.visit(*head);
                 let tail_fv = self.visit(*tail);

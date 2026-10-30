@@ -1,4 +1,4 @@
-(import (core) (srfi 13) (srfi 64))
+(import (core) (capy) (srfi 13) (srfi 64))
 
 (test-begin "procedure-metadata")
 

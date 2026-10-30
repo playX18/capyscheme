@@ -72,7 +72,7 @@ pub fn handle(Input { meta: args }: Input, fun: syn::ItemFn) -> syn::Result<Func
         }
     }
 
-    let module = module.unwrap_or(ModulePath::CurrentModule);
+    let module = module.unwrap_or(ModulePath::Capy);
     let name = name.unwrap_or_else(|| {
         let ident_str = fun.sig.ident.to_string();
         let ident_str = ident_str.replace('_', "-");
@@ -104,7 +104,7 @@ pub fn handle(Input { meta: args }: Input, fun: syn::ItemFn) -> syn::Result<Func
 pub struct SchemeAttribute {
     /// Path in a Scheme module where this function should be defined.
     ///
-    /// When `CurrentModule`, the function is defined in the same module
+    /// When `Capy`, the function is defined in the same module
     /// that loaded the Rust code.
     pub module_path: ModulePath,
     /// Name under which this function should be defined in Scheme.

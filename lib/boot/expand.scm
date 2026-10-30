@@ -1,3 +1,6 @@
+(|#%require| (boot prim) (boot control) (boot records) (boot conditions) (boot violations) (boot raise) (boot exceptions))
+(|#%provide| all-defined)
+
 (define &term
   (let* ([rtd (make-record-type-descriptor '&term #f #f #f #f '#((immutable sourcev)))]
          [rcd (make-record-constructor-descriptor rtd #f #f)])
@@ -29,63 +32,6 @@
 (define lset-value (record-accessor (record-type-rtd &lset) 2))
 (define lset-sym (record-accessor (record-type-rtd &lset) 1))
 (define make-lset (record-constructor (record-type-rcd &lset)))
-
-(define &module-ref
-  (let* ([rtd (make-record-type-descriptor '&module-ref (record-type-rtd &term) #f #f #f '#((immutable module) (immutable name) (immutable public?)))]
-         [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
-    (make-record-type '&module-ref rtd rcd)))
-
-(define (module-ref? obj)
-  (and (term? obj) (rtd-ancestor? (record-type-rtd &module-ref) (record-rtd obj))))
-(define module-ref-module (record-accessor (record-type-rtd &module-ref) 0))
-(define module-ref-name (record-accessor (record-type-rtd &module-ref) 1))
-(define module-ref-public? (record-accessor (record-type-rtd &module-ref) 2))
-(define make-module-ref (record-constructor (record-type-rcd &module-ref)))
-
-(define &module-set
-  (let* ([rtd (make-record-type-descriptor '&module-set (record-type-rtd &term) #f #f #f '#((immutable module) (immutable name) (immutable public?) (immutable value)))]
-         [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
-    (make-record-type '&module-set rtd rcd)))
-
-(define (module-set? obj)
-  (and (term? obj) (rtd-ancestor? (record-type-rtd &module-set) (record-rtd obj))))
-(define module-set-module (record-accessor (record-type-rtd &module-set) 0))
-(define module-set-name (record-accessor (record-type-rtd &module-set) 1))
-(define module-set-public? (record-accessor (record-type-rtd &module-set) 2))
-(define module-set-value (record-accessor (record-type-rtd &module-set) 3))
-(define make-module-set (record-constructor (record-type-rcd &module-set)))
-
-(define &toplevel-ref
-  (let* ([rtd (make-record-type-descriptor '&toplevel-ref (record-type-rtd &term) #f #f #f '#((immutable mod) (immutable name)))]
-         [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
-    (make-record-type '&toplevel-ref rtd rcd)))
-(define toplevel-ref? (record-predicate (record-type-rtd &toplevel-ref)))
-(define toplevel-ref-mod (record-accessor (record-type-rtd &toplevel-ref) 0))
-(define toplevel-ref-name (record-accessor (record-type-rtd &toplevel-ref) 1))
-(define make-toplevel-ref (record-constructor (record-type-rcd &toplevel-ref)))
-
-(define &toplevel-set
-  (let* ([rtd (make-record-type-descriptor '&toplevel-set (record-type-rtd &term) #f #f #f '#((immutable mod) (immutable name) (immutable value)))]
-         [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
-    (make-record-type '&toplevel-set rtd rcd)))
-
-(define (toplevel-set? obj)
-  (and (term? obj) (rtd-ancestor? (record-type-rtd &toplevel-set) (record-rtd obj))))
-(define toplevel-set-mod (record-accessor (record-type-rtd &toplevel-set) 0))
-(define toplevel-set-name (record-accessor (record-type-rtd &toplevel-set) 1))
-(define toplevel-set-value (record-accessor (record-type-rtd &toplevel-set) 2))
-(define make-toplevel-set (record-constructor (record-type-rcd &toplevel-set)))
-
-(define &toplevel-define
-  (let* ([rtd (make-record-type-descriptor '&toplevel-define (record-type-rtd &term) #f #f #f '#((immutable mod) (immutable name) (immutable value)))]
-         [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
-    (make-record-type '&toplevel-define rtd rcd)))
-(define (toplevel-define? obj)
-  (and (term? obj) (rtd-ancestor? (record-type-rtd &toplevel-define) (record-rtd obj))))
-(define toplevel-define-mod (record-accessor (record-type-rtd &toplevel-define) 0))
-(define toplevel-define-name (record-accessor (record-type-rtd &toplevel-define) 1))
-(define toplevel-define-value (record-accessor (record-type-rtd &toplevel-define) 2))
-(define make-toplevel-define (record-constructor (record-type-rcd &toplevel-define)))
 
 (define &if
   (let* ([rtd (make-record-type-descriptor '&if (record-type-rtd &term) #f #f #f '#((immutable test) (immutable then) (immutable else)))]
@@ -241,3 +187,58 @@
 (define wcm-mark (record-accessor (record-type-rtd &wcm) 1))
 (define wcm-result (record-accessor (record-type-rtd &wcm) 2))
 (define make-wcm (record-constructor (record-type-rcd &wcm)))
+
+(define &global-ref
+  (let* ([rtd (make-record-type-descriptor '&global-ref (record-type-rtd &term) #f #f #f '#((immutable key) (immutable name) (immutable slot)))]
+         [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
+    (make-record-type '&global-ref rtd rcd)))
+(define global-ref? (record-predicate (record-type-rtd &global-ref)))
+(define global-ref-key (record-accessor (record-type-rtd &global-ref) 0))
+(define global-ref-name (record-accessor (record-type-rtd &global-ref) 1))
+(define global-ref-slot (record-accessor (record-type-rtd &global-ref) 2))
+(define make-global-ref (record-constructor (record-type-rcd &global-ref)))
+
+(define &global-set
+  (let* ([rtd (make-record-type-descriptor '&global-set (record-type-rtd &term) #f #f #f '#((immutable key) (immutable name) (immutable slot) (immutable value)))]
+         [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
+    (make-record-type '&global-set rtd rcd)))
+(define global-set? (record-predicate (record-type-rtd &global-set)))
+(define global-set-key (record-accessor (record-type-rtd &global-set) 0))
+(define global-set-name (record-accessor (record-type-rtd &global-set) 1))
+(define global-set-slot (record-accessor (record-type-rtd &global-set) 2))
+(define global-set-value (record-accessor (record-type-rtd &global-set) 3))
+(define make-global-set (record-constructor (record-type-rcd &global-set)))
+
+(define &linklet
+  (let* ([rtd (make-record-type-descriptor '&linklet (record-type-rtd &term) #f #f #f '#((immutable name) (immutable imports) (immutable exports) (immutable slots) (immutable body) (immutable meta)))]
+         [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
+    (make-record-type '&linklet rtd rcd)))
+(define linklet-term? (record-predicate (record-type-rtd &linklet)))
+(define linklet-term-name (record-accessor (record-type-rtd &linklet) 0))
+(define linklet-term-imports (record-accessor (record-type-rtd &linklet) 1))
+(define linklet-term-exports (record-accessor (record-type-rtd &linklet) 2))
+(define linklet-term-slots (record-accessor (record-type-rtd &linklet) 3))
+(define linklet-term-body (record-accessor (record-type-rtd &linklet) 4))
+(define linklet-term-meta (record-accessor (record-type-rtd &linklet) 5))
+(define make-linklet-term (record-constructor (record-type-rcd &linklet)))
+
+;; Runtime hooks for Rust, see `install-runtime-hook!`.
+(install-expander-hook! '&term (record-type-rtd &term))
+(install-expander-hook! '&lref (record-type-rtd &lref))
+(install-expander-hook! '&lset (record-type-rtd &lset))
+(install-expander-hook! '&if (record-type-rtd &if))
+(install-expander-hook! '&let (record-type-rtd &let))
+(install-expander-hook! '&fix (record-type-rtd &fix))
+(install-expander-hook! '&receive (record-type-rtd &receive))
+(install-expander-hook! '&application (record-type-rtd &application))
+(install-expander-hook! '&primcall (record-type-rtd &primcall))
+(install-expander-hook! '&primref (record-type-rtd &primref))
+(install-expander-hook! '&constant (record-type-rtd &constant))
+(install-expander-hook! '&void (record-type-rtd &void))
+(install-expander-hook! '&values (record-type-rtd &values))
+(install-expander-hook! '&sequence (record-type-rtd &sequence))
+(install-expander-hook! '&proc (record-type-rtd &proc))
+(install-expander-hook! '&wcm (record-type-rtd &wcm))
+(install-expander-hook! '&global-ref (record-type-rtd &global-ref))
+(install-expander-hook! '&global-set (record-type-rtd &global-set))
+(install-expander-hook! '&linklet (record-type-rtd &linklet))

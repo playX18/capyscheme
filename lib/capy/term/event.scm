@@ -260,7 +260,7 @@
         (let-values ([(chunk ok?) (channel-recv/ok chunks)])
           (and ok? (loop (bytevector-append buffer chunk)))))
       (define (lone-escape?)
-        (and (= (bytevector-length buffer) 1) (= (bytevector-ref buffer 0) #x1b)))
+        (and (= (bytevector-length buffer) 1) (= (bytevector-u8-ref buffer 0) #x1b)))
       (cond
         [(terminal-closed? t) #f]
         [(= (bytevector-length buffer) 0) (more)]

@@ -6,6 +6,8 @@
 
 ; A "file name" is a string of length > 0.
 ; A "directory name" is a string of length > 0.
+(|#%require| (boot prim) (boot control) (boot records) (boot conditions) (boot violations) (boot raise) (boot exceptions) (boot expand) (boot interpreter) (boot enums) (boot sys))
+(|#%provide| all-defined)
 
 (define *current-directory-designator* ".") ; a string
 (define *directory-separators* '(#\/)) ; a list of characters
@@ -51,13 +53,18 @@
   (if (absolute-pathname? fn)
     (cons 'absolute (split-pathname fn 0 0))
     (cons 'relative (split-pathname fn 0 0))))
+.
+(define (join-with-slashes acc parts)
+  (if (null? parts)
+    acc
+    (join-with-slashes (string-append acc "/" (car parts)) (cdr parts))))
 
 (define (pathname-list->string l)
   (case (car l)
     ((absolute)
-      (fold-left (lambda (x y) (string-append x "/" y)) "e" (cdr l)))
+      (join-with-slashes "e" (cdr l)))
     ((relative)
-      (fold-left (lambda (x y) (string-append x "/" y)) (cadr l) (cddr l)))
+      (join-with-slashes (cadr l) (cddr l)))
     (else
       (error "Illegal keyword " (car l) " in pathname list."))))
 

@@ -94,8 +94,8 @@
 
   (define (rec term subst mutated)
     (match term
-      [(~or (~toplevel-ref _ _ _) (~module-ref _ _ _ _) (~primref _ _)
-            (~constant _ _) (~void _))
+      [(~or (~primref _ _)
+            (~global-ref _ _ _ _) (~constant _ _) (~void _))
         term]
       [(~lref src name sym)
         (cond
@@ -121,12 +121,12 @@
       [(~primcall src prim args)
         (make-primcall src prim
           (map (lambda (x) (rec x subst mutated)) args))]
-      [(~toplevel-define src mod name val)
-        (make-toplevel-define src mod name (rec val subst mutated))]
-      [(~toplevel-set src mod name val)
-        (make-toplevel-set src mod name (rec val subst mutated))]
-      [(~module-set src module name public? val)
-        (make-module-set src module name public? (rec val subst mutated))]
+      [(~global-set src key name slot val)
+        (make-global-set src key name slot (rec val subst mutated))]
+      [(~linklet src name imports exports slots body meta)
+        (make-linklet-term src name imports exports slots
+          (rec body subst mutated)
+          meta)]
       [(~if src test then else)
         (make-if src
           (rec test subst mutated)
@@ -176,7 +176,7 @@
           (rec producer subst mutated)
           (wrap-mutable vars ids consumer subst mutated))]
       [(~wcm src key mark result)
-        (make-wcm src key (rec mark subst mutated) (rec result subst mutated))]
+        (make-wcm src (rec key subst mutated) (rec mark subst mutated) (rec result subst mutated))]
       [_ term]))
 
   (define (eliminate-assignments term)

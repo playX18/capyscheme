@@ -38,6 +38,20 @@
 ;     is formatted as with number->string and an attempt is made to
 ;     fit it in the field (FIXME: should probably round it to fit,
 ;     if that's possible.)
+(|#%require| (boot prim) (boot control) (boot records) (boot conditions) (boot violations) (boot raise) (boot exceptions) (boot expand) (boot interpreter) (boot enums) (boot sys) (boot osdep) (boot ports-core) (boot transcoder) (boot binary-ports) (boot textual-ports) (boot custom-ports) (boot file-ports) (boot console-ports) (boot port-api) (boot print) (late (boot str2num) string->number))
+(|#%provide| all-defined)
+
+
+(define (format-fixed-flonum x digits)
+  (let* ([scale (expt 10 digits)]
+         [scaled (round (* (abs (inexact->exact x)) scale))]
+         [int-part (quotient scaled scale)]
+         [frac (number->string (remainder scaled scale))]
+         [frac-text (string-append (make-string (- digits (string-length frac)) #\0) frac)])
+    (string-append
+      (if (< x 0) "-" "")
+      (number->string int-part)
+      (if (= digits 0) "" (string-append "." frac-text)))))
 
 (define ($format port-spec format-string . args)
   (let ((port (cond ((output-port? port-spec)
@@ -155,7 +169,7 @@
                   (get-field-width (+ i 2))
                   (case spec
                     ((#\f)
-                      (display (flonum->string (next-arg args) width) port)
+                      (display (format-fixed-flonum (next-arg args) width) port)
                       (format-loop i (cdr args)))
                     (else
                       (format-error)))))
@@ -175,7 +189,7 @@
                         (case spec2
                           ((#\f)
                             (format-justified width 'right
-                              (flonum->string (next-arg args)
+                              (format-fixed-flonum (next-arg args)
                                 width2)
                               display)
                             (format-loop i2 (cdr args)))

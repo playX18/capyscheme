@@ -9,7 +9,7 @@ use crate::{
     runtime::{MutationContext, Scheme, State, value::Value, vm::threading::ThreadObject},
 };
 
-use super::env::{SCM_REF_NULL, Scm, ScmPtr, ScmRef, SniEnv, env_mut};
+use super::env::{SCM_REF_NULL, Scm, ScmPtr, ScmRef, SniEnv, env_mut, safe_cstr};
 
 /// Create a new Scheme runtime instance (boots the VM).
 #[unsafe(no_mangle)]
@@ -22,6 +22,47 @@ pub extern "C" fn scm_new() -> *mut Scm {
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_from_image(_image_data: *const u8, _image_size: usize) -> *mut Scm {
     std::ptr::null_mut()
+}
+
+/// Run a static bundle (`capyc --static`) in a fresh runtime, without booting it.
+///
+/// `argv` holds `argc` NUL-terminated strings, `argv[0]` being the program name. The
+/// bundle ends the process by calling `exit`, so this returns only if it does not.
+///
+/// # Safety
+/// `bundle` must be valid for `bundle_size` bytes and `argv` for `argc` C strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn scm_run_static(
+    bundle: *const u8,
+    bundle_size: usize,
+    argc: libc::c_int,
+    argv: *const *const libc::c_char,
+) -> libc::c_int {
+    if bundle.is_null() || argv.is_null() || argc < 1 {
+        return -1;
+    }
+    // SAFETY: the caller guarantees `bundle` is valid for `bundle_size` bytes.
+    let bytes = unsafe { std::slice::from_raw_parts(bundle, bundle_size) };
+    let mut args = Vec::with_capacity(argc as usize);
+    for index in 0..argc as usize {
+        // SAFETY: the caller guarantees `argv` holds `argc` C strings.
+        let ptr = unsafe { *argv.add(index) };
+        if ptr.is_null() {
+            return -1;
+        }
+        // Scheme strings are text: an argument that is not UTF-8 gets U+FFFD for its bad
+        // bytes, as `(program-arguments)` does for a booted runtime.
+        // SAFETY: `ptr` is a NUL-terminated string.
+        let bytes = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_bytes();
+        args.push(String::from_utf8_lossy(bytes).into_owned());
+    }
+    let scm = Scheme::new_static_runtime();
+    // The program runs as the main thread of the scheduler
+    crate::runtime::sched::scheduler::run_main(&scm.mutator, main_stack_bytes(), |_cx| {
+        scm.run_static(bytes, &args);
+    });
+    std::mem::forget(scm);
+    0
 }
 
 /// Free a Scheme instance from [`scm_new`].

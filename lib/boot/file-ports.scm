@@ -1,5 +1,7 @@
 ;;; R6RS file-port procedures (rnrs io ports, 8.2.7, 8.2.10, 8.2.13)
 
+(|#%require| (boot prim) (boot control) (boot records) (boot conditions) (boot violations) (boot raise) (boot exceptions) (boot expand) (boot interpreter) (boot enums) (boot sys) (boot osdep) (boot ports-core) (boot transcoder) (boot binary-ports) (boot textual-ports) (boot custom-ports) (late (boot port-api) file-options->list))
+(|#%provide| all-defined)
 
 (define whence:seek-set 0)
 (define whence:seek-cur 1)

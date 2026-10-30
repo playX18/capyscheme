@@ -1,4 +1,4 @@
-//! Runtime system: value representation, virtual machine, modules, and thread management.
+//! Runtime system: value representation, virtual machine, and thread management.
 
 pub mod class;
 #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -6,17 +6,21 @@ pub mod code_memory;
 #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub mod codegen;
 pub(crate) mod compile_service;
+pub mod conditions;
 pub mod fasl;
 pub mod fluids;
 pub mod gc_stats;
 #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub mod gdb_jit;
 pub mod global;
+pub mod hooks;
 pub mod interp;
 pub mod libs;
-pub mod modules;
+pub mod linklet;
 pub mod prims;
 pub mod profile;
+pub mod record;
+pub mod record_ops;
 pub mod root;
 pub mod sabi;
 pub mod sched;
@@ -25,6 +29,7 @@ pub mod sni;
 pub mod stats;
 pub mod thread;
 pub mod value;
+pub mod variable;
 pub mod vm;
 pub mod vmthread;
 pub(crate) mod watchpoint;
@@ -69,7 +74,10 @@ pub(crate) fn init<'gc>(mc: MutationContext<'gc>) {
     vm::load::init_load_path(mc);
     vm::load::init_load(mc);
     vm::arith::init(mc);
-    modules::init_modules(mc);
+    variable::variable_ops::register(mc);
+    record_ops::record_ops::register(mc);
+    hooks::hooks_ops::register(mc);
+    linklet::init_linklets(mc);
     vm::strings::init_strings(mc);
     vm::vector::init_vectors(mc);
     vm::portio::init_portio(mc);
@@ -100,7 +108,7 @@ use crate::runtime::{global::VM_GLOBALS, stats::GlobalStats, vmthread::VM_THREAD
 
 #[allow(ambiguous_glob_imports)]
 pub mod prelude {
-    use crate::runtime::modules::*;
+    use crate::runtime::variable::Variable;
 
     pub use super::global::Global;
     pub use super::interp::stack::Slot;

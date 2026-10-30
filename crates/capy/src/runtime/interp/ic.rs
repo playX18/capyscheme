@@ -9,7 +9,7 @@ use crate::runtime::class::instance::{
     scheme_instance_slot_bound_hook, scheme_instance_slot_ref_hook, scheme_instance_slot_set_hook,
 };
 use crate::runtime::class::{
-    ClassCategory, SLOT_PROTOCOL_GENERICS, SchemeInstance, class_root_binding, class_table,
+    ClassCategory, SLOT_PROTOCOL_GENERICS, SchemeInstance, class_table,
     generic_descriptor_from_value, try_scheme_instance,
 };
 use crate::runtime::class::{OP_REF, OP_SET, PROTOCOL_CUSTOM, PROTOCOL_PLAIN};
@@ -167,8 +167,8 @@ fn compute_plain<'gc>(
     class: Gc<'gc, crate::runtime::class::ClassDescriptor<'gc>>,
     op: usize,
 ) -> bool {
-    let (name, dispatch_args) = SLOT_PROTOCOL_GENERICS[op];
-    let Some(bound) = class_root_binding(ctx, name) else {
+    let (hook, dispatch_args) = SLOT_PROTOCOL_GENERICS[op];
+    let Some(bound) = ctx.try_hook(hook) else {
         return true;
     };
     let Some(generic) = generic_descriptor_from_value(ctx, bound) else {

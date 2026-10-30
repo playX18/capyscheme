@@ -1,8 +1,7 @@
 use std::path::Path;
 
 use crate::compiler::LoweredProgram;
-use crate::heap::Gc;
-use crate::runtime::{MutationContext, modules::Module, value::Value};
+use crate::runtime::{MutationContext, value::Value};
 
 #[cfg(feature = "bootstrap")]
 use crate::{
@@ -16,7 +15,6 @@ use crate::{
 pub fn compile_file<'gc>(
     _: MutationContext<'gc>,
     file: impl AsRef<Path>,
-    _: Option<Gc<'gc, Module<'gc>>>,
     _: bool,
 ) -> Result<LoweredProgram<'gc>, Value<'gc>> {
     unreachable!(
@@ -29,10 +27,8 @@ pub fn compile_file<'gc>(
 pub fn compile_file<'gc>(
     ctx: MutationContext<'gc>,
     file: impl AsRef<Path>,
-    env: Option<Gc<'gc, Module<'gc>>>,
     dump_graph: bool,
 ) -> Result<LoweredProgram<'gc>, Value<'gc>> {
-    let module = env.unwrap_or_else(|| ctx.globals().root_module());
     let file = file.as_ref();
 
     let file_in = std::fs::File::open(file).map_err(|e| {
@@ -69,8 +65,23 @@ pub fn compile_file<'gc>(
         make_lexical_violation(ctx, "compile-file", err.display_with_file(file.display()))
     })?;
 
-    let mut env =
-        crate::expander::core::Cenv::new(ctx, Value::new(false), module, denotations(ctx));
+    let mut env = crate::expander::core::Cenv::new(ctx, Value::new(false), denotations(ctx));
+
+    if let Some((header, used)) = crate::expander::boot_linklet::parse_header(ctx, &program)
+        .map_err(|err| make_lexical_violation(ctx, "compile-file", err.to_string()))?
+    {
+        let il =
+            crate::expander::boot_linklet::expand_linklet(&mut env, file, header, &program[used..])
+                .map_err(|err| {
+                    make_lexical_violation(
+                        ctx,
+                        "compile-file",
+                        format!("{}: {err}", file.display()),
+                    )
+                })?;
+        return lower_to_cps(ctx, il, true, dump_graph);
+    }
+
     let begin = env.denotations.denotation_of_begin;
 
     let mut ls = Value::null();
@@ -79,8 +90,9 @@ pub fn compile_file<'gc>(
     }
     ls = Value::cons(ctx, begin, ls);
 
-    let il = crate::expander::core::expand(&mut env, ls)
-        .map_err(|err| make_lexical_violation(ctx, "compile-file", err.to_string()))?;
+    let il = crate::expander::core::expand(&mut env, ls).map_err(|err| {
+        make_lexical_violation(ctx, "compile-file", format!("{}: {err}", file.display()))
+    })?;
 
-    lower_to_cps(ctx, il, Some(module), true, dump_graph)
+    lower_to_cps(ctx, il, true, dump_graph)
 }

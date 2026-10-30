@@ -6,12 +6,14 @@
 use std::{cell::Cell, collections::HashMap, sync::OnceLock};
 
 use crate::{
-    expander::{datum_sourcev, get_source_property},
+    expander::{
+        datum_sourcev, get_source_property,
+        primitives::{sym_variable_ref, sym_variable_set},
+    },
     heap::{Gc, Global, Trace, alloc::array::Array, barrier, cell::Lock},
     list,
     runtime::{
         MutationContext,
-        modules::{Module, get_current_module},
         value::{Str, Symbol, Value},
         vm::syntax::props_to_sourcev,
     },
@@ -20,9 +22,9 @@ use crate::{
 
 // Re-export types from focused submodules for backward compatibility.
 pub use crate::compiler::tree::{
-    Fix, LVar, LVarRef, Let, LetStyle, Proc, ProcRef, Term, TermKind, TermRef, call_term, constant,
-    define, fix_term, if_term, let_term, lref, lset, module_ref, module_set, prim_call_term,
-    proc_term, seq, seq_from_slice, toplevel_ref, toplevel_set,
+    Fix, GlobalSlot, LVar, LVarRef, Let, LetStyle, LinkletTerm, Proc, ProcRef, Term, TermKind,
+    TermRef, call_term, constant, fix_term, global_ref, global_set, if_term, let_term,
+    linklet_term, lref, lset, prim_call_term, proc_term, seq, seq_from_slice,
 };
 pub use crate::expander::cenv::{Cenv, Denotations, Frame};
 
@@ -53,8 +55,7 @@ static_symbols!(
     DENOTATION_OF_UNLESS = "unless"
     DENOTATION_OF_WCM = "with-continuation-mark"
     DENOTATION_OF_DEFINE_STRUCT = "define-struct"
-    DENOTATION_OF_PUBLIC_REF = "@"
-    DENOTATION_OF_PRIVATE_REF = "@@"
+    DENOTATION_OF_PRIMITIVE = "#%primitive"
 );
 
 pub fn denotations<'gc>(ctx: MutationContext<'gc>) -> &'gc Denotations<'gc> {
@@ -83,8 +84,7 @@ pub fn denotations<'gc>(ctx: MutationContext<'gc>) -> &'gc Denotations<'gc> {
                 denotation_of_unless: denotation_of_unless(ctx).into(),
                 denotation_of_wcm: denotation_of_wcm(ctx).into(),
                 denotation_of_define_struct: denotation_of_define_struct(ctx).into(),
-                denotation_of_public_ref: denotation_of_public_ref(ctx).into(),
-                denotation_of_private_ref: denotation_of_private_ref(ctx).into(),
+                denotation_of_primitive: denotation_of_primitive(ctx).into(),
             })
         })
         .fetch(ctx)
@@ -115,16 +115,30 @@ pub type Error<'gc> = Box<CompileError<'gc>>;
 
 pub fn expand<'gc>(cenv: &mut Cenv<'gc>, program: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
     if program.try_as::<Symbol>().is_some() {
-        let module = get_current_module(cenv.ctx).downcast::<Module>();
-        let module_name = module.name();
         match cenv.get(program) {
             Some(lvar) => Ok(lref(cenv.ctx, lvar)),
-            None => Ok(toplevel_ref(
-                cenv.ctx,
-                module_name,
-                program,
-                Value::new(false),
-            )),
+            None => match cenv.boot_resolve(program) {
+                Some((key, slot)) => Ok(global_ref(
+                    cenv.ctx,
+                    key,
+                    program,
+                    GlobalSlot::Box(slot),
+                    Value::new(false),
+                )),
+                None if cenv
+                    .ctx
+                    .globals()
+                    .interesting_primitive_vars()
+                    .get(cenv.ctx, program)
+                    .is_some() =>
+                {
+                    Ok(cenv.ctx.allocate(Term {
+                        source: Lock::new(Value::new(false)),
+                        kind: TermKind::PrimRef(program),
+                    }))
+                }
+                None => Ok(late_variable_ref(cenv.ctx, program)),
+            },
         }
     } else if program.is_pair() {
         let _source =
@@ -148,6 +162,8 @@ pub fn expand<'gc>(cenv: &mut Cenv<'gc>, program: Value<'gc>) -> Result<TermRef<
             expand_when(cenv, program)
         } else if proc == cenv.denotations.denotation_of_unless {
             expand_unless(cenv, program)
+        } else if proc == cenv.denotations.denotation_of_primitive {
+            expand_primitive(cenv, program)
         } else if proc == cenv.denotations.denotation_of_wcm {
             expand_wcm(cenv, program)
         } else if proc == cenv.denotations.denotation_of_and {
@@ -180,10 +196,6 @@ pub fn expand<'gc>(cenv: &mut Cenv<'gc>, program: Value<'gc>) -> Result<TermRef<
             expand_receive(cenv, program)
         } else if proc == cenv.denotations.denotation_of_values {
             expand_values(cenv, program)
-        } else if proc == cenv.denotations.denotation_of_public_ref {
-            expand_public_ref(cenv, program)
-        } else if proc == cenv.denotations.denotation_of_private_ref {
-            expand_private_ref(cenv, program)
         } else {
             let proc = expand(cenv, proc)?;
             let mut xs = args;
@@ -362,9 +374,71 @@ fn expand_set<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc
     let name = form.cadr();
     let source = datum_sourcev(cenv.ctx, form);
     cenv.expression_name = old;
-    let module = get_current_module(cenv.ctx).downcast::<Module>();
-    let module_name = module.name();
-    Ok(toplevel_set(cenv.ctx, module_name, name, value, source))
+    if let Some((key, slot)) = cenv.boot_resolve(name) {
+        return Ok(global_set(
+            cenv.ctx,
+            key,
+            name,
+            GlobalSlot::Box(slot),
+            value,
+            source,
+        ));
+    }
+    Ok(prim_call_term(
+        cenv.ctx,
+        sym_variable_set(cenv.ctx).into(),
+        &[late_variable_term(cenv.ctx, name), value],
+        source,
+    ))
+}
+
+/// The late-bound variable `name`, see [`crate::runtime::linklet::late_variable`].
+fn late_variable_term<'gc>(ctx: MutationContext<'gc>, name: Value<'gc>) -> TermRef<'gc> {
+    prim_call_term(
+        ctx,
+        Symbol::from_str(ctx, "late-variable").into(),
+        &[constant(ctx, name)],
+        Value::new(false),
+    )
+}
+
+/// A reference to the late-bound variable `name`, see [`late_variable_term`].
+fn late_variable_ref<'gc>(ctx: MutationContext<'gc>, name: Value<'gc>) -> TermRef<'gc> {
+    prim_call_term(
+        ctx,
+        sym_variable_ref(ctx).into(),
+        &[late_variable_term(ctx, name)],
+        Value::new(false),
+    )
+}
+
+/// A top-level definition: a variable of the current module, or while
+/// expanding a boot linklet, an assignment to the linklet's slot.
+fn toplevel_define<'gc>(
+    cenv: &mut Cenv<'gc>,
+    form: Value<'gc>,
+    name: Value<'gc>,
+    term: TermRef<'gc>,
+    source: Value<'gc>,
+) -> Result<TermRef<'gc>, Error<'gc>> {
+    let ctx = cenv.ctx;
+    if let Some(boot) = cenv.boot.as_mut() {
+        let (key, slot) = boot.define_target(ctx, name, form)?;
+        return Ok(global_set(
+            ctx,
+            key,
+            name,
+            GlobalSlot::Box(slot),
+            term,
+            source,
+        ));
+    }
+    let _ = (term, source);
+    Err(Box::new(CompileError {
+        message: "top-level definition outside a boot linklet".to_string(),
+        irritants: vec![name],
+        sourcev: datum_sourcev(ctx, form),
+    }))
 }
 
 fn expand_define<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
@@ -429,15 +503,7 @@ fn expand_define<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
                 kind: TermKind::Proc(proc),
             });
 
-            let module = get_current_module(cenv.ctx).downcast::<Module>();
-            let module_name = module.name();
-            Ok(define(
-                cenv.ctx,
-                module_name,
-                name,
-                proc_term,
-                datum_sourcev(cenv.ctx, form),
-            ))
+            toplevel_define(cenv, form, name, proc_term, datum_sourcev(cenv.ctx, form))
         }
 
         Define::Simple(name, value) => {
@@ -445,16 +511,47 @@ fn expand_define<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
             cenv.expression_name = name;
             let term = expand(cenv, value)?;
             cenv.expression_name = old;
-            let module = get_current_module(cenv.ctx).downcast::<Module>();
-            let module_name = module.name();
-            Ok(define(
-                cenv.ctx,
-                module_name,
-                name,
-                term,
-                datum_sourcev(cenv.ctx, form),
-            ))
+            toplevel_define(cenv, form, name, term, datum_sourcev(cenv.ctx, form))
         }
+    }
+}
+
+fn expand_primitive<'gc>(
+    cenv: &mut Cenv<'gc>,
+    form: Value<'gc>,
+) -> Result<TermRef<'gc>, Error<'gc>> {
+    let ctx = cenv.ctx;
+    let bad = |message: &str| {
+        Box::new(CompileError {
+            message: message.to_string(),
+            irritants: vec![form],
+            sourcev: datum_sourcev(ctx, form),
+        })
+    };
+    if form.list_length() != 2 || !form.cdr().car().is::<Symbol>() {
+        return Err(bad("#%primitive requires exactly one name"));
+    }
+    let name = form.cdr().car();
+    if ctx
+        .globals()
+        .interesting_primitive_vars()
+        .get(ctx, name)
+        .is_some()
+    {
+        return Ok(ctx.allocate(Term {
+            source: Lock::new(datum_sourcev(ctx, form)),
+            kind: TermKind::PrimRef(name),
+        }));
+    }
+    match cenv.boot.as_ref().and_then(|boot| boot.capy_slot(name)) {
+        Some((key, slot)) => Ok(global_ref(
+            ctx,
+            key,
+            name,
+            GlobalSlot::Box(slot),
+            Value::new(false),
+        )),
+        None => Err(bad("#%primitive: not a primitive of (#%capy)")),
     }
 }
 
@@ -1546,64 +1643,6 @@ fn expand_letrec_star<'gc>(
         body_term,
         datum_sourcev(cenv.ctx, form),
     ))
-}
-
-fn expand_private_ref<'gc>(
-    cenv: &mut Cenv<'gc>,
-    form: Value<'gc>,
-) -> Result<TermRef<'gc>, Error<'gc>> {
-    if form.list_length() != 3 {
-        return Err(Box::new(CompileError {
-            message: "@@ requires exactly two arguments: module name and variable name".to_string(),
-            irritants: vec![form],
-            sourcev: datum_sourcev(cenv.ctx, form),
-        }));
-    }
-
-    let modname = form.cadr();
-    let varname = form.caddr();
-
-    if !varname.is::<Symbol>() {
-        return Err(Box::new(CompileError {
-            message: "variable name must be a symbol".to_string(),
-            irritants: vec![varname],
-            sourcev: datum_sourcev(cenv.ctx, form),
-        }));
-    }
-
-    Ok(cenv.ctx.allocate(Term {
-        source: Lock::new(datum_sourcev(cenv.ctx, form)),
-        kind: TermKind::ModuleRef(modname, varname, false),
-    }))
-}
-
-fn expand_public_ref<'gc>(
-    cenv: &mut Cenv<'gc>,
-    form: Value<'gc>,
-) -> Result<TermRef<'gc>, Error<'gc>> {
-    if form.list_length() != 3 {
-        return Err(Box::new(CompileError {
-            message: "@ requires exactly two arguments: module name and variable name".to_string(),
-            irritants: vec![form],
-            sourcev: datum_sourcev(cenv.ctx, form),
-        }));
-    }
-
-    let modname = form.cadr();
-    let varname = form.caddr();
-
-    if !varname.is::<Symbol>() {
-        return Err(Box::new(CompileError {
-            message: "variable name must be a symbol".to_string(),
-            irritants: vec![varname],
-            sourcev: datum_sourcev(cenv.ctx, form),
-        }));
-    }
-
-    Ok(cenv.ctx.allocate(Term {
-        source: Lock::new(datum_sourcev(cenv.ctx, form)),
-        kind: TermKind::ModuleRef(modname, varname, true),
-    }))
 }
 
 fn expand_cond<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {

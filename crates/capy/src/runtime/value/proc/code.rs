@@ -734,8 +734,17 @@ pub(crate) fn procedure_span_short<'gc>(
     if !metadata.is_pair() {
         return None;
     }
-    let source = metadata.assq(ctx.intern("source"))?.cdr();
-    span_short(source)
+
+    let key = ctx.intern("source");
+    let mut rest = metadata;
+    while rest.is_pair() {
+        let entry = rest.car();
+        if entry.is_pair() && entry.car() == key {
+            return span_short(entry.cdr());
+        }
+        rest = rest.cdr();
+    }
+    None
 }
 
 /// `file:line:col` for a 9-vector span, or `None` when the value is not

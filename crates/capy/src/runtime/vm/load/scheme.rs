@@ -7,7 +7,6 @@ use crate::compiler::{
 };
 use crate::list;
 use crate::prelude::*;
-use crate::runtime::modules::{Module, current_module};
 use crate::runtime::value::{Closure, Str, Symbol, Value};
 use crate::runtime::vm::base::scm_log_level;
 use crate::runtime::vm::expand::TermConverter;
@@ -21,8 +20,9 @@ use super::paths::{fallback_file_name, find_path_to};
 use super::{
     artifact::LoadArtifact,
     compile::{
-        CompilationPhase, ExpandedJob, compile_lowered_to_destination,
-        destination_artifact_for_current_policy, load_thunk_in_vicinity,
+        CompilationPhase, ExpandedJob, Unsaved, compile_lowered_to_destination,
+        destination_artifact_for_current_policy, load_thunk_in_vicinity, load_unsaved,
+        take_unsaved,
     },
     policy::set_fasl_debug_entries,
 };
@@ -60,18 +60,15 @@ pub(super) mod load_ops {
     pub fn compile(
         expanded: Value<'gc>,
         destination: StringRef<'gc>,
-        m: Option<Value<'gc>>,
         load_thunk: Option<bool>,
         dump_selections: Option<Value<'gc>>,
         preprocessed: Option<bool>,
     ) -> LoadResult<'gc> {
-        let module = resolve_module_value(ctx, m);
         let dump_options = compile_dump_options(ctx, dump_selections);
         let result = compile_expanded_to_destination(
             ctx,
             expanded,
             destination.to_string().as_str(),
-            module,
             CompilationOptions {
                 backtraces: compile_backtraces_enabled(ctx),
                 ..CompilationOptions::default()
@@ -81,6 +78,44 @@ pub(super) mod load_ops {
             preprocessed.unwrap_or(false),
         );
         result
+    }
+
+    /// Compiles the source file `source` to the artifact `destination` with the Rust boot
+    /// expander
+    #[scheme(name = "%compile-boot-file")]
+    pub fn compile_boot_file(
+        source: StringRef<'gc>,
+        destination: StringRef<'gc>,
+    ) -> LoadResult<'gc> {
+        #[cfg(feature = "bootstrap")]
+        {
+            let destination =
+                destination_artifact_for_current_policy(destination.to_string().as_str());
+            let _phase = CompilationPhase::new(ctx);
+            let job = crate::runtime::vm::load::SourceJob {
+                source: PathBuf::from(source.to_string()),
+                destination,
+                unsaved: None,
+            };
+            let (ctx, outcome) = compile_service::run(ctx, JobInput::Source(job));
+            compile_service::raise_failure(ctx, outcome.unwrap_or_else(|killed| killed.unwind()))?;
+            Ok(Value::undefined())
+        }
+        #[cfg(not(feature = "bootstrap"))]
+        {
+            let _ = (source, destination);
+            Err(make_io_error(
+                ctx,
+                "%compile-boot-file",
+                Str::new(
+                    ctx,
+                    "%compile-boot-file is not available in non-bootstrap builds",
+                    true,
+                )
+                .into(),
+                &[],
+            ))
+        }
     }
 
     #[scheme(name = "try-load-thunk-in-vicinity")]
@@ -217,6 +252,22 @@ pub(super) mod load_ops {
         }
     }
 
+    /// The import specs of the `(|#%require| spec ...)` header of the boot file at `path`,
+    /// or `#f` when the file has no such header
+    #[scheme(name = "%boot-header-requires")]
+    pub fn boot_header_requires(path: StringRef<'gc>) -> LoadResult<'gc> {
+        let path = path.to_string();
+        let text = std::fs::read_to_string(&path).map_err(|e| {
+            make_io_error(
+                ctx,
+                "%boot-header-requires",
+                Str::new(ctx, format!("Cannot read '{}': {}", path, e), true).into(),
+                &[],
+            )
+        })?;
+        Ok(super::scan_boot_requires(ctx, &text).unwrap_or(Value::new(false)))
+    }
+
     #[scheme(name = "%search-load-path")]
     pub fn search_load_path(filename: StringRef<'gc>, arch: Option<StringRef<'gc>>) -> Value<'gc> {
         let filename = PathBuf::from(filename.as_gc_ref().to_string());
@@ -233,7 +284,7 @@ pub(super) mod load_ops {
         let mut load_path = ctx.globals().loc_load_path().get();
         while load_path.is_pair() {
             let base = PathBuf::from(load_path.car().downcast::<Str>().to_string());
-            if base.join("boot.scm").is_file() {
+            if base.join("boot").join("main.scm").is_file() {
                 return Str::new(ctx, base.to_string_lossy(), true).into();
             }
             load_path = load_path.cdr();
@@ -247,10 +298,93 @@ pub(super) mod load_ops {
     }
 }
 
+/// Scans the first form of `text`. When it is `(|#%require| spec ...)`, returns the specs.
+fn scan_boot_requires<'gc>(ctx: MutationContext<'gc>, text: &str) -> Option<Value<'gc>> {
+    let bytes: Vec<char> = text.chars().collect();
+    let mut pos = 0;
+
+    fn skip<'a>(b: &'a [char], pos: &mut usize) {
+        loop {
+            match b.get(*pos) {
+                Some(c) if c.is_whitespace() => *pos += 1,
+                Some(';') => {
+                    while b.get(*pos).is_some_and(|c| *c != '\n') {
+                        *pos += 1;
+                    }
+                }
+                Some('#') if b.get(*pos + 1) == Some(&'|') => {
+                    let mut depth = 0;
+                    while *pos < b.len() {
+                        if b[*pos] == '#' && b.get(*pos + 1) == Some(&'|') {
+                            depth += 1;
+                            *pos += 2;
+                        } else if b[*pos] == '|' && b.get(*pos + 1) == Some(&'#') {
+                            depth -= 1;
+                            *pos += 2;
+                            if depth == 0 {
+                                break;
+                            }
+                        } else {
+                            *pos += 1;
+                        }
+                    }
+                }
+                _ => return,
+            }
+        }
+    }
+
+    fn datum<'gc>(ctx: MutationContext<'gc>, b: &[char], pos: &mut usize) -> Option<Value<'gc>> {
+        skip(b, pos);
+        match *b.get(*pos)? {
+            '(' | '[' => {
+                *pos += 1;
+                let mut items = Vec::new();
+                loop {
+                    skip(b, pos);
+                    match *b.get(*pos)? {
+                        ')' | ']' => {
+                            *pos += 1;
+                            return Some(Value::list_from_slice(ctx, items));
+                        }
+                        _ => items.push(datum(ctx, b, pos)?),
+                    }
+                }
+            }
+            ')' | ']' => None,
+            _ => {
+                let mut name = String::new();
+                let mut barred = false;
+                while let Some(&c) = b.get(*pos) {
+                    if c == '|' {
+                        barred = !barred;
+                    } else if !barred && (c.is_whitespace() || "()[];".contains(c)) {
+                        break;
+                    } else {
+                        name.push(c);
+                    }
+                    *pos += 1;
+                }
+                if name.is_empty() {
+                    return None;
+                }
+                Some(Symbol::from_str(ctx, &name).into())
+            }
+        }
+    }
+
+    let form = datum(ctx, &bytes, &mut pos)?;
+    if form.is_pair() && form.car() == Value::from(Symbol::from_str(ctx, "#%require")) {
+        Some(form.cdr())
+    } else {
+        None
+    }
+}
+
 #[scheme(continuation)]
 pub(crate) fn continue_loading_k(
     ir: Value<'gc>,
-    cenv: Value<'gc>,
+    _cenv: Value<'gc>,
     _unused: Value<'gc>,
 ) -> LoadResult<'gc> {
     let rator = call.rator.downcast::<Closure>();
@@ -266,7 +400,6 @@ pub(crate) fn continue_loading_k(
         ctx,
         ir,
         compiled_path.as_str(),
-        resolve_continuation_module(ctx, cenv),
         CompilationOptions::default(),
         true,
         DumpArtifactsOptions::default(),
@@ -289,28 +422,6 @@ fn compile_backtraces_enabled<'gc>(ctx: MutationContext<'gc>) -> bool {
     false
 }
 
-fn resolve_module_value<'gc>(
-    ctx: MutationContext<'gc>,
-    module: Option<Value<'gc>>,
-) -> Gc<'gc, Module<'gc>> {
-    match module {
-        Some(module) if module.is::<Module>() => module.downcast(),
-        _ => current_module(ctx).get(ctx).downcast(),
-    }
-}
-
-#[allow(dead_code)]
-fn resolve_continuation_module<'gc>(
-    ctx: MutationContext<'gc>,
-    cenv: Value<'gc>,
-) -> Gc<'gc, Module<'gc>> {
-    if cenv.is::<Module>() {
-        cenv.downcast()
-    } else {
-        current_module(ctx).get(ctx).downcast()
-    }
-}
-
 /// Lower, compile and write `job` on a compile thread.
 pub(crate) fn run_expanded_job<'gc>(
     ctx: MutationContext<'gc>,
@@ -320,7 +431,6 @@ pub(crate) fn run_expanded_job<'gc>(
     let lowered = lower_expanded_scheme(
         ctx,
         job.expanded,
-        job.module,
         job.dump_options.dump_graph,
         job.preprocessed,
     )?;
@@ -331,7 +441,13 @@ pub(crate) fn run_expanded_job<'gc>(
         job.dump_options,
     );
     dump_lowered_program_artifacts(ctx, &job.destination.path, &lowered, job.dump_options);
-    compile_lowered_to_destination(ctx, lowered, options, &job.destination)?;
+    compile_lowered_to_destination(
+        ctx,
+        lowered,
+        options,
+        &job.destination,
+        job.unsaved.as_ref(),
+    )?;
     Ok(())
 }
 
@@ -339,7 +455,6 @@ fn compile_expanded_to_destination<'gc>(
     ctx: MutationContext<'gc>,
     expanded: Value<'gc>,
     destination: &str,
-    module: Gc<'gc, Module<'gc>>,
     options: CompilationOptions,
     load_thunk: bool,
     dump_options: DumpArtifactsOptions,
@@ -347,13 +462,14 @@ fn compile_expanded_to_destination<'gc>(
 ) -> LoadResult<'gc> {
     let _phase = CompilationPhase::new(ctx);
     let destination = destination_artifact_for_current_policy(destination);
+    let unsaved: Unsaved = Default::default();
     let job = ExpandedJob {
         expanded,
-        module,
         destination: destination.clone(),
         options,
         dump_options: merge_compile_dump_options(dump_options),
         preprocessed,
+        unsaved: Some(unsaved.clone()),
     };
     let (ctx, outcome) = compile_service::run(ctx, JobInput::Expanded(job));
     compile_service::raise_failure(ctx, outcome.unwrap_or_else(|killed| killed.unwind()))?;
@@ -362,7 +478,10 @@ fn compile_expanded_to_destination<'gc>(
         return Ok(Str::new(ctx, destination.path.display().to_string(), true).into());
     }
 
-    load_compiled_library(ctx, &destination)
+    match take_unsaved(&unsaved) {
+        Some(bytes) => load_unsaved(ctx, &bytes, &destination.path),
+        None => load_compiled_library(ctx, &destination),
+    }
 }
 
 fn compile_dump_options<'gc>(
@@ -403,7 +522,6 @@ fn configure_backend_dump_paths(
 fn lower_expanded_scheme<'gc>(
     ctx: MutationContext<'gc>,
     expanded: Value<'gc>,
-    module: Gc<'gc, Module<'gc>>,
     dump_graph: bool,
     preprocessed: bool,
 ) -> Result<LoweredProgram<'gc>, Value<'gc>> {
@@ -412,7 +530,6 @@ fn lower_expanded_scheme<'gc>(
     lower_expanded_to_cps(
         ctx,
         ir,
-        Some(module),
         cfg!(feature = "bootstrap"),
         dump_graph,
         preprocessed,

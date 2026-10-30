@@ -1,5 +1,8 @@
 use std::cell::Cell;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
+use std::io::Read;
+#[cfg(not(target_os = "macos"))]
+use std::io::{Seek, SeekFrom};
 use std::path::Path;
 
 use capy_sni::Scm;
@@ -14,6 +17,19 @@ const MANUAL_FLAG_ROWS: &[(&str, &str, CliKind)] =
     &[("--debug", "CAPY_FASL_DEBUG", CliKind::Value)];
 
 const COMPILER_ENTRY_ARG: &str = "--capy-compiler-entrypoint";
+
+/// Magic at the start of a FASL image
+const FASL_MAGIC: &[u8; 8] = b"CAPYFSL\0";
+
+/// How much of a file is inspected to tell a static bundle from anything else.
+const BUNDLE_HEAD_BYTES: u64 = 4096;
+
+/// Where an executable made by `capyc --static --exe` keeps its bundle: a Mach-O section
+/// on macOS, otherwise a trailer (the bundle, its length as a little-endian `u64`, then
+/// this magic)
+const EXE_SECTION: &str = "CAPYSTAT";
+#[cfg(not(target_os = "macos"))]
+const EXE_TRAILER_BYTES: u64 = 16;
 
 fn flag_table() -> Vec<(&'static str, &'static str, CliKind)> {
     let mut table: Vec<(&'static str, &'static str, CliKind)> = Vec::new();
@@ -36,6 +52,14 @@ fn flag_table() -> Vec<(&'static str, &'static str, CliKind)> {
 
 pub fn run_cli(default_entry: &'static str) -> i32 {
     let raw_args: Vec<OsString> = std::env::args_os().collect();
+
+    if let Some(bundle) = embedded_bundle() {
+        return Scm::run_static(&bundle, &raw_args);
+    }
+
+    if let Some(bundle) = raw_args.get(1).and_then(|path| read_static_bundle(path)) {
+        return Scm::run_static(&bundle, &raw_args[1..]);
+    }
 
     if raw_args
         .iter()
@@ -95,6 +119,58 @@ pub fn run_cli(default_entry: &'static str) -> i32 {
 
     std::mem::forget(scm);
     code.get()
+}
+
+/// The contents of `path` if it is a static bundle
+fn read_static_bundle(path: &OsStr) -> Option<Vec<u8>> {
+    let mut head = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(BUNDLE_HEAD_BYTES)
+        .read_to_end(&mut head)
+        .ok()?;
+    let payload = if head.starts_with(b"#!") {
+        let newline = head.iter().position(|&byte| byte == b'\n')?;
+        &head[newline + 1..]
+    } else {
+        &head[..]
+    };
+    if !payload.starts_with(FASL_MAGIC) {
+        return None;
+    }
+    std::fs::read(path).ok()
+}
+
+/// The bundle embedded in the running executable, if there is one
+#[cfg(target_os = "macos")]
+fn embedded_bundle() -> Option<Vec<u8>> {
+    libsui::find_section(EXE_SECTION)
+        .ok()
+        .flatten()
+        .map(<[u8]>::to_vec)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn embedded_bundle() -> Option<Vec<u8>> {
+    let mut file = std::fs::File::open(std::env::current_exe().ok()?).ok()?;
+    let len = file.seek(SeekFrom::End(0)).ok()?;
+    if len < EXE_TRAILER_BYTES {
+        return None;
+    }
+    file.seek(SeekFrom::End(-(EXE_TRAILER_BYTES as i64))).ok()?;
+    let mut trailer = [0u8; EXE_TRAILER_BYTES as usize];
+    file.read_exact(&mut trailer).ok()?;
+    if &trailer[8..] != EXE_SECTION.as_bytes() {
+        return None;
+    }
+    let payload_len = u64::from_le_bytes(trailer[..8].try_into().ok()?);
+    let start = len
+        .checked_sub(EXE_TRAILER_BYTES)?
+        .checked_sub(payload_len)?;
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bundle = vec![0u8; payload_len as usize];
+    file.read_exact(&mut bundle).ok()?;
+    Some(bundle)
 }
 
 fn select_entrypoint(

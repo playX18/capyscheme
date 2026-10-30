@@ -5,7 +5,7 @@ use std::{fs, io::Cursor, sync::LazyLock};
 use crate::heap::{Global, Trace, sync::monitor::Monitor};
 use crate::runtime::{
     MutationContext,
-    fasl::Reader,
+    fasl::{Reader, fasl_payload},
     value::Value,
     vm::load::{
         artifact::{LoadArtifact, LoadArtifactKind},
@@ -49,13 +49,24 @@ impl<'gc> Library<'gc> {
             )),
             LoadArtifactKind::FaslCode => {
                 let bytes = fs::read(&artifact.path)?;
-                let value =
-                    Reader::new_with_options(ctx, Cursor::new(bytes), get_fasl_load_options())
-                        .read()?;
-                let entrypoint = if initialize { value } else { Value::new(false) };
-                Ok((Self::Fasl(value), entrypoint))
+                Self::from_fasl(ctx, &bytes, initialize)
             }
         }
+    }
+
+    fn from_fasl(
+        ctx: MutationContext<'gc>,
+        bytes: &[u8],
+        initialize: bool,
+    ) -> std::io::Result<(Self, Value<'gc>)> {
+        let value = Reader::new_with_options(
+            ctx,
+            Cursor::new(fasl_payload(bytes)),
+            get_fasl_load_options(),
+        )
+        .read()?;
+        let entrypoint = if initialize { value } else { Value::new(false) };
+        Ok((Self::Fasl(value), entrypoint))
     }
 }
 
@@ -92,6 +103,17 @@ impl<'gc> LibraryCollection<'gc> {
         ctx: MutationContext<'gc>,
     ) -> std::io::Result<Value<'gc>> {
         let (lib, entrypoint) = Library::load(ctx, artifact, true)?;
+        self.libs.lock().push(lib);
+        Ok(entrypoint)
+    }
+
+    /// Loads a FASL code image that is in memory, see `SourceJob::unsaved`.
+    pub(crate) fn load_image(
+        &self,
+        bytes: &[u8],
+        ctx: MutationContext<'gc>,
+    ) -> std::io::Result<Value<'gc>> {
+        let (lib, entrypoint) = Library::from_fasl(ctx, bytes, true)?;
         self.libs.lock().push(lib);
         Ok(entrypoint)
     }

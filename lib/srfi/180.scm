@@ -1,5 +1,6 @@
 (define-library (srfi 180)
-(import (scheme base) (scheme case-lambda) (scheme inexact))
+(import (scheme base) (scheme case-lambda) (scheme inexact)
+  (rnrs arithmetic bitwise))
 (export json-number-of-character-limit
 	  json-nesting-depth-limit
 	  json-null?

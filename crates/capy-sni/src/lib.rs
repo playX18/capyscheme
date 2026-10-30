@@ -63,6 +63,28 @@ impl Scm {
             .expect("CLI alias table is UTF-8")
     }
 
+    /// Run a static bundle (`capyc --static`) in a fresh runtime, without booting one.
+    ///
+    /// `args[0]` is the program name. The bundle normally ends the process by calling
+    /// `exit`, so the returned status is only reached when it does not.
+    pub fn run_static(bundle: &[u8], args: &[OsString]) -> i32 {
+        let cstrings: Vec<CString> = args
+            .iter()
+            .map(|arg| CString::new(arg.as_bytes()).expect("argument contains NUL"))
+            .collect();
+        let argv: Vec<*const libc::c_char> = cstrings.iter().map(|arg| arg.as_ptr()).collect();
+        // SAFETY: `bundle` is valid for its length, and `argv` holds `argc` pointers to
+        // NUL-terminated strings owned by `cstrings`, alive for the call.
+        unsafe {
+            sys::scm_run_static(
+                bundle.as_ptr(),
+                bundle.len(),
+                argv.len() as libc::c_int,
+                argv.as_ptr(),
+            )
+        }
+    }
+
     /// Set a flag's environment variable through `libcapy`. Call it before
     /// any other thread starts. Fails if the name or value is not valid text
     /// for the environment.

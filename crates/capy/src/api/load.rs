@@ -83,11 +83,13 @@ pub unsafe extern "C" fn sni_program_arguments_init(
     let e = unsafe { env_mut(env) };
     let mut ls = Value::null();
     for i in (0..argc as usize).rev() {
-        let arg = match unsafe { safe_cstr(*argv.add(i)) } {
-            Some(s) => s,
-            None => continue,
-        };
-        let str_value = e.ctx.str(arg);
+        let ptr = unsafe { *argv.add(i) };
+        if ptr.is_null() {
+            continue;
+        }
+        // Scheme strings are text: bad bytes become U+FFFD instead of dropping the argument.
+        let arg = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy();
+        let str_value = e.ctx.str(&arg);
         ls = Value::cons(e.ctx, str_value, ls);
     }
     crate::runtime::vm::base::program_arguments_fluid(e.ctx).set(e.ctx, ls);

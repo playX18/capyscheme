@@ -1,4 +1,5 @@
 (import (rnrs)
+        (only (capy) call-without-interrupts)
         (srfi 64)
         (capy concurrency))
 

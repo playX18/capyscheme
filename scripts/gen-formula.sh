@@ -69,7 +69,6 @@ class $class < Formula
   end
 RUBY
 
-# The remainder has Ruby interpolation, so keep it in a quoted heredoc.
 sed "s/@SUFFIX@/$suffix/g" <<'RUBY'
 
   def install
@@ -90,17 +89,14 @@ sed "s/@SUFFIX@/$suffix/g" <<'RUBY'
   test do
     capy = bin/"capy@SUFFIX@"
 
-    # Arithmetic, including bignums.
     assert_match "246913578024691357802469135780",
                  shell_output("#{capy} -c '(display (* 123456789012345678901234567890 2))'")
 
-    # Bundled R6RS / SRFI libraries are found through the wrapper.
     assert_match "(2 4 6)",
                  shell_output("#{capy} -c '(import (rnrs) (srfi :1)) (write (map (lambda (x) (* 2 x)) (iota 3 1)))'")
     assert_match "55",
                  shell_output("#{capy} -c '(import (rnrs) (srfi :1)) (display (fold + 0 (iota 11)))'")
 
-    # Running a script file that uses records and string ports.
     (testpath/"hello.scm").write <<~SCHEME
       (import (rnrs))
       (define-record-type point (fields x y))
@@ -115,7 +111,6 @@ sed "s/@SUFFIX@/$suffix/g" <<'RUBY'
     assert_match(/^7$/, output)
     assert_match(/^capy$/, output)
 
-    # An uncaught error exits non-zero.
     shell_output("#{capy} -c '(error (quote test) \"boom\")' 2>&1", 1)
 
     # The compiler driver is installed and executable.

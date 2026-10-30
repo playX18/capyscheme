@@ -3,15 +3,13 @@ use std::path::Path;
 use crate::compiler::cfg::Program;
 use crate::compiler::cps::optimize::optimize_graph_func_to_ssa;
 use crate::compiler::dump;
-use crate::expander::core::TermRef;
+use crate::expander::core::{TermKind, TermRef};
 use crate::expander::{
-    assignment_elimination, compile_cps, free_vars::annotate_free_vars, primitives,
-    rectify_letrec::rectify_letrec, recursive_bindings::rewrite_recursive_bindings,
-    well_known_procs::expand_well_known_procs,
+    assignment_elimination, compile_cps, primitives,
+    recursive_bindings::rewrite_recursive_bindings, well_known_procs::expand_well_known_procs,
 };
-use crate::heap::Gc;
 use crate::runtime::stats::{CompilationBreakdownPhase, CompilationBreakdownScope};
-use crate::runtime::{MutationContext, modules::Module, value::Value};
+use crate::runtime::{MutationContext, value::Value};
 use crate::utils::pass_profile::ProfileScope;
 
 #[derive(Clone)]
@@ -63,17 +61,27 @@ impl DumpArtifactsOptions {
 pub fn lower_to_cps<'gc>(
     ctx: MutationContext<'gc>,
     il: TermRef<'gc>,
-    module: Option<Gc<'gc, Module<'gc>>>,
     expand_primitive_calls: bool,
     dump_graph: bool,
 ) -> Result<LoweredProgram<'gc>, Value<'gc>> {
-    lower_expanded_to_cps(ctx, il, module, expand_primitive_calls, dump_graph, false)
+    lower_expanded_to_cps(ctx, il, expand_primitive_calls, dump_graph, false)
+}
+
+#[allow(dead_code)]
+pub fn linklet_meta<'gc>(
+    il: TermRef<'gc>,
+) -> Option<(Value<'gc>, Value<'gc>, Value<'gc>, Value<'gc>)> {
+    match il.kind {
+        TermKind::Linklet(linklet) => {
+            Some((linklet.name, linklet.imports, linklet.exports, linklet.meta))
+        }
+        _ => None,
+    }
 }
 
 pub(crate) fn lower_expanded_to_cps<'gc>(
     ctx: MutationContext<'gc>,
     mut il: TermRef<'gc>,
-    module: Option<Gc<'gc, Module<'gc>>>,
     expand_primitive_calls: bool,
     dump_graph: bool,
     preprocessed: bool,
@@ -81,18 +89,9 @@ pub(crate) fn lower_expanded_to_cps<'gc>(
     let original_il = il;
     let _stats = CompilationBreakdownScope::new(CompilationBreakdownPhase::Lowering);
 
-    if !preprocessed
-        && expand_primitive_calls
-        && let Some(module) = module
-    {
-        il = primitives::resolve_primitive_refs(ctx, il, module);
+    if !preprocessed && expand_primitive_calls {
+        il = primitives::resolve_primitive_refs(ctx, il);
         il = primitives::expand_primitive_calls(ctx, il);
-        let _profile = ProfileScope::new("compiler.lower.annotate_free_vars");
-        il = annotate_free_vars(ctx, il);
-        drop(_profile);
-        let _profile = ProfileScope::new("compiler.lower.rectify_letrec");
-        il = rectify_letrec(ctx, il);
-        drop(_profile);
     }
 
     // When the Scheme pipeline has preprocessed the IR (preprocessed=true),

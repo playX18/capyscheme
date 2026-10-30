@@ -1,5 +1,6 @@
 (import (srfi 64)
-        (capy))
+        (capy)
+        (only (rnrs eval) environment))
 
 (test-begin "boot class define-class macro")
 
@@ -510,7 +511,7 @@
            before-redefinition-dispatch
            (macro-redefined-describe macro-redefined-instance)
            (pair? (class-direct-methods macro-redefined-class))))
-      (current-module))
+      (interaction-environment))
     '(#t 31 #t missing 33 (kept 31) (kept 31) #t))
   (test-error "define-class rejects non-symbol slot names"
     &syntax

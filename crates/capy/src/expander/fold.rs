@@ -1,7 +1,7 @@
 use crate::heap::{Gc, alloc::Array};
 
 use crate::{
-    expander::core::{Fix, Proc, Term, TermKind, TermRef},
+    expander::core::{Fix, LinkletTerm, Proc, Term, TermKind, TermRef},
     runtime::MutationContext,
 };
 
@@ -26,9 +26,8 @@ where
         match x.kind {
             TermKind::Const(_)
             | TermKind::LRef(_)
-            | TermKind::ModuleRef(_, _, _)
-            | TermKind::PrimRef(_)
-            | TermKind::ToplevelRef(_, _) => post(ctx, x),
+            | TermKind::GlobalRef(_, _, _)
+            | TermKind::PrimRef(_) => post(ctx, x),
             TermKind::LSet(lvar, val) => {
                 let nexp = rec(ctx, pre, post, val);
                 if Gc::ptr_eq(nexp, val) {
@@ -42,42 +41,37 @@ where
                 }
             }
 
-            TermKind::ModuleSet(module, name, public, val) => {
+            TermKind::GlobalSet(key, name, slot, val) => {
                 let nexp = rec(ctx, pre, post, val);
                 if Gc::ptr_eq(nexp, val) {
                     post(ctx, x)
                 } else {
-                    let mset = ctx.allocate(Term {
+                    let gset = ctx.allocate(Term {
                         source: x.source.get().into(),
-                        kind: TermKind::ModuleSet(module, name, public, nexp),
+                        kind: TermKind::GlobalSet(key, name, slot, nexp),
                     });
-                    post(ctx, mset)
+                    post(ctx, gset)
                 }
             }
 
-            TermKind::ToplevelSet(module, name, val) => {
-                let nexp = rec(ctx, pre, post, val);
-                if Gc::ptr_eq(nexp, val) {
+            TermKind::Linklet(linklet) => {
+                let nbody = rec(ctx, pre, post, linklet.body);
+                if Gc::ptr_eq(nbody, linklet.body) {
                     post(ctx, x)
                 } else {
-                    let tset = ctx.allocate(Term {
-                        source: x.source.get().into(),
-                        kind: TermKind::ToplevelSet(module, name, nexp),
+                    let linklet = ctx.allocate(LinkletTerm {
+                        name: linklet.name,
+                        imports: linklet.imports,
+                        exports: linklet.exports,
+                        slots: linklet.slots,
+                        body: nbody,
+                        meta: linklet.meta,
                     });
-                    post(ctx, tset)
-                }
-            }
-
-            TermKind::Define(module, name, value) => {
-                let nexp = rec(ctx, pre, post, value);
-                if Gc::ptr_eq(nexp, value) {
-                    post(ctx, x)
-                } else {
-                    let def = ctx.allocate(Term {
+                    let term = ctx.allocate(Term {
                         source: x.source.get().into(),
-                        kind: TermKind::Define(module, name, nexp),
+                        kind: TermKind::Linklet(linklet),
                     });
-                    post(ctx, def)
+                    post(ctx, term)
                 }
             }
 
@@ -323,13 +317,11 @@ pub fn fold_tree<'gc, ACC>(
         let acc = match tree.kind {
             TermKind::Const(_)
             | TermKind::LRef(_)
-            | TermKind::ModuleRef(_, _, _)
-            | TermKind::PrimRef(_)
-            | TermKind::ToplevelRef(_, _) => acc,
+            | TermKind::GlobalRef(_, _, _)
+            | TermKind::PrimRef(_) => acc,
             TermKind::LSet(_, val) => foldts(val, down, up, acc),
-            TermKind::ModuleSet(_, _, _, val) => foldts(val, down, up, acc),
-            TermKind::ToplevelSet(_, _, val) => foldts(val, down, up, acc),
-            TermKind::Define(_, _, val) => foldts(val, down, up, acc),
+            TermKind::GlobalSet(_, _, _, val) => foldts(val, down, up, acc),
+            TermKind::Linklet(linklet) => foldts(linklet.body, down, up, acc),
             TermKind::If(cond, cons, alt) => {
                 let acc = foldts(cond, down, up, acc);
                 let acc = foldts(cons, down, up, acc);

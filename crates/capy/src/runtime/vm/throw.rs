@@ -4,8 +4,8 @@ use crate::{
     global,
     runtime::{
         MutationContext,
-        modules::{Variable, define},
         value::{PROCEDURES, ReturnCode, Str, Value},
+        variable::{Variable, define},
     },
 };
 

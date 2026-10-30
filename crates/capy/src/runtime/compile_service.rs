@@ -14,7 +14,6 @@ use crate::heap::collection::Visitor;
 use crate::heap::mutator::Mutator;
 use crate::heap::{Trace, WeakProcessor};
 use crate::runtime::MutationContext;
-use crate::runtime::modules::current_module;
 use crate::runtime::root::RootScope;
 use crate::runtime::sched::scheduler::{Killed, Waker, current};
 use crate::runtime::service::{self, ServiceCtl, ServiceThread};
@@ -38,7 +37,7 @@ pub(crate) enum JobInput<'gc> {
     /// Expanded Scheme handed to `%compile`.
     Expanded(ExpandedJob<'gc>),
     /// A source file compiled by the Rust expander.
-    Source(SourceJob<'gc>),
+    Source(SourceJob),
 }
 
 pub(crate) enum Failure<'gc> {
@@ -136,11 +135,8 @@ unsafe impl<'gc> Trace for CompileQueue<'gc> {
 unsafe impl Trace for JobInput<'_> {
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         match self {
-            JobInput::Expanded(job) => {
-                visitor.trace(&mut job.expanded);
-                visitor.trace(&mut job.module);
-            }
-            JobInput::Source(job) => visitor.trace(&mut job.module),
+            JobInput::Expanded(job) => visitor.trace(&mut job.expanded),
+            JobInput::Source(_) => {}
         }
     }
 
@@ -246,11 +242,8 @@ pub(crate) fn run<'gc>(
     match &input {
         JobInput::Expanded(job) => {
             scope.root(job.expanded);
-            scope.root_gc(job.module);
         }
-        JobInput::Source(job) => {
-            scope.root_gc(job.module);
-        }
+        JobInput::Source(_) => {}
     }
     let id = enqueue(ctx, input);
     let result = wait(ctx, id);
@@ -434,19 +427,10 @@ fn finish<'gc>(ctx: MutationContext<'gc>, id: u64, outcome: Outcome<'gc>) {
 }
 
 fn execute<'gc>(ctx: MutationContext<'gc>, input: JobInput<'gc>) -> Outcome<'gc> {
-    let module = match &input {
-        JobInput::Expanded(job) => job.module,
-        JobInput::Source(job) => job.module,
-    };
-    let scope = RootScope::new(ctx);
-    let saved = scope.root(current_module(ctx).get(ctx));
-    current_module(ctx).set(ctx, module.into());
-    let outcome = match input {
+    match input {
         JobInput::Expanded(job) => run_expanded_job(ctx, job),
         JobInput::Source(job) => run_source_job(ctx, job),
-    };
-    current_module(ctx).set(ctx, saved.get());
-    outcome
+    }
 }
 
 pub(crate) fn raise_failure<'gc>(

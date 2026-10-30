@@ -216,14 +216,21 @@ impl<'gc, 'a, 'b> ValueFmt<'gc, 'a, 'b> {
         } else if x.is::<Syntax>() {
             let syntax = x.downcast::<Syntax<'gc>>();
             write!(self.fmt, "#<syntax {}>", syntax.expr())
-        } else if x.is::<Module>() {
-            let x = x.downcast::<Module>();
-            write!(self.fmt, "#<module {}>", x.name())
         } else if x.is::<Keyword>() {
             let kw = x.downcast::<Keyword>();
             write!(self.fmt, "{}", kw.symbol)
         } else if let Some(result) = crate::runtime::class::print_primitive_value(self.fmt, x) {
             result
+        } else if x.is::<crate::runtime::record::Rtd<'gc>>() {
+            let rtd = x.downcast::<crate::runtime::record::Rtd<'gc>>();
+            write!(self.fmt, "#<record-type-descriptor ")?;
+            self.patom(rtd.name, false, level)?;
+            write!(self.fmt, ">")
+        } else if x.is::<crate::runtime::record::Rcd<'gc>>() {
+            let rcd = x.downcast::<crate::runtime::record::Rcd<'gc>>();
+            write!(self.fmt, "#<record-constructor-descriptor ")?;
+            self.patom(rcd.rtd.name, false, level)?;
+            write!(self.fmt, ">")
         } else {
             write!(self.fmt, "#<unknown {:x}>", x.bits())
         }

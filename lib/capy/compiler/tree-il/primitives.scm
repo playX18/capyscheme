@@ -202,8 +202,6 @@
       variable-bound?
       slot-ref
       slot-set!
-      current-module
-      define!
       string-length
       string-ref
       string-set!
@@ -267,58 +265,33 @@
       unspecified
       unspecified?))
   (define *primitive-name->variable*
-    (let ([m (resolve-module '(capy) #f #f)]
+    (let ([inst (library-instance (root-library-registry) '(|#%capy|))]
           [table (make-eq-hashtable)])
       (for-each
         (lambda (name)
-          (hashtable-set! table name (or (module-variable m name)
-                                      (module-ensure-local-variable! m name))))
+          (let ([var (instance-variable inst name)])
+            (when var
+              (hashtable-set! table name var))))
         interesting-primitive-names)
       table))
 
-  (define (scan-toplevel-definitions x set)
-    (cond
-      [(toplevel-define? x)
-        (hashtable-set! set (toplevel-define-name x) #t)]
-      [(sequence? x)
-        (scan-toplevel-definitions (sequence-head x) set)
-        (scan-toplevel-definitions (sequence-tail x) set)]))
-
   (define (resolve-primitives x m)
     (define local-definitions (make-eq-hashtable))
-    (unless (eq? m (resolve-module '(capy) #f #f))
-      (scan-toplevel-definitions x local-definitions))
     (post-order
       (lambda (x)
         (define src (term-src x))
         (cond
-          [(toplevel-ref? x)
-            (define name (toplevel-ref-name x))
+          [(global-ref? x)
+            (define key (global-ref-key x))
+            (define name (global-ref-name x))
+            (define slot (global-ref-slot x))
+            (define prim-var (hashtable-ref *primitive-name->variable* name #f))
             (cond
-              [(and (not (hashtable-ref local-definitions name #f))
-                  (let ([var (module-variable m name)]
-                        [prim-var (hashtable-ref *primitive-name->variable* name #f)])
-                    (and var prim-var (eq? var prim-var))))
-                =>
-                (lambda (_)
-                  (make-primref src name))]
-              [else x])]
-          [(module-ref? x)
-            (define module (module-ref-module x))
-            (define name (module-ref-name x))
-            (define public? (module-ref-public? x))
-            (cond
-              [(resolve-module module #f #f)
-                =>
-                (lambda (module)
-                  (define iface (if public? (or (module-public-interface module) module) module))
+              [(and prim-var
                   (cond
-                    [(let ([var (module-variable iface name)]
-                           [prim-var (hashtable-ref *primitive-name->variable* name #f)])
-                        (and var prim-var (eq? var prim-var)))
-                      =>
-                      (lambda (_) (make-primref src name))]
-                    [else x]))]
+                    [(symbol? slot) (equal? key '(|#%capy|))]
+                    [else (eq? slot prim-var)]))
+                (make-primref src name)]
               [else x])]
           [(application? x)
             (if (primref? (application-operator x))
@@ -523,7 +496,7 @@
       [(null? args)
         (and identity (make-constant src identity))]
       [(and (null? (cdr args)) one?)
-        (or (and prefix? (prefix src (car args)))
+        (or (and prefix? (prefix? src (car args)))
           (car args))]
       [(and (null? (cdr args)) (not one?))
         #f]
@@ -911,12 +884,6 @@
   (define-primitive-expansion pointer-set!/f32 (x i v) (pointer-set!/f32 x i v))
   (define-primitive-expansion pointer-ref/f64 (x i) (pointer-ref/f64 x i))
   (define-primitive-expansion pointer-set!/f64 (x i v) (pointer-set!/f64 x i v))
-  (define-primitive-expansion current-module
-    ()
-    (current-module)
-    (mod)
-    (current-module mod))
-  (define-primitive-expansion define! (x y) (define! x y))
   (define-primitive-expansion make-syntax
     (x y z w)
     (make-syntax x y z w '())
@@ -997,7 +964,7 @@
     (cond
       [(primref? x)
         (define src (term-src x))
-        (make-module-ref src '(capy) (primref-prim x) #f)]
+        x]
       [(primcall? x)
         (let ([src (term-src x)]
               [args (primcall-args x)]
@@ -1010,7 +977,7 @@
             ;; expander does not exist or failed to expand,
             ;; expand to full application.
             [else (make-application src
-                   (make-module-ref src '(capy) (primcall-prim x) #f)
+                   (make-primref src (primcall-prim x))
                    args)]))]
       [else x]))
 

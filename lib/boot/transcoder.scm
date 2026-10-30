@@ -5,6 +5,8 @@
 ;;; 'latin-1, 'utf-8, 'utf-16.  An eol style is one of
 ;;; 'lf 'cr 'crlf 'nel 'crnel 'ls 'none.  An error-handling mode is
 ;;; one of 'ignore 'raise 'replace.
+(|#%require| (boot prim) (boot control) (boot records) (boot conditions) (boot violations) (boot raise) (boot exceptions) (boot expand) (boot interpreter) (boot enums) (boot sys) (boot osdep) (boot ports-core))
+(|#%provide| all-defined)
 
 (define <transcoder>
   (let* ([rtd (make-record-type-descriptor '<transcoder> #f #f #f #f '#(

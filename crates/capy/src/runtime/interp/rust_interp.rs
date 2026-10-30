@@ -35,11 +35,11 @@ use crate::runtime::interp::profile::ARRAY_FAST;
 use crate::runtime::interp::runtime_procs;
 use crate::runtime::interp::slow;
 use crate::runtime::interp::stack::{self, Ip, Slot};
-use crate::runtime::modules::Variable;
 use crate::runtime::prims::calls as prims;
 use crate::runtime::value::{
     Closure, EnvRecord, IntoValue, NativeReturn, Pair, ReturnCode, Value, Vector,
 };
+use crate::runtime::variable::Variable;
 use crate::runtime::vm::exceptions::RaiseKind;
 
 pub type Handler = for<'gc> unsafe extern "rust-preserve-none" fn(

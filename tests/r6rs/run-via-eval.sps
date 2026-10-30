@@ -10,9 +10,9 @@
   (syntax-rules ()
     [(_ test-proc library-name)
       (begin
-        (test:test-begin (format #f "~a" 'library-name))
+        (test:test-begin (call-with-string-output-port (lambda (p) (display 'library-name p))))
         (test/unspec (eval '(test-proc) (environment 'library-name)))
-        (test:test-end (format #f "~a" 'library-name)))]))
+        (test:test-end (call-with-string-output-port (lambda (p) (display 'library-name p)))))]))
 
 (test-library run-base-tests (tests r6rs base))
 (test-library run-reader-tests (tests r6rs reader))

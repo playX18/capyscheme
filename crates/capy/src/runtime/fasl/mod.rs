@@ -6,6 +6,7 @@
 use std::io;
 
 pub mod reader;
+pub mod stats;
 pub mod writer;
 
 pub use reader::{LoadOptions, Reader};
@@ -33,7 +34,9 @@ pub const FASL_TAG_IMMEDIATE: u8 = 18;
 pub const FASL_TAG_SYNTAX: u8 = 19;
 pub const FASL_TAG_TUPLE: u8 = 20;
 pub const FASL_TAG_KEYWORD: u8 = 21;
-// 22-27 are reserved
+pub const FASL_TAG_RTD: u8 = 22;
+pub const FASL_TAG_RCD: u8 = 23;
+// 24-27 are reserved
 pub const FASL_TAG_BEGIN: u8 = 28;
 pub const FASL_TAG_PROGRAM: u8 = 30;
 
@@ -45,8 +48,19 @@ pub const FASL_TAG_REF: u8 = 0xFF;
 pub const FASL_TAG_REF_INIT: u8 = 0xFE;
 
 pub const FASL_MAGIC: &[u8; 8] = b"CAPYFSL\0";
-pub const FASL_VERSION: u32 = 13;
-pub const MIN_SUPPORTED_FASL_VERSION: u32 = 11;
+
+pub fn fasl_payload(bytes: &[u8]) -> &[u8] {
+    if bytes.starts_with(b"#!")
+        && let Some(newline) = bytes.iter().position(|&byte| byte == b'\n')
+    {
+        return &bytes[newline + 1..];
+    }
+    bytes
+}
+
+pub fn is_fasl_image(bytes: &[u8]) -> bool {
+    fasl_payload(bytes).starts_with(FASL_MAGIC)
+}
 
 #[derive(Clone, Copy)]
 pub enum ConstSpec<'gc> {

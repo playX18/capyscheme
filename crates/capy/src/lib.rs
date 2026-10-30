@@ -50,9 +50,6 @@ pub mod prelude {
     pub use crate::heap::{Ephemeron, Frame, Gc, Pin, Scope, Space, Trace, Weak, Write, barrier};
     pub use crate::list;
     pub use crate::runtime::global::Global;
-    pub use crate::runtime::modules::Module;
-    pub use crate::runtime::modules::ModuleRef;
-    pub use crate::runtime::modules::current_module;
     pub use crate::runtime::prelude::*;
     pub use crate::runtime::vm::Call;
     pub use crate::vector;

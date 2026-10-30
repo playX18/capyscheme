@@ -43,13 +43,11 @@ pub type TermRef<'gc> = Gc<'gc, Term<'gc>>;
 pub enum TermKind<'gc> {
     LRef(LVarRef<'gc>),
     LSet(LVarRef<'gc>, TermRef<'gc>),
-    ModuleRef(Value<'gc>, Value<'gc>, bool),
-    ModuleSet(Value<'gc>, Value<'gc>, bool, TermRef<'gc>),
-
-    ToplevelRef(Value<'gc>, Value<'gc>),
-    ToplevelSet(Value<'gc>, Value<'gc>, TermRef<'gc>),
-
-    Define(Value<'gc>, Value<'gc>, TermRef<'gc>),
+    /// Reference to a variable of a linklet instance: `(key, symbol, slot)`.
+    GlobalRef(Value<'gc>, Value<'gc>, GlobalSlot<'gc>),
+    /// Assignment to a variable of a linklet instance: `(key, symbol, slot, value)`.
+    GlobalSet(Value<'gc>, Value<'gc>, GlobalSlot<'gc>, TermRef<'gc>),
+    Linklet(Gc<'gc, LinkletTerm<'gc>>),
 
     If(TermRef<'gc>, TermRef<'gc>, TermRef<'gc>),
     Seq(TermRef<'gc>, TermRef<'gc>),
@@ -74,6 +72,29 @@ pub enum TermKind<'gc> {
     PrimRef(Value<'gc>),
 
     Const(Value<'gc>),
+}
+
+#[derive(Trace, Debug, Clone, Copy)]
+#[collect(no_drop)]
+pub enum GlobalSlot<'gc> {
+    /// Box passed as a linklet body parameter (imports first, then exports).
+    Box(LVarRef<'gc>),
+    /// A `Variable` object embedded as a constant (namespace/REPL code only).
+    Variable(Value<'gc>),
+}
+
+#[derive(Trace, Debug, Clone)]
+#[collect(no_drop)]
+pub struct LinkletTerm<'gc> {
+    pub name: Value<'gc>,
+    /// List of `(key sym ...)`.
+    pub imports: Value<'gc>,
+    /// List of syms.
+    pub exports: Value<'gc>,
+    /// One LVar per slot: import syms in order, then exports.
+    pub slots: ArrayRef<'gc, LVarRef<'gc>>,
+    pub body: TermRef<'gc>,
+    pub meta: Value<'gc>,
 }
 
 #[derive(Trace, Debug)]
@@ -231,68 +252,63 @@ pub fn lset<'gc>(
     })
 }
 
-pub fn module_ref<'gc>(
+// used by the linklet expander (milestone 3)
+#[allow(dead_code)]
+pub fn global_ref<'gc>(
     ctx: MutationContext<'gc>,
-    module: Value<'gc>,
+    key: Value<'gc>,
     name: Value<'gc>,
-    public: bool,
+    slot: GlobalSlot<'gc>,
     sourcev: Value<'gc>,
 ) -> TermRef<'gc> {
+    if let GlobalSlot::Box(lvar) = slot {
+        lvar.reference();
+    }
     ctx.allocate(Term {
         source: Lock::new(sourcev),
-        kind: TermKind::ModuleRef(module, name, public),
+        kind: TermKind::GlobalRef(key, name, slot),
     })
 }
 
-pub fn module_set<'gc>(
+#[allow(dead_code)]
+pub fn global_set<'gc>(
     ctx: MutationContext<'gc>,
-    module: Value<'gc>,
+    key: Value<'gc>,
     name: Value<'gc>,
-    public: bool,
+    slot: GlobalSlot<'gc>,
     exp: TermRef<'gc>,
     sourcev: Value<'gc>,
 ) -> TermRef<'gc> {
+    if let GlobalSlot::Box(lvar) = slot {
+        lvar.reference();
+    }
     ctx.allocate(Term {
         source: Lock::new(sourcev),
-        kind: TermKind::ModuleSet(module, name, public, exp),
+        kind: TermKind::GlobalSet(key, name, slot, exp),
     })
 }
 
-pub fn toplevel_ref<'gc>(
+#[allow(dead_code)]
+pub fn linklet_term<'gc>(
     ctx: MutationContext<'gc>,
-    module: Value<'gc>,
     name: Value<'gc>,
+    imports: Value<'gc>,
+    exports: Value<'gc>,
+    slots: ArrayRef<'gc, LVarRef<'gc>>,
+    body: TermRef<'gc>,
+    meta: Value<'gc>,
     sourcev: Value<'gc>,
 ) -> TermRef<'gc> {
     ctx.allocate(Term {
         source: Lock::new(sourcev),
-        kind: TermKind::ToplevelRef(module, name),
-    })
-}
-
-pub fn toplevel_set<'gc>(
-    ctx: MutationContext<'gc>,
-    module: Value<'gc>,
-    name: Value<'gc>,
-    exp: TermRef<'gc>,
-    sourcev: Value<'gc>,
-) -> TermRef<'gc> {
-    ctx.allocate(Term {
-        source: Lock::new(sourcev),
-        kind: TermKind::ToplevelSet(module, name, exp),
-    })
-}
-
-pub fn define<'gc>(
-    ctx: MutationContext<'gc>,
-    module: Value<'gc>,
-    name: Value<'gc>,
-    value: TermRef<'gc>,
-    sourcev: Value<'gc>,
-) -> TermRef<'gc> {
-    ctx.allocate(Term {
-        source: Lock::new(sourcev),
-        kind: TermKind::Define(module, name, value),
+        kind: TermKind::Linklet(ctx.allocate(LinkletTerm {
+            name,
+            imports,
+            exports,
+            slots,
+            body,
+            meta,
+        })),
     })
 }
 
@@ -544,24 +560,6 @@ impl<'gc> Term<'gc> {
                     .group()
             }
 
-            TermKind::Define(module, var, exp) => {
-                let var_doc = alloc.text(var.to_string());
-                let exp_doc = exp.pretty(alloc);
-
-                alloc
-                    .text("define ")
-                    .append(if !module.is_bool() {
-                        alloc.text(format!("{}::", module))
-                    } else {
-                        alloc.nil()
-                    })
-                    .append(var_doc)
-                    .append(alloc.space())
-                    .append(exp_doc)
-                    .parens()
-                    .group()
-            }
-
             TermKind::LRef(lvar) => {
                 let lvar_doc = alloc.text(lvar.name.to_string());
                 alloc.text("lref ").append(lvar_doc).parens().group()
@@ -580,45 +578,30 @@ impl<'gc> Term<'gc> {
                     .group()
             }
 
-            TermKind::ModuleRef(module, name, is_public) => alloc
-                .text("module-ref")
-                .append(format!(
-                    " {module}::{name} {}",
-                    if *is_public { "#t" } else { "#f" }
-                ))
-                .parens()
-                .group(),
+            TermKind::GlobalRef(key, name, slot) => {
+                let slot_doc = slot.pretty(alloc);
+                alloc
+                    .text("global-ref")
+                    .append(format!(" {key} {name} "))
+                    .append(slot_doc)
+                    .parens()
+                    .group()
+            }
 
-            TermKind::ModuleSet(module, name, public, exp) => {
+            TermKind::GlobalSet(key, name, slot, exp) => {
+                let slot_doc = slot.pretty(alloc);
                 let exp_doc = exp.pretty(alloc);
                 alloc
-                    .text("module-set")
-                    .append(format!(
-                        " {module}::{name} {}",
-                        if *public { "#t" } else { "#f" }
-                    ))
+                    .text("global-set")
+                    .append(format!(" {key} {name} "))
+                    .append(slot_doc)
                     .append(alloc.space())
                     .append(exp_doc)
                     .parens()
                     .group()
             }
 
-            TermKind::ToplevelRef(module, name) => alloc
-                .text("toplevel-ref")
-                .append(format!(" {module} {name}"))
-                .parens()
-                .group(),
-
-            TermKind::ToplevelSet(module, name, exp) => {
-                let exp_doc = exp.pretty(alloc);
-                alloc
-                    .text("toplevel-set")
-                    .append(format!(" {module} {name}"))
-                    .append(alloc.space())
-                    .append(exp_doc)
-                    .parens()
-                    .group()
-            }
+            TermKind::Linklet(linklet) => linklet.pretty(alloc),
 
             TermKind::Seq(..) => {
                 let mut terms = Vec::new();
@@ -756,6 +739,47 @@ impl<'gc> Term<'gc> {
             source: Lock::new(src),
             kind: TermKind::LSet(lvar, value),
         })
+    }
+}
+
+impl<'gc> GlobalSlot<'gc> {
+    fn pretty<'a, D, A>(&self, alloc: &'a D) -> DocBuilder<'a, D, A>
+    where
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone,
+        A: 'a + Clone,
+    {
+        match self {
+            GlobalSlot::Box(lvar) => alloc.text(format!("box {}", lvar.name)),
+            GlobalSlot::Variable(v) => alloc.text(format!("variable {v}")),
+        }
+    }
+}
+
+impl<'gc> LinkletTerm<'gc> {
+    pub fn pretty<'a, D, A>(&self, alloc: &'a D) -> DocBuilder<'a, D, A>
+    where
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone,
+        A: 'a + Clone,
+    {
+        let slots_doc = alloc.intersperse(
+            self.slots
+                .iter()
+                .map(|slot| alloc.text(slot.name.to_string())),
+            alloc.space(),
+        );
+        let body_doc = self.body.pretty(alloc);
+
+        alloc
+            .text(format!("linklet {}", self.name))
+            .append(alloc.line())
+            .append(slots_doc.parens())
+            .append(alloc.line())
+            .append(body_doc)
+            .nest(1)
+            .parens()
+            .group()
     }
 }
 

@@ -1,3 +1,6 @@
+(|#%require| (boot prim) (boot control) (boot records) (boot conditions) (boot violations) (boot raise) (boot exceptions) (boot expand) (boot interpreter) (boot enums) (boot sys) (boot osdep) (boot ports-core) (boot transcoder) (boot binary-ports) (boot textual-ports) (boot custom-ports) (boot file-ports) (boot console-ports) (boot port-api) (boot print) (boot format) (boot log) (boot match-syntax) (boot units) (boot psyntax-exp) (boot str2num) (boot num2str))
+(|#%provide| all-defined)
+
 ;; Based on https://github.com/lassik/laesare with some minimal modifications
 ;; to run without macro and module system.
 
@@ -543,7 +546,7 @@
                                (column (reader-saved-column p))
                                (text (get-line p)))
                            (if keep-atmosphere?
-                             (values 'shebang `(,line ,column ,text))
+                             (values 'shebang (list line column text))
                              (reader:get-token* p keep-atmosphere?))))
                     ((and (char? next-char) (char-alphabetic? next-char))
                       (receive (type id) (get-token p)
@@ -558,10 +561,10 @@
                                 (reader-mode-set! p 'r6rs))
                               ((fold-case) ;r6rs-app.pdf
                                 (assert-mode p "#!fold-case" '(rnrs r6rs r7rs capy))
-                                (reader-fold-case?-set! p #t))
+                                (reader-fold-case-set! p #t))
                               ((no-fold-case) ;r6rs-app.pdf
                                 (assert-mode p "#!no-fold-case" '(rnrs r6rs r7rs capy))
-                                (reader-fold-case?-set! p #f))
+                                (reader-fold-case-set! p #f))
                               ((r7rs) ;oddly missing in r7rs
                                 (assert-mode p "#!r7rs" '(rnrs capy))
                                 (reader-mode-set! p 'r7rs))
@@ -585,7 +588,7 @@
                           (else
                             (reader-warning p "Expected an identifier after #!")
                             (get-token p)))))
-                    ((memq? (reader-mode p) '(rnrs capy))
+                    ((memq (reader-mode p) '(rnrs capy))
                       ;; Guile compat.
                       (get-token p)
                       (values 'comment (get-!-comment p)))

@@ -2,14 +2,10 @@
   (export eval environment)
   (import (core primitives))
 
+  ;; A fresh namespace that sees the bindings of IMPORT-SPECS only, and is frozen once
+  ;; they are in.
   (define (environment . import-specs)
-    (define module (make-module))
-    (define needs-purify? (not (member '(capy) import-specs)))
-    (beautify-user-module! module)
-    (for-each (lambda (spec)
-               (eval (list 'import spec) module))
-      import-specs)
-
-    (if needs-purify?
-      (set-module-uses! module (cdr (module-uses module))))
-    module))
+    (let ([ns (make-namespace #f '())])
+      (for-each (lambda (spec) (namespace-import! ns spec)) import-specs)
+      (namespace-freeze! ns)
+      ns)))

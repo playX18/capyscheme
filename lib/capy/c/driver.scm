@@ -367,7 +367,6 @@
                         [(caddr build) #f]
                         [else (list (cadr m) #f)]))))))))
 
-  (define native-procedures #f)
 
   (define (native-library-names)
     (let ([stem (cond-expand (macos "libcapy_cparse.dylib") (else "libcapy_cparse.so"))])
@@ -378,21 +377,21 @@
         (append-map
           (lambda (dir)
             (list (string-append dir "/../" stem)
-              (string-append dir "/../target/debug/" stem)
-              (string-append dir "/../target/release/" stem)))
+              (string-append dir "/../target/release/" stem)
+              (string-append dir "/../target/debug/" stem)))
           %load-path))))
 
   (define (c-native-available?)
     (and (find file-exists? (native-library-names)) #t))
 
+
   (define (native-procedure name)
-    (unless native-procedures
+    (unless (library-instance (current-library-registry) '(capy c native))
       (let ([found (find file-exists? (native-library-names))])
         (unless found
           (error 'c-include "cannot find the C parser library (set CAPY_CPARSE_LIB)"))
-        (load-native-extension found)
-        (set! native-procedures (resolve-module '(capy c native) #f #f))))
-    (module-ref native-procedures name))
+        (load-native-extension found)))
+    (instance-ref (library-instance (current-library-registry) '(capy c native)) name))
 
   (define (parse-header header config)
     (let* ([request
@@ -528,4 +527,6 @@
                        (car cached))
                      (generate! cache header config reqsha segments))])
       (c-use-cache-directory! cache)
-      (cons (string->symbol (library-directory-name libsha)) (map string->symbol segments)))))
+      (cons (string->symbol (library-directory-name libsha)) (map string->symbol segments))))
+
+  (c-use-cache-directory! (c-cache-directory)))

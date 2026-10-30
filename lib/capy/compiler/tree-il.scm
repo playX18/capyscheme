@@ -369,23 +369,23 @@
         [(lset? term)
           `(set! ,(alias-for (lset-sym term) env (lset-name term))
             ,(emit (lset-value term) env used))]
-        [(module-ref? term)
-          `(,(if (module-ref-public? term) '|@| '|@@|)
-            ,(module-ref-module term)
-            ,(module-ref-name term))]
-        [(module-set? term)
-          `(set! (,(if (module-set-public? term) '|@| '|@@|)
-                  ,(module-set-module term)
-                  ,(module-set-name term))
-            ,(emit (module-set-value term) env used))]
-        [(toplevel-ref? term)
-          (toplevel-ref-name term)]
-        [(toplevel-set? term)
-          `(set! ,(toplevel-set-name term)
-            ,(emit (toplevel-set-value term) env used))]
-        [(toplevel-define? term)
-          `(define ,(toplevel-define-name term)
-            ,(emit (toplevel-define-value term) env used))]
+        [(global-ref? term)
+          (let ([slot (global-ref-slot term)])
+            (if (variable? slot)
+              (global-ref-name term)
+              (alias-for slot env (global-ref-name term))))]
+        [(global-set? term)
+          (let ([slot (global-set-slot term)])
+            `(,(if (eq? slot 'define) 'define 'set!)
+              ,(if (variable? slot)
+                 (global-set-name term)
+                 (alias-for slot env (global-set-name term)))
+              ,(emit (global-set-value term) env used)))]
+        [(linklet-term? term)
+          (receive (aliases body-env body-used)
+            (assign-formals (linklet-term-slots term) (linklet-term-slots term) env used)
+            `(lambda ,aliases
+              ,(emit (linklet-term-body term) body-env body-used)))]
         [(if? term)
           (match `(if ,(condense-test (emit (if-test term) env used))
                    ,(emit (if-then term) env used)

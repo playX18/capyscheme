@@ -51,15 +51,14 @@
       (eq? (syntax->datum id1) (syntax->datum id2)))
 
     (define (identifier-defined? id)
-      "Checks if ID is defined. Checks definition inside the `(syntax-module id)` or in
-      (current-module) if no syntax module is associated with ID."
-      (define smod (or (syntax-module id) (current-module)))
-      (define mod (resolve-module smod #f #f))
-      (cond
-        [(not mod) #f]
-        [else
-          (define var (module-variable mod (syntax->datum id)))
-          (and var (variable-bound? var))]))
+      "Checks if ID is defined. Checks definition inside the environment of
+      `(syntax-module id)` or in the expansion environment if no syntax module is
+      associated with ID."
+      ; The module of a syntax object is (hygiene . key), as psyntax makes it.
+      (define smod (syntax-module id))
+      (define env (if smod (resolve-env (cdr smod) #f #f) (expansion-env)))
+      (define var (and env (env-variable env (syntax->datum id))))
+      (and var (variable-bound? var)))
 
     (define (unwrap-syntax stx)
       (syntax-case stx ()

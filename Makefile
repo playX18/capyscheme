@@ -55,20 +55,6 @@ CPARSE_LIB := libcapy_cparse.so
 endif
 COMPILED_SCM_EXT := fasl
 
-FASL_VERSION := $(shell sed -n 's/^pub const FASL_VERSION: u32 = \([0-9][0-9]*\);$$/\1/p' crates/capy/src/runtime/fasl/mod.rs)
-
-define check-fasl-stamp
-@if [ -z "$(FASL_VERSION)" ]; then \
-  echo "warning: could not determine FASL_VERSION; skipping version check for $(1)"; \
-else \
-  if [ -f $(1)/.fasl-version ] && [ "$$(cat $(1)/.fasl-version)" != "$(FASL_VERSION)" ]; then \
-    echo "FASL version changed ($$(cat $(1)/.fasl-version) -> $(FASL_VERSION)); rebuilding $(1)"; \
-    rm -rf $(1); \
-  fi; \
-  mkdir -p $(1); \
-  echo $(FASL_VERSION) > $(1)/.fasl-version; \
-fi
-endef
 
 ARCH := $(shell rustc -vV | awk '/^host:/ {print $$2}' | cut -d- -f1)
 
@@ -138,10 +124,14 @@ benchmark-r7rs: $(BENCHMARK_CAPY_DEP)
 
 
 
-BOOT_SRCS := \
+# The boot files that the loader lib/boot/main.scm expands with the Rust expander
+# (everything up to and including lib/boot/time.scm, which is what psyntax needs). They
+# are compiled with --boot-expander; the rest is compiled by psyntax.
+BOOT_RUST_SRCS := \
 	lib/boot/prim.scm \
 	lib/boot/control.scm \
-	lib/boot/modules.scm \
+	lib/boot/environments.scm \
+	lib/boot/library-manager.scm \
 	lib/boot/records.scm \
 	lib/boot/conditions.scm \
 	lib/boot/violations.scm \
@@ -164,11 +154,50 @@ BOOT_SRCS := \
 	lib/boot/format.scm \
 	lib/boot/log.scm \
 	lib/boot/match-syntax.scm \
+	lib/boot/units.scm \
 	lib/boot/psyntax-exp.scm \
 	lib/boot/str2num.scm \
 	lib/boot/num2str.scm \
 	lib/boot/reader.scm \
 	lib/boot/eval.scm \
+	lib/boot/namespace.scm \
+	lib/boot/time.scm \
+	
+
+BOOT_SRCS := \
+	lib/boot/prim.scm \
+	lib/boot/control.scm \
+	lib/boot/environments.scm \
+	lib/boot/library-manager.scm \
+	lib/boot/records.scm \
+	lib/boot/conditions.scm \
+	lib/boot/violations.scm \
+	lib/boot/raise.scm \
+	lib/boot/exceptions.scm \
+	lib/boot/expand.scm \
+	lib/boot/interpreter.scm \
+	lib/boot/enums.scm \
+	lib/boot/sys.scm \
+	lib/boot/osdep.scm \
+	lib/boot/ports-core.scm \
+	lib/boot/transcoder.scm \
+	lib/boot/binary-ports.scm \
+	lib/boot/textual-ports.scm \
+	lib/boot/custom-ports.scm \
+	lib/boot/file-ports.scm \
+	lib/boot/console-ports.scm \
+	lib/boot/port-api.scm \
+	lib/boot/print.scm \
+	lib/boot/format.scm \
+	lib/boot/log.scm \
+	lib/boot/match-syntax.scm \
+	lib/boot/units.scm \
+	lib/boot/psyntax-exp.scm \
+	lib/boot/str2num.scm \
+	lib/boot/num2str.scm \
+	lib/boot/reader.scm \
+	lib/boot/eval.scm \
+	lib/boot/namespace.scm \
 	lib/boot/time.scm \
 	lib/boot/base.scm \
 	lib/boot/compiler.scm \
@@ -268,12 +297,13 @@ CAPY_SRCS := \
 	lib/capy/compiler/tree-il/terms.scm 	 \
 	lib/capy/compiler/tree-il/fold.scm       \
 	lib/capy/compiler/tree-il/primitives.scm \
-	lib/capy/compiler/tree-il/resolve-free-vars.scm \
-	lib/capy/compiler/tree-il/letrectify.scm \
 	lib/capy/compiler/tree-il/fix-letrec.scm \
 	lib/capy/compiler/tree-il/assignment-elimination.scm \
 	lib/capy/compiler/tree-il/well-known-procs.scm \
 	lib/capy/compiler/tree-il.scm			\
+	lib/capy/compiler/static/effects.scm \
+	lib/capy/compiler/static/shake.scm \
+	lib/capy/compiler/static.scm \
 	lib/capy/graph.scm \
 	lib/capy/sequence.scm \
 	lib/capy/cst-reader.scm \
@@ -548,48 +578,55 @@ stage-2:
 COMPILER ?=
 OUT ?=
 
+# Boot files depend on the fasls of the boot files their header imports
+BOOT_DEPS_MK := target/boot-deps.mk
+$(BOOT_DEPS_MK): $(BOOT_SRCS) scripts/boot-deps.sh
+	@mkdir -p $(dir $@)
+	@scripts/boot-deps.sh $(BOOT_SRCS) > $@.tmp && mv $@.tmp $@
+-include $(BOOT_DEPS_MK)
+
 # Boot
 $(OUT)/boot/%.$(COMPILED_SCM_EXT): lib/boot/%.scm
 	@mkdir -p $(dir $@)
-	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ -m "capy" -L lib $<
+	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) $(if $(filter $<,$(BOOT_RUST_SRCS)),--boot-expander) -o $@ -L lib $<
 
 # Core
 $(OUT)/core/%.$(COMPILED_SCM_EXT): lib/core/%.scm
 	@mkdir -p $(dir $@)
-	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ $<
 
 $(OUT)/core.$(COMPILED_SCM_EXT): lib/core.scm
 	@mkdir -p $(dir $@)
-	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ $<
 
 # RNRS
 $(OUT)/rnrs/%.$(COMPILED_SCM_EXT): lib/rnrs/%.scm
 	@mkdir -p $(dir $@)
-	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ $<
 
 $(OUT)/rnrs.$(COMPILED_SCM_EXT): lib/rnrs.scm
 	@mkdir -p $(dir $@)
-	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ $<
 
 # Capy
 $(OUT)/capy/%.$(COMPILED_SCM_EXT): lib/capy/%.scm
 	@mkdir -p $(dir $@)
-	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ $<
 
 # SRFI
 $(OUT)/srfi/%.$(COMPILED_SCM_EXT): lib/srfi/%.scm
 	@mkdir -p $(dir $@)
-	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ $<
 
 # R7RS
 $(OUT)/scheme/%.$(COMPILED_SCM_EXT): lib/scheme/%.scm
 	@mkdir -p $(dir $@)
-	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ $<
 
 # Common
 $(OUT)/common/%.$(COMPILED_SCM_EXT): lib/common/%.scm
 	@mkdir -p $(dir $@)
-	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $@ $<
 
 $(OUT)/capy/args/option.$(COMPILED_SCM_EXT): $(OUT)/capy/args/help/optional.$(COMPILED_SCM_EXT)
 $(OUT)/capy/args/grammar.$(COMPILED_SCM_EXT): $(OUT)/capy/args/option.$(COMPILED_SCM_EXT) $(OUT)/capy/args/help/optional.$(COMPILED_SCM_EXT) $(OUT)/capy/args/string.$(COMPILED_SCM_EXT)
@@ -608,8 +645,8 @@ compile-cli: compile-capy-args
 	$(call require_var,OUT)
 	@echo "Compiling CLI"
 	@mkdir -p $(OUT)
-	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $(OUT)/boot/cli.$(COMPILED_SCM_EXT) -m "capy" -L lib lib/boot/cli.scm
-	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $(OUT)/boot.$(COMPILED_SCM_EXT) -m "capy" -L lib lib/boot.scm
+	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) -o $(OUT)/boot/cli.$(COMPILED_SCM_EXT) -L lib lib/boot/cli.scm
+	$(TIME_ENV) $(CAPY_ENV) $(COMPILER) --boot-expander -o $(OUT)/boot/main.$(COMPILED_SCM_EXT) -L lib lib/boot/main.scm
 
 compile-boot:
 	$(call require_var,COMPILER)

@@ -928,86 +928,30 @@
     make-variable
     variable-bound?
 
-    current-module
-    make-module
-    module?
-    module-obarray
-    module-uses
-    module-binder
-    module-declarative?
-    module-transformer
-    raw-module-name
-    module-version
-    module-kind
-    module-import-obarray
-    module-submodules
-    module-filename
-    module-public-interface
-    module-next-unique-id
-    module-replacements
-    module-inlinable-exports
-    set-module-obarray!
-    set-module-uses!
-    set-module-declarative!
-    set-module-name!
-    set-module-version!
-    set-module-kind!
-    set-module-filename!
-    set-module-public-interface!
-    set-module-next-unique-id!
-    set-module-replacements!
-    set-module-inlinable-exports!
-    module-local-variable
-    module-locally-bound?
-    module-bound?
-    module-variable
-    module-symbol-binding
-    module-symbol-local-binding
-    module-make-local-var!
-    module-ensure-local-variable!
-    module-add!
-    module-remove!
-    module-clear!
-    module-gensym
-    module-generate-unique-id
-    module-environment
-    set-module-environment!
-    module-map
-    module-ref-submodule
-    module-define-submodule!
-    save-module-excursion
-    module-ref
-    module-set!
-    module-defined?
-    module-use!
-    module-use-interfaces!
-    module-define!
-    nested-ref
-    nested-set!
-    nested-remove!
-    nested-remove-module!
-    nested-ref-module
-    nested-define-module!
-    local-ref
-    local-set!
-    local-define
-    local-remove
-    local-ref-module
-    local-define-module
-    module-name
-    make-modules-in
-    beautify-user-module!
-    make-fresh-user-module
-    invalidate-module!
-    resolve-module
-    resolve-interface
-    define-module*
-    module-export!
-    module-replace!
-    module-export-all!
-    process-use-modules
-    lookup-bound
-    module-re-export!
+    current-namespace
+    current-library-registry
+    make-namespace
+    make-sandbox-namespace
+    namespace-attach-library!
+    namespace-registry
+    root-library-registry
+    native-primitive-names
+    make-library-registry
+    library-registry?
+    namespace?
+    namespace-env
+    namespace-instance
+    namespace-name
+    namespace-ref
+    namespace-set!
+    namespace-define!
+    namespace-import!
+    namespace-freeze!
+    namespace-bindings
+    interaction-environment
+    resolve-library
+    load-library
+    invalidate-library!
     current-exception-printer
 
     %builtin-class
@@ -1041,7 +985,6 @@
     <keyword>
     <mapped-bytevector>
     <method>
-    <module>
     <mutex>
     <native-continuation>
     <native-procedure>
@@ -1482,8 +1425,6 @@
     enum-set-complement
     enum-set-projection
 
-    |@@|
-    |@|
     with-ellipsis)
   (import (capy)))
 

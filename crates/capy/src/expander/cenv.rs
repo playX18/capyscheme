@@ -4,9 +4,9 @@
 use std::collections::HashMap;
 
 use crate::{
-    expander::term::LVarRef,
-    heap::{Gc, Trace},
-    runtime::{MutationContext, modules::Module, value::Value},
+    expander::{boot_linklet::BootLinklet, term::LVarRef},
+    heap::Trace,
+    runtime::{MutationContext, value::Value},
 };
 
 pub struct Cenv<'gc> {
@@ -14,33 +14,40 @@ pub struct Cenv<'gc> {
     pub expression_name: Value<'gc>,
     pub frames: Option<Box<Frame<'gc>>>,
     pub denotations: &'gc Denotations<'gc>,
-    pub current_module: Gc<'gc, Module<'gc>>,
+    /// Set while expanding a boot file as a linklet.
+    pub boot: Option<Box<BootLinklet<'gc>>>,
 }
 
 impl<'gc> Cenv<'gc> {
     pub fn toplevel(ctx: MutationContext<'gc>) -> Self {
         Cenv {
             ctx,
-            current_module: ctx.globals().root_module(),
             expression_name: Value::undefined(),
             frames: None,
             denotations: super::core::denotations(ctx),
+            boot: None,
         }
     }
 
     pub fn new(
         ctx: MutationContext<'gc>,
         expression_name: Value<'gc>,
-        module: Gc<'gc, Module<'gc>>,
         denotations: &'gc Denotations<'gc>,
     ) -> Self {
         Cenv {
-            current_module: module,
             ctx,
             expression_name,
             frames: None,
             denotations,
+            boot: None,
         }
+    }
+
+    /// The linklet `(key, slot)` a free top-level name refers to, while
+    /// expanding a boot linklet.
+    pub fn boot_resolve(&mut self, name: Value<'gc>) -> Option<(Value<'gc>, LVarRef<'gc>)> {
+        let ctx = self.ctx;
+        self.boot.as_mut()?.resolve(ctx, name)
     }
 
     pub fn get(&self, name: Value<'gc>) -> Option<LVarRef<'gc>> {
@@ -119,6 +126,5 @@ pub struct Denotations<'gc> {
     pub denotation_of_unless: Value<'gc>,
     pub denotation_of_wcm: Value<'gc>,
     pub denotation_of_define_struct: Value<'gc>,
-    pub denotation_of_public_ref: Value<'gc>,
-    pub denotation_of_private_ref: Value<'gc>,
+    pub denotation_of_primitive: Value<'gc>,
 }

@@ -10,12 +10,12 @@ use crate::compiler::cps::{
     },
 };
 use crate::expander::core::{
-    LVarRef, LetStyle, Proc, TermKind, TermRef as CoreTermRef, fresh_lvar, seq_from_slice,
+    GlobalSlot, LVarRef, LetStyle, Proc, Term, TermKind, TermRef as CoreTermRef, constant,
+    fresh_lvar, proc_term, seq_from_slice,
 };
 use crate::heap::alloc::array::Array;
 use crate::heap::object::builtin_class_ids;
 use crate::heap::{Gc, Global, Trace, barrier};
-use crate::list;
 use crate::runtime::MutationContext;
 use crate::runtime::prelude::*;
 use crate::runtime::value::Value;
@@ -81,9 +81,10 @@ pub struct GraphCpsBuilder<'gc> {
     vars: HashMap<LVarRef<'gc>, BoundVar>,
     cont_shapes: HashMap<LVarRef<'gc>, ContShape>,
     varcount: u32,
-    scope_id: u32,
-    current_topbox_scope: Option<u32>,
     current_meta: Value<'gc>,
+    /// Slots whose reads check for an unbound variable: the namespace slots of a namespace
+    /// linklet (its meta is `(#%namespace . key)`, its first import group is the namespace's).
+    unbound_checked: std::collections::HashSet<LVarRef<'gc>>,
 }
 
 impl<'gc> GraphCpsBuilder<'gc> {
@@ -94,9 +95,8 @@ impl<'gc> GraphCpsBuilder<'gc> {
             vars: HashMap::new(),
             cont_shapes: HashMap::new(),
             varcount: 0,
-            scope_id: 0,
-            current_topbox_scope: None,
             current_meta: Value::null(),
+            unbound_checked: std::collections::HashSet::new(),
         }
     }
 
@@ -115,11 +115,6 @@ impl<'gc> GraphCpsBuilder<'gc> {
         );
         self.varcount += 1;
         var
-    }
-
-    fn enter_scope(&mut self) {
-        self.current_topbox_scope = Some(self.scope_id);
-        self.scope_id += 1;
     }
 
     fn bind_lvar(&mut self, lvar: LVarRef<'gc>) -> BoundVar {
@@ -1289,70 +1284,88 @@ primitive_transformers!(
     }
 );
 
-pub fn toplevel_box<'gc>(
-    cps: &mut GraphCpsBuilder<'gc>,
-    owner: Subterm,
-    src: Value<'gc>,
-    name: Value<'gc>,
-    bound: bool,
-    have_var: impl FnOnce(&mut GraphCpsBuilder<'gc>, Subterm, Atom<'gc>) -> TermId,
-) -> TermId {
-    match cps.current_topbox_scope {
-        None => {
-            let lookup = if bound { "lookup-bound" } else { "lookup" };
-            cps.let_prim(
-                owner,
-                "module",
-                Symbol::from_str(cps.ctx, "current-module").into(),
-                [],
-                src,
-                |cps, owner, module| {
-                    cps.let_prim(
-                        owner,
-                        "variable",
-                        Symbol::from_str(cps.ctx, lookup).into(),
-                        [Atom::Local(module), Atom::Constant(name)],
-                        src,
-                        |cps, owner, variable| have_var(cps, owner, Atom::Local(variable)),
-                    )
-                },
-            )
-        }
-
-        Some(scope) => {
-            let kbox = cps.fresh_variable("kbox");
-            let box_ = cps.fresh_variable("box_");
-            let cont_body = cps.new_child_link();
-            have_var(cps, cont_body, Atom::Local(box_));
-            let cont = cps.make_cont(
-                kbox,
-                &[box_],
-                None,
-                cont_body,
-                Value::new(false),
-                false,
-                false,
-                Value::new(false),
-            );
-            let body = cps.new_child_link();
-            cached_toplevel_box(cps, body, kbox, src, Value::new(scope as i32), name, bound);
-            cps.emit_letk(owner, &[cont], body, Value::new(false))
-        }
+fn is_program_meta<'gc>(ctx: MutationContext<'gc>, meta: Value<'gc>) -> bool {
+    if !meta.is_pair() || meta.car() != Symbol::from_str(ctx, "#%library").into() {
+        return false;
+    }
+    let key = meta.cdr();
+    key.is_pair() && {
+        let key = key.car();
+        key.is_pair() && key.car() == Symbol::from_str(ctx, "%program").into()
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn module_box<'gc>(
+fn checked_global_ref<'gc>(
+    cps: &mut GraphCpsBuilder<'gc>,
+    owner: Subterm,
+    src: Value<'gc>,
+    k: LVarRef<'gc>,
+    var: Atom<'gc>,
+    name: Value<'gc>,
+) -> TermId {
+    cps.let_prim(
+        owner,
+        "bound",
+        Symbol::from_str(cps.ctx, "variable-bound?").into(),
+        [var],
+        src,
+        |cps, owner, bound| {
+            let bound_link = cps.new_child_link();
+            cps.let_prim(
+                bound_link,
+                "val",
+                Symbol::from_str(cps.ctx, "variable-ref").into(),
+                [var],
+                src,
+                |cps, owner, val| cps.emit_continue(owner, k, [Atom::Local(val)], src),
+            );
+
+            let unbound_link = cps.new_child_link();
+
+            let message = Atom::Constant(Value::new(Str::new(
+                cps.ctx,
+                format!("undefined variable: {name}"),
+                true,
+            )));
+            cps.emit_raise(
+                unbound_link,
+                RaiseKind::Undefined,
+                [Atom::Constant(Value::new(false)), message],
+                src,
+            );
+
+            cps.emit_if(
+                owner,
+                Atom::Local(bound),
+                bound_link,
+                unbound_link,
+                [BranchHint::Normal, BranchHint::Cold],
+                src,
+            )
+        },
+    )
+}
+
+fn global_slot_atom<'gc>(
+    cps: &mut GraphCpsBuilder<'gc>,
+    owner: Subterm,
+    src: Value<'gc>,
+    slot: GlobalSlot<'gc>,
+    have_var: impl FnOnce(&mut GraphCpsBuilder<'gc>, Subterm, Atom<'gc>) -> TermId,
+) -> TermId {
+    match slot {
+        GlobalSlot::Box(lvar) => have_var(cps, owner, Atom::Local(lvar)),
+        GlobalSlot::Variable(var) => cps.bind_literal(owner, var, src, have_var),
+    }
+}
+
+pub fn prim_box<'gc>(
     cps: &mut GraphCpsBuilder<'gc>,
     owner: Subterm,
     val_proc: impl FnOnce(&mut GraphCpsBuilder<'gc>, Subterm, Atom<'gc>) -> TermId,
-    module: Value<'gc>,
     name: Value<'gc>,
-    public: bool,
-    bound: bool,
     src: Value<'gc>,
 ) -> TermId {
-    let _ = bound;
     let kbox = cps.fresh_variable("kbox");
     let var = cps.fresh_variable("var");
     let cont_body = cps.new_child_link();
@@ -1368,46 +1381,18 @@ pub fn module_box<'gc>(
         Value::new(false),
     );
     let body = cps.new_child_link();
-    cached_module_box(cps, body, kbox, src, module, name, public);
+    cached_prim_box(cps, body, kbox, src, name);
     cps.emit_letk(owner, &[cont], body, Value::new(false))
 }
 
-pub fn capture_toplevel_scope<'gc>(
-    cps: &mut GraphCpsBuilder<'gc>,
-    owner: Subterm,
-    src: Value<'gc>,
-    scope_id: u32,
-    fk: impl FnOnce(&mut GraphCpsBuilder<'gc>, Subterm) -> TermId,
-) -> TermId {
-    cps.let_prim(
-        owner,
-        "module",
-        Symbol::from_str(cps.ctx, "current-module").into(),
-        [],
-        src,
-        |cps, owner, module| {
-            cache_current_module(
-                cps,
-                owner,
-                src,
-                Atom::Constant(Value::new(scope_id as i32)),
-                Atom::Local(module),
-                fk,
-            )
-        },
-    )
-}
-
-pub fn cached_toplevel_box<'gc>(
+pub fn cached_prim_box<'gc>(
     cps: &mut GraphCpsBuilder<'gc>,
     owner: Subterm,
     k: LVarRef<'gc>,
     src: Value<'gc>,
-    scope: Value<'gc>,
     name: Value<'gc>,
-    bound: bool,
 ) -> TermId {
-    let cache_key = Value::cons(cps.ctx, scope, name);
+    let cache_key = Value::cons(cps.ctx, Symbol::from_str(cps.ctx, "#%capy").into(), name);
     let merge = cps.fresh_variable("merge");
     let cached_arg = cps.fresh_variable("cached");
     let merge_body = cps.new_child_link();
@@ -1425,125 +1410,11 @@ pub fn cached_toplevel_box<'gc>(
 
     let kinit = cps.fresh_variable("kinit");
     let kinit_body = cps.new_child_link();
-    cps.let_prim(
-        kinit_body,
-        "module",
-        Symbol::from_str(cps.ctx, "cache-ref").into(),
-        [Atom::Constant(scope)],
-        src,
-        |cps, owner, module| {
-            reify_lookup(cps, owner, src, module, name, bound, |cps, owner, var| {
-                cps.let_prim(
-                    owner,
-                    "_k",
-                    Symbol::from_str(cps.ctx, "cache-set!").into(),
-                    [Atom::Constant(cache_key), var],
-                    src,
-                    |cps, owner, _k| cps.emit_continue(owner, merge, [var], Value::new(false)),
-                )
-            })
-        },
-    );
-    let kinit_cont = cps.make_cont(
-        kinit,
-        &[],
-        None,
-        kinit_body,
-        Value::new(false),
-        true,
-        false,
-        Value::new(false),
-    );
-
-    let kok = cps.fresh_variable("kok");
-    let body = cps.new_child_link();
-    cps.let_prim(
-        body,
-        "cached",
-        Symbol::from_str(cps.ctx, "cache-ref").into(),
-        [Atom::Constant(cache_key)],
-        src,
-        |cps, owner, cached_value| {
-            let kok_body = cps.new_child_link();
-            cps.emit_continue(
-                kok_body,
-                merge,
-                [Atom::Local(cached_value)],
-                Value::new(false),
-            );
-            let kok_cont = cps.make_cont(
-                kok,
-                &[],
-                None,
-                kok_body,
-                Value::new(false),
-                false,
-                false,
-                Value::new(false),
-            );
-            cps.let_prim(
-                owner,
-                "is_heap_obj",
-                Symbol::from_str(cps.ctx, "heap-object?").into(),
-                [Atom::Local(cached_value)],
-                src,
-                |cps, owner, is_heap_obj| {
-                    let if_body = cps.new_child_link();
-                    cps.emit_if_continue(
-                        if_body,
-                        Atom::Local(is_heap_obj),
-                        kok,
-                        &[],
-                        kinit,
-                        &[],
-                        [BranchHint::Normal, BranchHint::Normal],
-                        Value::new(false),
-                    );
-                    cps.emit_letk(owner, &[kok_cont], if_body, Value::new(false))
-                },
-            )
-        },
-    );
-    cps.emit_letk(owner, &[merge_cont, kinit_cont], body, Value::new(false))
-}
-
-pub fn cached_module_box<'gc>(
-    cps: &mut GraphCpsBuilder<'gc>,
-    owner: Subterm,
-    k: LVarRef<'gc>,
-    src: Value<'gc>,
-    module: Value<'gc>,
-    name: Value<'gc>,
-    public: bool,
-) -> TermId {
-    let cache_key = Value::cons(cps.ctx, module, Value::cons(cps.ctx, name, public.into()));
-    let merge = cps.fresh_variable("merge");
-    let cached_arg = cps.fresh_variable("cached");
-    let merge_body = cps.new_child_link();
-    cps.emit_continue(merge_body, k, [Atom::Local(cached_arg)], Value::new(false));
-    let merge_cont = cps.make_cont(
-        merge,
-        &[cached_arg],
-        None,
-        merge_body,
-        Value::new(false),
-        false,
-        true,
-        Value::new(false),
-    );
-
-    let kinit = cps.fresh_variable("kinit");
-    let kinit_body = cps.new_child_link();
-    let lookup = if public {
-        "lookup-bound-public"
-    } else {
-        "lookup-bound-private"
-    };
     cps.let_prim(
         kinit_body,
         "var",
-        Symbol::from_str(cps.ctx, lookup).into(),
-        [Atom::Constant(module), Atom::Constant(name)],
+        Symbol::from_str(cps.ctx, "late-variable").into(),
+        [Atom::Constant(name)],
         src,
         |cps, owner, var| {
             cps.let_prim(
@@ -1622,72 +1493,10 @@ pub fn cached_module_box<'gc>(
     cps.emit_letk(owner, &[merge_cont, kinit_cont], body, Value::new(false))
 }
 
-pub fn cache_current_module<'gc>(
-    cps: &mut GraphCpsBuilder<'gc>,
-    owner: Subterm,
-    src: Value<'gc>,
-    scope: Atom<'gc>,
-    module: Atom<'gc>,
-    fk: impl FnOnce(&mut GraphCpsBuilder<'gc>, Subterm) -> TermId,
-) -> TermId {
-    cps.let_prim(
-        owner,
-        "_k",
-        Symbol::from_str(cps.ctx, "cache-set!").into(),
-        [scope, module],
-        src,
-        |cps, owner, _| fk(cps, owner),
-    )
-}
-
-pub fn reify_lookup<'gc>(
-    cps: &mut GraphCpsBuilder<'gc>,
-    owner: Subterm,
-    src: Value<'gc>,
-    mod_var: LVarRef<'gc>,
-    name: Value<'gc>,
-    assert_bound: bool,
-    have_var: impl FnOnce(&mut GraphCpsBuilder<'gc>, Subterm, Atom<'gc>) -> TermId,
-) -> TermId {
-    let lookup = if assert_bound {
-        "lookup-bound"
-    } else {
-        "lookup"
-    };
-    cps.let_prim(
-        owner,
-        "variable",
-        Symbol::from_str(cps.ctx, lookup).into(),
-        [Atom::Local(mod_var), Atom::Constant(name)],
-        src,
-        |cps, owner, variable| have_var(cps, owner, Atom::Local(variable)),
-    )
-}
-
-pub fn reify_resolve_module<'gc>(
-    cps: &mut GraphCpsBuilder<'gc>,
-    owner: Subterm,
-    k: LVarRef<'gc>,
-    src: Value<'gc>,
-    module: Value<'gc>,
-    public: bool,
-) -> TermId {
-    cps.let_prim(
-        owner,
-        "resolved",
-        Symbol::from_str(cps.ctx, "resolve-module").into(),
-        [Atom::Constant(public.into()), Atom::Constant(module)],
-        src,
-        |cps, owner, resolved| {
-            cps.emit_continue(owner, k, [Atom::Local(resolved)], Value::new(false))
-        },
-    )
-}
-
 fn is_single_valued<'gc>(exp: CoreTermRef<'gc>) -> bool {
     match &exp.kind {
         TermKind::Values(vals) if vals.len() == 1 => true,
-        TermKind::ToplevelRef(..) | TermKind::ModuleRef(..) | TermKind::LRef(..) => true,
+        TermKind::GlobalRef(..) | TermKind::LRef(..) => true,
         // Every primitive continues exactly once with one value or raises:
         // `values', `apply', and `call-with-values' are library procedures,
         // not primitives, and each table expansion ends in a single
@@ -2376,8 +2185,7 @@ pub fn convert<'gc>(
         }),
 
         TermKind::PrimRef(name) => with_pop_1(cps, owner, src, k, mode, |cps, k, owner| {
-            let module = list!(cps.ctx, cps.ctx.intern("capy"));
-            module_box(
+            prim_box(
                 cps,
                 owner,
                 |cps, owner, var| {
@@ -2392,63 +2200,47 @@ pub fn convert<'gc>(
                         },
                     )
                 },
-                module,
                 *name,
-                true,
-                true,
                 src,
             )
         }),
 
-        TermKind::ToplevelRef(_, name) => with_pop_1(cps, owner, src, k, mode, |cps, k, owner| {
-            toplevel_box(cps, owner, src, *name, true, |cps, owner, var| {
-                cps.let_prim(
-                    owner,
-                    "val",
-                    Symbol::from_str(cps.ctx, "variable-ref").into(),
-                    [var],
-                    src,
-                    |cps, owner, val| {
-                        cps.emit_continue(owner, k, [Atom::Local(val)], Value::new(false))
-                    },
-                )
-            })
-        }),
-
-        TermKind::ModuleRef(module, name, public) => {
+        TermKind::GlobalRef(_, name, GlobalSlot::Box(var)) => {
             with_pop_1(cps, owner, src, k, mode, |cps, k, owner| {
-                module_box(
-                    cps,
-                    owner,
-                    |cps, owner, var| {
-                        cps.let_prim(
-                            owner,
-                            "val",
-                            Symbol::from_str(cps.ctx, "variable-ref").into(),
-                            [var],
-                            src,
-                            |cps, owner, val| {
-                                cps.emit_continue(owner, k, [Atom::Local(val)], Value::new(false))
-                            },
-                        )
-                    },
-                    *module,
-                    *name,
-                    *public,
-                    false,
-                    src,
-                )
+                if cps.unbound_checked.contains(var) {
+                    // A slot of the namespace of a namespace linklet: it is made before the
+                    // body runs, but nothing may have defined it yet.
+                    checked_global_ref(cps, owner, src, k, Atom::Local(*var), *name)
+                } else {
+                    // Imports are instantiated before the linklet body runs, so the box is bound.
+                    cps.let_prim(
+                        owner,
+                        "val",
+                        Symbol::from_str(cps.ctx, "variable-ref").into(),
+                        [Atom::Local(*var)],
+                        src,
+                        |cps, owner, val| cps.emit_continue(owner, k, [Atom::Local(val)], src),
+                    )
+                }
             })
         }
 
-        TermKind::ToplevelSet(_, name, exp) => {
+        TermKind::GlobalRef(_, name, GlobalSlot::Variable(var)) => {
+            with_pop_1(cps, owner, src, k, mode, |cps, k, owner| {
+                cps.bind_literal(owner, *var, src, |cps, owner, var| {
+                    checked_global_ref(cps, owner, src, k, var, *name)
+                })
+            })
+        }
+
+        TermKind::GlobalSet(_, _, slot, exp) => {
             with_pop_1(cps, owner, src, k, mode, |cps, k, owner| {
                 convert_arg(
                     cps,
                     *exp,
                     owner,
                     Box::new(move |cps, owner, atom| {
-                        toplevel_box(cps, owner, src, *name, false, |cps, owner, var| {
+                        global_slot_atom(cps, owner, src, *slot, |cps, owner, var| {
                             cps.let_prim(
                                 owner,
                                 "_val",
@@ -2465,77 +2257,62 @@ pub fn convert<'gc>(
             })
         }
 
-        TermKind::ModuleSet(module, name, public, exp) => {
-            with_pop_1(cps, owner, src, k, mode, |cps, k, owner| {
-                convert_arg(
-                    cps,
-                    *exp,
-                    owner,
-                    Box::new(move |cps, owner, exp| {
-                        module_box(
-                            cps,
-                            owner,
-                            |cps, owner, var| {
-                                cps.let_prim(
-                                    owner,
-                                    "_val",
-                                    Symbol::from_str(cps.ctx, "variable-set!").into(),
-                                    [var, exp],
-                                    src,
-                                    |cps, owner, val| {
-                                        cps.emit_continue(owner, k, [Atom::Local(val)], src)
-                                    },
-                                )
-                            },
-                            *module,
-                            *name,
-                            *public,
-                            true,
-                            src,
-                        )
-                    }),
-                )
-            })
+        TermKind::Linklet(linklet) => {
+            let ctx = cps.ctx;
+            let meta = linklet.meta;
+            if meta.is_pair() && meta.car() == Symbol::from_str(ctx, "#%namespace").into() {
+                let imports = linklet.imports;
+                if imports.is_pair() {
+                    let count = imports.car().list_length().saturating_sub(1);
+                    for i in 0..count {
+                        cps.unbound_checked.insert(linklet.slots[i]);
+                    }
+                }
+            }
+
+            if is_program_meta(ctx, meta) {
+                let mut count = 0;
+                let mut groups = linklet.imports;
+                while groups.is_pair() {
+                    count += groups.car().list_length().saturating_sub(1);
+                    groups = groups.cdr();
+                }
+                for i in count..linklet.slots.len() {
+                    cps.unbound_checked.insert(linklet.slots[i]);
+                }
+            }
+            let proc = proc_term(
+                ctx,
+                linklet.name,
+                linklet.slots,
+                None,
+                linklet.body,
+                src,
+                linklet.meta,
+            );
+            let tag = Symbol::from_str(ctx, "#%linklet").into();
+            let vals = [
+                constant(ctx, tag),
+                constant(ctx, linklet.name),
+                constant(ctx, linklet.imports),
+                constant(ctx, linklet.exports),
+                proc,
+                constant(ctx, linklet.meta),
+            ];
+            let values = ctx.allocate(Term {
+                source: crate::heap::cell::Lock::new(src),
+                kind: TermKind::Values(Array::from_slice(ctx, &vals)),
+            });
+            convert(cps, values, k, owner, mode)
         }
 
         TermKind::Proc(proc) => with_pop_1(cps, owner, src, k, mode, |cps, k, owner| {
-            if cps.current_topbox_scope.is_some() {
-                let tmp = cps.fresh_variable("proc");
-                let func = cps.make_proc_func(proc, tmp, true);
-                let body = cps.new_child_link();
-                cps.emit_continue(body, k, [Atom::Local(tmp)], src);
-                cps.emit_fix(owner, &[func], body, src)
-            } else {
-                let prev = cps.current_topbox_scope;
-                cps.enter_scope();
-                let id = cps.current_topbox_scope.expect("invariant holds");
-                capture_toplevel_scope(cps, owner, src, id, |cps, owner| {
-                    let form = convert(cps, exp, k, owner, mode);
-                    cps.current_topbox_scope = prev;
-                    form
-                })
-            }
+            let tmp = cps.fresh_variable("proc");
+            let func = cps.make_proc_func(proc, tmp, true);
+            let body = cps.new_child_link();
+            cps.emit_continue(body, k, [Atom::Local(tmp)], src);
+            cps.emit_fix(owner, &[func], body, src)
         }),
-
-        TermKind::Define(_module, name, exp) => {
-            with_pop_1(cps, owner, src, k, mode, |cps, k, owner| {
-                convert_arg(
-                    cps,
-                    *exp,
-                    owner,
-                    Box::new(move |cps, owner, atom| {
-                        cps.let_prim(
-                            owner,
-                            "_rv",
-                            Symbol::from_str(cps.ctx, "define").into(),
-                            [Atom::Constant(*name), atom],
-                            src,
-                            |cps, owner, rv| cps.emit_continue(owner, k, [Atom::Local(rv)], src),
-                        )
-                    }),
-                )
-            })
-        }
 
         TermKind::Call(proc, args) => {
             let call_with = |cps: &mut GraphCpsBuilder<'gc>, k: LVarRef<'gc>, owner: Subterm| {
@@ -2651,31 +2428,20 @@ pub fn convert<'gc>(
         }
 
         TermKind::Fix(fix) => {
-            if cps.current_topbox_scope.is_some() {
-                for binding in fix.lhs.iter().copied() {
-                    cps.bind_lvar(binding);
-                }
-                let funcs = fix
-                    .lhs
-                    .iter()
-                    .copied()
-                    .zip(fix.rhs.iter().copied())
-                    .map(|(binding, func)| cps.make_proc_func(&func, binding, true))
-                    .collect::<Vec<_>>();
-
-                let body = cps.new_child_link();
-                convert(cps, fix.body, k, body, mode);
-                return cps.emit_fix(owner, &funcs, body, src);
+            for binding in fix.lhs.iter().copied() {
+                cps.bind_lvar(binding);
             }
+            let funcs = fix
+                .lhs
+                .iter()
+                .copied()
+                .zip(fix.rhs.iter().copied())
+                .map(|(binding, func)| cps.make_proc_func(&func, binding, true))
+                .collect::<Vec<_>>();
 
-            let prev = cps.current_topbox_scope;
-            cps.enter_scope();
-            let id = cps.current_topbox_scope.expect("invariant holds");
-            capture_toplevel_scope(cps, owner, src, id, |cps, owner| {
-                let form = convert(cps, exp, k, owner, mode);
-                cps.current_topbox_scope = prev;
-                form
-            })
+            let body = cps.new_child_link();
+            convert(cps, fix.body, k, body, mode);
+            cps.emit_fix(owner, &funcs, body, src)
         }
 
         TermKind::Receive(vars, variadic, producer, consumer) => {

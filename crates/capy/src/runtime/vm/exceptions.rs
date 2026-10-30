@@ -78,22 +78,14 @@ impl<'gc> ConditionBuilder<'gc> {
     }
 
     pub fn serious(mut self) -> Self {
-        let record_type = self
-            .ctx
-            .public_ref("capy", "&serious")
-            .expect("failed to get &serious record type");
-        let rtd = record_type.downcast::<Tuple>()[2].get();
+        let rtd: Value<'gc> = self.ctx.globals().condition_types().serious.into();
 
         self.simple.push(Tuple::from_slice(self.ctx, &[rtd]).into());
         self
     }
 
     pub fn message(mut self, msg: impl AsRef<str>) -> Self {
-        let record_type = self
-            .ctx
-            .public_ref("capy", "&message")
-            .expect("failed to get &message record type");
-        let rtd = record_type.downcast::<Tuple>()[2].get();
+        let rtd: Value<'gc> = self.ctx.globals().condition_types().message.into();
         let msg_value = self.ctx.str(msg.as_ref());
         self.simple
             .push(Tuple::from_slice(self.ctx, &[rtd, msg_value]).into());
@@ -101,55 +93,35 @@ impl<'gc> ConditionBuilder<'gc> {
     }
 
     pub fn message_value(mut self, msg: Value<'gc>) -> Self {
-        let record_type = self
-            .ctx
-            .public_ref("capy", "&message")
-            .expect("failed to get &message record type");
-        let rtd = record_type.downcast::<Tuple>()[2].get();
+        let rtd: Value<'gc> = self.ctx.globals().condition_types().message.into();
         self.simple
             .push(Tuple::from_slice(self.ctx, &[rtd, msg]).into());
         self
     }
 
     pub fn warning(mut self) -> Self {
-        let record_type = self
-            .ctx
-            .public_ref("capy", "&warning")
-            .expect("failed to get &warning record type");
-        let rtd = record_type.downcast::<Tuple>()[2].get();
+        let rtd: Value<'gc> = self.ctx.globals().condition_types().warning.into();
 
         self.simple.push(Tuple::from_slice(self.ctx, &[rtd]).into());
         self
     }
 
     pub fn error(mut self) -> Self {
-        let record_type = self
-            .ctx
-            .public_ref("capy", "&error")
-            .expect("failed to get &error record type");
-        let rtd = record_type.downcast::<Tuple>()[2].get();
+        let rtd: Value<'gc> = self.ctx.globals().condition_types().error.into();
 
         self.simple.push(Tuple::from_slice(self.ctx, &[rtd]).into());
         self
     }
 
     pub fn violation(mut self) -> Self {
-        let record_type = self
-            .ctx
-            .public_ref("capy", "&violation")
-            .expect("failed to get &violation record type");
-        let rtd = record_type.downcast::<Tuple>()[2].get();
+        let rtd: Value<'gc> = self.ctx.globals().condition_types().violation.into();
 
         self.simple.push(Tuple::from_slice(self.ctx, &[rtd]).into());
         self
     }
 
     pub fn irritants(mut self, irritants: &[Value<'gc>]) -> Self {
-        let record_type = self
-            .ctx
-            .public_ref("capy", "&irritants")
-            .expect("failed to get &irritants record type");
-        let rtd = record_type.downcast::<Tuple>()[2].get();
+        let rtd: Value<'gc> = self.ctx.globals().condition_types().irritants.into();
         let irritants_value = irritants
             .iter()
             .rfold(Value::null(), |acc, item| Value::cons(self.ctx, *item, acc));
@@ -159,11 +131,7 @@ impl<'gc> ConditionBuilder<'gc> {
     }
 
     pub fn who(mut self, who: impl AsRef<str>) -> Self {
-        let record_type = self
-            .ctx
-            .public_ref("capy", "&who")
-            .expect("failed to get &who record type");
-        let rtd = record_type.downcast::<Tuple>()[2].get();
+        let rtd: Value<'gc> = self.ctx.globals().condition_types().who.into();
         let who_value = self.ctx.intern(who.as_ref());
         self.simple
             .push(Tuple::from_slice(self.ctx, &[rtd, who_value]).into());
@@ -171,11 +139,7 @@ impl<'gc> ConditionBuilder<'gc> {
     }
 
     pub fn who_value(mut self, who: Value<'gc>) -> Self {
-        let record_type = self
-            .ctx
-            .public_ref("capy", "&who")
-            .expect("failed to get &who record type");
-        let rtd = record_type.downcast::<Tuple>()[2].get();
+        let rtd: Value<'gc> = self.ctx.globals().condition_types().who.into();
         self.simple
             .push(Tuple::from_slice(self.ctx, &[rtd, who]).into());
         self
@@ -184,55 +148,40 @@ impl<'gc> ConditionBuilder<'gc> {
     pub fn marks(mut self) -> Self {
         let marks = self.ctx.current_continuation_marks();
 
-        let record_type = self
-            .ctx
-            .public_ref("capy", "&marks")
-            .expect("failed to get &marks record type");
-        let rtd = record_type.downcast::<Tuple>()[2].get();
+        let rtd: Value<'gc> = self.ctx.globals().condition_types().marks.into();
         self.simple
             .push(Tuple::from_slice(self.ctx, &[rtd, marks.into()]).into());
         self
     }
 
     pub fn non_continuable(mut self) -> Self {
-        let record_type = self
-            .ctx
-            .public_ref("capy", "&non-continuable")
-            .expect("failed to get &non-continuable record type");
-        let rtd = record_type.downcast::<Tuple>()[2].get();
+        let rtd: Value<'gc> = self.ctx.globals().condition_types().non_continuable.into();
 
         self.simple.push(Tuple::from_slice(self.ctx, &[rtd]).into());
         self
     }
 
     pub fn implementation_restriction(mut self) -> Self {
-        let record_type = self
+        let rtd: Value<'gc> = self
             .ctx
-            .public_ref("capy", "&implementation-restriction")
-            .expect("failed to get &implementation-restriction record type");
-        let rtd = record_type.downcast::<Tuple>()[2].get();
+            .globals()
+            .condition_types()
+            .implementation_restriction
+            .into();
 
         self.simple.push(Tuple::from_slice(self.ctx, &[rtd]).into());
         self
     }
 
     pub fn lexical(mut self) -> Self {
-        let record_type = self
-            .ctx
-            .public_ref("capy", "&lexical")
-            .expect("failed to get &lexical record type");
-        let rtd = record_type.downcast::<Tuple>()[2].get();
+        let rtd: Value<'gc> = self.ctx.globals().condition_types().lexical.into();
 
         self.simple.push(Tuple::from_slice(self.ctx, &[rtd]).into());
         self
     }
 
     pub fn syntax(mut self, form: Value<'gc>, subform: Value<'gc>) -> Self {
-        let record_type = self
-            .ctx
-            .public_ref("capy", "&syntax")
-            .expect("failed to get &syntax record type");
-        let rtd = record_type.downcast::<Tuple>()[2].get();
+        let rtd: Value<'gc> = self.ctx.globals().condition_types().syntax.into();
 
         self.simple
             .push(Tuple::from_slice(self.ctx, &[rtd, form, subform]).into());
@@ -243,11 +192,7 @@ impl<'gc> ConditionBuilder<'gc> {
         let Some([file, line, column]) = source_condition_fields(source) else {
             return self;
         };
-        let record_type = self
-            .ctx
-            .public_ref("capy", "&source")
-            .expect("failed to get &source record type");
-        let rtd = record_type.downcast::<Tuple>()[2].get();
+        let rtd: Value<'gc> = self.ctx.globals().condition_types().source.into();
 
         self.simple
             .push(Tuple::from_slice(self.ctx, &[rtd, file, line, column]).into());
@@ -255,11 +200,7 @@ impl<'gc> ConditionBuilder<'gc> {
     }
 
     pub fn expansion_trace(mut self, frames: Value<'gc>) -> Self {
-        let record_type = self
-            .ctx
-            .public_ref("capy", "&expansion-trace")
-            .expect("failed to get &expansion-trace record type");
-        let rtd = record_type.downcast::<Tuple>()[2].get();
+        let rtd: Value<'gc> = self.ctx.globals().condition_types().expansion_trace.into();
 
         self.simple
             .push(Tuple::from_slice(self.ctx, &[rtd, frames]).into());
@@ -267,22 +208,14 @@ impl<'gc> ConditionBuilder<'gc> {
     }
 
     pub fn undefined(mut self) -> Self {
-        let record_type = self
-            .ctx
-            .public_ref("capy", "&undefined")
-            .expect("failed to get &undefined record type");
-        let rtd = record_type.downcast::<Tuple>()[2].get();
+        let rtd: Value<'gc> = self.ctx.globals().condition_types().undefined.into();
 
         self.simple.push(Tuple::from_slice(self.ctx, &[rtd]).into());
         self
     }
 
     pub fn assertion(mut self) -> Self {
-        let record_type = self
-            .ctx
-            .public_ref("capy", "&assertion")
-            .expect("failed to get &assertion record type");
-        let rtd = record_type.downcast::<Tuple>()[2].get();
+        let rtd: Value<'gc> = self.ctx.globals().condition_types().assertion.into();
 
         self.simple.push(Tuple::from_slice(self.ctx, &[rtd]).into());
         self
@@ -585,10 +518,11 @@ fn make_raise_condition_impl<'gc>(
             {
                 cc = cc.who_value(who);
             }
-            finish_condition(
-                cc.message_value(message).irritants(irritants).marks(),
-                source,
-            )
+            cc = cc.message_value(message);
+            if !irritants.is_empty() {
+                cc = cc.irritants(irritants);
+            }
+            finish_condition(cc.marks(), source)
         }
     }
 }

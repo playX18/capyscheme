@@ -2,70 +2,42 @@
 //!
 //! This module does not on its own expose any functions to Scheme code but
 //! merely provides utilities for other parts of the VM to work with records.
+//!
+//! A record instance is a tuple whose first slot holds its [`Rtd`]
+use crate::{
+    runtime::{
+        prelude::*,
+        record::{Rcd, Rtd},
+    },
+    static_symbols,
+};
 
-use crate::{runtime::prelude::*, static_symbols};
-
-static_symbols!(
-    SYM_TYPE_RTD = "type:record-type-descriptor"
-    SYM_TYPE_RCD = "type:record-constructor-descriptor"
-    SYM_TYPE_RECORD = "type:record-type"
-);
-
-pub const RTD_TYPE: usize = 0;
-pub const RTD_NAME: usize = 1;
-pub const RTD_PARENT: usize = 2;
-pub const RTD_UID: usize = 3;
-pub const RTD_SEALED: usize = 4;
-pub const RTD_OPAQUE: usize = 5;
-pub const RTD_FIELDS: usize = 6;
+static_symbols!(SYM_TYPE_RECORD = "type:record-type");
 
 impl<'gc> Value<'gc> {
-    pub fn is_recod_type_descriptor(&self, ctx: MutationContext<'gc>) -> bool {
-        self.is::<Tuple>() && self.downcast::<Tuple>()[0].get() == sym_type_rtd(ctx).into()
+    pub fn is_record_type_descriptor(&self) -> bool {
+        self.is::<Rtd>()
     }
 
-    pub fn is_record(&self, ctx: MutationContext<'gc>) -> bool {
-        self.is::<Tuple>()
-            && self.downcast::<Tuple>()[0]
-                .get()
-                .is_recod_type_descriptor(ctx)
+    pub fn is_record_constructor_descriptor(&self) -> bool {
+        self.is::<Rcd>()
     }
 
-    pub fn is_record_constructor_descriptor(&self, ctx: MutationContext<'gc>) -> bool {
-        self.is::<Tuple>() && self.downcast::<Tuple>()[0].get() == sym_type_rcd(ctx).into()
+    pub fn is_record(&self) -> bool {
+        self.record_rtd().is_some()
     }
 
     pub fn is_record_type(&self, ctx: MutationContext<'gc>) -> bool {
         self.is::<Tuple>() && self.downcast::<Tuple>()[0].get() == sym_type_record(ctx).into()
     }
 
-    pub fn record_rtd(&self, ctx: MutationContext<'gc>) -> Option<Gc<'gc, Tuple<'gc>>> {
-        if self.is_record(ctx) {
-            Some(self.downcast::<Tuple>()[0].get().downcast())
-        } else {
-            None
+    /// The type descriptor of a record instance, or `None` for any other value.
+    pub fn record_rtd(&self) -> Option<Gc<'gc, Rtd<'gc>>> {
+        let tuple = self.try_as::<Tuple>()?;
+        if tuple.len() == 0 {
+            return None;
         }
-    }
-
-    pub fn rtd_parent(&self, ctx: MutationContext<'gc>) -> Value<'gc> {
-        assert!(self.is_recod_type_descriptor(ctx), "not a record: {self}");
-        self.downcast::<Tuple>()[RTD_PARENT].get()
-    }
-
-    pub fn rtd_ancestor(&self, ctx: MutationContext<'gc>, parent: Value<'gc>) -> bool {
-        let mut rtd = *self;
-        loop {
-            if rtd == parent {
-                return true;
-            }
-
-            let rtd_parent = rtd.rtd_parent(ctx);
-            if rtd_parent == Value::new(false) {
-                return false;
-            }
-
-            rtd = rtd_parent;
-        }
+        tuple[0].get().try_as::<Rtd>()
     }
 
     pub fn record_type_rtd(&self, ctx: MutationContext<'gc>) -> Value<'gc> {
@@ -73,9 +45,8 @@ impl<'gc> Value<'gc> {
         self.downcast::<Tuple>()[2].get()
     }
 
-    pub fn is_record_of(&self, ctx: MutationContext<'gc>, rtd: Value<'gc>) -> bool {
-        self.is::<Tuple>()
-            && (self.downcast::<Tuple>()[0].get() == rtd
-                || self.downcast::<Tuple>()[0].get().rtd_ancestor(ctx, rtd))
+    /// Whether this is an instance of `rtd` or of one of its subtypes.
+    pub fn is_record_of(&self, rtd: Gc<'gc, Rtd<'gc>>) -> bool {
+        self.record_rtd().is_some_and(|own| own.is_subtype_of(rtd))
     }
 }

@@ -1,5 +1,29 @@
+(|#%require| (boot prim) (late (boot raise) error))
+(|#%provide| all-defined)
+
+
+(define (->bool x) (not (not x)))
+
+(define (identity x) x)
+
+;; Hook installed by `(core suggest)` to append "did you mean" hints to
+;; import-related error messages.  Called as (hook kind . args) with kinds:
+;;   (module name)     - unknown library name -> "did you mean (import ...)?"
+;;   (binding sym mod) - binding not in library -> "sym is exported by ..."
+;; Returns a suggestion string or #f.
+(define %import-suggestion-hook (make-parameter #f))
+
+(define (import-suggestion-string kind . args)
+  (let ([hook (%import-suggestion-hook)])
+    (if hook (apply hook kind args) #f)))
+
+;; Setter for the suggestion hook, callable from other libraries (the
+;; %-prefixed parameter itself is awkward to reference cross-library).
+(define (install-import-suggestion-hook! hook)
+  (%import-suggestion-hook hook))
+
 (define (current-continuation-marks)
-  (current-continuation-marks))
+  ((|#%primitive| current-continuation-marks)))
 
 (define current-exception-handler
   (let ([f (make-thread-local-fluid #f)])

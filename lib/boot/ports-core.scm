@@ -50,6 +50,8 @@
 ;;;   a built-in textual port maps character positions to byte offsets
 ;;;   via recorded anchors; on a custom textual port it delegates to
 ;;;   the user-supplied set-position!.
+(|#%require| (boot prim) (boot control) (boot records) (boot conditions) (boot violations) (boot raise) (boot exceptions) (boot expand) (boot interpreter) (boot enums) (boot sys) (boot osdep) (late (boot transcoder) %ports/transcoder-codec-raw %ports/transcoder-eol-raw %ports/transcoder-errmode-raw) (late (boot port-api) current-output-port) (late (boot textual-ports) get-char lookahead-char) (late (boot binary-ports) lookahead-u8))
+(|#%provide| all-defined)
 
 (define %port-tag '<port>)
 

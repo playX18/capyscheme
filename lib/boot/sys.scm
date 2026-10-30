@@ -7,6 +7,8 @@
 ; Private values and procedures.
 
 ; Standard Unix file descriptors
+(|#%require| (boot prim) (boot control) (boot records) (boot conditions) (boot violations) (boot raise) (boot exceptions) (boot expand) (boot interpreter) (boot enums))
+(|#%provide| all-defined)
 
 (define unix:stdin 0)
 (define unix:stdout 1)
@@ -56,9 +58,9 @@
 ; The first time through, we use standard file descriptors inherited from
 ; the parent process.  Later, we open /dev/tty.
 
-(define *conio-input-firsttime*)
-(define *conio-output-firsttime*)
-(define *conio-error-firsttime*)
+(define *conio-input-firsttime* #f)
+(define *conio-output-firsttime* #f)
+(define *conio-error-firsttime* #f)
 
 (define (osdep/initialize-console) ; Must be called in every process.
   (set! *conio-input-firsttime* #t)
@@ -208,19 +210,5 @@
   (or (char=? #\/ (string-ref path 0))
     (and (> (string-length path) 1)
       (char=? #\: (string-ref path 1)))))
-
-; Other system hooks
-
-(define (osdep/find-init-files)
-  (let ((result '())
-        (system (string-append (current-larceny-root) "/startup.sch"))
-        (home (getenv "HOME")))
-    (if home
-      (let ((user (string-append home "/.larceny")))
-        (if (file-exists? user)
-          (set! result (cons user result)))))
-    (if (file-exists? system)
-      (set! result (cons system result)))
-    result))
 
 ; eof

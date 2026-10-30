@@ -548,7 +548,7 @@ pub use weak_set::*;
 pub use weak_table::*;
 pub use weak_value::*;
 
-use crate::runtime::{modules::Module, vm::syntax::Syntax};
+use crate::runtime::vm::syntax::Syntax;
 
 impl<'gc> fmt::Pointer for Value<'gc> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

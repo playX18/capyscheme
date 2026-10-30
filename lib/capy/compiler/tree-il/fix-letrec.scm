@@ -90,6 +90,9 @@
               (for-each number! fixed)
               (when variadic (number! variadic)))
             (values)]
+          [(~linklet _ _ _ _ slots _ _)
+            (for-each number! slots)
+            (values)]
           [(~receive _ ids vars _ _)
             (receive (fixed variadic fids vid) (split-formals vars ids)
               (for-each number! fixed)
@@ -110,6 +113,14 @@
         (match node
           [(~lref _ _ sym)
             (hashtable-set! referenced sym #t)
+            (values)]
+          [(~global-ref _ _ _ slot)
+            (when (symbol? slot)
+              (hashtable-set! referenced slot #t))
+            (values)]
+          [(~global-set _ _ _ slot _)
+            (when (symbol? slot)
+              (hashtable-set! referenced slot #t))
             (values)]
           [(~lset _ _ sym _)
             (hashtable-set! assigned sym #t)
@@ -170,20 +181,20 @@
 
     (define (visit t)
       (match t
-        [(~or (~constant _ _) (~void _) (~primref _ _)
-              (~module-ref _ _ _ _) (~toplevel-ref _ _ _))
+        [(~or (~constant _ _) (~void _) (~primref _ _))
           (empty)]
         [(~lref _ _ sym)
           (adjoin (empty) (id sym))]
+        [(~global-ref _ _ _ slot)
+          (if (symbol? slot) (adjoin (empty) (id slot)) (empty))]
         [(~lset _ _ sym val)
           (adjoin (visit val) (id sym))]
-        [(~toplevel-set _ _ _ val) (visit val)]
-        [(~module-set _ _ _ _ val) (visit val)]
+        [(~global-set _ _ _ slot val)
+          (if (symbol? slot) (adjoin (visit val) (id slot)) (visit val))]
         [(~application _ func args)
           (union-all (cons (visit func) (map visit args)))]
         [(~primcall _ _ args)
           (union-all (map visit args))]
-        [(~toplevel-define _ _ _ val) (visit val)]
         [(~sequence _ head tail)
           (union2 (visit head) (visit tail))]
         [(~if _ test then else)
@@ -196,6 +207,8 @@
               (diff (visit body) (ids->set lhs))))]
         [(~proc _ args body _ ids)
           (diff (visit body) (formals-set args ids))]
+        [(~linklet _ _ _ _ slots body _)
+          (diff (visit body) (formals-set slots slots))]
         [(~fix _ _ lhs rhs body)
           (diff (union2 (union-all (map visit-proc rhs)) (visit body))
             (ids->set lhs))]

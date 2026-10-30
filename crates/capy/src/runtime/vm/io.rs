@@ -397,6 +397,98 @@ pub mod io_ops {
         rustix::fs::access(path.to_string(), rustix::fs::Access::EXEC_OK).is_ok()
     }
 
+    /// `(write-executable launcher payload out)`: `out` is the launcher with the file
+    /// `payload` embedded, see `executable`.
+    #[scheme(name = "write-executable")]
+    pub fn write_executable(
+        launcher: Gc<'gc, Str<'gc>>,
+        payload: Gc<'gc, Str<'gc>>,
+        out: Gc<'gc, Str<'gc>>,
+    ) -> Value<'gc> {
+        let result = std::fs::read(payload.to_string()).and_then(|bundle| {
+            crate::runtime::vm::executable::write_executable(
+                std::path::Path::new(&launcher.to_string()),
+                &bundle,
+                std::path::Path::new(&out.to_string()),
+            )
+        });
+        match result {
+            Ok(()) => Value::new(true),
+            Err(err) => call.raise_io_error(
+                err,
+                IoOperation::Write,
+                "write-executable",
+                "failed to write executable",
+                out.into(),
+            ),
+        }
+    }
+
+    /// `(fasl-stats path)`: where the bytes of the FASL program image `path` go, as the alist
+    ///
+    /// ```text
+    /// ((file . n) (uncompressed . n) (stored-payload . n) (compressed . bool) (blocks . n)
+    ///  (lites count raw gzip) (sections (name raw gzip) ...))
+    /// ```
+    ///
+    /// `gzip` is the size of a part compressed on its own, see `fasl::stats`.
+    #[scheme(name = "fasl-stats")]
+    pub fn fasl_stats(path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
+        use crate::runtime::fasl::stats::{Section, analyze};
+        use crate::runtime::value::Symbol;
+
+        let stats = std::fs::read(path.to_string()).and_then(|bytes| analyze(&bytes));
+        let stats = match stats {
+            Ok(stats) => stats,
+            Err(err) => {
+                return call.raise_io_error(
+                    err,
+                    IoOperation::Read,
+                    "fasl-stats",
+                    "failed to read the FASL image",
+                    path.into(),
+                );
+            }
+        };
+        let number = |n: usize| Value::new(i32::try_from(n).unwrap_or(i32::MAX));
+        let entry = |name: &str, value: Value<'gc>| {
+            Value::cons(ctx, Symbol::from_str(ctx, name).into(), value)
+        };
+        let section = |section: &Section| {
+            Value::list_from_slice(
+                ctx,
+                vec![
+                    Symbol::from_str(ctx, section.name).into(),
+                    number(section.raw),
+                    number(section.gzip),
+                ],
+            )
+        };
+        let sections = stats.sections.iter().map(section).collect::<Vec<_>>();
+        Value::list_from_slice(
+            ctx,
+            vec![
+                entry("file", number(stats.file)),
+                entry("uncompressed", number(stats.uncompressed)),
+                entry("stored-payload", number(stats.stored_payload)),
+                entry("compressed", Value::new(stats.compressed)),
+                entry("blocks", number(stats.blocks)),
+                entry(
+                    "lites",
+                    Value::list_from_slice(
+                        ctx,
+                        vec![
+                            number(stats.lite_count),
+                            number(stats.lites.raw),
+                            number(stats.lites.gzip),
+                        ],
+                    ),
+                ),
+                entry("sections", Value::list_from_slice(ctx, sections)),
+            ],
+        )
+    }
+
     #[scheme(name = "change-file-mode")]
     pub fn change_file_mode(path: Gc<'gc, Str<'gc>>, mode: i32) -> Value<'gc> {
         let Some(mode) = rustix::fs::Mode::from_bits(mode as _) else {
@@ -2305,13 +2397,12 @@ pub mod io_ops {
 pub fn init_io<'gc>(ctx: MutationContext<'gc>) {
     io_ops::register(ctx);
 
-    let module = ctx.module("capy").expect("'capy' module should exist");
+    let module = ctx.globals().capy_instance();
 
     macro_rules! export_term_primitive {
         ($name: literal, $make_static: ident) => {{
             let closure = io_ops::$make_static(ctx);
             module.define_rs(ctx, $name, closure);
-            module.export_one(ctx, ctx.intern($name));
         }};
     }
 

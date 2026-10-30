@@ -3,7 +3,7 @@
 use std::sync::OnceLock;
 
 use crate::heap::{Global, Trace};
-use crate::runtime::class::class_root_binding;
+use crate::runtime::hooks::Hook;
 use crate::runtime::{MutationContext, value::Value};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,10 +53,8 @@ pub fn get<'gc>(ctx: MutationContext<'gc>, id: u32) -> Value<'gc> {
         panic!("unknown runtime procedure id {id}");
     };
     let table = RUNTIME_PROCS.get_or_init(|| {
-        let slot_ref = class_root_binding(ctx, RuntimeProc::SlotRef.name())
-            .expect("slot-ref is bound after boot");
-        let slot_set = class_root_binding(ctx, RuntimeProc::SlotSet.name())
-            .expect("slot-set! is bound after boot");
+        let slot_ref = ctx.hook(Hook::SlotRef);
+        let slot_set = ctx.hook(Hook::SlotSet);
         Global::new(RuntimeProcTable {
             procs: [slot_ref, slot_set],
         })

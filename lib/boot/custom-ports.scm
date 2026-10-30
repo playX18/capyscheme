@@ -5,6 +5,9 @@
 
 ;;; Binary input read-method: calls the user's read! once and maps the
 ;;; result to a byte count (0 = EOF).
+(|#%require| (boot prim) (boot control) (boot records) (boot conditions) (boot violations) (boot raise) (boot exceptions) (boot expand) (boot interpreter) (boot enums) (boot sys) (boot osdep) (boot ports-core) (boot transcoder) (boot binary-ports) (boot textual-ports))
+(|#%provide| all-defined)
+
 (define (%custom-port/binary-read-method read!)
   (lambda (buffer start count)
     (let ([n (read! buffer start count)])

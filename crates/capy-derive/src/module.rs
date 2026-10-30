@@ -60,7 +60,7 @@ pub fn handle(Input { meta: args }: Input, input: syn::ItemMod) -> syn::Result<M
                     })?
                     .meta;
                 let registration = crate::fun::handle(Input { meta: args }, fun)?;
-                if registration.scheme_attribute.module_path != ModulePath::CurrentModule {
+                if registration.scheme_attribute.module_path != ModulePath::Capy {
                     return Err(syn::Error::new_spanned(
                         &registration.transformed_function,
                         "Function within #[scheme] module cannot specify module path",
@@ -78,7 +78,7 @@ pub fn handle(Input { meta: args }: Input, input: syn::ItemMod) -> syn::Result<M
                     })?
                     .meta;
                 let registration = crate::var::handle(Input { meta: args }, static_)?;
-                if registration.module_path != ModulePath::CurrentModule {
+                if registration.module_path != ModulePath::Capy {
                     return Err(syn::Error::new_spanned(
                         &registration.item,
                         "Static variable within #[scheme] module cannot specify module path",
@@ -122,23 +122,7 @@ impl Module {
                 ModuleItem::Use(_) => None,
             })
             .collect::<Vec<_>>();
-        let exports = items
-            .iter()
-            .filter_map(|item| {
-                let name = match item {
-                    ModuleItem::Variable(var) => Some(&var.name),
-                    ModuleItem::Function(fun) => Some(&fun.scheme_attribute.name),
-                    _ => None,
-                };
-
-                name.map(|name| {
-                    quote_spanned! {
-                        name.span() =>
-                        module.export_one(ctx, ctx.intern(#name));
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
+        let hint = register_calls.len();
         let item_tokens = items.iter_mut().map(|item| match item {
             ModuleItem::Function(fun) => fun.emit_tokens(),
             ModuleItem::Variable(var) => var.to_tokens(),
@@ -153,13 +137,10 @@ impl Module {
             items.extend(item);
         }
 
-        let path = path
-            .segments
-            .iter()
-            .map(|seg| seg.ident.to_string())
-            .collect::<Vec<_>>()
-            .join(" ");
-        let hint = exports.len();
+        assert!(
+            path.is_ident("capy"),
+            "#[scheme(path = ...)] modules register into the `#%capy` instance, the path must be `capy`"
+        );
 
         let metas = self
             .items
@@ -193,15 +174,10 @@ impl Module {
         items.extend(quote_spanned! {
             rust_name.span() =>
 
-            pub fn register<'gc>(ctx: MutationContext<'gc>) -> ModuleRef<'gc> {
-                let old = current_module(ctx).get(ctx);
-                let module = ctx.define_module(#path, Some(#hint));
-                current_module(ctx).set(ctx, module.into());
+            pub fn register<'gc>(ctx: MutationContext<'gc>) -> Gc<'gc, crate::runtime::linklet::Instance<'gc>> {
+                let _ = #hint;
                 #(#register_calls)*
-                #(#exports)*
-
-                current_module(ctx).set(ctx, old);
-                module
+                ctx.globals().capy_instance()
             }
 
             #[allow(unused)]

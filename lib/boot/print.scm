@@ -1,3 +1,6 @@
+(|#%require| (boot prim) (boot control) (boot records) (boot conditions) (boot violations) (boot raise) (boot exceptions) (boot expand) (boot interpreter) (boot enums) (boot sys) (boot osdep) (boot ports-core) (boot transcoder) (boot binary-ports) (boot textual-ports) (boot custom-ports) (boot file-ports) (boot console-ports) (boot port-api))
+(|#%provide| all-defined)
+
 (define %tuple-printers (make-parameter '()))
 
 (define (register-tuple-printer! type printer)
@@ -245,7 +248,7 @@
                          ; special subsequent
                          (< 0 i))
                        ((#\@)
-                         #t)
+                         (< 0 i))
                        ((#\.)
                          ; check for peculiar identifiers
                          (or (< 0 i)
@@ -388,10 +391,6 @@
         (display " in " p)
         (display (syntax-module x) p)
         (display ">" p)]
-      [(module? x)
-        (display "#<module " p)
-        (display (module-name x) p)
-        (display ">" p)]
       [(eq? (unspecified) x)
         (printstr "#<unspecified>" p)]
       [(boolean? x)
@@ -402,6 +401,11 @@
         (printstr (string-append "#<pointer " (number->string (pointer-address x) 16) ">") p)]
       [(continuation-marks? x)
         (display "#<continuation-mark-set>" p)]
+      [(record-type-descriptor? x)
+        (printstr (string-append "#<record-type-descriptor " (symbol->string (rtd-name x)) ">") p)]
+      [(record-constructor-descriptor? x)
+        (printstr (string-append "#<record-constructor-descriptor "
+                                 (symbol->string (rtd-name (rcd-rtd x))) ">") p)]
       [else (printstr "<TODO>" p)]))
 
   (define (printnumber n p slashify)
@@ -681,17 +685,9 @@
               (display "#<record " port)
               (display (record-type-name (record-rtd obj)) port)
               (display ">" port))))]
-      [(eq? (tuple-ref obj 0) 'type:record-type-descriptor)
-        (display "#<record-type-descriptor " port)
-        (display (record-type-name obj) port)
-        (display ">" port)]
       [(eq? (tuple-ref obj 0) 'type:record-type)
         (display "#<record-type " port)
         (display (record-type-name (record-type-rtd obj)) port)
-        (display ">" port)]
-      [(eq? (tuple-ref obj 0) 'type:record-constructor-descriptor)
-        (display "#<record-constructor-descriptor " port)
-        (display (record-type-name (rcd-rtd obj)) port)
         (display ">" port)]
       [(condition? obj)
         (display "#<condition " port)

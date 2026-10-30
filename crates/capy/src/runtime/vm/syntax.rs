@@ -12,7 +12,6 @@ use crate::{
     runtime::{
         MutationContext,
         fluids::Fluid,
-        modules::Module,
         value::{ClassTagged, Closure, Pair, Str, Tuple, Value, Vector},
         vm::ffi::Pointer,
     },
@@ -273,7 +272,6 @@ pub mod syntax_ops {
             || obj.is::<WeakTable>()
             || obj.is::<WeakMapping>()
             || obj.is::<Fluid>()
-            || obj.is::<Module>()
             || obj.is::<Pointer>()
             || obj.is::<Keyword>()
             || obj.is_number()

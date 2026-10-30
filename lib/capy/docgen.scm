@@ -250,9 +250,10 @@
             ((equal? (car rest) mod-name) #t)
             (else (loop (cdr rest))))))
 
-  (define (binding-value var)
+  ; The value of `name` in the library instance `inst`, or #f when it has none.
+  (define (binding-value inst name)
     (guard (c (#t #f))
-      (variable-ref var)))
+      (instance-ref inst name #f)))
 
   (define (procedure-source-alist proc)
     (let ((src (and (procedure? proc) (procedure-sourcev proc))))
@@ -283,12 +284,12 @@
              (let ((found (assq name static-defs)))
                (if found (cdr found) 'null))))))
 
-  (define (document-bindings mod static-defs)
+  (define (document-bindings inst static-defs)
     (let ((out '()))
-      (module-for-each
-       (lambda (name var)
+      (for-each
+       (lambda (name)
          (when (symbol? name)
-           (let ((value (binding-value var)))
+           (let ((value (binding-value inst name)))
              (when value
                (let* ((src (procedure-source-alist value))
                       (kind (procedure-kind value src)))
@@ -298,7 +299,7 @@
                                                               static-defs name))
                                        (cons 'source src))
                                  out)))))))
-       mod)
+       (instance-symbols inst))
       (list-sort (lambda (a b)
                    (string<? (cdr (assq 'name a)) (cdr (assq 'name b))))
                  out)))
@@ -318,17 +319,25 @@
                       (cons (cons path s) (car static-cache-box))))
           s))))
 
-  (define (document-submodules mod-name mod visited static-cache-box)
+  (define (submodule-keys mod-name)
+    (let lp ([keys (registered-library-keys (current-library-registry))] [out '()])
+      (cond
+        [(null? keys) out]
+        [(and (= (length (car keys)) (+ 1 (length mod-name)))
+              (let prefix? ([a mod-name] [b (car keys)])
+                (or (null? a)
+                    (and (equal? (car a) (car b)) (prefix? (cdr a) (cdr b))))))
+         (lp (cdr keys) (cons (car keys) out))]
+        [else (lp (cdr keys) out)])))
+
+  (define (document-submodules mod-name visited static-cache-box)
     (let ((subs '()))
       (for-each
-       (lambda (kv)
-         (when (symbol? (car kv))
-           (let ((child (document-module (append mod-name (list (car kv)))
-                                         visited
-                                         static-cache-box)))
-             (when child
-               (set! subs (cons child subs))))))
-       (core-hash->list (module-submodules mod)))
+       (lambda (child-key)
+         (let ((child (document-module child-key visited static-cache-box)))
+           (when child
+             (set! subs (cons child subs)))))
+       (submodule-keys mod-name))
       (list-sort (lambda (a b)
                    (string<? (module-display-name a)
                              (module-display-name b)))
@@ -337,8 +346,11 @@
   (define (document-module mod-name visited static-cache-box)
     ;; Autoload brings in requested libraries that are not loaded yet,
     ;; so every resolvable module documents on demand.
-    (let ((mod (guard (c (#t #f)) (resolve-module mod-name #t #f))))
-      (if (or (not mod) (not (module? mod)) (visited? mod-name visited))
+    (let ((inst (guard (c (#t #f))
+                  (unless (library-instance (current-library-registry) mod-name)
+                    (resolve-env mod-name))
+                  (library-instance (current-library-registry) mod-name))))
+      (if (or (not inst) (visited? mod-name visited))
         #f
         (let* ((seen (cons mod-name visited))
                (path (module-file-path mod-name))
@@ -346,8 +358,8 @@
                (mod-doc (let ((d (and scan (cdr (assq 'module-doc scan)))))
                           (if (string? d) d 'null)))
                (static-defs (if scan (cdr (assq 'defs scan)) '()))
-               (exports (document-bindings mod static-defs))
-               (subs (document-submodules mod-name mod seen static-cache-box)))
+               (exports (document-bindings inst static-defs))
+               (subs (document-submodules mod-name seen static-cache-box)))
           (list (cons 'name (list->vector (map segment->string mod-name)))
                 (cons 'doc mod-doc)
                 (cons 'exports (list->vector exports))

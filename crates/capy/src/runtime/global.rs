@@ -1,18 +1,12 @@
 use std::{cell::Cell, marker::PhantomData, sync::OnceLock};
 
 use crate::Rootable;
-use crate::heap::{Gc, Root, Trace, Visitor, barrier, sync::monitor::Monitor};
+use crate::heap::{Gc, Root, Trace, Visitor, sync::monitor::Monitor};
 
 use crate::{
     expander::primitives::for_each_prim_name,
-    prelude::{
-        FromValue, HashTable, HashTableRef, HashTableType, IntoValue, Module, ModuleRef, Value,
-        VariableRef,
-    },
-    runtime::{
-        MutationContext,
-        modules::{ModuleKind, define},
-    },
+    prelude::{FromValue, HashTable, HashTableRef, HashTableType, IntoValue, Value, VariableRef},
+    runtime::{MutationContext, linklet::Instance},
 };
 
 pub trait GlobalValue<'gc>: Trace + IntoValue<'gc> {}
@@ -211,22 +205,26 @@ macro_rules! global {
 #[derive(Trace)]
 pub struct Globals<'gc> {
     pub capy_module_name: Cell<Value<'gc>>,
+    /// The `(#%capy)` instance every native primitive is defined in.
+    pub capy_instance: Cell<Value<'gc>>,
 
     // HashTableRef
     pub interesting_primitive_vars: Cell<Value<'gc>>,
     // VariableRef
     pub interesting_primitive_vars_loc: Cell<Value<'gc>>,
     pub empty_wrap: Cell<Value<'gc>>,
-    // ModuleRef
-    pub resolve_module_root: Cell<Value<'gc>>,
 
     pub keyword_map: Cell<Value<'gc>>,
 
-    // ModuleRef
-    pub root_module: Cell<Value<'gc>>,
-    pub scm_module: Cell<Value<'gc>>,
+    /// Nongenerative record type descriptors, keyed by their uid symbol.
+    pub nongenerative_rtds: Cell<Value<'gc>>,
 
-    pub loc_resolve_module_root: Cell<Value<'gc>>,
+    /// The native R6RS condition record types.
+    pub condition_types: Option<crate::runtime::conditions::ConditionTypes<'gc>>,
+
+    /// Procedures and record types Rust calls through [`Hook`](crate::runtime::hooks::Hook).
+    pub hooks: crate::runtime::hooks::Hooks<'gc>,
+
     pub loc_load_path: Cell<Value<'gc>>,
     pub loc_load_extensions: Cell<Value<'gc>>,
     pub loc_load_compiled_path: Cell<Value<'gc>>,
@@ -236,29 +234,6 @@ pub struct Globals<'gc> {
     pub loc_capy_root: Cell<Value<'gc>>,
     pub loc_capy_sysroot: Cell<Value<'gc>>,
     pub loc_fresh_auto_compile: Cell<Value<'gc>>,
-    pub loc_the_root_module: Cell<Value<'gc>>,
-    pub loc_the_scm_module: Cell<Value<'gc>>,
-    pub loc_term_type: Cell<Value<'gc>>,
-    pub loc_lref_type: Cell<Value<'gc>>,
-    pub loc_lset_type: Cell<Value<'gc>>,
-    pub loc_let_type: Cell<Value<'gc>>,
-    pub loc_fix_type: Cell<Value<'gc>>,
-    pub loc_module_ref_type: Cell<Value<'gc>>,
-    pub loc_module_set_type: Cell<Value<'gc>>,
-    pub loc_toplevel_ref_type: Cell<Value<'gc>>,
-    pub loc_toplevel_set_type: Cell<Value<'gc>>,
-    pub loc_toplevel_define_type: Cell<Value<'gc>>,
-    pub loc_if_type: Cell<Value<'gc>>,
-    pub loc_receive_type: Cell<Value<'gc>>,
-    pub loc_application_type: Cell<Value<'gc>>,
-    pub loc_primcall_type: Cell<Value<'gc>>,
-    pub loc_primref_type: Cell<Value<'gc>>,
-    pub loc_constant_type: Cell<Value<'gc>>,
-    pub loc_void_type: Cell<Value<'gc>>,
-    pub loc_values_type: Cell<Value<'gc>>,
-    pub loc_sequence_type: Cell<Value<'gc>>,
-    pub loc_proc_type: Cell<Value<'gc>>,
-    pub loc_wcm_type: Cell<Value<'gc>>,
 
     /// Tier-up jobs waiting for a JIT worker.
     pub jit_jobs: crate::runtime::codegen::jit::JobQueue<'gc>,
@@ -266,10 +241,6 @@ pub struct Globals<'gc> {
 }
 
 impl<'gc> Globals<'gc> {
-    pub fn loc_resolve_module_root(&self) -> VariableRef<'gc> {
-        self.loc_resolve_module_root.get().downcast()
-    }
-
     pub fn loc_load_path(&self) -> VariableRef<'gc> {
         self.loc_load_path.get().downcast()
     }
@@ -302,96 +273,8 @@ impl<'gc> Globals<'gc> {
         self.loc_fresh_auto_compile.get().downcast()
     }
 
-    pub fn loc_the_root_module(&self) -> VariableRef<'gc> {
-        self.loc_the_root_module.get().downcast()
-    }
-
-    pub fn loc_the_scm_module(&self) -> VariableRef<'gc> {
-        self.loc_the_scm_module.get().downcast()
-    }
-
-    pub fn loc_term_type(&self) -> VariableRef<'gc> {
-        self.loc_term_type.get().downcast()
-    }
-
-    pub fn loc_lref_type(&self) -> VariableRef<'gc> {
-        self.loc_lref_type.get().downcast()
-    }
-
-    pub fn loc_lset_type(&self) -> VariableRef<'gc> {
-        self.loc_lset_type.get().downcast()
-    }
-
-    pub fn loc_let_type(&self) -> VariableRef<'gc> {
-        self.loc_let_type.get().downcast()
-    }
-
-    pub fn loc_fix_type(&self) -> VariableRef<'gc> {
-        self.loc_fix_type.get().downcast()
-    }
-
-    pub fn loc_module_ref_type(&self) -> VariableRef<'gc> {
-        self.loc_module_ref_type.get().downcast()
-    }
-
-    pub fn loc_module_set_type(&self) -> VariableRef<'gc> {
-        self.loc_module_set_type.get().downcast()
-    }
-
-    pub fn loc_toplevel_ref_type(&self) -> VariableRef<'gc> {
-        self.loc_toplevel_ref_type.get().downcast()
-    }
-
-    pub fn loc_toplevel_set_type(&self) -> VariableRef<'gc> {
-        self.loc_toplevel_set_type.get().downcast()
-    }
-
-    pub fn loc_toplevel_define_type(&self) -> VariableRef<'gc> {
-        self.loc_toplevel_define_type.get().downcast()
-    }
-
-    pub fn loc_if_type(&self) -> VariableRef<'gc> {
-        self.loc_if_type.get().downcast()
-    }
-
-    pub fn loc_receive_type(&self) -> VariableRef<'gc> {
-        self.loc_receive_type.get().downcast()
-    }
-
-    pub fn loc_application_type(&self) -> VariableRef<'gc> {
-        self.loc_application_type.get().downcast()
-    }
-
-    pub fn loc_primcall_type(&self) -> VariableRef<'gc> {
-        self.loc_primcall_type.get().downcast()
-    }
-
-    pub fn loc_primref_type(&self) -> VariableRef<'gc> {
-        self.loc_primref_type.get().downcast()
-    }
-
-    pub fn loc_constant_type(&self) -> VariableRef<'gc> {
-        self.loc_constant_type.get().downcast()
-    }
-
-    pub fn loc_void_type(&self) -> VariableRef<'gc> {
-        self.loc_void_type.get().downcast()
-    }
-
-    pub fn loc_values_type(&self) -> VariableRef<'gc> {
-        self.loc_values_type.get().downcast()
-    }
-
-    pub fn loc_sequence_type(&self) -> VariableRef<'gc> {
-        self.loc_sequence_type.get().downcast()
-    }
-
-    pub fn loc_proc_type(&self) -> VariableRef<'gc> {
-        self.loc_proc_type.get().downcast()
-    }
-
-    pub fn loc_wcm_type(&self) -> VariableRef<'gc> {
-        self.loc_wcm_type.get().downcast()
+    pub fn capy_instance(&self) -> Gc<'gc, Instance<'gc>> {
+        self.capy_instance.get().downcast()
     }
 
     pub fn capy_module_name(&self) -> Value<'gc> {
@@ -406,29 +289,25 @@ impl<'gc> Globals<'gc> {
         self.empty_wrap.get()
     }
 
-    pub fn resolve_module_root(&self) -> ModuleRef<'gc> {
-        self.resolve_module_root.get().downcast()
-    }
-
-    pub fn root_module(&self) -> ModuleRef<'gc> {
-        self.root_module.get().downcast()
-    }
-
-    pub fn scm_module(&self) -> ModuleRef<'gc> {
-        self.scm_module.get().downcast()
+    /// The native condition record types. Panics before [`Globals::new`] has run.
+    pub fn condition_types(&self) -> &crate::runtime::conditions::ConditionTypes<'gc> {
+        self.condition_types
+            .as_ref()
+            .expect("condition types are not initialized")
     }
 
     pub fn for_each_value(&self, mut f: impl FnMut(&Cell<Value<'gc>>)) {
         let Globals {
             keyword_map,
+            nongenerative_rtds,
+            // Traced by the derived `Trace` impl, not a value cell.
+            condition_types: _,
+            hooks,
             capy_module_name,
+            capy_instance,
             interesting_primitive_vars,
             interesting_primitive_vars_loc,
             empty_wrap,
-            resolve_module_root,
-            root_module,
-            scm_module,
-            loc_resolve_module_root,
             loc_load_path,
             loc_load_extensions,
             loc_load_compiled_path,
@@ -438,43 +317,19 @@ impl<'gc> Globals<'gc> {
             loc_capy_root,
             loc_capy_sysroot,
             loc_fresh_auto_compile,
-            loc_the_root_module,
-            loc_the_scm_module,
-            loc_term_type,
-            loc_lref_type,
-            loc_lset_type,
-            loc_let_type,
-            loc_fix_type,
-            loc_module_ref_type,
-            loc_module_set_type,
-            loc_toplevel_ref_type,
-            loc_toplevel_set_type,
-            loc_toplevel_define_type,
-            loc_if_type,
-            loc_receive_type,
-            loc_application_type,
-            loc_primcall_type,
-            loc_primref_type,
-            loc_constant_type,
-            loc_void_type,
-            loc_values_type,
-            loc_sequence_type,
-            loc_proc_type,
-            loc_wcm_type,
             // Traced by its own `Trace` impl, not a value cell.
             jit_jobs: _,
             compile_jobs: _,
         } = self;
 
         f(capy_module_name);
+        f(capy_instance);
         f(interesting_primitive_vars);
         f(interesting_primitive_vars_loc);
         f(empty_wrap);
-        f(resolve_module_root);
         f(keyword_map);
-        f(root_module);
-        f(scm_module);
-        f(loc_resolve_module_root);
+        f(nongenerative_rtds);
+        hooks.for_each_slot(&mut f);
         f(loc_load_path);
         f(loc_load_extensions);
         f(loc_load_compiled_path);
@@ -484,29 +339,6 @@ impl<'gc> Globals<'gc> {
         f(loc_capy_root);
         f(loc_capy_sysroot);
         f(loc_fresh_auto_compile);
-        f(loc_the_root_module);
-        f(loc_the_scm_module);
-        f(loc_term_type);
-        f(loc_lref_type);
-        f(loc_lset_type);
-        f(loc_let_type);
-        f(loc_fix_type);
-        f(loc_module_ref_type);
-        f(loc_module_set_type);
-        f(loc_toplevel_ref_type);
-        f(loc_toplevel_set_type);
-        f(loc_toplevel_define_type);
-        f(loc_if_type);
-        f(loc_receive_type);
-        f(loc_application_type);
-        f(loc_primcall_type);
-        f(loc_primref_type);
-        f(loc_constant_type);
-        f(loc_void_type);
-        f(loc_values_type);
-        f(loc_sequence_type);
-        f(loc_proc_type);
-        f(loc_wcm_type);
     }
 }
 
@@ -515,69 +347,12 @@ impl<'gc> Globals<'gc> {
         let capy_module_name = crate::list!(ctx, ctx.intern("capy"));
         let empty_wrap = crate::list!(ctx, Value::null());
 
-        /* modules */
-
-        let scm_module = Module::new(ctx, 0, Value::null(), Value::new(false));
-        let wm = Gc::write(ctx, scm_module);
-        barrier::field!(wm, Module, name).unlock().set(Value::cons(
-            ctx,
-            ctx.intern("capy"),
-            Value::null(),
-        ));
-        scm_module.kind.set(ModuleKind::Interface);
-
-        barrier::field!(wm, Module, public_interface)
-            .unlock()
-            .set(Some(scm_module));
-
-        let root_module = Module::new(ctx, 0, Value::null(), Value::new(false));
-        let wm = Gc::write(ctx, root_module);
-        barrier::field!(wm, Module, name).unlock().set(Value::cons(
-            ctx,
-            ctx.intern("capy"),
-            Value::null(),
-        ));
-        barrier::field!(wm, Module, obarray)
-            .unlock()
-            .set(scm_module.obarray.get());
-        barrier::field!(wm, Module, public_interface)
-            .unlock()
-            .set(Some(scm_module));
-
-        let resolve_module_root = Module::new(ctx, 0, Value::null(), Value::new(false));
-        barrier::field!(Gc::write(ctx, resolve_module_root), Module, name)
-            .unlock()
-            .set(Value::null());
-        resolve_module_root.define_submodule(ctx, ctx.intern("capy"), root_module);
-        super::modules::current_module(ctx).set(ctx, root_module.into());
+        let capy_instance = Instance::new(ctx, crate::list!(ctx, ctx.intern("#%capy")), true);
+        let define = |ctx: MutationContext<'gc>, name: &str, value: Value<'gc>| {
+            capy_instance.define(ctx, ctx.intern(name), value)
+        };
 
         let keyword_map = HashTable::new(ctx, HashTableType::Eq, 64, 0.75);
-
-        let loc_resolve_module_root = define(ctx, "*resolve-module-root*", resolve_module_root);
-        let loc_the_root_module = define(ctx, "the-root-module", root_module);
-        let loc_the_scm_module = define(ctx, "the-scm-module", scm_module);
-
-        let loc_term_type = define(ctx, "&term", Value::undefined());
-        let loc_lref_type = define(ctx, "&lref", Value::undefined());
-        let loc_lset_type = define(ctx, "&lset", Value::undefined());
-        let loc_let_type = define(ctx, "&let", Value::undefined());
-        let loc_fix_type = define(ctx, "&fix", Value::undefined());
-        let loc_module_ref_type = define(ctx, "&module-ref", Value::undefined());
-        let loc_module_set_type = define(ctx, "&module-set", Value::undefined());
-        let loc_toplevel_ref_type = define(ctx, "&toplevel-ref", Value::undefined());
-        let loc_toplevel_set_type = define(ctx, "&toplevel-set", Value::undefined());
-        let loc_toplevel_define_type = define(ctx, "&toplevel-define", Value::undefined());
-        let loc_if_type = define(ctx, "&if", Value::undefined());
-        let loc_receive_type = define(ctx, "&receive", Value::undefined());
-        let loc_application_type = define(ctx, "&application", Value::undefined());
-        let loc_primcall_type = define(ctx, "&primcall", Value::undefined());
-        let loc_primref_type = define(ctx, "&primref", Value::undefined());
-        let loc_constant_type = define(ctx, "&constant", Value::undefined());
-        let loc_void_type = define(ctx, "&void", Value::undefined());
-        let loc_values_type = define(ctx, "&values", Value::undefined());
-        let loc_sequence_type = define(ctx, "&sequence", Value::undefined());
-        let loc_proc_type = define(ctx, "&proc", Value::undefined());
-        let loc_wcm_type = define(ctx, "&wcm", Value::undefined());
 
         let loc_load_path = define(ctx, "%load-path", Value::null());
         let loc_load_extensions =
@@ -596,7 +371,7 @@ impl<'gc> Globals<'gc> {
         let interesting_primitive_vars = HashTable::new(ctx, HashTableType::Eq, 128, 0.75);
 
         for_each_prim_name(ctx, |_name_str, name| {
-            let var: Value = root_module.ensure_local_variable(ctx, name).into();
+            let var: Value = capy_instance.ensure_variable(ctx, name).into();
 
             interesting_primitive_vars.put(ctx, name, var);
         });
@@ -607,16 +382,26 @@ impl<'gc> Globals<'gc> {
             interesting_primitive_vars.into_value(ctx),
         );
 
+        let nongenerative_rtds = HashTable::new(ctx, HashTableType::Eq, 16, 0.75);
+
+        let condition_types = crate::runtime::conditions::ConditionTypes::new(ctx);
+        for ((name, _, _), wrapper) in crate::runtime::conditions::CONDITION_TYPES
+            .iter()
+            .zip(&condition_types.wrappers)
+        {
+            define(ctx, name, *wrapper);
+        }
+
         Self {
             keyword_map: Cell::new(keyword_map.into_value(ctx)),
+            nongenerative_rtds: Cell::new(nongenerative_rtds.into_value(ctx)),
+            condition_types: Some(condition_types),
+            hooks: crate::runtime::hooks::Hooks::new(),
             capy_module_name: Cell::new(capy_module_name),
+            capy_instance: Cell::new(capy_instance.into()),
             interesting_primitive_vars: Cell::new(interesting_primitive_vars.into()),
             interesting_primitive_vars_loc: Cell::new(interesting_primitive_vars_loc.into()),
             empty_wrap: Cell::new(empty_wrap),
-            resolve_module_root: Cell::new(resolve_module_root.into()),
-            root_module: Cell::new(root_module.into()),
-            scm_module: Cell::new(scm_module.into()),
-            loc_resolve_module_root: Cell::new(loc_resolve_module_root.into()),
             loc_load_path: Cell::new(loc_load_path.into()),
             loc_load_extensions: Cell::new(loc_load_extensions.into()),
             loc_load_compiled_path: Cell::new(loc_load_compiled_path.into()),
@@ -626,29 +411,6 @@ impl<'gc> Globals<'gc> {
             loc_capy_root: Cell::new(loc_capy_root.into()),
             loc_capy_sysroot: Cell::new(loc_capy_root.into()),
             loc_fresh_auto_compile: Cell::new(loc_fresh_auto_compile.into()),
-            loc_the_root_module: Cell::new(loc_the_root_module.into()),
-            loc_the_scm_module: Cell::new(loc_the_scm_module.into()),
-            loc_term_type: Cell::new(loc_term_type.into()),
-            loc_lref_type: Cell::new(loc_lref_type.into()),
-            loc_lset_type: Cell::new(loc_lset_type.into()),
-            loc_let_type: Cell::new(loc_let_type.into()),
-            loc_fix_type: Cell::new(loc_fix_type.into()),
-            loc_module_ref_type: Cell::new(loc_module_ref_type.into()),
-            loc_module_set_type: Cell::new(loc_module_set_type.into()),
-            loc_toplevel_ref_type: Cell::new(loc_toplevel_ref_type.into()),
-            loc_toplevel_set_type: Cell::new(loc_toplevel_set_type.into()),
-            loc_toplevel_define_type: Cell::new(loc_toplevel_define_type.into()),
-            loc_if_type: Cell::new(loc_if_type.into()),
-            loc_receive_type: Cell::new(loc_receive_type.into()),
-            loc_application_type: Cell::new(loc_application_type.into()),
-            loc_primcall_type: Cell::new(loc_primcall_type.into()),
-            loc_primref_type: Cell::new(loc_primref_type.into()),
-            loc_constant_type: Cell::new(loc_constant_type.into()),
-            loc_void_type: Cell::new(loc_void_type.into()),
-            loc_values_type: Cell::new(loc_values_type.into()),
-            loc_sequence_type: Cell::new(loc_sequence_type.into()),
-            loc_proc_type: Cell::new(loc_proc_type.into()),
-            loc_wcm_type: Cell::new(loc_wcm_type.into()),
             jit_jobs: Default::default(),
             compile_jobs: Default::default(),
         }
@@ -657,14 +419,14 @@ impl<'gc> Globals<'gc> {
     pub fn undefined() -> Self {
         Self {
             keyword_map: Cell::new(Value::undefined()),
+            nongenerative_rtds: Cell::new(Value::undefined()),
+            condition_types: None,
+            hooks: crate::runtime::hooks::Hooks::new(),
             capy_module_name: Cell::new(Value::undefined()),
+            capy_instance: Cell::new(Value::undefined()),
             interesting_primitive_vars: Cell::new(Value::undefined()),
             interesting_primitive_vars_loc: Cell::new(Value::undefined()),
             empty_wrap: Cell::new(Value::undefined()),
-            resolve_module_root: Cell::new(Value::undefined()),
-            root_module: Cell::new(Value::undefined()),
-            scm_module: Cell::new(Value::undefined()),
-            loc_resolve_module_root: Cell::new(Value::undefined()),
             loc_load_path: Cell::new(Value::undefined()),
             loc_load_extensions: Cell::new(Value::undefined()),
             loc_load_compiled_path: Cell::new(Value::undefined()),
@@ -674,29 +436,6 @@ impl<'gc> Globals<'gc> {
             loc_capy_root: Cell::new(Value::undefined()),
             loc_capy_sysroot: Cell::new(Value::undefined()),
             loc_fresh_auto_compile: Cell::new(Value::undefined()),
-            loc_the_root_module: Cell::new(Value::undefined()),
-            loc_the_scm_module: Cell::new(Value::undefined()),
-            loc_term_type: Cell::new(Value::undefined()),
-            loc_lref_type: Cell::new(Value::undefined()),
-            loc_lset_type: Cell::new(Value::undefined()),
-            loc_let_type: Cell::new(Value::undefined()),
-            loc_fix_type: Cell::new(Value::undefined()),
-            loc_module_ref_type: Cell::new(Value::undefined()),
-            loc_module_set_type: Cell::new(Value::undefined()),
-            loc_toplevel_ref_type: Cell::new(Value::undefined()),
-            loc_toplevel_set_type: Cell::new(Value::undefined()),
-            loc_toplevel_define_type: Cell::new(Value::undefined()),
-            loc_if_type: Cell::new(Value::undefined()),
-            loc_receive_type: Cell::new(Value::undefined()),
-            loc_application_type: Cell::new(Value::undefined()),
-            loc_primcall_type: Cell::new(Value::undefined()),
-            loc_primref_type: Cell::new(Value::undefined()),
-            loc_constant_type: Cell::new(Value::undefined()),
-            loc_void_type: Cell::new(Value::undefined()),
-            loc_values_type: Cell::new(Value::undefined()),
-            loc_sequence_type: Cell::new(Value::undefined()),
-            loc_proc_type: Cell::new(Value::undefined()),
-            loc_wcm_type: Cell::new(Value::undefined()),
             jit_jobs: Default::default(),
             compile_jobs: Default::default(),
         }

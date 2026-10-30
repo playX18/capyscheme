@@ -116,6 +116,7 @@
     (scheme write)
     (scheme complex)
     (scheme eval)
+    (scheme read)
     (rnrs syntax-case)
     (only (capy) syntax-sourcev)
     (srfi 39)
@@ -736,12 +737,25 @@
   (define (test-runner-test-name runner)
     (test-result-ref runner 'test-name ""))
 
+  ;; The value standing for an EXPECTED expression that raised. It is a fresh
+  ;; object, so the comparison fails and the test is reported as a FAIL
+  ;; instead of the error escaping the runner.
+  (define %test-expected-error (list 'expected-error))
+
+  (define-syntax %test-evaluate-expected
+    (syntax-rules ()
+      ((_ expected)
+        (let* ((ok #f)
+               (v (%test-evaluate-with-catch
+                    (let ((x expected)) (set! ok #t) x))))
+          (if ok v %test-expected-error)))))
+
   (define-syntax %test-comp2body
     (syntax-rules ()
       ((%test-comp2body r comp expected expr)
         (let ()
           (if (%test-on-test-begin r)
-            (let ((exp expected))
+            (let ((exp (%test-evaluate-expected expected)))
               (test-result-expected-value! r exp)
               (let ((res (%test-evaluate-with-catch expr)))
                 (test-result-actual-value! r res)

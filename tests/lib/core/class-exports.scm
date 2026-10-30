@@ -32,7 +32,6 @@
     (cons <ephemeron> "ephemeron")
     (cons <closure> "closure")
     (cons <native-procedure> "native-procedure")
-    (cons <module> "module")
     (cons <environment> "environment")
     (cons <syntax> "syntax")
     (cons <port> "port")

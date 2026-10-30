@@ -188,10 +188,7 @@
             (eq? obj (unspecified)))
           (wr-atom obj col))
         ((bytevector? obj)
-          (let* ((bvec-start
-                   (cond ((read-r7rs-weirdness?) "#u8")
-                     ((read-r6rs-weirdness?) "#vu8")
-                     (else "#u8")))
+          (let* ((bvec-start "#u8")
                  (col (out bvec-start col)))
             (wr-lst (bytevector->list obj) col lvl)))
         ((keyword? obj)
