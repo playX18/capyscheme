@@ -53,7 +53,7 @@
   (if (absolute-pathname? fn)
     (cons 'absolute (split-pathname fn 0 0))
     (cons 'relative (split-pathname fn 0 0))))
-.
+
 (define (join-with-slashes acc parts)
   (if (null? parts)
     acc
