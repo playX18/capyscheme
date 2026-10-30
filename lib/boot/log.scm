@@ -1,4 +1,7 @@
 ;; Simple logging facility inspired by log crate
+(|#%require| (boot prim) (boot control) (boot records) (boot conditions) (boot violations) (boot raise) (boot exceptions) (boot expand) (boot interpreter) (boot enums) (boot sys) (boot osdep) (boot ports-core) (boot transcoder) (boot binary-ports) (boot textual-ports) (boot custom-ports) (boot file-ports) (boot console-ports) (boot port-api) (boot print) (boot format))
+(|#%provide| all-defined)
+
 (define log:none 0)
 (define log:error 1)
 (define log:warn 2)
@@ -61,7 +64,7 @@
 
   (set! log:set-max-level!
     (lambda (level)
-      (set! *log-level* level)
+      (set-log-level! level)
       (max-log-level-filter level)))
   (set! log:max-level (lambda () (max-log-level-filter)))
 

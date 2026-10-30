@@ -1,4 +1,5 @@
 (import (rnrs)
+        (only (scheme base) modulo)
         (srfi 64)
         (capy sync)
         (capy concurrency))

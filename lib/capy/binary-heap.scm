@@ -42,7 +42,10 @@
     (let* ((old-vec (heap-data h))
            (old-len (vector-length old-vec))
            (new-vec (make-vector (* old-len 2))))
-      (vector-copy! old-vec 0 new-vec 0 old-len)
+      (let copy ([i 0])
+        (when (< i old-len)
+          (vector-set! new-vec i (vector-ref old-vec i))
+          (copy (+ i 1))))
       (heap-data-set! h new-vec)))
 
   (define (heap-sift-up! h index)

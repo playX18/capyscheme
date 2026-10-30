@@ -29,6 +29,7 @@ pub mod dl;
 pub mod errors;
 pub mod eval;
 pub mod exceptions;
+pub mod executable;
 pub mod expand;
 pub mod extensions;
 pub mod ffi;
@@ -760,10 +761,7 @@ impl<'a, 'gc> Call<'a, 'gc> {
     ) -> Value<'gc> {
         let assertion_violation = self
             .ctx
-            .globals()
-            .root_module()
-            .get_str(self.ctx, "assertion-violation")
-            .unwrap_or_else(|| panic!("pre boot error at {who}: {message} with {irritant}",));
+            .hook(crate::runtime::hooks::Hook::AssertionViolation);
         if irritant != Value::null() {
             self.tail(assertion_violation, &[who, message, irritant])
         } else {
@@ -779,10 +777,7 @@ impl<'a, 'gc> Call<'a, 'gc> {
     ) -> Value<'gc> {
         let error = self
             .ctx
-            .globals()
-            .root_module()
-            .get_str(self.ctx, "undefined-violation")
-            .expect("pre boot error");
+            .hook(crate::runtime::hooks::Hook::UndefinedViolation);
         let who = Value::new(Symbol::from_str(self.ctx, who));
         let message = Str::new(self.ctx, message, true).into();
         let args = std::iter::once(who)
@@ -800,10 +795,7 @@ impl<'a, 'gc> Call<'a, 'gc> {
     ) -> Value<'gc> {
         let error = self
             .ctx
-            .globals()
-            .root_module()
-            .get_str(self.ctx, "implementation-restriction-violation")
-            .expect("pre boot error");
+            .hook(crate::runtime::hooks::Hook::ImplementationRestrictionViolation);
         let who = Value::new(Symbol::from_str(self.ctx, who));
         let message = Str::new(self.ctx, message, true).into();
         let args = std::iter::once(who)
@@ -814,12 +806,7 @@ impl<'a, 'gc> Call<'a, 'gc> {
     }
 
     pub fn raise_error(&self, who: &str, message: &str, irritants: &[Value<'gc>]) -> Value<'gc> {
-        let error = self
-            .ctx
-            .globals()
-            .root_module()
-            .get_str(self.ctx, "error")
-            .expect("pre boot error");
+        let error = self.ctx.hook(crate::runtime::hooks::Hook::Error);
         let who = Value::new(Symbol::from_str(self.ctx, who));
         let message = Str::new(self.ctx, message, true).into();
         let args = std::iter::once(who)
@@ -854,89 +841,50 @@ impl<'a, 'gc> Call<'a, 'gc> {
                 Some(libc::ENOENT) => {
                     let error = self
                         .ctx
-                        .globals()
-                        .root_module()
-                        .get_str(self.ctx, "raise-i/o-file-does-not-exist-error")
-                        .expect("pre boot error");
+                        .hook(crate::runtime::hooks::Hook::RaiseIoFileDoesNotExistError);
                     self.tail(error, &[who, message, filename])
                 }
 
                 Some(libc::EEXIST) => {
                     let error = self
                         .ctx
-                        .globals()
-                        .root_module()
-                        .get_str(self.ctx, "raise-i/o-file-already-exists-error")
-                        .expect("pre boot error");
+                        .hook(crate::runtime::hooks::Hook::RaiseIoFileAlreadyExistsError);
                     self.tail(error, &[who, message, filename])
                 }
 
                 Some(libc::EROFS) | Some(libc::EISDIR) | Some(libc::ETXTBSY) => {
                     let error = self
                         .ctx
-                        .globals()
-                        .root_module()
-                        .get_str(self.ctx, "raise-i/o-file-is-read-only-error")
-                        .expect("pre boot error");
+                        .hook(crate::runtime::hooks::Hook::RaiseIoFileIsReadOnlyError);
                     self.tail(error, &[who, message, filename])
                 }
                 Some(libc::EACCES) => {
                     let error = self
                         .ctx
-                        .globals()
-                        .root_module()
-                        .get_str(self.ctx, "raise-i/o-file-protection-error")
-                        .expect("pre boot error");
+                        .hook(crate::runtime::hooks::Hook::RaiseIoFileProtectionError);
                     self.tail(error, &[who, message, filename])
                 }
 
                 _ => {
-                    let error = self
-                        .ctx
-                        .globals()
-                        .root_module()
-                        .get_str(self.ctx, "raise-i/o-error")
-                        .expect("pre boot error");
+                    let error = self.ctx.hook(crate::runtime::hooks::Hook::RaiseIoError);
                     self.tail(error, &[who, message, filename])
                 }
             },
 
             IoOperation::Read => {
-                let error = self
-                    .ctx
-                    .globals()
-                    .root_module()
-                    .get_str(self.ctx, "raise-i/o-read-error")
-                    .expect("pre boot error");
+                let error = self.ctx.hook(crate::runtime::hooks::Hook::RaiseIoReadError);
                 self.tail(error, &[who, message, filename])
             }
 
             IoOperation::Write => {
                 let error = self
                     .ctx
-                    .globals()
-                    .root_module()
-                    .get_str(self.ctx, "raise-i/o-write-error")
-                    .expect("pre boot error");
+                    .hook(crate::runtime::hooks::Hook::RaiseIoWriteError);
                 self.tail(error, &[who, message, filename])
             }
 
-            IoOperation::Seek => {
-                let error = self
-                    .ctx
-                    .globals()
-                    .root_module()
-                    .get_str(self.ctx, "raise-i/o-seek-error")
-                    .expect("pre boot error");
-                self.tail(error, &[who, message, filename])
-            }
             _ => {
-                let error = self
-                    .ctx
-                    .globals()
-                    .root_module()
-                    .get_str(self.ctx, "raise-i/o-error")
-                    .expect("pre boot error");
+                let error = self.ctx.hook(crate::runtime::hooks::Hook::RaiseIoError);
                 self.tail(error, &[who, message, filename])
             }
         }
@@ -966,30 +914,19 @@ impl<'a, 'gc> Call<'a, 'gc> {
             ErrorKind::NotFound | ErrorKind::DirectoryNotEmpty => {
                 let error = self
                     .ctx
-                    .globals()
-                    .root_module()
-                    .get_str(self.ctx, "raise-i/o-file-does-not-exist-error")
-                    .expect("pre boot error");
+                    .hook(crate::runtime::hooks::Hook::RaiseIoFileDoesNotExistError);
                 self.tail(error, &[who, message, old_filename])
             }
 
             ErrorKind::AlreadyExists => {
                 let error = self
                     .ctx
-                    .globals()
-                    .root_module()
-                    .get_str(self.ctx, "raise-i/o-file-already-exists-error")
-                    .expect("pre boot error");
+                    .hook(crate::runtime::hooks::Hook::RaiseIoFileAlreadyExistsError);
                 self.tail(error, &[who, message, new_filename])
             }
 
             _ => {
-                let error = self
-                    .ctx
-                    .globals()
-                    .root_module()
-                    .get_str(self.ctx, "raise-i/o-error")
-                    .expect("pre boot error");
+                let error = self.ctx.hook(crate::runtime::hooks::Hook::RaiseIoError);
                 self.tail(error, &[who, message, old_filename, new_filename])
             }
         }

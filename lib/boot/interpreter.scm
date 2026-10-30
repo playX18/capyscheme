@@ -1,3 +1,6 @@
+(|#%require| (boot prim) (boot control) (boot records) (boot conditions) (boot violations) (boot raise) (boot exceptions) (boot expand) (boot environments) (late (boot format) format) (late (boot units) unit-variable))
+(|#%provide| all-defined)
+
 (define (raise-undefined-violation src who message)
   (raise
     (apply
@@ -10,6 +13,15 @@
           (and who (make-who-condition who))
           (and message (make-message-condition message))
           (sourcev->source-condition src))))))
+
+(define (interpret/free-variable key name)
+  (unit-variable key name))
+
+(define (primitive-variable name)
+  (let ([var (env-variable the-core-env name)])
+    (if (and var (variable-bound? var))
+      var
+      (raise-undefined-violation #f #f (format #f "undefined primitive: ~a" name)))))
 
 (define (interpret/preprocess expr env)
   (define src (term-src expr))
@@ -36,6 +48,61 @@
                                          (loop (- rib 1) (cdr env)))))))]
     [(constant? expr)
       (interpreted-expression src (lambda (env) (constant-value expr)))]
+    [(global-ref? expr)
+      (let* ([slot (global-ref-slot expr)]
+             [name (global-ref-name expr)]
+             [address (interpret/var-address slot env)])
+        (cond
+          [(pair? address)
+            (let ([rib (car address)]
+                  [offset (cdr address)])
+              (interpreted-expression src (lambda (env0)
+                                           (let loop ([rib rib] [env env0])
+                                             (if (zero? rib)
+                                               (variable-ref (vector-ref (car env) offset))
+                                               (loop (- rib 1) (cdr env)))))))]
+          [else
+            (let ([key (global-ref-key expr)] [var #f])
+              (interpreted-expression src
+                (lambda (env0)
+                  (if (not var)
+                    (set! var (interpret/free-variable key name)))
+                  (if (variable-bound? var)
+                    (variable-ref var)
+                    (raise-undefined-violation src #f (format #f "undefined variable: ~a" name))))))]))]
+    [(global-set? expr)
+      (let* ([slot (global-set-slot expr)]
+             [val-proc (interpret/preprocess (global-set-value expr) env)]
+             [address (interpret/var-address slot env)])
+        (cond
+          [(pair? address)
+            (let ([rib (car address)]
+                  [offset (cdr address)])
+              (interpreted-expression src (lambda (env0)
+                                           (let loop ([rib rib] [env env0])
+                                             (if (zero? rib)
+                                               (variable-set! (vector-ref (car env) offset) (val-proc env0))
+                                               (loop (- rib 1) (cdr env)))))))]
+          [else
+            (let ([key (global-set-key expr)] [name (global-set-name expr)] [var #f])
+              (interpreted-expression src
+                (lambda (env0)
+                  (let ([val (val-proc env0)])
+                    (if (not var)
+                      (set! var (interpret/free-variable key name)))
+                    (variable-set! var val)))))]))]
+    [(linklet-term? expr)
+      ;; A linklet runs as a procedure over its slot variables.
+      (let* ([slots (linklet-term-slots expr)]
+             [body-proc (interpret/preprocess (linklet-term-body expr) (cons slots env))])
+        ;; Like a compiled linklet, it returns the tag and the arguments of `make-linklet`.
+        (interpreted-expression src
+          (lambda (env0)
+            (values '|#%linklet| (linklet-term-name expr) (linklet-term-imports expr)
+              (linklet-term-exports expr)
+              (lambda args
+                (body-proc (cons (list->vector args) env0)))
+              (linklet-term-meta expr)))))]
     [(application? expr)
       (let* ([rator (interpret/preprocess (application-operator expr) env)]
              [rands (map (lambda (rand) (interpret/preprocess rand env)) (application-operands expr))])
@@ -45,12 +112,12 @@
               (apply func (map (lambda (rand) (rand env0)) rands))))))]
     [(primref? expr)
       (let* ([name (primref-prim expr)]
-             [func (lookup-bound '(capy) name #t)])
+             [func (primitive-variable name)])
         (interpreted-expression src (lambda (env) (variable-ref func))))]
     [(primcall? expr)
       (let* ([rator (primcall-prim expr)]
              [rands (map (lambda (rand) (interpret/preprocess rand env)) (primcall-args expr))]
-             [func (lookup-bound '(capy) rator #t)])
+             [func (primitive-variable rator)])
         (interpreted-expression
           src
           (lambda (env0)
@@ -59,71 +126,6 @@
                 (apply (variable-ref func) (reverse vals))
                 (loop (cdr rands) (cons ((car rands) env0) vals)))))))]
     [(proc? expr) (interpret/lambda expr env)]
-    [(toplevel-define? expr)
-      (let ([name (toplevel-define-name expr)]
-            [val (interpret/preprocess (toplevel-define-value expr) env)]
-            [module-slot #f])
-        (interpreted-expression
-          src
-          (lambda (env0)
-            (if module-slot
-              (module-define! module-slot name (val env0))
-              (begin
-                (set! module-slot (current-module))
-                (module-define! module-slot name (val env0)))))))]
-    [(toplevel-ref? expr)
-      (let ([name (toplevel-ref-name expr)]
-            [var #f])
-        (interpreted-expression src
-          (lambda (env)
-            (if var
-              (variable-ref var)
-              (begin
-                (set! var (module-variable (current-module) name))
-                (if (or (not var) (not (variable-bound? var)))
-                  (raise-undefined-violation src #f (format #f "undefined variable: ~a" name)))
-                (variable-ref var))))))]
-    [(module-ref? expr)
-      (let ([module (module-ref-module expr)]
-            [name (module-ref-name expr)]
-            [public? (module-ref-public? expr)]
-            [var #f])
-        (interpreted-expression src
-          (lambda (env0)
-            (if var
-              (variable-ref var)
-              (begin
-                (set! var (lookup-bound module name public?))
-                (if (or (not var) (not (variable-bound? var)))
-                  (raise-undefined-violation src #f (format #f "undefined variable: ~a in module ~a" name module)))
-                (variable-ref var))))))]
-    [(module-set? expr)
-      (let ([module (module-set-module expr)]
-            [name (module-set-name expr)]
-            [public? (module-set-public? expr)]
-            [val-proc (interpret/preprocess (module-set-value expr) env)]
-            [var #f])
-        (interpreted-expression
-          src
-          (lambda (env0)
-            (if var
-              (variable-set! var (val-proc env0))
-              (begin
-                (set! var (lookup-bound module name public?))
-                (variable-set! var (val-proc env0)))))))]
-    [(toplevel-set? expr)
-      (let ([name (toplevel-set-name expr)]
-            [val-proc (interpret/preprocess (toplevel-set-value expr) env)]
-            [var #f])
-        (interpreted-expression
-          src
-          (lambda (env0)
-            (if var
-              (variable-set! var (val-proc env0))
-              (begin
-                (set! var (module-variable (current-module) name))
-                (variable-set! var (val-proc env0)))))))]
-
     [(if? expr)
       (let* ([test-proc (interpret/preprocess (if-test expr) env)]
              [then-proc (interpret/preprocess (if-then expr) env)]

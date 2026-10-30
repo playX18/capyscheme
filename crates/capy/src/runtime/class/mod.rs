@@ -46,10 +46,3 @@ pub(crate) use table::{
     ClassListError, class_table_initialized, is_type_class_registered,
     register_internal_type_class_if_ready,
 };
-
-use crate::runtime::MutationContext;
-use crate::runtime::value::Value;
-
-pub(crate) fn class_root_binding<'gc>(ctx: MutationContext<'gc>, name: &str) -> Option<Value<'gc>> {
-    ctx.globals().root_module().get_str(ctx, name)
-}

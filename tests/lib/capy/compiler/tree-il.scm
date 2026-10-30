@@ -1,8 +1,9 @@
 (import (srfi 64)
   (capy)
   (capy compiler tree-il)
-  (capy compiler tree-il letrectify)
-  (capy compiler tree-il resolve-free-vars)
+  (capy compiler tree-il assignment-elimination)
+  (capy compiler tree-il fix-letrec)
+  (capy compiler tree-il primitives)
   (capy compiler tree-il terms))
 
 (test-begin "capy compiler tree-il")
@@ -76,53 +77,39 @@
       (tree-il->scheme term '(denoise-lexicals?))
       '(lambda (x) x))))
 
-(test-group "resolve-free-vars"
-  (let* ((provider-name '(test resolve-free-vars provider))
-         (consumer-name '(test resolve-free-vars consumer))
-         (provider (define-module* provider-name #t))
-         (consumer (define-module* consumer-name #t)))
-    (module-define! provider 'exported-value 42)
-    (module-export! provider '(exported-value))
-    (module-use-interfaces! consumer (list (module-public-interface provider)))
-    (test-equal
-      "imported free toplevel reference becomes public module ref"
-      `(let ((module-var
-               ((|@@| (capy) define-module*)
-                ',consumer-name)))
-         (|@| ,provider-name exported-value))
-      (tree-il->scheme
-        (resolve-free-vars
-          (make-let
-            src
-            'let
-            (list 'module-id)
-            (list 'module-var)
-            (list
-              (make-application
-                src
-                (make-module-ref src '(capy) 'define-module* #f)
-                (list (make-constant src consumer-name))))
-            (make-toplevel-ref src consumer-name 'exported-value)))
-        '()))))
-
-(test-group "letrectify"
-  (let* ((module-name '(test letrectify private))
-         (module (define-module* module-name #t))
-         (term
-           (make-sequence
+(test-group "linklet terms"
+  (let* ((key '(|#%capy|))
+         (car-slot 'car-slot-identity)
+         (export-slot 'result-slot-identity)
+         (linklet
+           (make-linklet-term
              src
-             (make-toplevel-define
+             '(test linklet)
+             (list (list key 'car))
+             '(result)
+             (list car-slot export-slot)
+             (make-global-set
                src
-               module-name
-               'private-value
-               (make-constant src 42))
-             (make-toplevel-ref src module-name 'private-value))))
-    (test-equal
-      "private declarative toplevel define becomes lexical letrec*"
-      '(letrec* ((private-value (quote 42)))
-         private-value)
-      (tree-il->scheme
-        (letrectify term #:seal-private-bindings? #t)
-        '(denoise-lexicals?)))))
+               key
+               'result
+               export-slot
+               (make-application
+                 src
+                 (make-global-ref src key 'car car-slot)
+                 (list (make-constant src '(1 2)))))
+             '()))
+         (out
+           (eliminate-assignments
+             (fix-letrec
+               (resolve-primitives linklet #f)))))
+    (test-assert "linklet term survives the passes"
+      (linklet-term? out))
+    (test-equal "linklet slots are preserved"
+      (list car-slot export-slot)
+      (linklet-term-slots out))
+    (test-equal "capy global ref to car becomes a primitive call"
+      (quote (lambda (car-slot-identity result-slot-identity)
+               (set! result-slot-identity (car (quote (1 2))))))
+      (tree-il->scheme out '(denoise-lexicals?)))))
 
 (test-end "capy compiler tree-il")

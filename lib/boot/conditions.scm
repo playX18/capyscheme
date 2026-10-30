@@ -1,7 +1,6 @@
-(define &condition
-  (let* ([rtd (make-record-type-descriptor '&condition #f #f #f #f '#())]
-         [rcd (make-record-constructor-descriptor rtd #f #f)])
-    (make-record-type '&condition rtd rcd)))
+(|#%require| (boot prim) (boot control) (boot records) (late (boot violations) condition-expansion-trace condition-irritants condition-marks condition-who expansion-trace? irritants-condition? syntax-violation-form syntax-violation-subform syntax-violation? warning? who-condition?) (late (boot port-api) call-with-input-file) (late (boot print) display newline write) (late (boot format) format) (late (boot textual-ports) get-line))
+(|#%provide| all-defined)
+
 
 (define (compound-condition-component obj) (tuple-ref obj 1))
 
@@ -62,19 +61,11 @@
           (if res (proc res) (wrong-type rtd obj)))
         (wrong-type rtd obj)))))
 
-(define &message
-  (let ([rtd (make-record-type-descriptor '&message (record-type-rtd &condition) #f #f #f '#((immutable message)))])
-    (let ([rcd (make-record-constructor-descriptor rtd (record-type-rcd &condition) #f)])
-      (make-record-type '&message rtd rcd))))
 
 (define make-message-condition (record-constructor (record-type-rcd &message)))
 (define message-condition? (condition-predicate (record-type-rtd &message)))
 (define condition-message (condition-accessor (record-type-rtd &message) (record-accessor (record-type-rtd &message) 0)))
 
-(define &source
-  (let ([rtd (make-record-type-descriptor '&source (record-type-rtd &condition) #f #f #f '#((immutable file) (immutable line) (immutable column)))])
-    (let ([rcd (make-record-constructor-descriptor rtd (record-type-rcd &condition) #f)])
-      (make-record-type '&source rtd rcd))))
 
 (define make-source-condition (record-constructor (record-type-rcd &source)))
 (define source-condition? (condition-predicate (record-type-rtd &source)))
@@ -108,8 +99,6 @@
   (if (and (vector? src) (>= (vector-length src) 3))
     (make-source-condition (vector-ref src 0) (vector-ref src 1) (vector-ref src 2))
     #f))
-
-(define (make-condition-uid) #f)
 
 ;; Render the source line of FILE at LINE (1-based) with a caret under column
 ;; COL (0-based), extended to END-COL when the span lies on the same line.
@@ -190,7 +179,7 @@
         (format p ": ~a" (condition-who exn)))
       (when (message-condition? exn)
         (format p ": ~a" (condition-message exn)))
-      (when (irritants-condition? exn)
+      (when (and (irritants-condition? exn) (pair? (condition-irritants exn)))
         (format p ": ~s" (condition-irritants exn)))
       (newline p)))
   (define (sourcev-ref src index default)
@@ -218,7 +207,8 @@
     ;; the caller) into a plain datum before printing.
     (define (convert x)
       (cond
-        [(syntax? x) (syntax->datum x)]
+        ; The same as `syntax->datum` of the expander, without a dependency on it.
+        [(syntax? x) (convert (syntax-expression x))]
         [(pair? x) (cons (convert (car x)) (convert (cdr x)))]
         [(vector? x) (list->vector (map convert (vector->list x)))]
         [else x]))

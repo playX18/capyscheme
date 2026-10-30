@@ -192,7 +192,9 @@ fn address(masm: &mut Masm, space: Space, elem: Elem, slow: onlineasm::Label) {
             masm.bind(checked);
             masm.branch_if_not_fixnum(tmp::T2, tmp::T0, slow);
             masm.unbox_int32(tmp::T2, tmp::T2);
-            let len_at = masm.assembler().mem(tmp::T1, sabi::BYTEVECTOR_LENGTH as i32);
+            let len_at = masm
+                .assembler()
+                .mem(tmp::T1, sabi::BYTEVECTOR_LENGTH as i32);
             let contents_at = masm
                 .assembler()
                 .mem(tmp::T1, sabi::BYTEVECTOR_CONTENTS as i32);

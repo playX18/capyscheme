@@ -1,29 +1,26 @@
 //! Thread and GC context management.
 
 use crate::{
-    heap::{
-        GarbageCollector, Gc, Mutation, Mutator, Trace,
-        barrier::{self},
-        sync::thread::Thread,
-    },
+    heap::{GarbageCollector, Gc, Mutation, Mutator, Trace, sync::thread::Thread},
     prelude::{HashTable, Keyword},
     runtime::stats::ThreadStats,
 };
 use crate::{
-    prelude::{IntoValue, NativeFn, PROCEDURES, current_module},
+    prelude::{IntoValue, NativeFn, PROCEDURES},
     runtime::{
         fluids::DynamicState,
         global::{Globals, VM_GLOBALS},
         interp::stack::{Ip, Slot, StackState},
         //image::{ALLOWED_GC, AllowedGc, reader::ImageReader},
-        modules::{Module, ModuleRef, resolve_module},
+        linklet::{Instance, Linklet, instantiate_linklet, registry_register, root_registry},
         prelude::VariableRef,
         value::{
-            Closure, ReturnCode, Str, Symbol, Value, init_symbols, init_weak_sets, init_weak_tables,
+            Closure, ReturnCode, Str, Symbol, Value, Vector, init_symbols, init_weak_sets,
+            init_weak_tables,
         },
         vm::{
-            ExecutionResult, control::ContinuationMarks, load::load_thunk_in_vicinity,
-            threading::ThreadObject,
+            ExecutionResult, base::program_arguments_fluid, control::ContinuationMarks,
+            load::load_thunk_in_vicinity, threading::ThreadObject,
         },
     },
 };
@@ -247,14 +244,35 @@ impl<'gc> Mutation<'gc> {
             .set(retk.unwrap_or_else(Value::undefined));
     }
 
-    pub fn module(self, name: &str) -> Option<Gc<'gc, Module<'gc>>> {
-        let name = crate::runtime::modules::convert_module_name(self, name);
-        resolve_module(self, name, false, false)
+    /// The instance registered under the space-separated library name `name`
+    /// (`"capy"` is the primitive instance).
+    pub fn instance(self, name: &str) -> Option<Gc<'gc, Instance<'gc>>> {
+        if name == "capy" {
+            return Some(self.globals().capy_instance());
+        }
+        let key = crate::runtime::linklet::library_name(self, name);
+        crate::runtime::linklet::registry_lookup(
+            self,
+            crate::runtime::linklet::root_registry(self),
+            key,
+        )
     }
 
-    pub fn ensure_module(self, name: &str) -> Gc<'gc, Module<'gc>> {
-        let name = crate::runtime::modules::convert_module_name(self, name);
-        resolve_module(self, name, true, false).expect("Failed to ensure module")
+    /// Like [`Self::instance`], creating and registering a mutable instance if the
+    /// name is not registered yet.
+    pub fn ensure_instance(self, name: &str) -> Gc<'gc, Instance<'gc>> {
+        if let Some(inst) = self.instance(name) {
+            return inst;
+        }
+        let key = crate::runtime::linklet::library_name(self, name);
+        let inst = Instance::new(self, key, true);
+        crate::runtime::linklet::registry_register(
+            self,
+            crate::runtime::linklet::root_registry(self),
+            key,
+            inst,
+        );
+        inst
     }
 
     pub fn globals(self) -> &'gc Globals<'gc> {
@@ -271,11 +289,11 @@ impl<'gc> Mutation<'gc> {
     }
 
     pub fn public_ref(self, mname: &str, name: &str) -> Option<Value<'gc>> {
-        crate::runtime::modules::public_ref(self, mname, name)
+        self.private_ref(mname, name)
     }
 
     pub fn private_ref(self, mname: &str, name: &str) -> Option<Value<'gc>> {
-        crate::runtime::modules::private_ref(self, mname, name)
+        self.instance(mname)?.get(self, self.intern(name))
     }
 
     pub fn accumulator(&self) -> Value<'gc> {
@@ -289,39 +307,9 @@ impl<'gc> Mutation<'gc> {
         value: impl IntoValue<'gc>,
     ) -> Option<VariableRef<'gc>> {
         let value = value.into_value(self);
-        let module = self.module(mname)?;
+        let inst = self.instance(mname)?;
         let name = self.intern(name);
-        Some(module.define(self, name, value))
-    }
-
-    pub fn define_module(self, name: &str, size_hint: Option<usize>) -> ModuleRef<'gc> {
-        let name = crate::runtime::modules::convert_module_name(self, name);
-
-        let module =
-            resolve_module(self, name, false, true).expect("module resolve succeeds when creating");
-        let wmodule = Gc::write(self, module);
-        if module.uses.get().is_null() {
-            barrier::field!(wmodule, Module, uses)
-                .unlock()
-                .set(Value::cons(
-                    self,
-                    self.globals().scm_module().into(),
-                    Value::null(),
-                ));
-        }
-
-        if module.public_interface.get().is_none() {
-            let public_interface = Module::new(
-                self,
-                size_hint.unwrap_or(8),
-                Value::null(),
-                Value::new(false),
-            );
-            barrier::field!(wmodule, Module, public_interface)
-                .unlock()
-                .set(Some(public_interface));
-        }
-        module
+        Some(inst.define(self, name, value))
     }
 
     pub fn winders(&self) -> Value<'gc> {
@@ -608,6 +596,40 @@ impl Scheme {
     }
 
     pub fn new() -> Self {
+        let (scm, should_init) = Self::new_runtime();
+        if should_init { scm.boot() } else { scm }
+    }
+
+    /// Runs a static bundle, the output of `capyc --static`, without booting the runtime.
+    ///
+    /// `bytes` is the bundle file: a FASL image, optionally after a `#!` line. Instead of
+    /// `boot/main.scm` it is instantiated against the native primitives and registered
+    /// as the `(boot static)` instance, which fills the core table. Its body then runs
+    /// the program with `args` as `(program-arguments)`. The body ends the process by
+    /// calling `exit`, so this returns only if it does not.
+    pub fn new_static(bytes: &[u8], args: &[String]) -> Self {
+        let scm = Self::new_static_runtime();
+        scm.run_static(bytes, args);
+        scm
+    }
+
+    /// The setup half of [`Scheme::new_static`]: a runtime that is not booted, linked against
+    /// the native primitives only. Nothing of the bundle has run yet.
+    pub fn new_static_runtime() -> Self {
+        let (scm, _) = Self::new_runtime();
+        scm.enter(|ctx| crate::runtime::linklet::install_capy_primitive_instance(ctx));
+        scm
+    }
+
+    /// The body half: instantiates the bundle, registers it and runs it. A caller that wants
+    /// the program on the thread scheduler calls this from inside `scheduler::run_main`.
+    pub fn run_static(&self, bytes: &[u8], args: &[String]) {
+        self.enter(|ctx| run_static_bundle(ctx, bytes, args));
+    }
+
+    /// Creates the mutator and runs the one-time process init. The flag tells whether this
+    /// call did that init, which is the one that has to boot.
+    fn new_runtime() -> (Self, bool) {
         let mut should_init = false;
 
         // if VM is not initialized yet, we need to run init code
@@ -651,7 +673,7 @@ impl Scheme {
             },
         };
 
-        if should_init { scm.boot() } else { scm }
+        (scm, should_init)
     }
 
     pub fn new_uninit() -> Self {
@@ -733,10 +755,10 @@ impl Scheme {
     fn boot(self) -> Self {
         let scm = self;
         scm.enter(|ctx| {
-            current_module(ctx).set(ctx, (ctx.globals().root_module()).into());
+            crate::runtime::linklet::install_capy_primitive_instance(ctx);
 
-            let thunk = load_thunk_in_vicinity::<true>(ctx, "boot.scm", None::<&str>, false, None)
-                .expect("Failed to load boot.scm");
+            let thunk = load_thunk_in_vicinity::<true>(ctx, "boot/main.scm", None::<&str>, false, None)
+                .expect("Failed to load boot/main.scm");
 
             match crate::runtime::sni::call_function(ctx, thunk, []) {
                 ExecutionResult::Ok(_) => {}
@@ -757,6 +779,57 @@ impl Scheme {
 impl Default for Scheme {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Fatal error while running a static bundle: the message goes to stderr, then exit 70
+fn static_fatal(message: impl std::fmt::Display) -> ! {
+    eprintln!("{message}");
+    std::process::exit(70)
+}
+
+/// Instantiates the static bundle `bytes` and runs its body, see [`Scheme::new_static`].
+fn run_static_bundle<'gc>(ctx: MutationContext<'gc>, bytes: &[u8], args: &[String]) {
+    let payload = crate::runtime::fasl::fasl_payload(bytes);
+    let reader = crate::runtime::fasl::Reader::new_with_options(
+        ctx,
+        std::io::Cursor::new(payload),
+        crate::runtime::vm::load::policy::get_fasl_load_options(),
+    );
+    let thunk = reader
+        .read()
+        .unwrap_or_else(|err| static_fatal(format_args!("cannot read static bundle: {err}")));
+
+    let parts = match crate::runtime::sni::call_function(ctx, thunk, []) {
+        ExecutionResult::Ok(value) if value.is::<Vector>() => value,
+        ExecutionResult::Ok(_) => static_fatal("not a static bundle"),
+        ExecutionResult::Err(err) => static_fatal(err),
+    };
+    let parts = parts.downcast::<Vector>();
+    let [head, name, imports, exports, body, meta] = parts.as_slice() else {
+        static_fatal("not a static bundle: expected a linklet")
+    };
+    if *head != ctx.intern("#%linklet") {
+        static_fatal("not a static bundle: expected a linklet")
+    }
+
+    let linklet = Linklet::new(ctx, *name, *imports, *exports, *body, *meta);
+    let target = Instance::new(ctx, *name, false);
+    let reg = root_registry(ctx);
+    let capy = ctx.globals().capy_instance();
+    let slots = instantiate_linklet(ctx, reg, linklet, &[capy], target)
+        .unwrap_or_else(|bad| static_fatal(format_args!("static bundle: unbound import {bad}")));
+
+    registry_register(ctx, reg, *name, target);
+
+    let argv = args.iter().rev().fold(Value::null(), |tail, arg| {
+        Value::cons(ctx, Str::new(ctx, arg, true).into(), tail)
+    });
+    program_arguments_fluid(ctx).set(ctx, argv);
+
+    match crate::runtime::sni::call_function(ctx, *body, slots) {
+        ExecutionResult::Ok(_) => {}
+        ExecutionResult::Err(err) => static_fatal(err),
     }
 }
 

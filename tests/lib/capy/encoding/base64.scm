@@ -1,4 +1,5 @@
 (import (except (rnrs) define)
+  (only (scheme base) modulo)
   (rename (only (core kw) new-define) (new-define define))
   (srfi 64)
   (capy encoding base64))

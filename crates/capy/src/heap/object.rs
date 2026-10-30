@@ -79,7 +79,7 @@ pub mod builtin_class_ids {
     pub const CODE_BLOCK: u32 = 46;
     /// Instruction stream and constant pool of a code block.
     pub const CODE_BUFFER: u32 = 47;
-    pub const MODULE: u32 = 48;
+    // 48 was the module class. The id stays unused so the numbering of the others is stable.
     pub const ENVIRONMENT: u32 = 49;
     pub const SYNTAX: u32 = 50;
     pub const SYNTAX_TRANSFORMER: u32 = 51;
@@ -106,8 +106,18 @@ pub mod builtin_class_ids {
     /// Owner of a piece of machine code (a compiled procedure or a call
     /// IC stub).
     pub const CODE_IMAGE: u32 = 71;
+    /// A linklet: immutable code plus its import/export signature.
+    pub const LINKLET: u32 = 72;
+    /// A linklet instance: a symbol -> variable namespace.
+    pub const INSTANCE: u32 = 73;
+    /// A library registry: library key -> instance, plus the expander's per-registry tables.
+    pub const REGISTRY: u32 = 74;
+    /// A record type descriptor (`rtd`).
+    pub const RTD: u32 = 75;
+    /// A record constructor descriptor (`rcd`).
+    pub const RCD: u32 = 76;
 
-    pub const MAX: u32 = CODE_IMAGE;
+    pub const MAX: u32 = RCD;
 }
 
 static NEXT_CLASS_ID: AtomicU32 = AtomicU32::new(builtin_class_ids::MAX + 1);

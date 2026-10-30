@@ -1,5 +1,6 @@
 (import (srfi 64)
-        (capy))
+        (capy)
+        (only (rnrs eval) environment))
 
 (test-begin "boot class invocable scheme classes")
 
@@ -65,7 +66,7 @@
            (class-applicable? (procedure-property macro-proc 'class))
            (class-name (current-class-of macro-instance))
            (slot-ref (procedure-property macro-proc-v2 'instance) 'extra)))
-      (current-module))
+      (interaction-environment))
     '(#t #t #t (macro first 7) #t "macro-callable" new))
   (test-error "invocable class requires procedure slot"
     &assertion-violation

@@ -44,10 +44,10 @@
 ;;;; syntax-case macro system: syntax objects with hygienic marks and
 ;;;; substitutions, pattern matching ($sc-dispatch), define-property,
 ;;;; implicit #%app keyword, and expansion to
-;;;; Capy's tree IL.  The expander is integrated with Capy's module
-;;;; system: it resolves R6RS/R7RS imports and re-exports, expands
-;;;; define-module and define-library forms into define-module* calls,
-;;;; and routes every application through the implicit #%app keyword.
+;;;; Capy's tree IL.  The expander is integrated with Capy's expansion
+;;;; environments: it resolves R6RS/R7RS imports and re-exports, expands
+;;;; library and define-library forms into a library body, and routes
+;;;; every application through the implicit #%app keyword.
 ;;;; For background on syntax-case, see The Scheme Programming Language,
 ;;;; Fourth Edition (R. Kent Dybvig, MIT Press, 2009), or the R6RS.
 ;;;;
@@ -64,7 +64,7 @@
 ;;;; datum->syntax.  Such objects are never copied during expansion.
 ;;;;
 ;;;; An identifier that is neither a macro nor bound lexically is treated
-;;;; as a reference to a global (module-level) variable.
+;;;; as a reference to a global (library or namespace level) variable.
 ;;;;
 ;;;; Top-level definitions of macro-introduced identifiers are allowed.
 ;;;;
@@ -99,12 +99,12 @@
 
 (define syntax-error #f)
 
-(let ((syntax? (module-ref (current-module) 'syntax?))
-      (make-syntax (module-ref (current-module) 'make-syntax))
-      (syntax-expression (module-ref (current-module) 'syntax-expression))
-      (syntax-wrap (module-ref (current-module) 'syntax-wrap))
-      (syntax-module (module-ref (current-module) 'syntax-module))
-      (syntax-sourcev (module-ref (current-module) 'syntax-sourcev)))
+(let ((syntax? (env-ref (expansion-env) 'syntax?))
+      (make-syntax (env-ref (expansion-env) 'make-syntax))
+      (syntax-expression (env-ref (expansion-env) 'syntax-expression))
+      (syntax-wrap (env-ref (expansion-env) 'syntax-wrap))
+      (syntax-module (env-ref (expansion-env) 'syntax-module))
+      (syntax-sourcev (env-ref (expansion-env) 'syntax-sourcev)))
 
   (define (syntax-pair? x)
     (cond 
@@ -192,7 +192,7 @@
   (define nil (list "nil"))
 
   (define (global-extend type sym val)
-    (module-define! (current-module) sym (make-syntax-transformer sym type val)))
+    (env-define! (expansion-env) sym (make-syntax-transformer sym type val)))
   ;; Generated scaffolding (`regen`, `gen-clause` dispatchers) is sourceless
   ;; BY POLICY, not by accident: stamping it with a use-site span would
   ;; mis-attribute it (Chez `d->s` precedent). P1 teaches lookups to report
@@ -250,28 +250,48 @@
       [#f (bare-cont #f var)]
       [('public . mod) (modref-cont mod var #t)]
       [((or 'private 'hygiene) . mod)
-        (if (equal? mod (module-name (current-module)))
+        (if (equal? mod (env-key (expansion-env)))
           (bare-cont mod var)
           (modref-cont mod var #f))]
       [('primitive . _)
         (syntax-violation #f "primitive not in operator position" var)]))
 
+  ;; Globals are built as `global-ref` and `global-set` terms on the slots of the unit
+  ;; being expanded (see lib/boot/units.scm). The unit gives the slot of a variable from
+  ;; the owner of its binding in the environment, `(key . sym)`; the term names the
+  ;; same owner, which is how code that runs while the unit is expanded finds the
+  ;; variable.
   (define (build-global-definition src mod var exp)
-    (make-toplevel-define src (and mod (cdr mod)) var (maybe-name-value var exp)))
+    (let* ((exp (maybe-name-value var exp))
+           (unit (current-unit))
+           (env (unit-env unit)))
+      (if (and (namespace? env) (env-frozen? env))
+        (syntax-violation #f "cannot define in an immutable environment" var))
+      (let ((slot (unit-definition-slot! unit var)))
+        (make-global-set src (car slot) (cadr slot) (caddr slot) exp))))
   (define (build-global-reference src var mod)
     (analyze-variable
       mod
       var
-      (lambda (mod var public?) (make-module-ref src mod var public?))
-      (lambda (mod var) (make-toplevel-ref src mod var))))
-  ; (make-toplevel-ref src mod var))
+      (lambda (key var public?)
+        (build-global-ref src key var public?))
+      (lambda (key var)
+        (build-global-ref src #f var #f))))
+  (define (build-global-ref src key var public?)
+    (let ((slot (unit-binding-slot (current-unit) key var public?)))
+      (make-global-ref src (car slot) (cadr slot) (caddr slot))))
   (define (build-global-assignment src var val mod)
     (let ((exp (maybe-name-value var val)))
       (analyze-variable
         mod
         var
-        (lambda (mod var public?) (make-module-set src mod var public? exp))
-        (lambda (mod var) (make-toplevel-set src mod var exp)))))
+        (lambda (key var public?)
+          (build-global-set* src key var public? exp))
+        (lambda (key var)
+          (build-global-set* src #f var #f exp)))))
+  (define (build-global-set* src key var public? exp)
+    (let ((slot (unit-assignment-slot (current-unit) key var public?)))
+      (make-global-set src (car slot) (cadr slot) (caddr slot) exp)))
   (define (build-primcall src name args)
     (make-primcall src name args))
   (define (build-simple-lambda src ids vars meta exp)
@@ -350,7 +370,7 @@
                   src
                   (build-lexical-reference src f-name f)
                   (map maybe-name-value ids val-exps)))))))))
-  (define (gen-lexical id) (module-gensym (symbol->string id)))
+  (define (gen-lexical id) (unit-gensym (current-unit) (symbol->string id)))
   (define (source-annotation x) (if (syntax? x) (syntax-sourcev x) (datum-sourcev x)))
 
   (define-syntax make-binding
@@ -420,10 +440,9 @@
   (define (wrap-marks w) (car w))
   (define (wrap-subst w) (cdr w))
 
-  (define (gen-unique . args)
-    (cond
-      ((null? args) (vector '(capy) (gensym "id")))
-      (else (vector (module-name (car args)) (module-generate-unique-id! (car args))))))
+  ;; The unique names of marks and labels count in the unit being expanded, so they do
+  ;; not depend on what else the process expanded before.
+  (define (gen-unique) (unit-unique (current-unit)))
 
   (define (gen-label) (gen-unique))
   (define (gen-labels ls)
@@ -648,7 +667,7 @@
   (define (primitive-module? mod)
     (and (pair? mod) (eq? (car mod) 'primitive)))
   (define (current-hygiene-module)
-    (cons 'hygiene (module-name (current-module))))
+    (cons 'hygiene (env-key (expansion-env))))
   (define (make-global-property-label mod sym)
     (vector 'global-property-label (or mod (current-hygiene-module)) sym))
   (define (global-property-label? x)
@@ -670,7 +689,7 @@
            (sym (id-sym-name id))
            (mod (or (and (syntax? id) (syntax-module id)) mod (current-hygiene-module))))
       (and (not (primitive-module? mod))
-        (let ((var (module-variable (resolve-module (cdr mod) #t #t) sym)))
+        (let ((var (env-variable (resolve-env (cdr mod) #t #t) sym)))
           var))))
 
   ;; Capy treats unresolved identifiers as global references, so property
@@ -718,20 +737,20 @@
         (lp (cdr a) (adjoin-property-label (car a) b)))))
   (define (module-local-symbols-for-variable module var)
     (let ((out '()))
-      (module-for-each
+      (env-for-each
         (lambda (sym var*)
           (if (eq? var var*)
             (set! out (cons sym out))))
         module)
       out))
   (define (module-export-symbols-for-variable module var)
-    (let ((iface (module-public-interface module)))
+    (let ((iface (env-public-interface module)))
       (if iface
         (module-local-symbols-for-variable iface var)
         '())))
   (define (module-hygiene-label module sym)
     (make-global-property-label
-      (cons 'hygiene (module-name module))
+      (cons 'hygiene (env-key module))
       sym))
 
   ;; Top-level properties live outside lexical ribcages so they can be
@@ -743,8 +762,8 @@
     (and (global-property-label? label)
       (let ((mod (global-property-label-module label)))
         (and (not (primitive-module? mod))
-          (let ((var (module-variable
-                       (resolve-module (cdr mod) #t #t)
+          (let ((var (env-variable
+                       (resolve-env (cdr mod) #t #t)
                        (global-property-label-symbol label))))
             var)))))
   (define (record-top-level-property-label! label)
@@ -759,8 +778,8 @@
     (let ((a (assq var top-level-property-labels)))
       (if a (cdr a) '())))
   (define (source-module-for-interface iface)
-    (let ((name (module-name iface)))
-      (resolve-module name #t #f)))
+    (let ((name (env-key iface)))
+      (resolve-env name #t #f)))
   (define (visible-interface-property-labels* iface var seen include-fallback?)
     (let ((src (source-module-for-interface iface))
           (fallback-syms (module-local-symbols-for-variable iface var)))
@@ -791,7 +810,7 @@
   (define (visible-interface-property-labels iface var seen)
     (visible-interface-property-labels* iface var seen #t))
   (define (visible-import-property-labels* module var seen include-fallback?)
-    (let lp ((uses (module-uses module)) (labels '()))
+    (let lp ((uses (env-imports module)) (labels '()))
       (if (null? uses)
         labels
         (lp (cdr uses)
@@ -801,11 +820,11 @@
   (define (visible-import-property-labels module var seen)
     (visible-import-property-labels* module var seen #t))
   (define (visible-direct-import-property-label-groups module sym var)
-    (let lp ((uses (module-uses module)) (groups '()))
+    (let lp ((uses (env-imports module)) (groups '()))
       (if (null? uses)
         (reverse groups)
         (let* ((iface (car uses))
-               (iface-var (module-local-variable iface sym)))
+               (iface-var (env-local-variable iface sym)))
           (lp (cdr uses)
             (if (eq? iface-var var)
               (let ((labels (visible-interface-property-labels* iface var (list module) #f)))
@@ -829,8 +848,8 @@
            (sym (id-sym-name id))
            (mod (or (and (syntax? id) (syntax-module id)) mod (current-hygiene-module))))
       (and (not (primitive-module? mod))
-        (let* ((module (resolve-module (cdr mod) #t #t))
-               (var (module-variable module sym)))
+        (let* ((module (resolve-env (cdr mod) #t #t))
+               (var (env-variable module sym)))
           (and var (visible-module-property-labels module sym var '()))))))
   (define (top-level-property-entry-ref id-label key-label)
     (let ((a (property-assoc id-label top-level-properties)))
@@ -924,19 +943,19 @@
     (let* ((wrapped-id (wrap id empty-wrap mod))
            (id-sym (id-sym-name wrapped-id))
            (id-mod (or (and (syntax? wrapped-id) (syntax-module wrapped-id)) mod (current-hygiene-module)))
-           (id-module (and (not (primitive-module? id-mod)) (resolve-module (cdr id-mod) #t #t)))
-           (id-var (and id-module (module-variable id-module id-sym)))
+           (id-module (and (not (primitive-module? id-mod)) (resolve-env (cdr id-mod) #t #t)))
+           (id-var (and id-module (env-variable id-module id-sym)))
            (wrapped-key-id (wrap key-id empty-wrap mod))
            (key-sym (id-sym-name wrapped-key-id))
            (key-mod (or (and (syntax? wrapped-key-id) (syntax-module wrapped-key-id)) mod (current-hygiene-module)))
-           (key-module (and (not (primitive-module? key-mod)) (resolve-module (cdr key-mod) #t #t)))
-           (key-var (and key-module (module-variable key-module key-sym)))
+           (key-module (and (not (primitive-module? key-mod)) (resolve-env (cdr key-mod) #t #t)))
+           (key-var (and key-module (env-variable key-module key-sym)))
            (id-labels (and id-var (visible-module-property-labels id-module id-sym id-var '())))
            (key-labels (and key-var (visible-module-property-labels key-module key-sym key-var '())))
            (use-mod (or mod (current-hygiene-module)))
-           (use-module (and (not (primitive-module? use-mod)) (resolve-module (cdr use-mod) #t #t)))
-           (use-id-var (and use-module (module-variable use-module id-sym)))
-           (use-key-var (and use-module (module-variable use-module key-sym))))
+           (use-module (and (not (primitive-module? use-mod)) (resolve-env (cdr use-mod) #t #t)))
+           (use-id-var (and use-module (env-variable use-module id-sym)))
+           (use-key-var (and use-module (env-variable use-module key-sym))))
       (unless id-var
         (syntax-violation #f "no visible binding for property id" id))
       (unless key-var
@@ -965,7 +984,7 @@
             key-id)))))
   (set! $sc-define-property!
     (lambda args
-      (let ((id-label (car args))
+      (let* ((id-label (car args))
             (key-label (cadr args))
             (propval (caddr args))
             (origin (if (null? (cdddr args))
@@ -1006,7 +1025,7 @@
                           (m (car marks))
                           (marks (cdr marks)))
                       (lp symnames marks
-                        (cons (wrap sym (anti-mark (make-wrap m subst)) mod) resulsts)))))))
+                        (cons (wrap sym (anti-mark (make-wrap m subst)) mod) results)))))))
             (define (scan-vector-rib)
               (let ((n (vector-length symnames)))
                 (let lp ((i 0) (results results))
@@ -1021,8 +1040,8 @@
     (scan (wrap-subst w) '()))
   (define (resolve-global-variable mod var)
     (and (not (equal? mod '(primitive)))
-      (module-variable
-        (if mod (resolve-module (cdr mod) #t #t) (current-module))
+      (env-variable
+        (if mod (resolve-env (cdr mod) #t #t) (expansion-env))
         var)))
   (define (resolve-identifier id w r mod resolve-syntax-parameters?)
     (define (resolve-global var mod)
@@ -1082,8 +1101,8 @@
            (ni (id-var-name i empty-wrap mi))
            (nj (id-var-name j empty-wrap mj)))
       (define (id-module-binding id mod)
-        (module-variable
-          (if mod (resolve-module (cdr mod) #t #t) (current-module))
+        (env-variable
+          (if mod (resolve-env (cdr mod) #t #t) (expansion-env))
           (id-sym-name id)))
 
       (cond
@@ -1202,20 +1221,19 @@
 
   (define (resolve-r6rs-interface* import-spec)
     (define (make-custom-interface mod)
-      (let ((iface (make-module)))
-        (set-module-kind! iface 'custom-interface)
-        (set-module-name! iface (module-name mod))
-        iface))
+      (make-env (env-key mod) 'interface))
     (define (module-for-each/nonlocal f mod)
       (define (module-and-uses mod)
         (let lp ((in (list mod)) (out '()))
           (cond
             ((null? in) (reverse out))
             ((memq (car in) out) (lp (cdr in) out))
-            (else (lp (append (module-uses (car in)) (cdr in))
+            (else (lp (append (env-imports (car in)) (cdr in))
                    (cons (car in) out))))))
       (for-each (lambda (mod)
-                 (module-for-each f mod))
+                 (env-for-each
+                   (lambda (sym var) (f sym var (env-origin mod sym)))
+                   mod))
         (module-and-uses mod)))
     (syntax-case import-spec (library only except prefix rename srfi)
       ((library (srfi n rest ... (version ...)))
@@ -1230,7 +1248,7 @@
 
       ((library (name name* ... (version ...)))
         (module-name? #'(name name* ...))
-        (resolve-interface (syntax->datum #'(name name* ...)) #f '() #f))
+        (resolve-env-interface (syntax->datum #'(name name* ...)) #f '() #f))
 
       ((library (name name* ...))
         (module-name? #'(name name* ...))
@@ -1241,15 +1259,16 @@
         (let* ((mod (resolve-r6rs-interface* #'import-set))
                (iface (make-custom-interface mod)))
           (for-each (lambda (sym)
-                     (module-add! iface sym
-                       (or (module-variable mod sym)
+                     (env-add! iface sym
+                       (or (env-variable mod sym)
                          (let ([hint (import-suggestion-string 'binding sym mod)])
                            (error 'import
                              (format #f "no binding '~a' in module ~a~a"
                                sym mod
-                               (if hint (string-append "; " hint) ""))))))
-                     (if (core-hash-ref (module-replacements mod) sym)
-                       (core-hash-put! (module-replacements iface) sym #t)))
+                               (if hint (string-append "; " hint) "")))))
+                       (env-origin mod sym))
+                     (if (core-hash-ref (env-replacements mod) sym)
+                       (core-hash-put! (env-replacements iface) sym #t)))
             (syntax->datum #'(identifier ...)))
           iface))
 
@@ -1257,17 +1276,17 @@
         (and-map r6rs-import-sym? #'(identifier ...))
         (let* ((mod (resolve-r6rs-interface* #'import-set))
                (iface (make-custom-interface mod)))
-          (module-for-each/nonlocal (lambda (sym var)
-                                     (module-add! iface sym var))
+          (module-for-each/nonlocal (lambda (sym var origin)
+                                     (env-add! iface sym var origin))
             mod)
           (for-each (lambda (sym)
-                     (if (not (module-local-variable iface sym))
+                     (if (not (env-local-variable iface sym))
                        (let ([hint (import-suggestion-string 'binding sym mod)])
                          (error 'import
                            (format #f "no binding '~a' in module ~a~a"
                              sym mod
                              (if hint (string-append "; " hint) "")))))
-                     (module-remove! iface sym))
+                     (env-remove! iface sym))
             (syntax->datum #'(identifier ...)))
           iface))
 
@@ -1277,21 +1296,21 @@
                (iface (make-custom-interface mod))
                (pre (syntax->datum #'identifier)))
           (module-for-each/nonlocal
-            (lambda (sym var)
+            (lambda (sym var origin)
               (let ((sym* (symbol-append pre sym)))
-                (module-add! iface sym* var)
-                (if (core-hash-ref (module-replacements mod) sym)
-                  (core-hash-put! (module-replacements iface) sym* #t))))
+                (env-add! iface sym* var origin)
+                (if (core-hash-ref (env-replacements mod) sym)
+                  (core-hash-put! (env-replacements iface) sym* #t))))
             mod)
           iface))
 
       ((rename import-set (from to) ...)
         (and (and-map r6rs-import-sym? #'(from ...)) (and-map r6rs-import-sym? #'(to ...)))
         (let* ((mod (resolve-r6rs-interface* #'import-set))
-               (replacements (module-replacements mod))
+               (replacements (env-replacements mod))
                (iface (make-custom-interface mod)))
           (module-for-each/nonlocal
-            (lambda (sym var) (module-add! iface sym var))
+            (lambda (sym var origin) (env-add! iface sym var origin))
             mod)
           (let lp ((in (syntax->datum #'((from . to) ...))) (out '()))
             (cond
@@ -1300,16 +1319,17 @@
                   (lambda (v)
                     (let ((to (vector-ref v 0))
                           (replace? (vector-ref v 1))
-                          (var (vector-ref v 2)))
-                      (if (module-local-variable iface to)
+                          (var (vector-ref v 2))
+                          (origin (vector-ref v 3)))
+                      (if (env-local-variable iface to)
                         (error 'import (format
                                         #f
                                         "duplicate binding for '~a' in module ~a (rename uses ~a)"
                                         to
                                         mod
-                                        (module-uses mod))))
+                                        (env-imports mod))))
 
-                      (module-add! iface to var)
+                      (env-add! iface to var origin)
                       (if replace?
                         (core-hash-put! replacements to #t))))
                   out)
@@ -1318,7 +1338,7 @@
               (else
                 (let* ((from (caar in))
                        (to (cdar in))
-                       (var (module-variable mod from))
+                       (var (env-variable mod from))
                        (replace? (core-hash-ref replacements from)))
                   (if (not var)
                     (let ([hint (import-suggestion-string 'binding from mod)])
@@ -1326,9 +1346,9 @@
                         (format #f "no binding `~a` in module ~a~a"
                           from mod
                           (if hint (string-append "; " hint) "")))))
-                  (module-remove! iface from)
+                  (env-remove! iface from)
                   (core-hash-remove! replacements from)
-                  (lp (cdr in) (cons (vector to replace? var) out))))))))
+                  (lp (cdr in) (cons (vector to replace? var (env-origin mod from)) out))))))))
 
       ((name name* ... (version ...))
         (library-reference-name? #'(name name* ...))
@@ -1338,7 +1358,10 @@
         (library-reference-name? #'(name name* ...))
         (resolve-r6rs-interface* #'(library (name name* ... ()))))))
 
-  (define (expand-import-form stx)
+  ;; Applies the import form STX to the environment being expanded in and records it
+  ;; there. The compiled unit carries the recorded import sets in its meta (see
+  ;; lib/boot/environments.scm), so nothing of the import is in its body.
+  (define (apply-import-form! stx)
     (define (strip-for import-set)
       (syntax-case import-set (for)
         ((for import-set import-level ...)
@@ -1347,12 +1370,12 @@
           #'import-set)))
     (syntax-case stx ()
       ((_ import-set ...)
-        (with-syntax (((library-reference ...) (map strip-for #'(import-set ...))))
-          #'(eval-when (expand load eval)
-             (let ((iface (resolve-r6rs-interface 'library-reference)))
-              (module-use-interfaces! (current-module) (list iface)))
-             ...
-             (if #f #f))))))
+        (for-each
+          (lambda (import-set)
+            (let ((spec (syntax->datum (strip-for import-set))))
+              (env-use-interfaces! (expansion-env) (list (resolve-r6rs-interface spec)))
+              (env-record-import! (expansion-env) spec)))
+          #'(import-set ...)))))
 
   (define (expand-library-form stx)
     (define (body-definition-names body)
@@ -1384,10 +1407,10 @@
         (memq sym local-definitions))
       (define (re-export? sym)
         (or-map (lambda (iface)
-                 (module-variable iface sym))
+                 (env-variable iface sym))
           ifaces))
       (define (replace? sym)
-        (module-variable the-scm-module sym))
+        (env-variable the-core-env sym))
 
       (let lp ((specs specs) (e '()) (r '()) (x '()))
         (syntax-case specs (rename)
@@ -1473,7 +1496,9 @@
         (module-name? #'(name name* ...))
         (let* ((library-name (syntax->datum #'(name name* ...)))
                (auto-prelims (if (or (equal? library-name '(capy prelims))
-                                  (equal? library-name '(core)))
+                                  (equal? library-name '(core))
+                                  ; a program sees what it imports and nothing else
+                                  (eq? (car library-name) '%program))
                               #'()
                               #'((capy prelims)))))
           (call-with-values
@@ -1492,16 +1517,37 @@
                             ((e ...) exports)
                             ((r ...) re-exports)
                             ((x ...) replacements))
-                #'(begin
-                   (define-pure-module (name name* ...))
-
+                #'(%library-unit (name name* ...) (version ...)
                    (export e ...)
                    (export! x ...)
                    (import ispec)
                    ...
                    (re-export r ...)
-                   (|@@| |@@| (name name* ...) body)
+                   (%library-body (name name* ...) body)
                    ...))))))))
+
+  ;; Opens the unit of the library NAME: the unit that is current is closed (it is the
+  ;; unit of the file, or of the library before), and the forms after the library form up
+  ;; to the next one are expanded in the new unit, like the FORMS of the library form.
+  (define (expand-library-unit name version parse-forms)
+    (finish-current-unit!)
+    ; A program is closed: the core environment is not behind its imports.
+    (let* ((env (define-env* name (eq? (car name) '%program) version))
+           (unit (make-unit 'library name env)))
+      (current-unit unit)
+      (current-expansion-env env)
+      (parse-forms (cons 'hygiene (env-key env)))))
+  (define (syntax->list* x)
+    (syntax-case x ()
+      (() '())
+      ((a . d) (cons #'a (syntax->list* #'d)))))
+
+  ;; Expands code that is run right away while its unit is expanded in a scratch unit, and
+  ;; runs it.
+  (define (eval-in-scratch-unit thunk mod)
+    (call-with-scratch-unit
+      (lambda ()
+        (top-level-eval (thunk) mod))))
 
   (define (expand-define-library-form stx)
     (define (handle-includes filenames)
@@ -1596,7 +1642,7 @@
            (ribcage (make-empty-ribcage))
            (w (make-wrap (wrap-marks w) (cons ribcage (wrap-subst w)))))
       (define (record-definition! id var)
-        (let ((mod (cons 'hygiene (module-name (current-module)))))
+        (let ((mod (cons 'hygiene (env-key (expansion-env)))))
           (extend-ribcage! ribcage id
             (cons (or (syntax-module id) mod)
               (wrap var top-wrap mod)))))
@@ -1646,15 +1692,15 @@
                   (append thunks (loop tail))))))))
 
       (define (parse1 x r w s m esew mod)
-        (define (current-module-for-expansion mod)
+        (define (current-env-for-expansion mod)
           (cond
             ((and (pair? mod) (eq? (car mod) 'hygiene))
-              (cons 'hygiene (module-name (current-module))))
+              (cons 'hygiene (env-key (expansion-env))))
             (else mod)))
 
         (call-with-values
           (lambda ()
-            (let ((mod (current-module-for-expansion mod)))
+            (let ((mod (current-env-for-expansion mod)))
               (syntax-type x r w (source-annotation x) ribcage mod #f)))
           (lambda (type value form e w s mod)
             (case type
@@ -1664,9 +1710,7 @@
                              (fresh-derived-name id x)
                              (syntax-expression id))))
                   (unless (primitive-module? mod)
-                    (module-ensure-local-variable!
-                      (resolve-module (cdr mod) #t #t)
-                      var))
+                    (env-own-variable! (expansion-env) var (unit-key (current-unit))))
                   (record-definition! id var)
                   (list (if (eq? m 'c&e)
                          (let ((x (build-global-definition s mod var (expand e r w mod))))
@@ -1700,8 +1744,9 @@
                               '(eval))
                             (begin
                               (if (memq 'expand when-list)
-                                (top-level-eval
-                                  (expand-top-sequence body r w s 'e '(eval) mod)
+                                (eval-in-scratch-unit
+                                  (lambda ()
+                                    (expand-top-sequence body r w s 'e '(eval) mod))
                                   mod))
                               '())))
                         ((memq 'load when-list)
@@ -1715,59 +1760,33 @@
                         ((or (memq 'compile when-list)
                             (memq 'expand when-list)
                             (and (eq? m 'c&e) (memq 'eval when-list)))
-                          (top-level-eval
-                            (expand-top-sequence body r w s 'e '(eval) mod)
+                          (eval-in-scratch-unit
+                            (lambda ()
+                              (expand-top-sequence body r w s 'e '(eval) mod))
                             mod)
                           '())
                         (else '())))]))
 
-              ((define-module-form)
-                (syntax-case e ()
-                  [(_ (name name* ...) body ...)
-                    (module-name? #'(name name* ...))
-                    (parse
-                      #'((eval-when (expand load eval)
-                          (let ([m ((|@@| (capy) define-module*) '(name name* ...))])
-                           (current-module m)))
-                         (|@@| |@@| (name name* ...) body)
-                         ...)
-                      r w s m essew mod)]))
-
-              ((define-pure-module-form)
-                (syntax-case e ()
-                  [(_ (name name* ...) body ...)
-                    (module-name? #'(name name* ...))
-                    (parse
-                      #'((eval-when (expand load eval)
-                          (let ([m ((|@@| (capy) define-module*) '(name name* ...) #t)])
-                           (current-module m)))
-                         (|@@| |@@| (name name* ...) body)
-                         ...)
-                      r w s m essew mod)]))
-
               ((export-form)
                 (syntax-case e ()
                   [(_ name ...)
-                    (parse
-                      #'((eval-when (expand load eval)
-                          (module-export! (current-module) '(name ...))))
-                      r w s m essew mod)]))
+                    (begin
+                      (env-export! (expansion-env) (syntax->datum #'(name ...)))
+                      '())]))
 
               ((re-export-form)
                 (syntax-case e ()
                   [(_ name ...)
-                    (parse
-                      #'((eval-when (expand load eval)
-                          (module-re-export! (current-module) '(name ...))))
-                      r w s m essew mod)]))
+                    (begin
+                      (env-re-export! (expansion-env) (syntax->datum #'(name ...)))
+                      '())]))
 
               ((export!-form)
                 (syntax-case e ()
                   [(_ name ...)
-                    (parse
-                      #'((eval-when (expand load eval)
-                          (module-replace! (current-module) '(name ...))))
-                      r w s m essew mod)]))
+                    (begin
+                      (env-replace! (expansion-env) (syntax->datum #'(name ...)))
+                      '())]))
 
               ((export-syntax-form)
                 (syntax-case e ()
@@ -1780,10 +1799,33 @@
                     (parse #'((re-export name ...)) r w s m essew mod)]))
 
               ((import-form)
-                (parse (list (expand-import-form e)) r w s m essew mod))
+                (apply-import-form! e)
+                '())
+
+              ((require-form)
+                (syntax-case e ()
+                  [(_ spec ...)
+                    (begin
+                      (unit-require! (current-unit) (syntax->datum #'(spec ...)))
+                      '())]))
+
+              ((provide-form)
+                (syntax-case e ()
+                  [(_ spec ...)
+                    (begin
+                      (unit-provide! (current-unit) (syntax->datum #'(spec ...)))
+                      '())]))
 
               ((library-form)
                 (parse (list (expand-library-form e)) r w s m essew mod))
+
+              ((library-unit-form)
+                (syntax-case e ()
+                  [(_ name version form ...)
+                    (expand-library-unit
+                      (syntax->datum #'name) (syntax->datum #'version)
+                      (lambda (mod)
+                        (parse (syntax->list* #'(form ...)) r w s m essew mod)))]))
 
               ((define-library-form)
                 (parse (list (expand-define-library-form e)) r w s m essew mod))
@@ -2110,22 +2152,23 @@
                 fval e r w s rib mod
                 (lambda (expanded)
                   (syntax-type expanded r empty-wrap s rib mod for-car?))))
-            ((module-ref)
+            ((library-body)
               (call-with-values (lambda () (fval e r w mod))
                 (lambda (e r w s mod) (syntax-type e r w s rib mod for-car?))))
             ((core) (values 'core-form fval e e w s mod))
             ((local-syntax) (values 'local-syntax-form fval e e w s mod))
             ((begin) (values 'begin-form #f e e w s mod))
             ((eval-when) (values 'eval-when-form #f e e w s mod))
-            ((define-module) (values 'define-module-form #f e e w s mod))
-            ((define-pure-module) (values 'define-pure-module-form #f e e w s mod))
             ((export) (values 'export-form #f e e w s mod))
             ((re-export) (values 're-export-form #f e e w s mod))
             ((export!) (values 'export!-form #f e e w s mod))
             ((export-syntax) (values 'export-syntax-form #f e e w s mod))
             ((re-export-syntax) (values 're-export-syntax-form #f e e w s mod))
             ((import) (values 'import-form #f e e w s mod))
+            ((require) (values 'require-form #f e e w s mod))
+            ((provide) (values 'provide-form #f e e w s mod))
             ((library) (values 'library-form #f e e w s mod))
+            ((library-unit) (values 'library-unit-form #f e e w s mod))
             ((define-library) (values 'define-library-form #f e e w s mod))
             ((include-library-declarations)
               (values 'include-library-declarations-form #f e e w s mod))
@@ -2256,7 +2299,7 @@
         (build-lexical-reference s e value))
       ((or (eq? type 'core) (eq? type 'core-form))
         (value e r w s mod))
-      ((eq? type 'module-ref)
+      ((eq? type 'library-body)
         (call-with-values (lambda () (value e r w mod))
           (lambda (e r w s mod)
             (expand e r w mod))))
@@ -2567,19 +2610,10 @@
           (syntax-violation 'lambda "duplicate argument names" orig-args)]))
     (req orig-args '()))
 
-  (define (expand-public-ref e r w mod)
-    (syntax-case e ()
-      [(_ (mod ...) id)
-        (and (module-name? #'(mod ...)) (id? #'id))
-        (values
-          (syntax->datum #'id)
-          r
-          top-wrap
-          #f
-          (syntax->datum
-            #'(public mod ...)))]))
-
-  (define (expand-private-ref e r w mod)
+  ;; (%library-body (name ...) form): FORM, with every identifier of it taken to be
+  ;; in the library NAME. The body of a library comes straight from the reader, with
+  ;; no module, and is expanded under the environment of the library.
+  (define (expand-library-body e r w mod)
     (letrec* ((remodulate
                 (lambda (x mod)
                   (cond
@@ -2597,42 +2631,12 @@
                             (begin (if #f #f) v)
                             (begin (vector-set! v i (remodulate (vector-ref x i) mod)) (loop (+ 1 i)))))))
                     (else x)))))
-      (let* ((tmp e)
-             (tmp-1 ($sc-dispatch
-                     tmp
-                     (list '_ (vector 'free-id (make-syntax 'primitive top-wrap '(hygiene capy))) 'any))))
-        (if (and tmp-1
-             (apply (lambda (id)
-                     (and (id? id)
-                       (equal? (cdr (or (and (syntax? id) (syntax-module id)) mod)) '(capy))))
-               tmp-1))
-          (apply (lambda (id) (values (syntax->datum id) r top-wrap #f '(primitive))) tmp-1)
-          (let ((tmp-1 ($sc-dispatch tmp '(_ each-any any))))
-            (if (and tmp-1 (apply (lambda (mod id) (and (module-name? mod) (id? id))) tmp-1))
-              (apply (lambda (mod id)
-                      (values
-                        (syntax->datum id)
-                        r
-                        top-wrap
-                        #f
-                        (syntax->datum (cons (make-syntax 'private top-wrap '(hygiene capy)) mod))))
-                tmp-1)
-              (let ((tmp-1 ($sc-dispatch
-                            tmp
-                            (list '_
-                              (vector 'free-id (make-syntax '|@@| top-wrap '(hygiene capy)))
-                              'each-any
-                              'any))))
-                (if (and tmp-1 (apply (lambda (mod exp) (module-name? mod)) tmp-1))
-                  (apply (lambda (mod exp)
-                          (let ((mod (syntax->datum
-                                      (cons (make-syntax 'private top-wrap '(hygiene capy)) mod))))
-                            (values (remodulate exp mod) r w (source-annotation exp) mod)))
-                    tmp-1)
-                  (syntax-violation #f "source expression failed to match any pattern" tmp)))))))))
-
-
-
+      (syntax-case e ()
+        ((_ mod exp)
+          (module-name? #'mod)
+          (let ((mod (cons 'private (syntax->datum #'mod))))
+            (values (remodulate #'exp mod) r w (source-annotation #'exp) mod)))
+        (_ (syntax-violation #f "source expression failed to match any pattern" e)))))
 
   (define expand-syntax
     (letrec* ((gen-syntax
@@ -3225,7 +3229,7 @@
                              ((and (alist? source)) (props->sourcev source))
                              ((and (vector? source) (>= (vector-length source) 3)) source)
                              (else (if (not (vector? (syntax-sourcev source)))
-                                    (assertion-violation 'datum->syntax "invalid source vector" for datum))
+                                    (assertion-violation 'datum->syntax "invalid source vector" datum))
                                (syntax-sourcev source)))))
                        (cond
                          ((syntax? datum) (wrap datum))
@@ -3249,18 +3253,18 @@
       (define sym (if (null? args) 'tmp (car args)))
       (unless (symbol? sym)
         (error 'generate-identifier "Expected symbol" sym))
-      (wrap (gen-var sym) top-wrap (cons 'hygiene (module-name (current-module))))))
+      (wrap (gen-var sym) top-wrap (cons 'hygiene (env-key (expansion-env))))))
 
   (set! generate-temporaries
     (lambda (ls)
       (let ((x ls)) (if (not (list? x)) (syntax-violation 'generate-temporaries "invalid argument" x)))
-      (let ((mod (cons 'hygiene (module-name (current-module)))))
+      (let ((mod (cons 'hygiene (env-key (expansion-env)))))
         (map (lambda (x) (wrap (gen-var 't) top-wrap mod)) ls))))
   (set! :ellipsis? ellipsis?)
   (set! resolve-r6rs-interface resolve-r6rs-interface*)
 
   (set! macroexpand (lambda (x . rest)
-                     "Expands expression `x` in the context of module `m` or (current-module) if `m` is not given."
+                     "Expands expression `x` in the context of module `m` or (expansion-env) if `m` is not given."
                      (define (unstrip x)
                        (define (annotate result)
                          (let ((props (source-properties x)))
@@ -3279,8 +3283,13 @@
                            (essew (if (= (length rest) 2) (car (cdr rest)) '(eval))))
                        (*log-time*
                          (lambda ()
-                           (expand-top-sequence (list (unstrip x)) null-env top-wrap #f m essew
-                             (cons 'hygiene (module-name (current-module)))))
+                           (define (expand-it)
+                             (expand-top-sequence (list (unstrip x)) null-env top-wrap #f m essew
+                               (cons 'hygiene (env-key (expansion-env)))))
+                           ;; Outside of a file, the form is expanded in a unit of its own.
+                           (if (current-unit)
+                             (expand-it)
+                             (call-with-unit (make-file-unit (expansion-env) #f m) expand-it)))
                          log:trace
                          "psyntax"
                          #f
@@ -3289,15 +3298,16 @@
   (global-extend 'define 'define '())
   (global-extend 'begin 'begin '())
   (global-extend 'eval-when 'eval-when '())
-  (global-extend 'define-module 'define-module '())
-  (global-extend 'define-pure-module 'define-pure-module '())
   (global-extend 'export 'export '())
   (global-extend 're-export 're-export '())
   (global-extend 'export! 'export! '())
   (global-extend 'export-syntax 'export-syntax '())
   (global-extend 're-export-syntax 're-export-syntax '())
   (global-extend 'import 'import '())
+  (global-extend 'require '|#%require| '())
+  (global-extend 'provide '|#%provide| '())
   (global-extend 'library 'library '())
+  (global-extend 'library-unit '%library-unit '())
   (global-extend 'define-library 'define-library '())
   (global-extend 'include-library-declarations 'include-library-declarations '())
 
@@ -3333,6 +3343,20 @@
       (syntax-case e ()
         [(_ datum) (build-data s (strip #'datum))]
         [_ (syntax-violation 'quote "bad quote form" (source-wrap e w s mod))])))
+
+  ;; (|#%primitive| name): the primitive NAME of the `(#%capy)` instance, whatever a boot
+  ;; file defines under that name. The Rust boot expander resolves a bare `name` inside
+  ;; `(define (name x) (name x))` to the primitive, since defining a name of `(#%capy)`
+  ;; assigns the primitive's variable; here the definition would be the target.
+  (global-extend 'core '|#%primitive|
+    (lambda (e r w s mod)
+      (syntax-case e ()
+        [(_ name)
+          (identifier? #'name)
+          (let ([sym (syntax->datum #'name)])
+            (make-global-ref s '(|#%capy|) sym
+              (unit-import-slot! (current-unit) '(|#%capy|) sym)))]
+        [_ (syntax-violation '|#%primitive| "bad primitive reference" (source-wrap e w s mod))])))
 
   (global-extend 'core 'quote-syntax
     (lambda (e r w s mod)
@@ -3474,19 +3498,10 @@
                 (syntax-violation 'set! "identifier out of context" (wrap #'id w mod))]
               [else (syntax-violation 'set! "bad set!" (source-wrap e w s mod))]))]
         [(_ (head tail ...) val)
-          (receive (type value ee* ee ww ss modmod) (syntax-type #'head r empty-wrap no-source #f mod #t)
-            (case type 
-              [(module-ref)
-                (let ([val (expand #'val r w mod)])
-                  (receive (e r w s* mod) (value #'(head tail ...) r w mod)
-                    (syntax-case e () 
-                      [e (id? #'e)
-                        (build-global-assignment s (syntax->datum #'e) val mod)])))]
-              [else 
-                (build-call 
-                  s 
-                  (expand #'(setter head) r w mod)
-                  (map (lambda (e) (expand e r w mod)) #'(tail ... val)))]))])))
+          (build-call
+            s
+            (expand #'(setter head) r w mod)
+            (map (lambda (e) (expand e r w mod)) #'(tail ... val)))])))
 
   (global-extend 'local-syntax 'letrec-syntax #t)
   (global-extend 'local-syntax 'let-syntax #f)
@@ -3495,8 +3510,7 @@
   (global-extend 'define-syntax 'define-syntax '())
   (global-extend 'define-syntax-parameter 'define-syntax-parameter '())
   (global-extend 'define-property 'define-property '())
-  (global-extend 'module-ref '|@| expand-public-ref)
-  (global-extend 'module-ref '|@@| expand-private-ref)
+  (global-extend 'library-body '%library-body expand-library-body)
   (global-extend 'core 'syntax-parameterize expand-syntax-parameterize)
 
   (set! identifier-binding 
@@ -3511,43 +3525,7 @@
           [(eq? result name) #f] ;; global
           [(global-property-label? result) #f]
           [(or (pair? result) (vector? result)) 'lexical]
-          [else #f]))))
-      ;(id-var-name (syntax-expression id) (syntax-wrap id) (syntax-module id))))
-
-  (set! syntax-error
-    (let ((make-syntax make-syntax))
-      (make-syntax-transformer
-        'syntax-error
-        'macro
-        (cons (lambda (x)
-               (let ((tmp-1 x))
-                 (let ((tmp ($sc-dispatch tmp-1 '(_ (any . any) any . each-any))))
-                   (if (if tmp (apply (lambda (keyword operands message arg) (string? (syntax->datum message))) tmp) #f)
-                     (apply (lambda (keyword operands message arg)
-                             (syntax-violation
-                               (syntax->datum keyword)
-                               (string-join
-                                 (cons (syntax->datum message) (map (lambda (x) (object->string (syntax->datum x))) arg)))
-                               (if (syntax->datum keyword) (cons keyword operands) #f)))
-                       tmp)
-                     (let ((tmp ($sc-dispatch tmp-1 '(_ any . each-any))))
-                       (if (if tmp (apply (lambda (message arg) (string? (syntax->datum message))) tmp) #f)
-                         (apply (lambda (message arg)
-                                 (cons (make-syntax
-                                        'syntax-error
-                                        (list top-mark
-                                          (vector
-                                            'ribcage
-                                            '#(syntax-error)
-                                            top-wrap-v
-                                            (vector
-                                              (cons '(hygiene capy)
-                                                (make-syntax 'syntax-error top-wrap '(hygiene capy))))))
-                                        '(hygiene capy))
-                                   (cons '(#f) (cons message arg))))
-                           tmp)
-                         (syntax-violation #f "source expression failed to match any pattern" tmp-1)))))))
-          (make-syntax #f top-wrap '(hygiene capy)))))))
+          [else #f])))))
 
 (define with-syntax
   (let ((make-syntax make-syntax))

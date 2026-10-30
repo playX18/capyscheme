@@ -56,9 +56,7 @@
                     ;; single-expression nodes
                     [(~or
                         (~lset _ _ _ exp)
-                        (~module-set _ _ _ _ exp)
-                        (~toplevel-set _ _ _ exp)
-                        (~toplevel-define _ _ _ exp))
+                        (~global-set _ _ _ _ exp))
                       (recur exp seed ...)]
                     ;; binding forms: values first, then the body
                     [(~or
@@ -74,15 +72,18 @@
                         (sweep-children recur operands seed ...))]
                     [(~primcall _ _ args)
                       (sweep-children recur args seed ...)]
-                    [(~proc _ _ body _ _)
+                    [(~or
+                        (~proc _ _ body _ _)
+                        (~linklet _ _ _ _ _ body _))
                       (recur body seed ...)]
                     [(~values _ vals)
                       (sweep-children recur vals seed ...)]
                     [(~sequence _ head tail)
                       (let*-values (([seed ...] (recur head seed ...)))
                         (recur tail seed ...))]
-                    [(~wcm _ _ mark result)
-                      (let*-values (([seed ...] (recur mark seed ...)))
+                    [(~wcm _ key mark result)
+                      (let*-values (([seed ...] (recur key seed ...))
+                                    ([seed ...] (recur mark seed ...)))
                         (recur result seed ...))]
                     [(~if _ test then els)
                       (let*-values (([seed ...] (recur test seed ...))
@@ -114,8 +115,7 @@
                 (constant? node)
                 (lref? node)
                 (primref? node)
-                (module-ref? node)
-                (toplevel-ref? node))
+                (global-ref? node))
               node]
             ;; single-expression nodes
             [(lset? node)
@@ -123,28 +123,13 @@
                 (if (not (eq? value* (lset-value node)))
                   (make-lset (term-src node) (lset-name node) (lset-sym node) value*)
                   node))]
-            [(module-set? node)
-              (let ([value* (walk (module-set-value node))])
-                (if (not (eq? value* (module-set-value node)))
-                  (make-module-set (term-src node) (module-set-module node)
-                    (module-set-name node)
-                    (module-set-public? node)
-                    value*)
-                  node))]
-            [(toplevel-set? node)
-              (let ([value* (walk (toplevel-set-value node))])
-                (if (not (eq? value* (toplevel-set-value node)))
-                  (make-toplevel-set (term-src node)
-                    (toplevel-set-mod node)
-                    (toplevel-set-name node)
-                    value*)
-                  node))]
-            [(toplevel-define? node)
-              (let ([value* (walk (toplevel-define-value node))])
-                (if (not (eq? value* (toplevel-define-value node)))
-                  (make-toplevel-define (term-src node)
-                    (toplevel-define-mod node)
-                    (toplevel-define-name node)
+            [(global-set? node)
+              (let ([value* (walk (global-set-value node))])
+                (if (not (eq? value* (global-set-value node)))
+                  (make-global-set (term-src node)
+                    (global-set-key node)
+                    (global-set-name node)
+                    (global-set-slot node)
                     value*)
                   node))]
             ;; conditionals
@@ -227,6 +212,17 @@
                     (proc-meta node)
                     (proc-ids node))
                   node))]
+            [(linklet-term? node)
+              (let ([body* (walk (linklet-term-body node))])
+                (if (not (eq? body* (linklet-term-body node)))
+                  (make-linklet-term (term-src node)
+                    (linklet-term-name node)
+                    (linklet-term-imports node)
+                    (linklet-term-exports node)
+                    (linklet-term-slots node)
+                    body*
+                    (linklet-term-meta node))
+                  node))]
             ;; multiple values
             [(values? node)
               (unless (list? (values-values node))
@@ -248,12 +244,14 @@
                   node))]
             ;; continuation marks
             [(wcm? node)
-              (let* ([mark* (walk (wcm-mark node))]
+              (let* ([key* (walk (wcm-key node))]
+                    [mark* (walk (wcm-mark node))]
                     [result* (walk (wcm-result node))])
-                (if (not (and (eq? mark* (wcm-mark node))
+                (if (not (and (eq? key* (wcm-key node))
+                         (eq? mark* (wcm-mark node))
                          (eq? result* (wcm-result node))))
                   (make-wcm (term-src node)
-                    (wcm-key node)
+                    key*
                     mark*
                     result*)
                   node))]

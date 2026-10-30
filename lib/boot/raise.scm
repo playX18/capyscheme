@@ -1,3 +1,6 @@
+(|#%require| (boot prim) (boot control) (boot records) (boot conditions) (boot violations) (late (boot port-api) current-error-port) (late (boot psyntax-exp) identifier?) (late (boot exceptions) raise current-exception-printer))
+(|#%provide| all-defined)
+
 (define (warning who message . irritants)
   ;; Prints a warning through the exception printer and continues; does not
   ;; raise (a warning should not abort the program).
@@ -92,6 +95,9 @@
                 (if sub (make-irritants-condition (list sub)) #f))))))
       (assertion-violation 'syntax-violation "expected string as message" message))
     (assertion-violation 'syntax-violation "expected string or symbol or #f as who" who)))
+
+(define (error-without-irritants message)
+  (raise (condition (make-error) (make-message-condition message))))
 
 (define (error who message . irritants)
   (define marks (current-continuation-marks))
@@ -346,3 +352,21 @@
             (and who (make-who-condition who))
             (and (pair? message) (make-message-condition (car message))))))
       #f)))
+
+;; Runtime hooks for Rust, see `install-runtime-hook!`.
+(install-runtime-hook! 'assertion-violation assertion-violation)
+(install-runtime-hook! 'undefined-violation undefined-violation)
+(install-runtime-hook! 'implementation-restriction-violation implementation-restriction-violation)
+(install-runtime-hook! 'error error)
+(install-runtime-hook! 'raise-i/o-error raise-i/o-error)
+(install-runtime-hook! 'raise-i/o-file-does-not-exist-error raise-i/o-file-does-not-exist-error)
+(install-runtime-hook! 'raise-i/o-file-already-exists-error raise-i/o-file-already-exists-error)
+(install-runtime-hook! 'raise-i/o-file-is-read-only-error raise-i/o-file-is-read-only-error)
+(install-runtime-hook! 'raise-i/o-file-protection-error raise-i/o-file-protection-error)
+(install-runtime-hook! 'raise-i/o-read-error raise-i/o-read-error)
+(install-runtime-hook! 'raise-i/o-write-error raise-i/o-write-error)
+(install-runtime-hook! '%make-assertion-violation %make-assertion-violation)
+(install-runtime-hook! '%make-undefined-violation %make-undefined-violation)
+(install-runtime-hook! '%make-error %make-error)
+(install-runtime-hook! '%make-io-error %make-io-error)
+(install-runtime-hook! '%make-lexical-violation %make-lexical-violation)

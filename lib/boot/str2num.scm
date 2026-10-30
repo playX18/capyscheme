@@ -1,3 +1,6 @@
+(|#%require| (boot prim) (boot control) (boot records) (boot conditions) (boot violations) (boot raise) (boot exceptions) (boot expand) (boot interpreter) (boot enums) (boot sys) (boot osdep) (boot ports-core) (boot transcoder) (boot binary-ports) (boot textual-ports) (boot custom-ports) (boot file-ports) (boot console-ports) (boot port-api) (boot print) (boot format) (boot log) (boot match-syntax) (boot units) (boot psyntax-exp))
+(|#%provide| all-defined)
+
 ; Copyright Lightship Software, Incorporated.
 ;
 ; $Id$
@@ -911,19 +914,7 @@
                    (i (+ i 1)))
               (if (and (< i n)
                    (decimal-digit? (string-ref s i)))
-                (if (and (char=? #\0 (string-ref s i))
-                     (char=? sign #\-)
-                     (eq? e 'i)
-                     (= p 1)
-                     (eq? 'extremely (larceny:r7strict)))
-                  (call-with-values
-                    (lambda () (loop i 0 -1))
-                    (lambda (x i)
-                      (values (if (= x (flonum:zero))
-                               (create-number 'i -1 0 1 0)
-                               x)
-                        i)))
-                  (loop i 0 (if (char=? sign #\+) 1 -1)))
+                (loop i 0 (if (char=? sign #\+) 1 -1))
                 (values #f i))))
           ((#\0 #\1 #\2 #\3 #\4 #\5 #\6 #\7 #\8 #\9)
             (loop i 0 1))

@@ -6,8 +6,8 @@ use super::*;
 use crate::{
     expander::{
         core::{
-            Fix, LVarRef, Let, LetStyle, Proc, Term, TermKind, TermRef, call_term, define,
-            fresh_lvar, lref, prim_call_term,
+            Fix, GlobalSlot, LVarRef, Let, LetStyle, LinkletTerm, Proc, Term, TermKind, TermRef,
+            call_term, fresh_lvar, lref, prim_call_term,
         },
         primitives::{sym_make_variable, sym_variable_ref, sym_variable_set},
     },
@@ -59,10 +59,7 @@ fn rec<'gc>(
     substitutions: &mut HashMap<LVarRef<'gc>, LVarRef<'gc>>,
 ) -> TermRef<'gc> {
     match &term.kind {
-        TermKind::ToplevelRef(_, _)
-        | TermKind::ModuleRef(_, _, _)
-        | TermKind::PrimRef(_)
-        | TermKind::Const(_) => term,
+        TermKind::GlobalRef(_, _, _) | TermKind::PrimRef(_) | TermKind::Const(_) => term,
         TermKind::LRef(lvar) => {
             if let Some(new_var) = substitutions.get(lvar) {
                 box_ref(ctx, *new_var)
@@ -91,11 +88,6 @@ fn rec<'gc>(
                 .map(|arg| rec(ctx, *arg, substitutions))
                 .collect::<Vec<_>>();
             call_term(ctx, proc, args, term.source())
-        }
-
-        TermKind::Define(module, name, val) => {
-            let val = rec(ctx, *val, substitutions);
-            define(ctx, *module, *name, val, term.source())
         }
 
         TermKind::If(test, cons, alt) => {
@@ -133,14 +125,6 @@ fn rec<'gc>(
             ctx.allocate(Term {
                 source: Lock::new(term.source()),
                 kind: TermKind::Values(values),
-            })
-        }
-
-        TermKind::ToplevelSet(module, name, val) => {
-            let val = rec(ctx, *val, substitutions);
-            ctx.allocate(Term {
-                source: Lock::new(term.source()),
-                kind: TermKind::ToplevelSet(*module, *name, val),
             })
         }
 
@@ -269,11 +253,30 @@ fn rec<'gc>(
             })
         }
 
-        TermKind::ModuleSet(module, name, public, val) => {
+        TermKind::GlobalSet(key, name, slot, val) => {
             let val = rec(ctx, *val, substitutions);
             ctx.allocate(Term {
                 source: Lock::new(term.source()),
-                kind: TermKind::ModuleSet(*module, *name, *public, val),
+                kind: TermKind::GlobalSet(*key, *name, *slot, val),
+            })
+        }
+
+        TermKind::Linklet(linklet) => {
+            debug_assert!(
+                linklet.slots.iter().all(|slot| !slot.is_mutated()),
+                "linklet slots must not be mutated locally"
+            );
+            let body = rec(ctx, linklet.body, substitutions);
+            ctx.allocate(Term {
+                source: Lock::new(term.source()),
+                kind: TermKind::Linklet(ctx.allocate(LinkletTerm {
+                    name: linklet.name,
+                    imports: linklet.imports,
+                    exports: linklet.exports,
+                    slots: linklet.slots,
+                    body,
+                    meta: linklet.meta,
+                })),
             })
         }
     }
@@ -316,10 +319,24 @@ impl<'gc> Term<'gc> {
         match self.kind {
             TermKind::Const(_)
             | TermKind::PrimRef(_)
-            | TermKind::ToplevelRef(_, _)
-            | TermKind::ModuleRef(_, _, _) => (),
-            TermKind::LRef(lvar) => {
+            | TermKind::GlobalRef(_, _, GlobalSlot::Variable(_)) => (),
+            TermKind::LRef(lvar) | TermKind::GlobalRef(_, _, GlobalSlot::Box(lvar)) => {
                 lvar.reference();
+            }
+
+            TermKind::GlobalSet(_, _, slot, val) => {
+                if let GlobalSlot::Box(lvar) = slot {
+                    lvar.reference();
+                }
+                val.count_refs();
+            }
+
+            TermKind::Linklet(linklet) => {
+                for slot in linklet.slots.iter() {
+                    slot.set_count.set(0);
+                    slot.ref_count.set(0);
+                }
+                linklet.body.count_refs();
             }
 
             TermKind::LSet(lvar, val) => {
@@ -338,10 +355,6 @@ impl<'gc> Term<'gc> {
                 for arg in args.iter() {
                     arg.count_refs();
                 }
-            }
-
-            TermKind::Define(_, _, val) => {
-                val.count_refs();
             }
 
             TermKind::Fix(fix) => {
@@ -370,10 +383,6 @@ impl<'gc> Term<'gc> {
                     val.count_refs();
                 }
                 l.body.count_refs();
-            }
-
-            TermKind::ModuleSet(_, _, _, val) => {
-                val.count_refs();
             }
 
             TermKind::Proc(proc) => {
@@ -406,10 +415,6 @@ impl<'gc> Term<'gc> {
             TermKind::Seq(head, tail) => {
                 head.count_refs();
                 tail.count_refs();
-            }
-
-            TermKind::ToplevelSet(_, _, val) => {
-                val.count_refs();
             }
 
             TermKind::Values(values) => {

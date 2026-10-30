@@ -1,5 +1,6 @@
 (import (srfi 64)
-        (capy))
+        (capy)
+        (only (rnrs eval) environment))
 
 (test-begin "boot class generic definition macros")
 
@@ -116,11 +117,11 @@
   (test-error "define-method rejects unsupported inline qualifiers"
     &syntax
     (eval '(define-method (macro-unsupported-inline (obj point)) :before obj)
-      (current-module)))
+      (interaction-environment)))
   (test-error "define-method rejects unsupported split qualifiers"
     &syntax
     (eval '(define-method macro-unsupported-split :before ((obj point)) obj)
-      (current-module)))
+      (interaction-environment)))
   (test-equal "define-method handles optional method arguments"
     (macro-options p)
     '(default 9))
@@ -172,7 +173,7 @@
   (test-error "define-generic rejects unsupported options"
     &syntax
     (eval '(define-generic macro-unsupported-generic-option :class <generic>)
-      (current-module)))
+      (interaction-environment)))
   (test-assert "generic-sealed? starts false"
     (not (generic-sealed? macro-sealed)))
   (generic-seal! macro-sealed)

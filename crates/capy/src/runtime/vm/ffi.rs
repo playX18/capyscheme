@@ -13,8 +13,8 @@ use crate::{
     global,
     prelude::*,
     runtime::{
-        modules::define,
         prelude::*,
+        variable::define,
         vm::ExecutionResult,
         vm::thunks::make_assertion_violation,
         vmthread::{Command, VM_THREAD},
@@ -840,104 +840,233 @@ pub mod ffi_ops {
     }
     #[scheme(name = "pointer-ref/u8")]
     pub fn ptr_u8_ref(pointer: Value<'gc>, offset: Value<'gc>) -> Value<'gc> {
-        crate::runtime::prims::memory::pointer_ref(ctx, "pointer-ref/u8", crate::runtime::prims::memory::Elem::U8, pointer, offset)
+        crate::runtime::prims::memory::pointer_ref(
+            ctx,
+            "pointer-ref/u8",
+            crate::runtime::prims::memory::Elem::U8,
+            pointer,
+            offset,
+        )
     }
 
     #[scheme(name = "pointer-set!/u8")]
     pub fn ptr_u8_set(pointer: Value<'gc>, offset: Value<'gc>, value: Value<'gc>) -> Value<'gc> {
-        crate::runtime::prims::memory::pointer_set(ctx, "pointer-set!/u8", crate::runtime::prims::memory::Elem::U8, pointer, offset, value)
+        crate::runtime::prims::memory::pointer_set(
+            ctx,
+            "pointer-set!/u8",
+            crate::runtime::prims::memory::Elem::U8,
+            pointer,
+            offset,
+            value,
+        )
     }
 
     #[scheme(name = "pointer-ref/s8")]
     pub fn ptr_s8_ref(pointer: Value<'gc>, offset: Value<'gc>) -> Value<'gc> {
-        crate::runtime::prims::memory::pointer_ref(ctx, "pointer-ref/s8", crate::runtime::prims::memory::Elem::S8, pointer, offset)
+        crate::runtime::prims::memory::pointer_ref(
+            ctx,
+            "pointer-ref/s8",
+            crate::runtime::prims::memory::Elem::S8,
+            pointer,
+            offset,
+        )
     }
 
     #[scheme(name = "pointer-set!/s8")]
     pub fn ptr_s8_set(pointer: Value<'gc>, offset: Value<'gc>, value: Value<'gc>) -> Value<'gc> {
-        crate::runtime::prims::memory::pointer_set(ctx, "pointer-set!/s8", crate::runtime::prims::memory::Elem::S8, pointer, offset, value)
+        crate::runtime::prims::memory::pointer_set(
+            ctx,
+            "pointer-set!/s8",
+            crate::runtime::prims::memory::Elem::S8,
+            pointer,
+            offset,
+            value,
+        )
     }
 
     #[scheme(name = "pointer-ref/u16")]
     pub fn ptr_u16_ref(pointer: Value<'gc>, offset: Value<'gc>) -> Value<'gc> {
-        crate::runtime::prims::memory::pointer_ref(ctx, "pointer-ref/u16", crate::runtime::prims::memory::Elem::U16, pointer, offset)
+        crate::runtime::prims::memory::pointer_ref(
+            ctx,
+            "pointer-ref/u16",
+            crate::runtime::prims::memory::Elem::U16,
+            pointer,
+            offset,
+        )
     }
 
     #[scheme(name = "pointer-set!/u16")]
     pub fn ptr_u16_set(pointer: Value<'gc>, offset: Value<'gc>, value: Value<'gc>) -> Value<'gc> {
-        crate::runtime::prims::memory::pointer_set(ctx, "pointer-set!/u16", crate::runtime::prims::memory::Elem::U16, pointer, offset, value)
+        crate::runtime::prims::memory::pointer_set(
+            ctx,
+            "pointer-set!/u16",
+            crate::runtime::prims::memory::Elem::U16,
+            pointer,
+            offset,
+            value,
+        )
     }
 
     #[scheme(name = "pointer-ref/s16")]
     pub fn ptr_s16_ref(pointer: Value<'gc>, offset: Value<'gc>) -> Value<'gc> {
-        crate::runtime::prims::memory::pointer_ref(ctx, "pointer-ref/s16", crate::runtime::prims::memory::Elem::S16, pointer, offset)
+        crate::runtime::prims::memory::pointer_ref(
+            ctx,
+            "pointer-ref/s16",
+            crate::runtime::prims::memory::Elem::S16,
+            pointer,
+            offset,
+        )
     }
 
     #[scheme(name = "pointer-set!/s16")]
     pub fn ptr_s16_set(pointer: Value<'gc>, offset: Value<'gc>, value: Value<'gc>) -> Value<'gc> {
-        crate::runtime::prims::memory::pointer_set(ctx, "pointer-set!/s16", crate::runtime::prims::memory::Elem::S16, pointer, offset, value)
+        crate::runtime::prims::memory::pointer_set(
+            ctx,
+            "pointer-set!/s16",
+            crate::runtime::prims::memory::Elem::S16,
+            pointer,
+            offset,
+            value,
+        )
     }
 
     #[scheme(name = "pointer-ref/u32")]
     pub fn ptr_u32_ref(pointer: Value<'gc>, offset: Value<'gc>) -> Value<'gc> {
-        crate::runtime::prims::memory::pointer_ref(ctx, "pointer-ref/u32", crate::runtime::prims::memory::Elem::U32, pointer, offset)
+        crate::runtime::prims::memory::pointer_ref(
+            ctx,
+            "pointer-ref/u32",
+            crate::runtime::prims::memory::Elem::U32,
+            pointer,
+            offset,
+        )
     }
 
     #[scheme(name = "pointer-set!/u32")]
     pub fn ptr_u32_set(pointer: Value<'gc>, offset: Value<'gc>, value: Value<'gc>) -> Value<'gc> {
-        crate::runtime::prims::memory::pointer_set(ctx, "pointer-set!/u32", crate::runtime::prims::memory::Elem::U32, pointer, offset, value)
+        crate::runtime::prims::memory::pointer_set(
+            ctx,
+            "pointer-set!/u32",
+            crate::runtime::prims::memory::Elem::U32,
+            pointer,
+            offset,
+            value,
+        )
     }
 
     #[scheme(name = "pointer-ref/s32")]
     pub fn ptr_s32_ref(pointer: Value<'gc>, offset: Value<'gc>) -> Value<'gc> {
-        crate::runtime::prims::memory::pointer_ref(ctx, "pointer-ref/s32", crate::runtime::prims::memory::Elem::S32, pointer, offset)
+        crate::runtime::prims::memory::pointer_ref(
+            ctx,
+            "pointer-ref/s32",
+            crate::runtime::prims::memory::Elem::S32,
+            pointer,
+            offset,
+        )
     }
 
     #[scheme(name = "pointer-set!/s32")]
     pub fn ptr_s32_set(pointer: Value<'gc>, offset: Value<'gc>, value: Value<'gc>) -> Value<'gc> {
-        crate::runtime::prims::memory::pointer_set(ctx, "pointer-set!/s32", crate::runtime::prims::memory::Elem::S32, pointer, offset, value)
+        crate::runtime::prims::memory::pointer_set(
+            ctx,
+            "pointer-set!/s32",
+            crate::runtime::prims::memory::Elem::S32,
+            pointer,
+            offset,
+            value,
+        )
     }
 
     #[scheme(name = "pointer-ref/u64")]
     pub fn ptr_u64_ref(pointer: Value<'gc>, offset: Value<'gc>) -> Value<'gc> {
-        crate::runtime::prims::memory::pointer_ref(ctx, "pointer-ref/u64", crate::runtime::prims::memory::Elem::U64, pointer, offset)
+        crate::runtime::prims::memory::pointer_ref(
+            ctx,
+            "pointer-ref/u64",
+            crate::runtime::prims::memory::Elem::U64,
+            pointer,
+            offset,
+        )
     }
 
     #[scheme(name = "pointer-set!/u64")]
     pub fn ptr_u64_set(pointer: Value<'gc>, offset: Value<'gc>, value: Value<'gc>) -> Value<'gc> {
-        crate::runtime::prims::memory::pointer_set(ctx, "pointer-set!/u64", crate::runtime::prims::memory::Elem::U64, pointer, offset, value)
+        crate::runtime::prims::memory::pointer_set(
+            ctx,
+            "pointer-set!/u64",
+            crate::runtime::prims::memory::Elem::U64,
+            pointer,
+            offset,
+            value,
+        )
     }
 
     #[scheme(name = "pointer-ref/s64")]
     pub fn ptr_s64_ref(pointer: Value<'gc>, offset: Value<'gc>) -> Value<'gc> {
-        crate::runtime::prims::memory::pointer_ref(ctx, "pointer-ref/s64", crate::runtime::prims::memory::Elem::S64, pointer, offset)
+        crate::runtime::prims::memory::pointer_ref(
+            ctx,
+            "pointer-ref/s64",
+            crate::runtime::prims::memory::Elem::S64,
+            pointer,
+            offset,
+        )
     }
 
     #[scheme(name = "pointer-set!/s64")]
     pub fn ptr_s64_set(pointer: Value<'gc>, offset: Value<'gc>, value: Value<'gc>) -> Value<'gc> {
-        crate::runtime::prims::memory::pointer_set(ctx, "pointer-set!/s64", crate::runtime::prims::memory::Elem::S64, pointer, offset, value)
+        crate::runtime::prims::memory::pointer_set(
+            ctx,
+            "pointer-set!/s64",
+            crate::runtime::prims::memory::Elem::S64,
+            pointer,
+            offset,
+            value,
+        )
     }
 
     #[scheme(name = "pointer-ref/f32")]
     pub fn ptr_f32_ref(pointer: Value<'gc>, offset: Value<'gc>) -> Value<'gc> {
-        crate::runtime::prims::memory::pointer_ref(ctx, "pointer-ref/f32", crate::runtime::prims::memory::Elem::F32, pointer, offset)
+        crate::runtime::prims::memory::pointer_ref(
+            ctx,
+            "pointer-ref/f32",
+            crate::runtime::prims::memory::Elem::F32,
+            pointer,
+            offset,
+        )
     }
 
     #[scheme(name = "pointer-set!/f32")]
     pub fn ptr_f32_set(pointer: Value<'gc>, offset: Value<'gc>, value: Value<'gc>) -> Value<'gc> {
-        crate::runtime::prims::memory::pointer_set(ctx, "pointer-set!/f32", crate::runtime::prims::memory::Elem::F32, pointer, offset, value)
+        crate::runtime::prims::memory::pointer_set(
+            ctx,
+            "pointer-set!/f32",
+            crate::runtime::prims::memory::Elem::F32,
+            pointer,
+            offset,
+            value,
+        )
     }
 
     #[scheme(name = "pointer-ref/f64")]
     pub fn ptr_f64_ref(pointer: Value<'gc>, offset: Value<'gc>) -> Value<'gc> {
-        crate::runtime::prims::memory::pointer_ref(ctx, "pointer-ref/f64", crate::runtime::prims::memory::Elem::F64, pointer, offset)
+        crate::runtime::prims::memory::pointer_ref(
+            ctx,
+            "pointer-ref/f64",
+            crate::runtime::prims::memory::Elem::F64,
+            pointer,
+            offset,
+        )
     }
 
     #[scheme(name = "pointer-set!/f64")]
     pub fn ptr_f64_set(pointer: Value<'gc>, offset: Value<'gc>, value: Value<'gc>) -> Value<'gc> {
-        crate::runtime::prims::memory::pointer_set(ctx, "pointer-set!/f64", crate::runtime::prims::memory::Elem::F64, pointer, offset, value)
+        crate::runtime::prims::memory::pointer_set(
+            ctx,
+            "pointer-set!/f64",
+            crate::runtime::prims::memory::Elem::F64,
+            pointer,
+            offset,
+            value,
+        )
     }
-
 }
 
 pub fn alignof<'gc>(
@@ -1321,7 +1450,7 @@ fn raise_condition<'gc>(
     ctx: MutationContext<'gc>,
     condition: Value<'gc>,
 ) -> Value<'gc> {
-    match ctx.globals().root_module().get_str(ctx, "raise") {
+    match ctx.try_hook(crate::runtime::hooks::Hook::Raise) {
         Some(raise) => call.tail(raise, &[condition]),
         None => call.err(condition),
     }

@@ -14,3 +14,6 @@ path = "src/capyc.rs"
 
 [dependencies]
 capy-sni = { path = "../capy-sni" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libsui = "0.16.4"

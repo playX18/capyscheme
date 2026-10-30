@@ -10,6 +10,7 @@ use crate::heap::mmtk::util::Address;
 
 use crate::runtime::{
     MutationContext,
+    record::{RTD_OPAQUE, RTD_SEALED, Rcd, Rtd},
     value::{
         BigInt, ByteVector, Complex, HashTable, HashTableType, IntoValue, Keyword, Rational, Str,
         Symbol, Tuple, Value, Vector,
@@ -21,9 +22,9 @@ use super::{
     ConstSpec, FASL_COMPRESSION_GZIP, FASL_COMPRESSION_NONE, FASL_MAGIC, FASL_TAG_BIGINT,
     FASL_TAG_BVECTOR, FASL_TAG_CHAR, FASL_TAG_COMPLEX, FASL_TAG_DLIST, FASL_TAG_F, FASL_TAG_FIXNUM,
     FASL_TAG_FLONUM, FASL_TAG_IMMEDIATE, FASL_TAG_KEYWORD, FASL_TAG_LOOKUP, FASL_TAG_NIL,
-    FASL_TAG_PLIST, FASL_TAG_PROGRAM, FASL_TAG_RATIONAL, FASL_TAG_REF, FASL_TAG_REF_INIT,
-    FASL_TAG_STR, FASL_TAG_SYMBOL, FASL_TAG_SYNTAX, FASL_TAG_T, FASL_TAG_TUPLE,
-    FASL_TAG_UNINTERNED_SYMBOL, FASL_TAG_VECTOR, FASL_VERSION, ProgramSpec, checked_u32_len,
+    FASL_TAG_PLIST, FASL_TAG_PROGRAM, FASL_TAG_RATIONAL, FASL_TAG_RCD, FASL_TAG_REF,
+    FASL_TAG_REF_INIT, FASL_TAG_RTD, FASL_TAG_STR, FASL_TAG_SYMBOL, FASL_TAG_SYNTAX, FASL_TAG_T,
+    FASL_TAG_TUPLE, FASL_TAG_UNINTERNED_SYMBOL, FASL_TAG_VECTOR, ProgramSpec, checked_u32_len,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -170,6 +171,25 @@ impl<'gc, W: Write> Writer<'gc, W> {
             return Ok(());
         }
 
+        if obj.is::<Rtd>() {
+            let rtd = obj.downcast::<Rtd>();
+            self.scan(rtd.name)?;
+            self.scan(rtd.uid)?;
+            self.scan(rtd.fields)?;
+            if let Some(parent) = rtd.parent() {
+                self.scan(Value::from(parent))?;
+            }
+            return Ok(());
+        }
+
+        if obj.is::<Rcd>() {
+            let rcd = obj.downcast::<Rcd>();
+            self.scan(Value::from(rcd.rtd))?;
+            self.scan(rcd.prcd)?;
+            self.scan(rcd.protocol)?;
+            return Ok(());
+        }
+
         log::debug!("{obj}");
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -307,6 +327,39 @@ impl<'gc, W: Write> Writer<'gc, W> {
             self.put(sym.into_value(self.ctx))?;
             return Ok(());
         }
+
+        if obj.is::<Rtd>() {
+            let rtd = obj.downcast::<Rtd>();
+            let parent = rtd.parent();
+            let inherited_fields = parent.map_or(0, |p| p.field_count);
+            let own_field_count =
+                rtd.field_count
+                    .checked_sub(inherited_fields)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "record type has fewer fields than its parent",
+                        )
+                    })?;
+            self.put8(FASL_TAG_RTD)?;
+            self.put(rtd.name)?;
+            self.put(rtd.uid)?;
+            self.put8((rtd.flags.get() & (RTD_SEALED | RTD_OPAQUE)) as u8)?;
+            self.put32(own_field_count)?;
+            self.put(rtd.fields)?;
+            self.put(parent.map_or(Value::new(false), |p| Value::from(p)))?;
+            return Ok(());
+        }
+
+        if obj.is::<Rcd>() {
+            let rcd = obj.downcast::<Rcd>();
+            self.put8(FASL_TAG_RCD)?;
+            self.put(Value::from(rcd.rtd))?;
+            self.put(rcd.prcd)?;
+            self.put(rcd.protocol)?;
+            return Ok(());
+        }
+
         log::debug!("{obj}");
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -343,14 +396,16 @@ impl<'gc, W: Write> Writer<'gc, W> {
     }
 
     pub fn put_header(&mut self) -> io::Result<()> {
-        self.writer.write_all(FASL_MAGIC)?;
-        self.put32(FASL_VERSION)
+        self.writer.write_all(FASL_MAGIC)
     }
 
     pub fn put_lites(&mut self) -> io::Result<()> {
         self.put32(self.lites.len() as u32)?;
 
-        for (key, value) in self.lites.iter() {
+        let mut entries: Vec<_> = self.lites.iter().collect();
+        entries.sort_by_key(|(_, value)| value.as_int32());
+
+        for (key, value) in entries {
             self.put32(value.as_int32() as u32)?;
 
             if key.is::<Symbol>() {

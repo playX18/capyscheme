@@ -36,7 +36,7 @@
             (string-append out " " (symbol->string (car name))))])))
 
   (define (repl-prompt)
-    (string-append "(" (module-name->string (module-name (current-module))) ")> "))
+    (string-append "(" (module-name->string (namespace-name (current-namespace))) ")> "))
 
   (define (print-values vals)
     (parameterize ([print-length (or (print-length) 4)]
@@ -69,12 +69,18 @@
             (guard (c [else
                        (flush-output-port (current-output-port))
                        ((current-exception-printer) c)])
-              (receive ans (eval form (current-module))
+              (receive ans (eval form (current-namespace))
                 (print-values ans)))
             (loop)]))))
+
+
+  (define (fancy-read-eval-print-loop)
+    (unless (library-instance (current-library-registry) '(core fancy-repl))
+      (resolve-env '(core fancy-repl)))
+    ((instance-ref (library-instance (current-library-registry) '(core fancy-repl)) 'read-eval-print-loop)))
 
   (define (read-eval-print-loop)
     (if (and (tty? (current-input-port))
          (tty? (current-output-port)))
-      (eval '((|@| (core fancy-repl) read-eval-print-loop)) (current-module))
+      (fancy-read-eval-print-loop)
       (simple-read-eval-print-loop))))

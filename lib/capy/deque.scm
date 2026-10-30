@@ -55,12 +55,12 @@
            (new-buf (make-vector new-cap)))
       ;; Copy elements linearly to the new buffer
       (do ((i 0 (+ i 1)))
-        ((= i (deque-len dq)))
+        ((= i (%deque-len dq)))
         (vector-set! new-buf i
           (vector-ref old-buf
-            (modulo (+ (deque-head dq) i) old-cap))))
-      (deque-buf-set! dq new-buf)
-      (deque-head-set! dq 0)))
+            (modulo (+ (%deque-head dq) i) old-cap))))
+      (%deque-buf-set! dq new-buf)
+      (%deque-head-set! dq 0)))
   (define (deque-capacity dq)
     (vector-length (%deque-buf dq)))
   (define (deque-length dq)

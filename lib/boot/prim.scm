@@ -1,4 +1,6 @@
 ;; Primitive functions to make bootstrap easier.
+(|#%require| (late (boot format) format))
+(|#%provide| all-defined)
 
 (define (filter pred lst)
   (let loop ([lst lst] [acc '()])
@@ -8,53 +10,13 @@
         (loop (cdr lst) (cons (car lst) acc))
         (loop (cdr lst) acc)))))
 
-(define (eq? x y) (eq? x y))
-(define (eqv? x y) (eqv? x y))
-(define (equal? x y) (equal? x y))
-(define (null? x) (null? x))
-(define (char? x) (char? x))
-(define (char>=? x . ys)
-  (let loop ([ys ys])
-    (cond
-      [(null? ys) #t]
-      [else (and (char>=? x (car ys))
-             (loop (cdr ys)))])))
 
-(define (char<=? x . ys)
-  (let loop ([ys ys])
-    (cond
-      [(null? ys) #t]
-      [else (and (char<=? x (car ys))
-             (loop (cdr ys)))])))
-
-(define (char>? x . ys)
-  (let loop ([ys ys])
-    (cond
-      [(null? ys) #t]
-      [else (and (char>? x (car ys))
-             (loop (cdr ys)))])))
-
-(define (char<? x . ys)
-  (let loop ([ys ys])
-    (cond
-      [(null? ys) #t]
-      [else (and (char<? x (car ys))
-             (loop (cdr ys)))])))
-
-(define (char=? x . ys)
-  (let loop ([ys ys])
-    (cond
-      [(null? ys) #t]
-      [else (and (char=? x (car ys))
-             (loop (cdr ys)))])))
-
+(define (null? x) ((|#%primitive| null?) x))
+(define (char? x) ((|#%primitive| char?) x))
 (define (integer->char i)
-  (integer->char i))
+  ((|#%primitive| integer->char) i))
 (define (char->integer c)
-  (char->integer c))
-
-(define (real? x) (real? x))
-(define (inexact? x) (inexact? x))
+  ((|#%primitive| char->integer) c))
 
 (define (tuple->list x)
   (let lp ([i 0] [n (tuple-size x)] [acc '()])
@@ -103,7 +65,7 @@
                           (loop (cdr y) (inexact x) #f))
                         (else (loop (cdr y) x exact))))))))
     max))
-(define (boolean? x) (boolean? x))
+(define (boolean? x) ((|#%primitive| boolean?) x))
 (define (alist-cons key datum alist) (cons (cons key datum) alist))
 (define (flatten lst)
   (if (null? lst) '()
@@ -279,6 +241,15 @@
               (else
                 (assertion-violation 'for-all (format "traversal reached to non-pair element ~s" (car lst)) list-of-lists))))))
 
+      (define collect-cdr
+        (lambda (lst)
+          (let loop ((lst lst))
+            (cond ((null? lst) '())
+              ((pair? (car lst))
+                (cons (cdr (car lst)) (loop (cdr lst))))
+              (else
+                (assertion-violation 'for-all (format "traversal reached to non-pair element ~s" (car lst)) list-of-lists))))))
+
       (let loop ((head (collect-car list-of-lists)) (rest (collect-cdr list-of-lists)))
         (or (= (length head) argc)
           (assertion-violation 'for-all "expected same length chains of pairs" list-of-lists))
@@ -388,9 +359,6 @@
 
 (define tuple-printer (make-parameter #f))
 
-; 0 - no logging, 1 - error, 2 - warning, 3 - info, 4 - debug, 5 - trace
-(define *log-level* 0)
-
 (define (set-procedure-property! proc key value)
   (let ([props (procedure-properties proc)])
     (if props
@@ -420,8 +388,9 @@
   (for-each proc (core-hash->list ht)))
 
 (define (call-with-values producer consumer)
-  (receive results (producer)
-    (apply consumer results)))
+  ((|#%primitive| call-with-values)
+    (lambda () (producer))
+    (lambda results (apply consumer results))))
 
 (define (cadr x) (car (cdr x)))
 (define (cddr x) (cdr (cdr x)))
@@ -433,8 +402,8 @@
 (define (cddddr x) (cdr (cdr (cdr (cdr x)))))
 (define (cdddar x) (cdr (cdr (cdr (car x)))))
 (define (caddar x) (car (cdr (cdr (car x)))))
-(define (cdaadr x) (cdr (car (cdr (car x)))))
-(define (caaddr x) (car (car (cdr (car x)))))
+(define (cdaadr x) (cdr (car (car (cdr x)))))
+(define (caaddr x) (car (car (cdr (cdr x)))))
 (define (caaaddr x) (car (car (car (cdr x)))))
 (define (cdaaddr x) (cdr (car (car (cdr x)))))
 (define (cddadr x) (cdr (cdr (car (cdr x)))))
@@ -446,11 +415,11 @@
 (define (cadaar x) (car (cdr (car (car x)))))
 (define (caadar x) (car (car (cdr (car x)))))
 (define (caaaar x) (car (car (car (car x)))))
-(define (caaadr x) (car (car (cdr (car x)))))
+(define (caaadr x) (car (car (car (cdr x)))))
 (define (cddar x) (cdr (cdr (car x))))
 (define (cdadr x) (cdr (car (cdr x))))
 (define (cadar x) (car (cdr (car x))))
-(define (caadr x) (car (cdr (car x))))
+(define (caadr x) (car (car (cdr x))))
 (define (cdaar x) (cdr (car (car x))))
 (define (caaar x) (car (car (car x))))
 
@@ -702,10 +671,10 @@
   (rec c))
 
 (define (inexact->exact num)
-  (inexact->exact num))
+  ((|#%primitive| inexact->exact) num))
 
 (define (exact->inexact num)
-  (exact->inexact num))
+  ((|#%primitive| exact->inexact) num))
 
 (define list-sort
   (lambda (proc lst)
@@ -769,8 +738,8 @@
   (string<? (symbol->string s1) (symbol->string s2)))
 
 (define (inf? x) (infinite?))
-(define ($set-attachments! x) ($set-attachments! x))
+(define ($set-attachments! x) ((|#%primitive| $set-attachments!) x))
 (define ($winders . args)
   (cond
-    [(null? args) ($winders)]
-    [else ($winders (car args))]))
+    [(null? args) ((|#%primitive| $winders))]
+    [else ((|#%primitive| $winders) (car args))]))

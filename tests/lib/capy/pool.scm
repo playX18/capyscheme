@@ -5,6 +5,18 @@
         (capy sync)
         (capy pool))
 
+(define (iota-list n)
+  (let loop ([i (- n 1)] [acc '()])
+    (if (< i 0) acc (loop (- i 1) (cons (+ i 1) acc)))))
+
+(define (sort-numbers lst)
+  (if (or (null? lst) (null? (cdr lst)))
+    lst
+    (let ([sorted (sort-numbers (cdr lst))])
+      (if (< (car lst) (car sorted))
+        (cons (car lst) sorted)
+        (cons (car sorted) (sort-numbers (cons (car lst) (cdr sorted))))))))
+
 (test-begin "capy pool")
 
 (test-group "worker pool"
@@ -146,17 +158,5 @@
     (let ([ch (make-channel 1)])
       (eq? (pipeline ch) ch))
     #t))
-
-(define (iota-list n)
-  (let loop ([i (- n 1)] [acc '()])
-    (if (< i 0) acc (loop (- i 1) (cons (+ i 1) acc)))))
-
-(define (sort-numbers lst)
-  (if (or (null? lst) (null? (cdr lst)))
-    lst
-    (let ([sorted (sort-numbers (cdr lst))])
-      (if (< (car lst) (car sorted))
-        (cons (car lst) sorted)
-        (cons (car sorted) (sort-numbers (cons (car lst) (cdr sorted))))))))
 
 (test-end "capy pool")

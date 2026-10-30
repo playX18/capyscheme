@@ -1,7 +1,12 @@
 use super::*;
 use crate::bytecode::{def, verify};
 use crate::heap::{Gc, Global, Trace, Visitor, mmtk::util::Address, sync::monitor::Monitor};
-use crate::runtime::{MutationContext, value::*, vm::syntax::Syntax};
+use crate::runtime::{
+    MutationContext,
+    record::{RTD_OPAQUE, RTD_SEALED, Rcd, Rtd},
+    value::*,
+    vm::syntax::Syntax,
+};
 use flate2::read::GzDecoder;
 use std::{
     collections::HashMap,
@@ -15,7 +20,6 @@ pub struct Reader<'gc, R: io::Read> {
     options: LoadOptions,
     roots: Global<crate::Rootable!(Roots<'_>)>,
     pub reference_map: HashMap<u32, Address>,
-    format_version: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +92,39 @@ struct ReadCode<'gc> {
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+
+/// Returns the descriptor a nongenerative record type with this uid resolves to.
+fn intern_nongenerative_rtd<'gc>(
+    ctx: MutationContext<'gc>,
+    rtd: Gc<'gc, Rtd<'gc>>,
+) -> io::Result<Gc<'gc, Rtd<'gc>>> {
+    let table = ctx
+        .globals()
+        .nongenerative_rtds
+        .get()
+        .downcast::<HashTable>();
+    match table.get(ctx, rtd.uid) {
+        Some(current) => {
+            let current = current.downcast::<Rtd>();
+            if current.nongenerative_compatible(
+                rtd.parent(),
+                rtd.fields,
+                rtd.is_sealed(),
+                rtd.is_opaque(),
+            ) {
+                Ok(current)
+            } else {
+                Err(invalid(
+                    "FASL record type conflicts with the nongenerative type of the same uid",
+                ))
+            }
+        }
+        None => {
+            table.put(ctx, rtd.uid, rtd);
+            Ok(rtd)
+        }
+    }
 }
 
 impl<'gc, R: io::Read> Reader<'gc, R> {
@@ -382,6 +419,59 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
                 Ok(kw.into())
             }
 
+            _x @ FASL_TAG_RTD => {
+                let name = self.read_value()?;
+                let uid = self.read_value()?;
+                let flags = self.read8()? as u32;
+                if flags & !(RTD_SEALED | RTD_OPAQUE) != 0 {
+                    return Err(invalid("FASL record type has unknown flags"));
+                }
+                let own_field_count = self.read32()?;
+                let fields = self.read_value()?;
+                let parent_value = self.read_value()?;
+                let parent =
+                    if parent_value == Value::new(false) {
+                        None
+                    } else {
+                        Some(parent_value.try_as::<Rtd>().ok_or_else(|| {
+                            invalid("FASL record type parent is not a record type")
+                        })?)
+                    };
+                let generative = uid == Value::new(false);
+                if !generative && !uid.is::<Symbol>() {
+                    return Err(invalid(
+                        "FASL nongenerative record type uid is not a symbol",
+                    ));
+                }
+
+                let rtd = Rtd::new(
+                    self.ctx,
+                    name,
+                    parent,
+                    uid,
+                    flags & RTD_SEALED != 0,
+                    flags & RTD_OPAQUE != 0,
+                    fields,
+                    own_field_count,
+                );
+                let rtd = if generative {
+                    rtd
+                } else {
+                    intern_nongenerative_rtd(self.ctx, rtd)?
+                };
+                Ok(rtd.into())
+            }
+
+            _x @ FASL_TAG_RCD => {
+                let rtd_value = self.read_value()?;
+                let rtd = rtd_value.try_as::<Rtd>().ok_or_else(|| {
+                    invalid("FASL record constructor descriptor has no record type")
+                })?;
+                let prcd = self.read_value()?;
+                let protocol = self.read_value()?;
+                Ok(Rcd::new(self.ctx, rtd, prcd, protocol).into())
+            }
+
             _x @ FASL_TAG_PROGRAM => self.read_program(),
 
             _ => Err(io::Error::new(
@@ -561,16 +651,7 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
                 ),
             ));
         }
-        let version = self.read32()?;
-        if !(MIN_SUPPORTED_FASL_VERSION..=FASL_VERSION).contains(&version) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "unsupported FASL version {version} (expected {MIN_SUPPORTED_FASL_VERSION}..={FASL_VERSION})"
-                ),
-            ));
-        }
-        self.format_version = version;
+
         Ok(())
     }
 
@@ -609,7 +690,6 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
             options,
             roots,
             reference_map: HashMap::new(),
-            format_version: 0,
         }
     }
 
@@ -649,7 +729,7 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
     fn read_payload_value(&self, payload: Vec<u8>) -> io::Result<Value<'gc>> {
         let mut reader = Reader::new_with_options(self.ctx, Cursor::new(payload), self.options);
         reader.lites = self.lites;
-        reader.format_version = self.format_version;
+
         reader.keep_value(Value::from(reader.lites));
         let value = reader.read_value()?;
         reader.keep_value(value);

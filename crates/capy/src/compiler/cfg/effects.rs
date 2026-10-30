@@ -13,10 +13,9 @@ pub struct MemoryRanges(u16);
 pub enum MemoryRegion {
     Heap = 0,
     Variables = 1,
-    Modules = 2,
-    Continuations = 3,
-    Runtime = 4,
-    Unknown = 5,
+    Continuations = 2,
+    Runtime = 3,
+    Unknown = 4,
 }
 
 impl MemoryRanges {
@@ -85,7 +84,6 @@ pub struct SemanticEffects(u32);
 impl SemanticEffects {
     pub const NONE: Self = Self(0);
     pub const MUTABLE_LEXICAL: Self = Self(1 << 0);
-    pub const TOPLEVEL: Self = Self(1 << 1);
     pub const FLUID: Self = Self(1 << 2);
     pub const DEFINITE_BAILOUT: Self = Self(1 << 3);
     pub const POSSIBLE_BAILOUT: Self = Self(1 << 4);
@@ -407,12 +405,6 @@ pub fn instruction_effects(instruction: &Instruction<'_>) -> Effects {
         | Instruction::CacheSet { .. } => {
             Effects::write(MemoryRegion::Heap, SemanticEffects::UNKNOWN)
         }
-        // `(current-module m)` installs `m`, only the nullary form reads.
-        Instruction::PrimCall {
-            prim: Primitive::CurrentModule,
-            args,
-            ..
-        } if !args.is_empty() => Effects::write(MemoryRegion::Modules, SemanticEffects::TOPLEVEL),
         Instruction::PrimCall { prim, .. } => primitive_effects(*prim),
         Instruction::RestRef { .. }
         | Instruction::RestLength { .. }
@@ -585,9 +577,7 @@ pub fn primitive_effects(primitive: Primitive) -> Effects {
         | Primitive::PtrF32Ref
         | Primitive::PtrF32Set
         | Primitive::PtrF64Ref
-        | Primitive::PtrF64Set => {
-            Effects::for_call()
-        }
+        | Primitive::PtrF64Set => Effects::for_call(),
         Primitive::VectorSet => {
             Effects::write(MemoryRegion::Heap, SemanticEffects::VECTOR).checked_write()
         }
@@ -613,8 +603,6 @@ pub fn primitive_effects(primitive: Primitive) -> Effects {
         Primitive::VariableBound => {
             Effects::read(MemoryRegion::Variables, SemanticEffects::VARIABLE).checked()
         }
-        Primitive::Define => Effects::write(MemoryRegion::Modules, SemanticEffects::TOPLEVEL),
-        Primitive::CurrentModule => Effects::read(MemoryRegion::Modules, SemanticEffects::TOPLEVEL),
         Primitive::Plus
         | Primitive::Minus
         | Primitive::Times

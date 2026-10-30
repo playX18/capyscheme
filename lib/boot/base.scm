@@ -1,4 +1,5 @@
-(current-module (resolve-module '(capy) #f #f))
+(|#%require| (boot prim) (boot control) (boot environments) (boot records) (boot conditions) (boot violations) (boot raise) (boot exceptions) (boot expand) (boot interpreter) (boot enums) (boot sys) (boot osdep) (boot ports-core) (boot transcoder) (boot binary-ports) (boot textual-ports) (boot custom-ports) (boot file-ports) (boot console-ports) (boot port-api) (boot print) (boot format) (boot log) (boot match-syntax) (boot units) (boot psyntax-exp) (boot str2num) (boot num2str) (boot reader) (boot eval) (boot time))
+(|#%provide| all-defined)
 
 (define-syntax syntax-rules
   (lambda (xx)
@@ -473,6 +474,21 @@
 
 (define-syntax define-values
   (lambda (orig-form)
+    (define (expand-define-values formals vars expr)
+      ;; XXX Work around the lack of hygienic toplevel identifiers
+      (with-syntax (((dummy) (generate-temporaries '(dummy)))
+                    (formals formals)
+                    ((var ...) vars)
+                    ((index ...)
+                      (let loop ([i (length (syntax->datum vars))] [acc '()])
+                        (if (= i 0) acc (loop (- i 1) (cons (- i 1) acc)))))
+                    (expr expr))
+        #'(begin
+           (define dummy
+            (call-with-values (lambda () expr)
+             (lambda formals (list var ...))))
+           (define var (list-ref dummy index))
+           ...)))
     (syntax-case orig-form ()
       ((_ () expr)
         ;; XXX Work around the lack of hygienic top-level identifiers
@@ -487,23 +503,7 @@
             (lambda (v) v))))
       ((_ (var0 ... varn) expr)
         (and-map identifier? #'(var0 ... varn))
-        ;; XXX Work around the lack of hygienic toplevel identifiers
-        (with-syntax (((dummy) (generate-temporaries '(dummy))))
-          #`(begin
-             ;; Avoid mutating the user-visible variables
-             (define dummy
-              (call-with-values (lambda () expr)
-               (lambda (var0 ... varn)
-                (list var0 ... varn))))
-             (define var0
-              (let ((v (car dummy)))
-               (set! dummy (cdr dummy))
-               v))
-             ...
-             (define varn
-              (let ((v (car dummy)))
-               (set! dummy #f) ; blackhole dummy
-               v)))))
+        (expand-define-values #'(var0 ... varn) #'(var0 ... varn) #'expr))
       ((_ var expr)
         (identifier? #'var)
         #'(define var
@@ -511,23 +511,7 @@
             list)))
       ((_ (var0 ... . varn) expr)
         (and-map identifier? #'(var0 ... varn))
-        ;; XXX Work around the lack of hygienic toplevel identifiers
-        (with-syntax (((dummy) (generate-temporaries '(dummy))))
-          #`(begin
-             ;; Avoid mutating the user-visible variables
-             (define dummy
-              (call-with-values (lambda () expr)
-               (lambda (var0 ... . varn)
-                (list var0 ... varn))))
-             (define var0
-              (let ((v (car dummy)))
-               (set! dummy (cdr dummy))
-               v))
-             ...
-             (define varn
-              (let ((v (car dummy)))
-               (set! dummy #f) ; blackhole dummy
-               v))))))))
+        (expand-define-values #'(var0 ... . varn) #'(var0 ... varn) #'expr)))))
 
 (define-syntax do
   (lambda (orig-x)
@@ -659,7 +643,7 @@
                     (cons (datum->syntax #'filename x) (lp))))))))])))
 
 (define (generate-temporary-symbol)
-  (module-gensym ".L"))
+  (env-gensym ".L"))
 
 ;;;;;;;;;;;;;;
 ;; let-values
@@ -814,8 +798,7 @@
 
 (define %cond-expand-features
   ;; This should contain only features that are present in core Guile,
-  ;; before loading any modules.  Modular features are handled by
-  ;; placing 'cond-expand-provide' in the relevant module.
+  ;; before loading any modules.
   '(capy
     r5rs
     r6rs
@@ -871,27 +854,8 @@
 (set! %cond-expand-features
   (cons (string->symbol (host-arch)) %cond-expand-features))
 
-;; This table maps module public interfaces to the list of features.
-;;
-(define %cond-expand-table (make-core-hash-eq))
-
-;; Add one or more features to the `cond-expand' feature list of the
-;; module `module'.
-;;
-(define (cond-expand-provide module features)
-  (let ((mod (module-public-interface module)))
-    (and mod
-      (core-hash-put! %cond-expand-table mod
-        (append (core-hash-ref %cond-expand-table mod '())
-          features)))))
-
 (define-syntax cond-expand
   (lambda (x)
-    (define (module-has-feature? mod sym)
-      (or-map (lambda (mod)
-               (memq sym (core-hash-ref %cond-expand-table mod '())))
-        (module-uses mod)))
-
     (define (condition-matches? condition)
       (syntax-case condition (and or not library)
         ((library libname)
@@ -907,7 +871,7 @@
           (let ((sym (syntax->datum #'c)))
             (if (memq sym %cond-expand-features)
               #t
-              (module-has-feature? (current-module) sym))))))
+              #f)))))
 
     (define (match clauses alternate)
       (syntax-case clauses ()
@@ -1200,7 +1164,7 @@
   (syntax-rules ()
     [(_ name)
       (define name
-        (%reusable-generic (module-local-variable (current-module) 'name) 'name))]))
+        (%reusable-generic (env-local-variable (expansion-env) 'name) 'name))]))
 
 (define-syntax %ensure-accessor-setter
   (syntax-rules ()
@@ -1830,7 +1794,7 @@
                   [applicable-value (datum->syntax form applicable?)])
       #'(begin
          (define name
-          (let ([class-var (module-local-variable (current-module) 'name)])
+          (let ([class-var (env-local-variable (expansion-env) 'name)])
            (if (and class-var (variable-bound? class-var))
             (let ([old-class (variable-ref class-var)])
              (if (class? old-class)
@@ -2210,7 +2174,6 @@
 (define <code-block> (%builtin-class 'code-block))
 (define <code-buffer> (%builtin-class 'code-buffer))
 (define <continuation> (%builtin-class 'continuation))
-(define <module> (%builtin-class 'module))
 (define <environment> (%builtin-class 'environment))
 (define <syntax> (%builtin-class 'syntax))
 (define <syntax-transformer> (%builtin-class 'syntax-transformer))
@@ -2468,3 +2431,12 @@
 (set-setter! ~ %set-~)
 
 (define ref* ~)
+
+;; Runtime hooks for Rust, see `install-runtime-hook!`.
+(install-runtime-hook! 'slot-ref-using-class slot-ref-using-class)
+(install-runtime-hook! 'slot-set-using-class! slot-set-using-class!)
+(install-runtime-hook! 'slot-bound-using-class? slot-bound-using-class?)
+(install-runtime-hook! 'slot-unbound slot-unbound)
+(install-runtime-hook! 'slot-missing slot-missing)
+(install-runtime-hook! 'slot-ref slot-ref)
+(install-runtime-hook! 'slot-set! slot-set!)

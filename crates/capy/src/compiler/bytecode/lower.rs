@@ -2208,9 +2208,11 @@ impl<'a, 'gc> Lower<'a, 'gc> {
         let mask = self.mask_ref(live.into_iter());
         // An effect context takes the single header too: with no fixed values
         // and an ignored rest, every count is accepted either way, so the
-        // multiple-value entry and its count store are dead.
+        // multiple-value entry and its count store are dead. A receiver with a
+        // fixed value and a rest, even an unused one, takes any number of values
+        // from one up, so it does not get the single header.
         let single =
-            (ret.nvals == 1 && !rest_used) || (ret.variadic && ret.nvals == 0 && !any_used);
+            (ret.nvals == 1 && !ret.variadic) || (ret.variadic && ret.nvals == 0 && !any_used);
         // The single value lands directly in the destination of the first
         // used `Receive` of value 0. A dropped value lands in `r[base+2]`,
         // where it arrives anyway.

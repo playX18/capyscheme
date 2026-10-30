@@ -103,7 +103,7 @@ pub fn builtin_primitive_layout_hooks(id: ClassId) -> Option<PrimitiveLayoutHook
             AllocationHooksOf::<'static, crate::runtime::value::Pair<'static>>::HOOKS
         }
         builtin_class_ids::VARIABLE => {
-            AllocationHooksOf::<'static, crate::runtime::modules::Variable<'static>>::HOOKS
+            AllocationHooksOf::<'static, crate::runtime::variable::Variable<'static>>::HOOKS
         }
         builtin_class_ids::CLOSURE => crate::runtime::value::CLOSURE_HOOKS,
         builtin_class_ids::ENV_RECORD => crate::runtime::value::ENV_RECORD_HOOKS,
@@ -169,8 +169,20 @@ pub fn builtin_primitive_layout_hooks(id: ClassId) -> Option<PrimitiveLayoutHook
         builtin_class_ids::CONTINUATION => {
             crate::runtime::interp::stack::Continuation::<'static>::HOOKS
         }
-        builtin_class_ids::MODULE => {
-            AllocationHooksOf::<'static, crate::runtime::modules::Module<'static>>::HOOKS
+        builtin_class_ids::LINKLET => {
+            AllocationHooksOf::<'static, crate::runtime::linklet::Linklet<'static>>::HOOKS
+        }
+        builtin_class_ids::INSTANCE => {
+            AllocationHooksOf::<'static, crate::runtime::linklet::Instance<'static>>::HOOKS
+        }
+        builtin_class_ids::REGISTRY => {
+            AllocationHooksOf::<'static, crate::runtime::linklet::Registry<'static>>::HOOKS
+        }
+        builtin_class_ids::RTD => {
+            AllocationHooksOf::<'static, crate::runtime::record::Rtd<'static>>::HOOKS
+        }
+        builtin_class_ids::RCD => {
+            AllocationHooksOf::<'static, crate::runtime::record::Rcd<'static>>::HOOKS
         }
         builtin_class_ids::SYNTAX => {
             AllocationHooksOf::<'static, crate::runtime::vm::syntax::Syntax<'static>>::HOOKS
@@ -302,7 +314,11 @@ builtin_specs! {
     "code-block" => builtin_class_ids::CODE_BLOCK, Builtin;
     "code-buffer" => builtin_class_ids::CODE_BUFFER, Builtin;
     "code-image" => builtin_class_ids::CODE_IMAGE, Builtin;
-    "module" => builtin_class_ids::MODULE, Builtin;
+    "linklet" => builtin_class_ids::LINKLET, Builtin;
+    "instance" => builtin_class_ids::INSTANCE, Builtin;
+    "library-registry" => builtin_class_ids::REGISTRY, Builtin;
+    "record-type-descriptor" => builtin_class_ids::RTD, Builtin;
+    "record-constructor-descriptor" => builtin_class_ids::RCD, Builtin;
     "environment" => builtin_class_ids::ENVIRONMENT, Abstract;
     "syntax" => builtin_class_ids::SYNTAX, Builtin;
     "syntax-transformer" => builtin_class_ids::SYNTAX_TRANSFORMER, Builtin;

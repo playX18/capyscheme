@@ -8,7 +8,6 @@ pub mod control;
 pub mod gc;
 pub mod helpers;
 pub mod misc;
-pub mod modules;
 pub mod numbers;
 pub mod pairs;
 pub mod preds;
@@ -57,49 +56,12 @@ thunks! {
 
     pub fn make_variable(ctx: MutationContext<'gc>,
         value: Value<'gc>) -> Value<'gc> {
-        modules::make_variable(ctx, value)
+        crate::runtime::variable::Variable::new(ctx, value).into()
     }
 
-    pub fn lookup_bound(ctx: MutationContext<'gc>,
-        module: Value<'gc>,
+    pub fn late_variable(ctx: MutationContext<'gc>,
         name: Value<'gc>) -> Value<'gc> {
-        modules::lookup_bound(ctx, module, name)
-    }
-
-    pub fn lookup(ctx: MutationContext<'gc>,
-        module: Value<'gc>,
-        name: Value<'gc>) -> Value<'gc> {
-        modules::lookup(ctx, module, name)
-    }
-
-    pub fn lookup_bound_public(ctx: MutationContext<'gc>,
-        module: Value<'gc>,
-        name: Value<'gc>) -> Value<'gc> {
-        modules::lookup_bound_public(ctx, module, name)
-    }
-
-    pub fn lookup_bound_private(ctx: MutationContext<'gc>,
-        module: Value<'gc>,
-        name: Value<'gc>) -> Value<'gc> {
-        modules::lookup_bound_private(ctx, module, name)
-    }
-
-    pub fn define(ctx: MutationContext<'gc>,
-        name: Value<'gc>,
-        value: Value<'gc>) -> Value<'gc> {
-        modules::define(ctx, name, value)
-    }
-
-    pub fn current_module(ctx: MutationContext<'gc>) -> Value<'gc> {
-        modules::current_module(ctx)
-    }
-
-    pub fn set_current_module(ctx: MutationContext<'gc>, module: Value<'gc>) -> Value<'gc> {
-        modules::set_current_module(ctx, module)
-    }
-
-    pub fn module_ensure_local_variable(ctx: MutationContext<'gc>, module: Value<'gc>, name: Value<'gc>) -> Value<'gc> {
-        modules::module_ensure_local_variable(ctx, module, name)
+        late_variable_impl(ctx, name)
     }
 
     pub fn yieldpoint_block(ctx: MutationContext<'gc>) -> () {
@@ -494,16 +456,7 @@ pub fn make_assertion_violation<'gc>(
         .chain(irritants.iter().cloned())
         .collect::<Vec<_>>();
 
-    let assertion_violation = ctx
-        .globals()
-        .root_module()
-        .get(
-            ctx,
-            Symbol::from_str(ctx, "%make-assertion-violation").into(),
-        )
-        .unwrap_or_else(|| {
-            panic!("failed to resolve %make-assertion-violation (pre-boot): who={who}, message={message}, irritants={irritants:?}",)
-        });
+    let assertion_violation = ctx.hook(crate::runtime::hooks::Hook::MakeAssertionViolation);
 
     match crate::runtime::sni::call_function(ctx, assertion_violation, args) {
         ExecutionResult::Ok(val) => val,
@@ -520,16 +473,7 @@ pub fn make_undefined_violation<'gc>(
     let message: Value = Str::new(ctx, message, true).into();
     let mut args = vec![who, message];
     args.extend_from_slice(irritants);
-    let undefined_violation = ctx
-        .globals()
-        .root_module()
-        .get(
-            ctx,
-            Symbol::from_str(ctx, "%make-undefined-violation").into(),
-        )
-        .unwrap_or_else(|| {
-            panic!("failed to resolve %make-undefined-violation (pre-boot): who={who}, message={message}, irritants={irritants:?}",)
-        });
+    let undefined_violation = ctx.hook(crate::runtime::hooks::Hook::MakeUndefinedViolation);
     match crate::runtime::sni::call_function(ctx, undefined_violation, args) {
         ExecutionResult::Ok(val) => val,
         ExecutionResult::Err(err) => err,
@@ -547,11 +491,7 @@ pub fn make_error<'gc>(
         .chain(irritants.iter().cloned())
         .collect::<Vec<_>>();
 
-    let error = ctx
-        .globals()
-        .root_module()
-        .get(ctx, Symbol::from_str(ctx, "%make-error").into())
-        .expect("failed to resolve %make-error (pre-boot)");
+    let error = ctx.hook(crate::runtime::hooks::Hook::MakeError);
 
     match crate::runtime::sni::call_function(ctx, error, args) {
         ExecutionResult::Ok(val) => val,
@@ -572,9 +512,7 @@ pub fn make_io_error<'gc>(
         .collect::<Vec<_>>();
 
     let io_error = ctx
-        .globals()
-        .root_module()
-        .get(ctx, Symbol::from_str(ctx, "%make-io-error").into())
+        .try_hook(crate::runtime::hooks::Hook::MakeIoError)
         .unwrap_or_else(|| {
             // Pre-boot: the Scheme condition machinery is not loaded yet, so
             // build a minimal string error instead of panicking.
@@ -603,11 +541,7 @@ pub fn make_lexical_violation<'gc>(
     let message: Value = Str::new(ctx, message, true).into();
     let args = vec![who, message];
 
-    let lexical_violation = ctx
-        .globals()
-        .root_module()
-        .get(ctx, Symbol::from_str(ctx, "%make-lexical-violation").into())
-        .unwrap_or_else(|| panic!("failed to resolve %make-lexical-violation (pre-boot): who={who}, message={message}",));
+    let lexical_violation = ctx.hook(crate::runtime::hooks::Hook::MakeLexicalViolation);
 
     match crate::runtime::sni::call_function(ctx, lexical_violation, args) {
         ExecutionResult::Ok(val) => val,
@@ -615,30 +549,15 @@ pub fn make_lexical_violation<'gc>(
     }
 }
 
-pub fn resolve_module<'gc>(
-    ctx: MutationContext<'gc>,
-    name: Value<'gc>,
-    public: bool,
-) -> Value<'gc> {
-    let Some(module) = crate::runtime::modules::resolve_module(ctx, name, false, false) else {
-        thunk_raise(
+/// The variable [`crate::runtime::linklet::late_variable`] finds for `name`. Raises an
+/// undefined-variable violation when no bound variable has that name.
+fn late_variable_impl<'gc>(ctx: MutationContext<'gc>, name: Value<'gc>) -> Value<'gc> {
+    assert!(name.is::<Symbol>());
+    match crate::runtime::linklet::late_variable(ctx, name) {
+        Some(var) => var.into(),
+        None => thunk_raise(
             ctx,
-            undefined_violation(
-                ctx,
-                Some(Symbol::from_str(ctx, "resolve-module").into()),
-                &format!("module '{name}' not found"),
-                &[name],
-            ),
-        );
-    };
-
-    if public {
-        module
-            .public_interface
-            .get()
-            .expect("index in range")
-            .into()
-    } else {
-        module.into()
+            undefined_violation(ctx, Some(name), "variable not found", &[name]),
+        ),
     }
 }

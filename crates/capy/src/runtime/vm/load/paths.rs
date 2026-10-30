@@ -5,14 +5,15 @@ use std::{
 
 use crate::heap::Gc;
 use crate::list;
-use crate::runtime::modules::{Variable, define};
 use crate::runtime::value::{Str, Value};
+use crate::runtime::variable::{Variable, define};
 use crate::runtime::vm::thunks::make_io_error;
 use crate::{global, runtime::MutationContext};
 
 use super::{
     artifact::{
-        LoadArtifact, artifact_extension, artifact_kind_for_path, artifact_kind_for_policy,
+        LoadArtifact, LoadArtifactKind, artifact_extension, artifact_kind_for_path,
+        artifact_kind_for_policy, is_fasl_file,
     },
     policy::get_execution_policy,
 };
@@ -72,7 +73,13 @@ impl ResolvedLoadPath {
 fn prepend_segments<'gc>(ctx: MutationContext<'gc>, raw: &str, tail: Value<'gc>) -> Value<'gc> {
     let segments: Vec<Value<'gc>> = raw
         .split(':')
-        .map(|segment| Str::new(ctx, segment, true).into())
+        .map(|segment| {
+            let mut segment = segment;
+            while let Some(rest) = segment.strip_prefix("./") {
+                segment = rest;
+            }
+            Str::new(ctx, segment, true).into()
+        })
         .collect();
     segments
         .into_iter()
@@ -81,26 +88,23 @@ fn prepend_segments<'gc>(ctx: MutationContext<'gc>, raw: &str, tail: Value<'gc>)
 }
 
 pub fn init_load_path<'gc>(ctx: MutationContext<'gc>) {
-    const FALLBACK_DIR: &str = concat!("capy/cache/", env!("CARGO_PKG_VERSION"));
+    let fallback_dir = format!("capy/cache/{}", env!("CARGO_PKG_VERSION"),);
 
     let cache_dir = if let Some(env) = crate::utils::flags::xdg_cache_home() {
-        format!("{env}/{FALLBACK_DIR}")
+        format!("{env}/{fallback_dir}")
     } else if let Some(home) = crate::utils::flags::home_dir() {
-        format!("{home}/.cache/{FALLBACK_DIR}")
+        format!("{home}/.cache/{fallback_dir}")
     } else if let Some(appdata) = crate::utils::flags::local_app_data() {
-        format!("{appdata}/.cache/{FALLBACK_DIR}")
+        format!("{appdata}/.cache/{fallback_dir}")
     } else if let Some(appdata) = crate::utils::flags::app_data() {
-        format!("{appdata}/.cache/{FALLBACK_DIR}")
+        format!("{appdata}/.cache/{fallback_dir}")
     } else {
-        FALLBACK_DIR.to_string()
+        fallback_dir.clone()
     };
 
     // Bytecode does not depend on the GC plan or its barrier, so one cache
     // and one set of installed artifacts serve every plan.
     let compile_fallback_path = Path::new(&cache_dir);
-    if !compile_fallback_path.exists() {
-        std::fs::create_dir_all(compile_fallback_path).expect("Failed to create cache directory");
-    }
     ctx.globals().loc_compile_fallback_path().set(
         ctx,
         Str::new(ctx, compile_fallback_path.to_string_lossy(), true).into(),
@@ -110,9 +114,10 @@ pub fn init_load_path<'gc>(ctx: MutationContext<'gc>) {
     let mut compiled_path = Value::null();
 
     let sysroot_dir: Option<PathBuf> = if cfg!(feature = "portable") {
-        let exe = std::env::current_exe().expect("Failed to get current exe path");
-        let exe = std::fs::read_link(&exe).unwrap_or(exe);
-        exe.parent().map(|parent| parent.to_owned())
+        std::env::current_exe().ok().and_then(|exe| {
+            let exe = std::fs::read_link(&exe).unwrap_or(exe);
+            exe.parent().map(|parent| parent.to_owned())
+        })
     } else {
         Some(PathBuf::from(env!("CAPY_SYSROOT")))
     };
@@ -188,15 +193,18 @@ pub(super) fn resolve_load_path<'gc>(
     let filename = filename.as_ref();
     let vicinity = in_vicinity.map(|path| path.as_ref().to_owned());
 
-    if let Some(kind) = artifact_kind_for_path(filename) {
-        let candidates = vec![filename.to_owned()];
-        let Some(artifact_path) = find_existing_candidate(
-            ctx,
-            filename,
-            &candidates,
-            vicinity.as_deref(),
-            resolve_relative,
-        ) else {
+    let named = find_existing_candidate(
+        ctx,
+        filename,
+        &[filename.to_owned()],
+        vicinity.as_deref(),
+        resolve_relative,
+    );
+    let sniffed_fasl = named.as_deref().is_some_and(is_fasl_file);
+    let kind =
+        artifact_kind_for_path(filename).or(sniffed_fasl.then_some(LoadArtifactKind::FaslCode));
+    if let Some(kind) = kind {
+        let Some(artifact_path) = named else {
             return Ok(None);
         };
         let full_path = artifact_path.canonicalize().map_err(|err| {
@@ -276,6 +284,14 @@ pub(super) fn resolve_load_path<'gc>(
     let compiled_artifact = freshest_compiled_candidate(ctx, filename, &full_source_path, arch);
     let build_destination = fallback_artifact(ctx, &full_source_path, arch);
 
+    let source_path = match std::env::current_dir() {
+        Ok(cwd) if source_path.is_absolute() => source_path
+            .strip_prefix(&cwd)
+            .map(Path::to_path_buf)
+            .unwrap_or(source_path),
+        _ => source_path,
+    };
+
     Ok(Some(ResolvedLoadPath::Source {
         source_path,
         full_source_path,
@@ -309,12 +325,6 @@ fn fallback_artifact<'gc>(
     let full_path = fallback
         .join(relative_source)
         .with_extension(artifact_extension(kind));
-
-    if let Some(parent) = full_path.parent()
-        && !parent.exists()
-    {
-        std::fs::create_dir_all(parent).expect("Failed to create fallback directory");
-    }
 
     LoadArtifact::new(kind, full_path)
 }

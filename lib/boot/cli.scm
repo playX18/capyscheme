@@ -5,6 +5,11 @@
     (core repl)
     (capy args))
 
+  (define (lib-ref key name)
+    (unless (library-instance (current-library-registry) key)
+      (resolve-env key))
+    (instance-ref (library-instance (current-library-registry) key) name))
+
   (define (cli-error fmt . args)
     (apply format (current-error-port) fmt args)
     (exit 1))
@@ -17,7 +22,7 @@
         (let lp ([result (if #f #f)])
           (let ([exp (read-datum reader)])
             (if (not (eof-object? exp))
-              (lp (eval exp (current-module)))
+              (lp (eval exp (current-namespace)))
               result))))))
 
   (define (eval-string str)
@@ -25,8 +30,7 @@
 
 
   (define (install-core-in-user-module!)
-    (module-use! (resolve-module '(capy user) #f #t)
-      (resolve-interface '(core) #f '() #f)))
+    (namespace-import! (current-namespace) '(core)))
 
   (define (canonicalize-paths paths)
     (map canonicalize-path-string paths))
@@ -375,7 +379,7 @@
           (eval `(begin
                   ,@(reverse out)
                   ,(if interactive?
-                    `((|@| (core repl) read-eval-print-loop))
+                    (list read-eval-print-loop)
                     '(exit 0)))))))
     (define (run)
       (with-exception-handler
@@ -402,7 +406,7 @@
           (if (arg-results-ref res "log-trace")
             (begin
               (log:set-max-level! log:trace)
-              ((|@@| (capy) gc-logging-enable!) #t)))
+              (gc-logging-enable! #t)))
           (if (not (zero? (log:max-level)))
             (log:set-logger! *simple-logger*))
           (when (arg-results-ref res "help")
@@ -424,24 +428,24 @@
           (if (arg-results-ref res "fresh-auto-compile")
             (set! %fresh-auto-compile #t))
           (if (arg-results-ref res "debug")
-            ((|@@| (capy) load-debug-enable!) #t))
+            (load-debug-enable! #t))
           (define out '())
 
           (when (arg-results-ref res "runtime-stats")
-            (set! out (cons `((|@@| (capy) runtime-stats-enable!) #t) out)))
+            (set! out (cons `(,runtime-stats-enable! #t) out)))
 
           (when (arg-results-ref res "load")
-            (set! out (cons `((|@@| (capy) load) ,(arg-results-ref res "load")) out)))
+            (set! out (cons `(,load ,(arg-results-ref res "load")) out)))
           (when (arg-results-ref res "script")
             (set! arg0 (arg-results-ref res "script"))
             (set! interactive? #f)
-            (set! out (cons `((|@@| (capy) load) ,(arg-results-ref res "script")) out)))
+            (set! out (cons `(,load-program ,(arg-results-ref res "script")) out)))
           (when (arg-results-ref res "command")
             (set! interactive? #f)
-            (set! out (cons `((|@@| (boot cli) eval-string) ,(arg-results-ref res "command")) out)))
+            (set! out (cons `(,eval-string ,(arg-results-ref res "command")) out)))
           (when (pair? (arg-results-ref res "doc-module"))
             (set! interactive? #f)
-            (set! out (cons `((|@@| (capy docgen) docgen-main)
+            (set! out (cons `(,(lib-ref '(capy docgen) 'docgen-main)
                               (list ,@(arg-results-ref res "doc-module"))
                               ,(arg-results-ref res "doc-output"))
                             out)))
@@ -450,12 +454,12 @@
           (let ([files (arg-results-rest res)])
             (when (and interactive? (pair? files))
               (set! interactive? #f)
-              (set! out (cons `((|@@| (capy) load) ,(car files)) out))))
+              (set! out (cons `(,load-program ,(car files)) out))))
           (when entrypoint
             (set! interactive? #f)
             (set! out (cons `(,entrypoint) out)))
           (when (and (arg-results-ref res "runtime-stats") (not interactive?))
-            (set! out (cons `((|@@| (capy) format) #t "~a~%" ((|@@| (capy) runtime-stats-report))) out)))
+            (set! out (cons `(,format #t "~a~%" (,runtime-stats-report)) out)))
           (finish (arg-results-rest res) out))))
 
     (add-flag! parser
@@ -580,8 +584,6 @@
 
 (define (enter-compiler args)
   "Entrypoint for `capyc` compiler CLI."
-  ((|@@| (capy) primitive-load) "boot/compiler.scm")
-
   (define arg0 "capyc")
   (define parser (argparser))
 
@@ -589,19 +591,6 @@
     (format #t "CapyScheme Compiler ~a~%" (implementation-version))
     (format #t "Usage:~%~a~%" (argparser-usage parser))
     (exit 0))
-
-  (define (parse-module str)
-    (and str
-      (let* ([len (string-length str)]
-             [body
-               (if (and (>= len 2)
-                    (eqv? (string-ref str 0) #\()
-                    (eqv? (string-ref str (- len 1)) #\)))
-                 (substring str 1 (- len 1))
-                 str)]
-             [parts (filter (lambda (part) (> (string-length part) 0))
-                     (string-split body #\space))])
-        (map string->symbol parts))))
 
   (define (run)
     (define res (with-exception-handler
@@ -661,13 +650,32 @@
       (print-help))
 
     (when runtime-stats
-      ((|@@| (capy) runtime-stats-enable!) #t))
+      (runtime-stats-enable! #t))
     (when (arg-results-ref res "nobacktrace")
       (format (current-error-port)
         "warning: --nobacktrace is deprecated; debug is controlled when FASL is loaded~%"))
 
-    (define module-name (or (parse-module (arg-results-ref res "module"))
-                         '(capy user)))
+    (define boot-expander (arg-results-ref res "boot-expander"))
+    (when (and boot-expander (not out-file))
+      (cli-error "--boot-expander needs --output"))
+
+    (define exe (arg-results-ref res "exe"))
+    (define static (or (arg-results-ref res "static") exe))
+    (define no-shebang (arg-results-ref res "no-shebang"))
+    (define static-report (arg-results-ref res "static-report"))
+    (define static-size (arg-results-ref res "static-size"))
+    (define static-why (arg-results-ref res "static-why"))
+    (define static-mode (arg-results-ref res "static-mode"))
+    (define static-dry-run (arg-results-ref res "static-dry-run"))
+    (define static-no-shake (arg-results-ref res "static-no-shake"))
+    (when (and static (not out-file))
+      (cli-error "--static needs --output"))
+    (when (and static (not (= (length source-files) 1)))
+      (cli-error "--static takes exactly one input file"))
+    (when (and static boot-expander)
+      (cli-error "--static and --boot-expander cannot be combined"))
+    (when (and (or no-shebang static-report static-size static-why static-mode static-dry-run static-no-shake) (not static))
+      (cli-error "--no-shebang, --static-report, --static-size and --static-why need --static"))
 
     (when (and out-file
            (or (null? source-files)
@@ -693,22 +701,91 @@
                 (when verbose
                   (format #t ";; Compiling file ~a~%" file))
                 (with-continuation-mark *compile-backtrace-key* backtrace
-                  (define out (compile-file
-                               file
-                               out-file
-                               (or (and module-name (resolve-module module-name #f #t)) #f)
-                               #f
-                               dump-options))
+                  (define out
+                    (cond
+                      [static
+                        ((lib-ref '(capy compiler static) 'static-link)
+                          file out-file
+                          (append
+                            (if no-shebang '(no-shebang) '())
+                            (if static-report '(report) '())
+                            (if static-size '(size) '())
+                            (if static-why (list (cons 'why static-why)) '())
+                            (cond
+                              [(equal? static-mode "open") '(open)]
+                              [(equal? static-mode "closed") '(closed)]
+                              [else '()])
+                            (if static-dry-run '(dry-run) '())
+                            (if static-no-shake '(no-shake) '())
+                            (if exe '(exe) '())
+                            (if verbose '(verbose) '())))
+                        out-file]
+                      [boot-expander
+                        (%compile-boot-file file out-file)
+                        out-file]
+                      [else
+                        (compile-file
+                        file
+                        out-file
+                        ; A boot file (it has a `|#%require|` header) is expanded in the core
+                        ; environment, like the loader expands it when it boots.
+                        (if (%boot-header-requires file) the-core-env (current-namespace))
+                        #f
+                        dump-options)]))
                   (when verbose
                     (format #t ";; Compiled ~a -> ~a~%" file out))))))
           source-files)
         (when runtime-stats
-          ((|@@| (capy) format) #t "~a~%" ((|@@| (capy) runtime-stats-report)))))))
+          (format #t "~a~%" (runtime-stats-report))))))
 
   (add-option! parser
     "output"
     (abbreviation "o")
     (help "Specify output file"))
+
+  (add-flag! parser
+    "boot-expander"
+    not-negatable
+    (help "Compile with the Rust boot expander, for the boot loader lib/boot/main.scm"))
+
+  (add-flag! parser
+    "static"
+    not-negatable
+    (help "Link the program and everything it depends on into one boot-less fasl (needs --output)"))
+  (add-flag! parser
+    "exe"
+    not-negatable
+    (help "With --static, write a program that runs without capy: a copy of the capy launcher with the program appended (macOS: ad-hoc signed). The launcher loads libcapy from its own directory, so the output needs libcapy.so (libcapy.dylib) next to it"))
+  (add-flag! parser
+    "no-shebang"
+    not-negatable
+    (help "With --static, do not put a #!/usr/bin/env capy line before the fasl"))
+  (add-flag! parser
+    "static-report"
+    not-negatable
+    (help "With --static, print the linklets that were kept and dropped"))
+  (add-flag! parser
+    "static-size"
+    not-negatable
+    (help "With --static, print where the bytes of the bundle go: per section of the code blocks, raw and compressed"))
+
+  (add-option! parser
+    "static-mode"
+    (allowed (list "auto" "open" "closed"))
+    (value-help "MODE")
+    (help "With --static, link open (keeps the expander), closed (fails if the program needs it) or auto (default)"))
+  (add-flag! parser
+    "static-no-shake"
+    not-negatable
+    (help "With --static, keep every binding of the linklets that take part (for bisecting the shaker)"))
+  (add-flag! parser
+    "static-dry-run"
+    not-negatable
+    (help "With --static, analyse and report but do not compile or write the output"))
+  (add-option! parser
+    "static-why"
+    (value-help "NAME")
+    (help "With --static, print the chain of bindings that keeps NAME in the bundle"))
 
   (add-flag! parser
     "nobacktrace"
@@ -796,12 +873,6 @@
     (help "Append a directory to the load path")
     (value-help "DIR")
     split-commas)
-
-  (add-option! parser
-    "module"
-    (abbreviation "m")
-    (help "Specify the module to compile source file in")
-    (value-help "MODULE-NAME"))
 
   (add-flag! parser
     "help"

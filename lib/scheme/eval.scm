@@ -2,15 +2,10 @@
   (import (capy))
   (export environment eval)
   (begin
+    ;; A fresh namespace with `import` and the given import specs. R7RS does not
+    ;; provide the core bindings here.
     (define (environment . import-specs)
-      (define module (make-module))
-      (beautify-user-module! module)
-      (purify-module! module)
-
-      (module-use! module (resolve-interface '(capy) '(import) '() #f))
-      (for-each (lambda (ispec)
-                 (eval (list 'import ispec) module))
-        import-specs)
-      (set-module-uses! module (cdr (module-uses module)))
-      (core-hash-clear! (module-import-obarray module))
-      module)))
+      (let ([ns (make-namespace #f '((only (capy) import)))])
+        (for-each (lambda (ispec) (namespace-import! ns ispec)) import-specs)
+        (namespace-freeze! ns)
+        ns))))

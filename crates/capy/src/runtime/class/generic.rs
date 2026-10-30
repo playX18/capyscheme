@@ -26,13 +26,10 @@ pub enum GenericDispatchError {
     NoApplicableMethod,
 }
 
-/// Generics whose only method must be the boot `<class>` method for slot
-/// inline caches to apply, with the required dispatch argument count the
-/// boot `define-generic` used.
-pub const SLOT_PROTOCOL_GENERICS: &[(&str, usize)] = &[
-    ("slot-ref-using-class", 3),
-    ("slot-set-using-class!", 4),
-    ("slot-bound-using-class?", 3),
+pub const SLOT_PROTOCOL_GENERICS: &[(crate::runtime::hooks::Hook, usize)] = &[
+    (crate::runtime::hooks::Hook::SlotRefUsingClass, 3),
+    (crate::runtime::hooks::Hook::SlotSetUsingClass, 4),
+    (crate::runtime::hooks::Hook::SlotBoundUsingClass, 3),
 ];
 
 /// Indices into [`SLOT_PROTOCOL_GENERICS`], and of the per-class state of
@@ -46,7 +43,7 @@ pub(crate) const OP_INIT: usize = 3;
 pub fn is_slot_protocol_generic(name: &str) -> bool {
     SLOT_PROTOCOL_GENERICS
         .iter()
-        .any(|(protocol, _)| *protocol == name)
+        .any(|(protocol, _)| protocol.name() == name)
 }
 
 /// Record a change that may affect slot caches: fire the slot-protocol
@@ -386,13 +383,7 @@ pub fn generic_assertion_violation<'gc>(
     message: &'static str,
     irritant: Value<'gc>,
 ) -> ReturnCode {
-    let assertion_violation = ctx
-        .globals()
-        .root_module()
-        .get_str(ctx, "assertion-violation")
-        .unwrap_or_else(|| {
-            panic!("pre boot error at {who}: {message} with {irritant}");
-        });
+    let assertion_violation = ctx.hook(crate::runtime::hooks::Hook::AssertionViolation);
     ctx.stage_tail_call(
         assertion_violation,
         &[ctx.intern(who), ctx.str(message), irritant],

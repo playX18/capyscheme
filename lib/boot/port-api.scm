@@ -6,6 +6,8 @@
 ;;; ---------------------------------------------------------------
 ;;; File options and buffer modes (R6RS 8.2.2, 8.2.3).
 ;;; ---------------------------------------------------------------
+(|#%require| (boot prim) (boot control) (boot records) (boot conditions) (boot violations) (boot raise) (boot exceptions) (boot expand) (boot interpreter) (boot enums) (boot sys) (boot osdep) (boot ports-core) (boot transcoder) (boot binary-ports) (boot textual-ports) (boot custom-ports) (boot file-ports) (boot console-ports) (late (boot print) write))
+(|#%provide| all-defined)
 
 (define *file-option-symbols* '(no-create no-fail no-truncate))
 

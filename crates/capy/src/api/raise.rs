@@ -6,7 +6,8 @@ use crate::prelude::*;
 
 use super::env::{SCM_REF_NULL, ScmRef, SniEnv, env_mut, ref_value, safe_cstr};
 use super::native::{SniNativeFn, sni_new_native_procedure};
-use super::util::{call_public, call_root, values_from_refs};
+use super::util::{call_hook, call_library, values_from_refs};
+use crate::runtime::hooks::Hook;
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sni_raise(env: *mut SniEnv<'static>, obj: ScmRef) -> ScmRef {
@@ -14,7 +15,7 @@ pub unsafe extern "C" fn sni_raise(env: *mut SniEnv<'static>, obj: ScmRef) -> Sc
         return SCM_REF_NULL;
     }
     let e = unsafe { env_mut(env) };
-    call_root(e, "raise", [unsafe { ref_value(obj) }])
+    call_hook(e, Hook::Raise, [unsafe { ref_value(obj) }])
 }
 
 #[unsafe(no_mangle)]
@@ -23,7 +24,7 @@ pub unsafe extern "C" fn sni_raise_continuable(env: *mut SniEnv<'static>, obj: S
         return SCM_REF_NULL;
     }
     let e = unsafe { env_mut(env) };
-    call_root(e, "raise-continuable", [unsafe { ref_value(obj) }])
+    call_hook(e, Hook::RaiseContinuable, [unsafe { ref_value(obj) }])
 }
 
 pub type SniThunk =
@@ -117,9 +118,9 @@ pub unsafe extern "C" fn sni_with_exception_handler(
         return SCM_REF_NULL;
     }
 
-    let result = call_root(
+    let result = call_hook(
         e,
-        "with-exception-handler",
+        Hook::WithExceptionHandler,
         [unsafe { ref_value(handler_proc) }, unsafe {
             ref_value(body_proc)
         }],
@@ -141,7 +142,7 @@ pub unsafe extern "C" fn sni_condition(
     }
     let e = unsafe { env_mut(env) };
     let args = values_from_refs(components, n as usize);
-    call_public(e, "condition", args)
+    call_library(e, "boot conditions", "condition", args)
 }
 
 #[unsafe(no_mangle)]
@@ -157,7 +158,7 @@ pub unsafe extern "C" fn sni_make_message_condition(
         return SCM_REF_NULL;
     };
     let s = e.ctx.str(msg);
-    call_public(e, "make-message-condition", [s])
+    call_library(e, "boot conditions", "make-message-condition", [s])
 }
 
 #[unsafe(no_mangle)]
@@ -173,7 +174,7 @@ pub unsafe extern "C" fn sni_make_who_condition(
         return SCM_REF_NULL;
     };
     let sym = Symbol::from_str(e.ctx, who);
-    call_public(e, "make-who-condition", [sym.into()])
+    call_library(e, "boot conditions", "make-who-condition", [sym.into()])
 }
 
 #[unsafe(no_mangle)]
@@ -191,7 +192,7 @@ pub unsafe extern "C" fn sni_make_irritants_condition(
         let r = unsafe { *irritants.add(i) };
         list = Value::cons(e.ctx, unsafe { ref_value(r) }, list);
     }
-    call_public(e, "make-irritants-condition", [list])
+    call_library(e, "boot conditions", "make-irritants-condition", [list])
 }
 
 #[unsafe(no_mangle)]
@@ -200,7 +201,7 @@ pub unsafe extern "C" fn sni_make_assertion_violation(env: *mut SniEnv<'static>)
         return SCM_REF_NULL;
     }
     let e = unsafe { env_mut(env) };
-    call_public(e, "make-assertion-violation", [])
+    call_library(e, "boot violations", "make-assertion-violation", [])
 }
 
 #[unsafe(no_mangle)]
@@ -209,7 +210,7 @@ pub unsafe extern "C" fn sni_make_error(env: *mut SniEnv<'static>) -> ScmRef {
         return SCM_REF_NULL;
     }
     let e = unsafe { env_mut(env) };
-    call_public(e, "make-error", [])
+    call_library(e, "boot violations", "make-error", [])
 }
 
 #[unsafe(no_mangle)]
@@ -234,5 +235,5 @@ pub unsafe extern "C" fn sni_assertion_violation(
             args.push(unsafe { ref_value(*irritants.add(i)) });
         }
     }
-    let _ = call_root(e, "assertion-violation", args);
+    let _ = call_hook(e, Hook::AssertionViolation, args);
 }

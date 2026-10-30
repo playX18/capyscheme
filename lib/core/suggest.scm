@@ -52,45 +52,33 @@
                 (+ (vector-ref d (+ (- i 1) (* (- j 1) w))) cost))))))
       (vector-ref d (+ m (* n w)))))
 
-  (define (module-name-of m)
-    (normalize-name (or (raw-module-name m) (module-name m))))
-
+  ; The library keys whose instance exports something: the loaded libraries.
   (define (loaded-modules)
-    ;; All modules in the resolve tree that have a public interface.
-    (let lp ([pending (list (resolve-module '() #f #t))] [seen '()] [out '()])
+    (let lp ([keys (registered-library-keys (current-library-registry))] [out '()])
       (cond
-        [(null? pending) out]
-        [(memq (car pending) seen) (lp (cdr pending) seen out)]
+        [(null? keys) (reverse out)]
         [else
-         (let* ([m (car pending)]
-                [seen* (cons m seen)]
-                [iface (module-public-interface m)]
-                [out* (if (and iface (not (eq? iface m)))
-                        (cons m out)
-                        out)])
-           (let lp2 ([entries (core-hash->alist (module-submodules m))]
-                     [pending (cdr pending)]
-                     [out out*])
-             (cond
-               [(null? entries) (lp pending seen* out)]
-               [(module? (cdar entries))
-                (lp2 (cdr entries) (cons (cdar entries) pending) out)]
-               [else (lp2 (cdr entries) pending out)])))])))
+         (let ([inst (library-instance (current-library-registry) (car keys))])
+           (lp (cdr keys)
+             (if (and inst (pair? (instance-symbols inst)))
+               (cons (car keys) out)
+               out)))])))
+
+  (define (module-name-of key)
+    (normalize-name key))
 
   (define (find-modules-exporting sym)
-    (let lp ([modules (loaded-modules)] [out '()])
+    (let lp ([keys (loaded-modules)] [out '()])
       (cond
-        [(null? modules)
+        [(null? keys)
          (let ([scan (ensure-scan!)])
            (dedupe (append (reverse out)
                      (or (core-hash-ref (cdr scan) sym) '()))))]
         [else
-         (let ([m (car modules)])
-           (let ([iface (module-public-interface m)])
-             (if (and iface (not (eq? iface m))
-                  (core-hash-ref (module-obarray iface) sym))
-               (lp (cdr modules) (cons (module-name-of m) out))
-               (lp (cdr modules) out))))])))
+         (let ([inst (library-instance (current-library-registry) (car keys))])
+           (if (memq sym (instance-symbols inst))
+             (lp (cdr keys) (cons (module-name-of (car keys)) out))
+             (lp (cdr keys) out)))])))
 
   (define (loaded-module-names)
     (map module-name-of (loaded-modules)))

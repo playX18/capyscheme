@@ -1,4 +1,6 @@
 ;; Enumerations
+(|#%require| (boot prim) (boot control) (boot records) (boot conditions) (boot violations) (boot raise) (boot exceptions) (boot expand) (boot interpreter) (late (boot format) format))
+(|#%provide| all-defined)
 
 (define make-enumeration #f)
 (define enum-set? #f)

@@ -1,10 +1,7 @@
 use crate::heap::Gc;
 use crate::list;
 use crate::prelude::*;
-use crate::{
-    runtime::{prelude::*, vm::thunks::lookup_bound_public},
-    static_symbols,
-};
+use crate::{runtime::prelude::*, static_symbols};
 use simplehash::MurmurHasher64;
 use std::hash::Hash;
 
@@ -65,6 +62,21 @@ fn list_to_hash_impl<'gc>(
 
 #[scheme(path=capy)]
 pub mod hash_ops {
+    #[scheme(name = "eq?")]
+    pub fn eq_p(a: Value<'gc>, b: Value<'gc>) -> bool {
+        a.bits() == b.bits()
+    }
+
+    #[scheme(name = "eqv?")]
+    pub fn eqv_p(a: Value<'gc>, b: Value<'gc>) -> bool {
+        a.eqv(b)
+    }
+
+    #[scheme(name = "equal?")]
+    pub fn equal_p(a: Value<'gc>, b: Value<'gc>) -> bool {
+        a.equal(b, &mut Default::default())
+    }
+
     #[scheme(name = "core-hashtable?")]
     pub fn is_hash_table(val: Value<'gc>) -> bool {
         val.is::<HashTable>()
@@ -317,22 +329,20 @@ pub mod hash_ops {
     pub fn core_hashtable_equivalence_function(
         ht: Either<HashTableRef<'gc>, WeakTableRef<'gc>>,
     ) -> Value<'gc> {
-        let module = list!(ctx, sym_capy(ctx));
-
         match ht {
             Either::Left(ht) => match ht.typ() {
                 /* if these lookups fail something is seriously messed up */
-                HashTableType::Eq => lookup_bound_public(ctx, module, sym_eq(ctx).into()),
-                HashTableType::Eqv => lookup_bound_public(ctx, module, sym_eqv(ctx).into()),
-                HashTableType::Equal => lookup_bound_public(ctx, module, sym_equal(ctx).into()),
-                HashTableType::String => lookup_bound_public(ctx, module, sym_string(ctx).into()),
+                HashTableType::Eq => capy_primitive(ctx, sym_eq(ctx).into()),
+                HashTableType::Eqv => capy_primitive(ctx, sym_eqv(ctx).into()),
+                HashTableType::Equal => capy_primitive(ctx, sym_equal(ctx).into()),
+                HashTableType::String => capy_primitive(ctx, sym_string(ctx).into()),
                 HashTableType::Generic(v) => {
                     let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_EQUIV_FUNC].get();
                     call.tail(handler, &[ht.into()])
                 }
             },
 
-            _ => lookup_bound_public(ctx, module, sym_eq(ctx).into()),
+            _ => capy_primitive(ctx, sym_eq(ctx).into()),
         }
     }
 
@@ -688,4 +698,13 @@ pub mod hash_ops {
         EqualHash(v).hash(&mut hasher);
         hasher.finish_u64()
     }
+}
+
+fn capy_primitive<'gc>(ctx: MutationContext<'gc>, name: Value<'gc>) -> Value<'gc> {
+    ctx.globals()
+        .capy_instance()
+        .variable(ctx, name)
+        .filter(|var| var.is_bound())
+        .unwrap_or_else(|| panic!("primitive {name} is not defined"))
+        .get()
 }

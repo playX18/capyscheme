@@ -39,7 +39,7 @@
         (queue-command port (print-styled-content (apply stylize text specs))))))
 
   (define (fancy-repl-prompt)
-    (string-append "(" (module-name->string (module-name (current-module))) ")> "))
+    (string-append "(" (module-name->string (namespace-name (current-namespace))) ")> "))
 
   (define (identifier-char? ch)
     (not (or (char-whitespace? ch)
@@ -69,7 +69,7 @@
       (if (zero? (string-length prefix))
         '()
         (find-bindings (string-append "^" (regexp-quote prefix))
-          (current-module)))))
+          (current-namespace)))))
 
   (define (completion-strings text cursor)
     (map symbol->string (fancy-repl-completions text cursor)))
@@ -402,7 +402,7 @@
                   (let loop ()
                     (let ([form (read in)])
                       (unless (eof-object? form)
-                        (receive ans (eval form (current-module))
+                        (receive ans (eval form (current-namespace))
                           (print-values ans))
                         (loop)))))) ])))
       (loop))))

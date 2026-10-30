@@ -48,3 +48,16 @@ pub(crate) fn artifact_kind_for_path(path: &Path) -> Option<LoadArtifactKind> {
         _ => None,
     }
 }
+
+/// Whether the file at `path` starts with a FASL image
+pub(crate) fn is_fasl_file(path: &Path) -> bool {
+    use std::io::Read;
+
+    const HEAD_BYTES: u64 = 4096;
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut head = Vec::new();
+    file.take(HEAD_BYTES).read_to_end(&mut head).is_ok()
+        && crate::runtime::fasl::is_fasl_image(&head)
+}

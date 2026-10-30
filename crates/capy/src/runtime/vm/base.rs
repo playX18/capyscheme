@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicI32, Ordering};
+
 use crate::heap::{Gc, barrier};
 
 use crate::{
@@ -5,9 +7,9 @@ use crate::{
     prelude::*,
     runtime::{
         MutationContext,
-        modules::Variable,
         prelude::*,
         value::{Boxed, Closure, Str, Symbol, Tuple, Value},
+        variable::Variable,
     },
 };
 
@@ -15,14 +17,11 @@ fluid!(
     pub program_arguments_fluid = Value::null();
 );
 
-pub fn scm_log_level<'gc>(ctx: MutationContext<'gc>) -> i32 {
-    let log_level = ctx.private_ref("capy", "*log-level*");
-    if let Some(level) = log_level
-        && level.is_int32()
-    {
-        return level.as_int32();
-    }
-    0
+/// Current log level: 0 - none, 1 - error, 2 - warn, 3 - info, 4 - debug, 5 - trace.
+static LOG_LEVEL: AtomicI32 = AtomicI32::new(0);
+
+pub fn scm_log_level<'gc>(_ctx: MutationContext<'gc>) -> i32 {
+    LOG_LEVEL.load(Ordering::Relaxed)
 }
 
 /// Monotonic real time in milliseconds since the first call in the process.
@@ -105,6 +104,15 @@ pub mod base_ops {
         prefix.into()
     }
 
+    /// The path of the running executable, or #f when the OS does not say.
+    #[scheme(name = "executable-path")]
+    pub fn executable_path() -> Value<'gc> {
+        match std::env::current_exe() {
+            Ok(path) => Str::new(ctx, path.to_string_lossy(), true).into(),
+            Err(_) => Value::new(false),
+        }
+    }
+
     #[scheme(name = "procedure?")]
     pub fn is_procedure(v: Value<'gc>) -> Value<'gc> {
         Value::new(v.is::<Closure>())
@@ -129,6 +137,16 @@ pub mod base_ops {
         }
         program_arguments_fluid(ctx).set(ctx, args);
         args
+    }
+
+    #[scheme(name = "set-log-level!")]
+    pub fn set_log_level(level: i32) -> () {
+        LOG_LEVEL.store(level, Ordering::Relaxed);
+    }
+
+    #[scheme(name = "log-level")]
+    pub fn log_level() -> Value<'gc> {
+        Value::new(scm_log_level(ctx))
     }
 
     #[scheme(name = "eof-object")]
@@ -599,8 +617,10 @@ pub mod base_ops {
 pub fn init_base<'gc>(ctx: MutationContext<'gc>) {
     base_ops::register(ctx);
 
-    let args = std::env::args().rev().fold(Value::null(), |acc, arg| {
-        Value::cons(ctx, Str::new(ctx, arg, true).into(), acc)
+    // `std::env::args()` panics on an argument that is not UTF-8.
+    let args = std::env::args_os().rev().fold(Value::null(), |acc, arg| {
+        let arg = arg.to_string_lossy();
+        Value::cons(ctx, Str::new(ctx, &*arg, true).into(), acc)
     });
 
     program_arguments_fluid(ctx).set(ctx, args);

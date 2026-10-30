@@ -1,16 +1,14 @@
-use crate::compiler::cps::Set;
 use crate::expander::core::{
-    LetStyle, Term, TermKind, TermRef, call_term, constant, fresh_lvar, if_term, let_term, lref,
-    prim_call_term, seq_from_slice,
+    GlobalSlot, LetStyle, Term, TermKind, TermRef, call_term, constant, fresh_lvar, if_term,
+    let_term, lref, prim_call_term, seq_from_slice,
 };
 use crate::heap::Gc;
 use crate::heap::alloc::Array;
 use crate::heap::cell::Lock;
-use crate::list;
 use crate::runtime::MutationContext;
-use crate::runtime::modules::{Module, Variable, resolve_module};
 use crate::runtime::prelude::*;
 use crate::runtime::value::Symbol;
+use crate::runtime::variable::Variable;
 use crate::{runtime::value::Value, static_symbols};
 use std::collections::HashMap;
 
@@ -259,8 +257,6 @@ prim_names!(
     slot_set = "slot-set!"
 
 
-    current_module = "current-module"
-    define = "define!"
 
     string_length = "string-length"
     string_ref = "string-ref"
@@ -350,38 +346,11 @@ prim_names!(
     assertion_violation = "assertion-violation"
 );
 
-pub fn resolve_primitive_refs<'gc>(
-    ctx: MutationContext<'gc>,
-    x: TermRef<'gc>,
-    m: Gc<'gc, Module<'gc>>,
-) -> TermRef<'gc> {
-    let mut local_definitions = Set::default();
-    if !Gc::ptr_eq(m, ctx.globals().root_module()) {
-        fn collect_local_definitions<'gc>(
-            x: TermRef<'gc>,
-            local_definitions: &mut Set<Value<'gc>>,
-        ) {
-            match &x.kind {
-                TermKind::Define(_, name, _) => {
-                    local_definitions.insert(*name);
-                }
-
-                TermKind::Seq(head, tail) => {
-                    collect_local_definitions(*head, local_definitions);
-                    collect_local_definitions(*tail, local_definitions);
-                }
-                _ => (),
-            }
-        }
-        collect_local_definitions(x, &mut local_definitions);
-    }
-
+pub fn resolve_primitive_refs<'gc>(ctx: MutationContext<'gc>, x: TermRef<'gc>) -> TermRef<'gc> {
     x.post_order(ctx, |ctx, x| match &x.kind {
-        TermKind::ToplevelRef(_, name) => {
-            if !local_definitions.contains(name)
-                && let Some(var) = m.variable(ctx, *name)
-                && let Some(prim) = ctx.globals().interesting_primitive_vars().get(ctx, *name)
-                && Gc::ptr_eq(var, prim.downcast::<Variable>())
+        TermKind::GlobalRef(key, name, slot) => {
+            if let Some(prim) = ctx.globals().interesting_primitive_vars().get(ctx, *name)
+                && is_interesting_global(ctx, *key, *slot, prim)
             {
                 ctx.allocate(Term {
                     source: Lock::new(x.source()),
@@ -390,28 +359,6 @@ pub fn resolve_primitive_refs<'gc>(
             } else {
                 x
             }
-        }
-
-        TermKind::ModuleRef(module, name, public) => {
-            if let Some(module) = resolve_module(ctx, *module, false, false) {
-                let iface = if *public {
-                    module.public_interface.get().unwrap_or(module)
-                } else {
-                    module
-                };
-
-                if let Some(var) = iface.variable(ctx, *name)
-                    && let Some(prim) = ctx.globals().interesting_primitive_vars().get(ctx, *name)
-                    && Gc::ptr_eq(var, prim.downcast::<Variable>())
-                {
-                    return ctx.allocate(Term {
-                        source: Lock::new(x.source()),
-                        kind: TermKind::PrimRef(*name),
-                    });
-                }
-            }
-
-            x
         }
 
         TermKind::Call(proc, args) => {
@@ -424,6 +371,28 @@ pub fn resolve_primitive_refs<'gc>(
 
         _ => x,
     })
+}
+
+/// Whether a linklet global refers to the same binding as the interesting primitive `prim`:
+/// either a box of the `(#%capy)` key with the same name, or a variable object that is the
+/// primitive's variable itself.
+fn is_interesting_global<'gc>(
+    ctx: MutationContext<'gc>,
+    key: Value<'gc>,
+    slot: GlobalSlot<'gc>,
+    prim: Value<'gc>,
+) -> bool {
+    match slot {
+        GlobalSlot::Box(_) => {
+            key.is_pair()
+                && key.cdr().is_null()
+                && key.car().r5rs_equal(Symbol::from_str(ctx, "#%capy").into())
+        }
+        GlobalSlot::Variable(var) => match (var.try_as::<Variable>(), prim.try_as::<Variable>()) {
+            (Some(var), Some(prim)) => Gc::ptr_eq(var, prim),
+            _ => false,
+        },
+    }
 }
 
 macro_rules! primitive_expanders {
@@ -1710,20 +1679,6 @@ primitive_expanders!(
         Some(prim_call_term(ctx, sym_tuple_set(ctx).into(), args, src))
     }
 
-    "current-module" ex_current_module<'gc>(ctx, args, src) {
-        if args.len() > 1 {
-            return None;
-        }
-        Some(prim_call_term(ctx, sym_current_module(ctx).into(), args, src))
-    }
-
-    "define!" ex_define<'gc>(ctx, args, src) {
-        if args.len() != 2 {
-            return None;
-        }
-        Some(prim_call_term(ctx, sym_define(ctx).into(), args, src))
-    }
-
     "make-syntax-transformer" ex_mkstx_transformer<'gc>(_ctx, _args, _src) {
         None
     }
@@ -1771,8 +1726,15 @@ primitive_expanders!(
     }
 );
 
+/// Whether a call of the primitive `name` with `argc` arguments is lowered as it is, without an
+/// expander. These are the variable accessors the expander and the assignment elimination emit.
+fn is_lowered_directly<'gc>(ctx: MutationContext<'gc>, name: Value<'gc>, argc: usize) -> bool {
+    (name == sym_variable_ref(ctx).into() && argc == 1)
+        || (name == sym_variable_set(ctx).into() && argc == 2)
+        || (name == Symbol::from_str(ctx, "late-variable").into() && argc == 1)
+}
+
 pub fn expand_primitive_calls<'gc>(ctx: MutationContext<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
-    let capy_module = list!(ctx, Symbol::from_str(ctx, "capy"));
     t.pre_order(ctx, |ctx, t| match &t.kind {
         TermKind::PrimCall(name, args) => {
             let expanders = &*PRIMITIVE_EXPANDERS;
@@ -1784,21 +1746,23 @@ pub fn expand_primitive_calls<'gc>(ctx: MutationContext<'gc>, t: TermRef<'gc>) -
                     term
                 } else {
                     // failed expansion: reify primitive into a function call to it instead
-                    let module_ref = ctx.allocate(Term {
+                    let prim_ref = ctx.allocate(Term {
                         source: t.source().into(),
-                        kind: TermKind::ModuleRef(capy_module, *name, true),
+                        kind: TermKind::PrimRef(*name),
                     });
 
-                    call_term(ctx, module_ref, args.as_slice(), t.source())
+                    call_term(ctx, prim_ref, args.as_slice(), t.source())
                 }
+            } else if is_lowered_directly(ctx, *name, args.len()) {
+                t
             } else {
                 // failed expansion: reify primitive into a function call to it instead
-                let module_ref = ctx.allocate(Term {
+                let prim_ref = ctx.allocate(Term {
                     source: t.source().into(),
-                    kind: TermKind::ModuleRef(capy_module, *name, true),
+                    kind: TermKind::PrimRef(*name),
                 });
 
-                call_term(ctx, module_ref, args.as_slice(), t.source())
+                call_term(ctx, prim_ref, args.as_slice(), t.source())
             }
         }
 

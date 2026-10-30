@@ -6,7 +6,7 @@ use crate::prelude::*;
 use crate::runtime::vm::ffi::Pointer;
 
 use super::env::{SCM_REF_NULL, ScmRef, SniEnv, env_mut, ref_value, safe_cstr};
-use super::util::{ensure_module, make_pointer_value};
+use super::util::make_pointer_value;
 
 /// C callback for SNI-registered native procedures.
 pub type SniNativeFn =
@@ -101,12 +101,9 @@ pub unsafe extern "C" fn sni_define(
     let Some(name) = (unsafe { safe_cstr(name) }) else {
         return -1;
     };
-    let Some(m) = ensure_module(e.ctx, module) else {
-        return -1;
-    };
+    let inst = e.ctx.ensure_instance(module);
     let sym = Symbol::from_str(e.ctx, name);
     let val = unsafe { ref_value(value) };
-    m.define(e.ctx, sym.into(), val);
-    m.export_one(e.ctx, sym.into());
+    inst.define(e.ctx, sym.into(), val);
     0
 }

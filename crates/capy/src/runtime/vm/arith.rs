@@ -501,7 +501,8 @@ mod arith_operations {
                 );
                 return Err(Value::undefined());
             };
-            if arg.is_zero() && arg.is_exact() {
+
+            if arg.is_zero() && arg.is_exact() && acc.is_exact() {
                 let mut args = Vec::with_capacity(1 + rest.len());
                 args.push(acc.into_value(ctx));
                 args.extend_from_slice(rest);

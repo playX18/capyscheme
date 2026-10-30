@@ -15,7 +15,9 @@
     log:set-logger!
     *simple-logger*
     log:)
-  (import (core primitives))
+  (import (core primitives)
+    (only (rnrs syntax-case) with-syntax)
+    (only (capy) assq-ref env-key expansion-env syntax-source))
 
   (define-syntax log:
     (lambda (stx)
@@ -42,39 +44,26 @@
             ((and src (assq-ref src 'line)) (assq-ref src 'line))
             (else #f))))
 
-      (define (current-module-name-quote)
-        (datum->syntax stx (module-name (current-module))))
+      (define (expansion-key-quote)
+        (datum->syntax stx (env-key (expansion-env))))
 
       (syntax-case stx (target error warn info debug trace)
         [(_ (target trgt) (module mod) lvl arg arg* ...)
-          #`(*raw-log/src*
-             #,(convert-log-level #'lvl)
-             'mod
-             'trgt
-             #,(get-filename #'lvl)
-             #,(get-line #'lvl)
-             arg
-             arg*
-             ...)]
+          (with-syntax ([level (convert-log-level #'lvl)]
+                        [file (get-filename #'lvl)]
+                        [line (get-line #'lvl)])
+            #'(*raw-log/src* level 'mod 'trgt file line arg arg* ...))]
 
         [(_ (target trgt) level arg arg* ...)
-          #`(*raw-log/src*
-             #,(convert-log-level #'level)
-             '#,(current-module-name-quote)
-             'trgt
-             #,(get-filename #'level)
-             #,(get-line #'level)
-             arg
-             arg*
-             ...)]
+          (with-syntax ([lvl (convert-log-level #'level)]
+                        [mname (expansion-key-quote)]
+                        [file (get-filename #'level)]
+                        [line (get-line #'level)])
+            #'(*raw-log/src* lvl 'mname 'trgt file line arg arg* ...))]
 
         [(_ level arg arg* ...)
-          #`(*raw-log/src*
-             #,(convert-log-level #'level)
-             #f
-             '#,(current-module-name-quote)
-             #,(get-filename #'level)
-             #,(get-line #'level)
-             arg
-             arg*
-             ...)]))))
+          (with-syntax ([lvl (convert-log-level #'level)]
+                        [mname (expansion-key-quote)]
+                        [file (get-filename #'level)]
+                        [line (get-line #'level)])
+            #'(*raw-log/src* lvl #f 'mname file line arg arg* ...))]))))

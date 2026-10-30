@@ -113,7 +113,7 @@ pub mod class_ops {
         MethodDescriptor, MethodFlags, NextMethodDescriptor, SchemeClassSpecError, SchemeInstance,
         SlotAccessError, SlotAccessorDefinition, SlotDefinitionDescriptor, builtin_class_specs,
         call_scheme_slot_bound, call_scheme_slot_ref, call_scheme_slot_set,
-        class_id_list_to_class_objects, class_id_to_class_object, class_root_binding, class_table,
+        class_id_list_to_class_objects, class_id_to_class_object, class_table,
         generic_descriptor_from_value, generic_procedure, parse_class_list, slot_accessor_list,
         slot_definition_list, try_scheme_instance,
     };
@@ -1289,7 +1289,8 @@ pub mod class_ops {
         let receiver = Value::from(instance);
 
         if !protocol_is_plain(ctx, class, OP_REF)
-            && let Some(slot_ref_using_class) = class_root_binding(ctx, "slot-ref-using-class")
+            && let Some(slot_ref_using_class) =
+                ctx.try_hook(crate::runtime::hooks::Hook::SlotRefUsingClass)
         {
             let slot = class_slot_argument(ctx, class, &slot_name, name.into());
             return if let Some(fallback) = fallback {
@@ -1337,7 +1338,7 @@ pub mod class_ops {
         match result {
             Ok(value) => value,
             Err(SlotAccessError::Unbound) => {
-                if let Some(slot_unbound) = class_root_binding(ctx, "slot-unbound") {
+                if let Some(slot_unbound) = ctx.try_hook(crate::runtime::hooks::Hook::SlotUnbound) {
                     return call.tail(slot_unbound, &[class.into(), receiver, name.into()]);
                 }
                 let who = ctx.intern("slot-ref");
@@ -1356,7 +1357,7 @@ pub mod class_ops {
                 call.raise_assertion_violation(who, message, name.into())
             }
             Err(SlotAccessError::Unknown) => {
-                if let Some(slot_missing) = class_root_binding(ctx, "slot-missing") {
+                if let Some(slot_missing) = ctx.try_hook(crate::runtime::hooks::Hook::SlotMissing) {
                     return call.tail(slot_missing, &[class.into(), receiver, name.into()]);
                 }
                 let who = ctx.intern("slot-ref");
@@ -1454,7 +1455,8 @@ pub mod class_ops {
         let receiver = Value::from(instance_obj);
 
         if !protocol_is_plain(ctx, class, OP_SET)
-            && let Some(slot_set_using_class) = class_root_binding(ctx, "slot-set-using-class!")
+            && let Some(slot_set_using_class) =
+                ctx.try_hook(crate::runtime::hooks::Hook::SlotSetUsingClass)
         {
             let slot = class_slot_argument(ctx, class, &slot_name, name.into());
             return call_protocol(
@@ -1838,7 +1840,8 @@ pub mod class_ops {
         let receiver = Value::from(instance);
 
         if !protocol_is_plain(ctx, class, OP_BOUND)
-            && let Some(slot_bound_using_class) = class_root_binding(ctx, "slot-bound-using-class?")
+            && let Some(slot_bound_using_class) =
+                ctx.try_hook(crate::runtime::hooks::Hook::SlotBoundUsingClass)
         {
             let slot = class_slot_argument(ctx, class, &slot_name, name.into());
             return call_protocol(

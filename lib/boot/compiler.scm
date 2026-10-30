@@ -1,7 +1,8 @@
+(|#%require| (boot prim) (boot control) (boot records) (boot conditions) (boot violations) (boot raise) (boot exceptions) (boot expand) (boot interpreter) (boot enums) (boot sys) (boot osdep) (boot ports-core) (boot transcoder) (boot binary-ports) (boot textual-ports) (boot custom-ports) (boot file-ports) (boot console-ports) (boot port-api) (boot print) (boot format) (boot log) (boot match-syntax) (boot units) (boot psyntax-exp) (boot str2num) (boot num2str) (boot reader) (boot environments) (boot eval) (boot namespace) (boot time) (boot base) (boot match))
+(|#%provide| all-defined)
+
 
 (import
-  (capy compiler tree-il resolve-free-vars)
-  (capy compiler tree-il letrectify)
   (capy compiler tree-il fix-letrec)
   (capy compiler tree-il assignment-elimination)
   (capy compiler tree-il well-known-procs)
@@ -16,21 +17,21 @@
   (let ([token #f])
     (dynamic-wind
       (lambda ()
-        (set! token ((|@@| (capy) %runtime-stats-begin-reader))))
+        (set! token (%runtime-stats-begin-reader)))
       thunk
       (lambda ()
-        ((|@@| (capy) %runtime-stats-end-reader) token)))))
+        (%runtime-stats-end-reader token)))))
 
 ;; Per-pass timing for the Scheme-side compile pipeline. Enabled by the same
 ;; CAPY_PROFILE_PASSES env var as the Rust pass profiler (utils/pass_profile.rs).
 (define (%profile-phase name thunk)
-  (let ([flag ((|@@| (capy) getenv) "CAPY_PROFILE_PASSES")])
+  (let ([flag (getenv "CAPY_PROFILE_PASSES")])
     (if (and flag (not (equal? flag "")))
-      (let ([t0 ((|@@| (capy) microsecond))])
+      (let ([t0 (microsecond)])
         (call-with-values
           thunk
           (lambda results
-            (let ([t1 ((|@@| (capy) microsecond))])
+            (let ([t1 (microsecond)])
               (display
                 (string-append
                   ";; PERF (capy) phase=" name " elapsed_ms="
@@ -54,7 +55,7 @@
                 [(eof-object? exp) (reverse exps)]
                 [else (lp (cons exp exps))]))))))
     (define output-file (or compiled-path (compiled-file-name filename)))
-    (define module (or env (resolve-module '(capy user) #f #f)))
+    (define module (or env (current-namespace) (expansion-env)))
     (*raw-log* log:debug
       '(capy)
       'compile-file
@@ -63,7 +64,7 @@
       output-file)
     (dynamic-wind
       (lambda ()
-        ((|@@| (capy) %runtime-stats-begin-compilation)))
+        (%runtime-stats-begin-compilation))
       (lambda ()
         (call-with-input-file filename
           (lambda (in)
@@ -71,21 +72,17 @@
             (define reader (get-port-reader in #f))
             (with-continuation-mark *compile-backtrace-key* (not (reader-nobacktrace? reader))
               (receive (code mod new-mod)
-                (%profile-phase "scheme.compile_tree_il" (lambda () (compile-tree-il exps module)))
+                (%profile-phase "scheme.compile_tree_il" (lambda () (compile-tree-il exps module filename)))
                 (let* ([code (%profile-phase "scheme.resolve_primitives"
-                               (lambda () (resolve-primitives code mod)))]
+                               (lambda () (resolve-primitives code #f)))]
                        [code (%profile-phase "scheme.expand_primitives"
                                (lambda () (expand-primitives code)))]
-                       [code (%profile-phase "scheme.resolve_free_vars"
-                               (lambda () (resolve-free-vars code)))]
-                       [code (%profile-phase "scheme.letrectify"
-                               (lambda () (letrectify code #t)))]
                        [code (%profile-phase "scheme.fix_letrec"
                                (lambda () (fix-letrec code)))]
                        [code (%profile-phase "scheme.expand_well_known_procs"
                                (lambda () (expand-well-known-procs code)))]
                        [code (%profile-phase "scheme.assignment_elimination"
                                (lambda () (eliminate-assignments code)))])
-                  (%compile code output-file mod load-thunk? dump-options #t)))))))
+                  (%compile code output-file load-thunk? dump-options #t)))))))
       (lambda ()
-        ((|@@| (capy) %runtime-stats-end-compilation))))))
+        (%runtime-stats-end-compilation)))))

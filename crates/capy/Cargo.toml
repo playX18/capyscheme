@@ -61,3 +61,6 @@ default = ["portable", "bootstrap"]
 portable = []
 aslr = []
 bootstrap = ["tree-sitter", "tree-sitter-scheme", "num-bigint"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libsui = "0.16.4"

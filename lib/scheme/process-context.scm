@@ -1,6 +1,7 @@
 (define-library (scheme process-context)
   (import (rename (core primitives) (exit core:exit))
-    (core optargs))
+    (core optargs)
+    (only (capy) program-arguments))
   (export command-line
     exit
     get-environment-variable
@@ -8,7 +9,7 @@
     emergency-exit)
   (begin
     (define (command-line)
-      ((|@@| (capy) program-arguments)))
+      (program-arguments))
     (define get-environment-variable getenv)
     (define get-environment-variables process-environment->alist)
     (define emergency-exit core:exit)

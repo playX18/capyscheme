@@ -116,6 +116,7 @@
     (scheme write)
     (scheme complex)
     (scheme eval)
+    (scheme read)
     (rnrs syntax-case)
     (only (capy) syntax-sourcev)
     (srfi :39)

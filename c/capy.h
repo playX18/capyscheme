@@ -35,6 +35,10 @@ struct SniEnv {
 Scm *scm_new(void);
 /* Create a runtime from a previously saved boot image. NULL on failure. */
 Scm *scm_from_image(const uint8_t *image_data, size_t image_size);
+/* Run a static bundle (capyc --static) in a fresh runtime, without booting it. argv[0] is
+   the program name. The bundle ends the process by calling exit, so this returns only if
+   it does not, with 0, or -1 for bad arguments. */
+int scm_run_static(const uint8_t *bundle, size_t bundle_size, int argc, const char *const *argv);
 /* Destroy a runtime created by scm_new / scm_from_image. */
 void scm_free(Scm *scm);
 

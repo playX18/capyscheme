@@ -6,16 +6,15 @@ use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::compiler::{
     CompilationOptions, DumpArtifactsOptions, LoweredProgram, begin_compilation_artifact,
     compile_file, compile_lowered_to_fasl_bytes, dump_lowered_program_artifacts,
     merge_compile_dump_options, resolve_artifact_dump_path,
 };
-use crate::heap::Gc;
 use crate::runtime::MutationContext;
 use crate::runtime::compile_service::{self, Failure, JobInput};
-use crate::runtime::modules::{Module, current_module};
 use crate::runtime::value::{Closure, Str, Value};
 use crate::runtime::vm::libraries::LIBRARY_COLLECTION;
 use crate::runtime::vm::thunks::make_io_error;
@@ -205,36 +204,48 @@ fn describe_uncompiled_source<'gc>(
 #[derive(Clone)]
 pub(crate) struct ExpandedJob<'gc> {
     pub(crate) expanded: Value<'gc>,
-    pub(crate) module: Gc<'gc, Module<'gc>>,
     pub(crate) destination: LoadArtifact,
     pub(crate) options: CompilationOptions,
     pub(crate) dump_options: DumpArtifactsOptions,
     pub(crate) preprocessed: bool,
+    /// See [`SourceJob::unsaved`].
+    pub(crate) unsaved: Option<Unsaved>,
 }
 
 /// Inputs of a compile of one source file with the Rust expander.
 #[derive(Clone)]
-pub(crate) struct SourceJob<'gc> {
+pub(crate) struct SourceJob {
     pub(crate) source: PathBuf,
-    pub(crate) module: Gc<'gc, Module<'gc>>,
     pub(crate) destination: LoadArtifact,
+    /// Set for an automatic compile. When the cache cannot take the image, the image is left
+    /// here and the caller loads it from memory instead of failing.
+    pub(crate) unsaved: Option<Unsaved>,
 }
+
+/// The image of a compile whose cache write failed, see [`SourceJob::unsaved`].
+pub(crate) type Unsaved = Arc<Mutex<Option<Vec<u8>>>>;
 
 /// Compile one source file on a compile thread. The caller loads the result.
 pub(crate) fn run_source_job<'gc>(
     ctx: MutationContext<'gc>,
-    job: SourceJob<'gc>,
+    job: SourceJob,
 ) -> Result<(), Failure<'gc>> {
     begin_compilation_artifact(&job.destination.path);
     let dump_options = merge_compile_dump_options(DumpArtifactsOptions::default());
-    let lowered = compile_file(ctx, &job.source, Some(job.module), dump_options.dump_graph)?;
+    let lowered = compile_file(ctx, &job.source, dump_options.dump_graph)?;
     dump_lowered_program_artifacts(ctx, &job.destination.path, &lowered, dump_options);
     let mut options = CompilationOptions::default();
     if dump_options.dump_bytecode {
         options.backend_dumps.bytecode =
             Some(resolve_artifact_dump_path(&job.destination.path, ".bc.txt"));
     }
-    compile_lowered_to_destination(ctx, lowered, options, &job.destination)?;
+    compile_lowered_to_destination(
+        ctx,
+        lowered,
+        options,
+        &job.destination,
+        job.unsaved.as_ref(),
+    )?;
     Ok(())
 }
 
@@ -255,18 +266,50 @@ fn compile_and_load_source<'gc>(
             &[],
         ));
     };
-    let module = current_module(ctx).get(ctx).downcast();
     let _phase = CompilationPhase::new(ctx);
+    let unsaved: Unsaved = Arc::new(Mutex::new(None));
     let job = SourceJob {
         source: source_path,
-        module,
         destination: build_destination.clone(),
+        unsaved: Some(unsaved.clone()),
     };
     let (ctx, outcome) = compile_service::run(ctx, JobInput::Source(job));
     compile_service::raise_failure(ctx, outcome.unwrap_or_else(|killed| killed.unwind()))?;
 
     let libs = LIBRARY_COLLECTION.fetch(ctx);
-    load_artifact(ctx, libs, &build_destination)
+    match take_unsaved(&unsaved) {
+        Some(bytes) => load_unsaved(ctx, &bytes, &build_destination.path),
+        None => load_artifact(ctx, libs, &build_destination),
+    }
+}
+
+/// The image a compile left in memory, if the cache could not take it.
+pub(crate) fn take_unsaved(unsaved: &Unsaved) -> Option<Vec<u8>> {
+    unsaved.lock().unwrap_or_else(|e| e.into_inner()).take()
+}
+
+/// Loads an image that is in memory, see [`SourceJob::unsaved`]
+pub(crate) fn load_unsaved<'gc>(
+    ctx: MutationContext<'gc>,
+    bytes: &[u8],
+    path: &Path,
+) -> Result<Value<'gc>, Value<'gc>> {
+    LIBRARY_COLLECTION
+        .fetch(ctx)
+        .load_image(bytes, ctx)
+        .map_err(|err| {
+            make_io_error(
+                ctx,
+                "load",
+                Str::new(
+                    ctx,
+                    format!("Failed to load {}: {err}", path.display()),
+                    true,
+                )
+                .into(),
+                &[],
+            )
+        })
 }
 
 pub(super) fn compile_lowered_to_destination<'gc>(
@@ -274,15 +317,28 @@ pub(super) fn compile_lowered_to_destination<'gc>(
     lowered: LoweredProgram<'gc>,
     options: CompilationOptions,
     destination: &LoadArtifact,
+    unsaved: Option<&Unsaved>,
 ) -> Result<(), Value<'gc>> {
-    compile_to_destination(ctx, destination, move || {
+    compile_to_destination(ctx, destination, unsaved, move || {
         compile_lowered_to_fasl_bytes(ctx, lowered, options)
     })
+}
+
+/// Whether `path` names an artifact of the compile cache, the only artifacts that get a lock.
+fn is_cache_artifact<'gc>(ctx: MutationContext<'gc>, path: &Path) -> bool {
+    let cache = ctx
+        .globals()
+        .loc_compile_fallback_path()
+        .get()
+        .downcast::<Str>()
+        .to_string();
+    !cache.is_empty() && path.starts_with(&cache)
 }
 
 fn compile_to_destination<'gc>(
     ctx: MutationContext<'gc>,
     destination: &LoadArtifact,
+    unsaved: Option<&Unsaved>,
     compile_fasl: impl FnOnce() -> Result<Vec<u8>, Value<'gc>>,
 ) -> Result<(), Value<'gc>> {
     match destination.kind {
@@ -298,25 +354,26 @@ fn compile_to_destination<'gc>(
             &[],
         )),
         LoadArtifactKind::FaslCode => {
-            let _lock = ArtifactLock::acquire(&destination.path).map_err(|err| {
-                make_io_error(
-                    ctx,
-                    "compile",
-                    Str::new(
-                        ctx,
-                        format!(
-                            "Cannot lock FASL code image '{}': {err}",
-                            destination.path.display()
-                        ),
-                        true,
-                    )
-                    .into(),
-                    &[],
-                )
-            })?;
+            let cache = is_cache_artifact(ctx, &destination.path);
+            let lock = if cache {
+                ArtifactLock::acquire(&destination.path).map(Some)
+            } else {
+                Ok(None)
+            };
             let bytes = compile_fasl()?;
-            write_artifact_atomically(&destination.path, &bytes).map_err(|err| {
-                make_io_error(
+            let stored =
+                lock.and_then(|_lock| write_artifact_atomically(&destination.path, &bytes));
+            match (stored, unsaved) {
+                (Ok(()), _) => Ok(()),
+                (Err(err), Some(unsaved)) if cache => {
+                    log::debug!(
+                        "Cannot cache {}, loading it from memory: {err}",
+                        destination.path.display()
+                    );
+                    *unsaved.lock().unwrap_or_else(|e| e.into_inner()) = Some(bytes);
+                    Ok(())
+                }
+                (Err(err), _) => Err(make_io_error(
                     ctx,
                     "compile",
                     Str::new(
@@ -329,8 +386,8 @@ fn compile_to_destination<'gc>(
                     )
                     .into(),
                     &[],
-                )
-            })
+                )),
+            }
         }
     }
 }

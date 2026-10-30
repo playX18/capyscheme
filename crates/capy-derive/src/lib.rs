@@ -120,7 +120,7 @@ impl syn::parse::Parse for Input {
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum ModulePath {
-    CurrentModule,
+    Capy,
     Concrete(syn::Path),
 }
 
@@ -128,8 +128,8 @@ impl ModulePath {
     /// Given a path to module, produces code to resolve it.
     pub fn resolve(&self) -> proc_macro2::TokenStream {
         match self {
-            ModulePath::CurrentModule => quote::quote! {
-                current_module(ctx).get(ctx).downcast::<Module>()
+            ModulePath::Capy => quote::quote! {
+                ctx.globals().capy_instance()
             },
 
             ModulePath::Concrete(path) => {
@@ -141,7 +141,7 @@ impl ModulePath {
                     .join(" ");
 
                 quote::quote! {
-                    ctx.ensure_module(#path)
+                    ctx.ensure_instance(#path)
                 }
             }
         }
@@ -175,7 +175,7 @@ pub(crate) fn get_module_path(
         }
     }
 
-    Ok(module.unwrap_or(ModulePath::CurrentModule))
+    Ok(module.unwrap_or(ModulePath::Capy))
 }
 
 pub(crate) fn get_name(
@@ -286,7 +286,7 @@ pub(crate) fn get_path(
 impl std::fmt::Debug for ModulePath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ModulePath::CurrentModule => write!(f, "(current-module)"),
+            ModulePath::Capy => write!(f, "(capy)"),
             ModulePath::Concrete(path) => write!(f, "{}", path.to_token_stream()),
         }
     }

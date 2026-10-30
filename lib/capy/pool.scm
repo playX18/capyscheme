@@ -14,6 +14,7 @@
     map-stage
     pipeline)
   (import (rnrs)
+    (rnrs mutable-pairs (6))
     (core thread)
     (capy channel)
     (capy sync))

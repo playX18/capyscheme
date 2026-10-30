@@ -119,6 +119,12 @@ const _: () = {
 unsafe extern "C" {
     pub fn scm_new() -> *mut Scm;
     pub fn scm_from_image(image_data: *const u8, image_size: size_t) -> *mut Scm;
+    pub fn scm_run_static(
+        bundle: *const u8,
+        bundle_size: size_t,
+        argc: c_int,
+        argv: *const *const c_char,
+    ) -> c_int;
     pub fn scm_free(scm: *mut Scm);
     pub fn scm_enter(scm: *mut Scm, enter: ScmEnterFn, arg: *mut c_void) -> c_int;
     pub fn scm_attach_current_thread(scm: *mut Scm, enter: ScmEnterFn, arg: *mut c_void) -> c_int;

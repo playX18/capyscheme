@@ -89,7 +89,6 @@
     <keyword>
     <mapped-bytevector>
     <method>
-    <module>
     <mutex>
     <native-continuation>
     <native-procedure>

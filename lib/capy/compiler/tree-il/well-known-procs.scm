@@ -40,7 +40,7 @@
       t
       (lambda (node)
         (match node
-          [(~lref _ _ sym)
+          [(~or (~lref _ _ sym) (~global-ref _ _ _ sym) (~global-set _ _ _ sym _))
             (match (hashtable-ref infos sym #f)
               [#f (values)]
               [(~list refs ops proc)

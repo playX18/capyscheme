@@ -11,7 +11,7 @@ use crate::runtime::value::Tuple;
 
 use super::env::{SCM_REF_NULL, ScmRef, SniEnv, env_mut, ref_value, safe_cstr};
 use super::exceptions::set_type_error;
-use super::util::{call_public, values_from_refs};
+use super::util::{call_library, call_public, values_from_refs};
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sni_make_rtd(
@@ -63,7 +63,7 @@ pub unsafe extern "C" fn sni_make_rcd(
     }
     let e = unsafe { env_mut(env) };
     let rtd_v = unsafe { ref_value(rtd) };
-    if !rtd_v.is_recod_type_descriptor(e.ctx) {
+    if !rtd_v.is_record_type_descriptor() {
         set_type_error(e, "sni_make_rcd", "record-type descriptor", rtd_v);
         return SCM_REF_NULL;
     }
@@ -91,7 +91,7 @@ pub unsafe extern "C" fn sni_record_constructor(env: *mut SniEnv<'static>, rcd: 
     }
     let e = unsafe { env_mut(env) };
     let rcd_v = unsafe { ref_value(rcd) };
-    if !rcd_v.is_record_constructor_descriptor(e.ctx) {
+    if !rcd_v.is_record_constructor_descriptor() {
         set_type_error(
             e,
             "sni_record_constructor",
@@ -100,7 +100,7 @@ pub unsafe extern "C" fn sni_record_constructor(env: *mut SniEnv<'static>, rcd: 
         );
         return SCM_REF_NULL;
     }
-    call_public(e, "record-constructor", [rcd_v])
+    call_library(e, "boot records", "record-constructor", [rcd_v])
 }
 
 #[unsafe(no_mangle)]
@@ -110,11 +110,11 @@ pub unsafe extern "C" fn sni_record_predicate(env: *mut SniEnv<'static>, rtd: Sc
     }
     let e = unsafe { env_mut(env) };
     let rtd_v = unsafe { ref_value(rtd) };
-    if !rtd_v.is_recod_type_descriptor(e.ctx) {
+    if !rtd_v.is_record_type_descriptor() {
         set_type_error(e, "sni_record_predicate", "record-type descriptor", rtd_v);
         return SCM_REF_NULL;
     }
-    call_public(e, "record-predicate", [rtd_v])
+    call_library(e, "boot records", "record-predicate", [rtd_v])
 }
 
 #[unsafe(no_mangle)]
@@ -128,11 +128,16 @@ pub unsafe extern "C" fn sni_record_accessor(
     }
     let e = unsafe { env_mut(env) };
     let rtd_v = unsafe { ref_value(rtd) };
-    if !rtd_v.is_recod_type_descriptor(e.ctx) {
+    if !rtd_v.is_record_type_descriptor() {
         set_type_error(e, "sni_record_accessor", "record-type descriptor", rtd_v);
         return SCM_REF_NULL;
     }
-    call_public(e, "record-accessor", [rtd_v, Value::new(field)])
+    call_library(
+        e,
+        "boot records",
+        "record-accessor",
+        [rtd_v, Value::new(field)],
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -146,11 +151,16 @@ pub unsafe extern "C" fn sni_record_mutator(
     }
     let e = unsafe { env_mut(env) };
     let rtd_v = unsafe { ref_value(rtd) };
-    if !rtd_v.is_recod_type_descriptor(e.ctx) {
+    if !rtd_v.is_record_type_descriptor() {
         set_type_error(e, "sni_record_mutator", "record-type descriptor", rtd_v);
         return SCM_REF_NULL;
     }
-    call_public(e, "record-mutator", [rtd_v, Value::new(field)])
+    call_library(
+        e,
+        "boot records",
+        "record-mutator",
+        [rtd_v, Value::new(field)],
+    )
 }
 
 #[unsafe(no_mangle)]
