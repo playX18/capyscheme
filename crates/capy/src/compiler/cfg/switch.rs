@@ -1,7 +1,7 @@
 use super::*;
 use crate::runtime::{
     prims::def::Primitive,
-    value::{Symbol, Value},
+    objectmodel::{Symbol, Value},
 };
 use std::collections::{HashMap, HashSet};
 const SYMBOL_HASH_DISPATCH_MIN_LENGTH: usize = 4;

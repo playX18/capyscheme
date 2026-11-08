@@ -18,7 +18,7 @@ pub type SniNativeFn =
 /// its raises. No raise unwinds this frame. The error is left as the pending
 /// exception, and it is checked once `fn_ptr` returns.
 extern "C" fn sni_native_trampoline<'gc>(ctx: MutationContext<'gc>, sfp: Slot<'gc>) -> ReturnCode {
-    Call::invoke(ctx, sfp, |call| {
+    NativeCall::invoke(ctx, sfp, |call| {
         let closure = call.rator.downcast::<Closure>();
         // free[0] = NativeProc wrapper, free[1] = Pointer to SniNativeFn
         if closure.nfree < 2 {

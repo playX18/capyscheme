@@ -11,7 +11,7 @@ use cranelift_entity::{EntitySet, SecondaryMap};
 
 use crate::{
     compiler::{cfg::Program, dump},
-    runtime::{MutationContext, value::Value},
+    runtime::{MutationContext, objectmodel::Value},
     utils::{flags, pass_profile::ProfileScope},
 };
 
@@ -52,6 +52,10 @@ pub struct OptimizationStats {
     pub contified_functions: usize,
     pub scc_contified_functions: usize,
     pub dom_contified_functions: usize,
+    pub loops_introduced: usize,
+    pub loop_self_calls: usize,
+    pub loops_accumulated: usize,
+    pub accumulated_self_calls: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +99,9 @@ impl<'gc> OptimizedGraphFunctionProgram<'gc> {
 pub struct OptimizedProgram<'gc> {
     pub ssa: Program<'gc>,
     pub stats: OptimizationStats,
+    /// The optimized graph before closure conversion, when compile dumps ask
+    /// for it. Shows loops and contification as the optimizer left them.
+    pub graph_cps: Option<String>,
 }
 
 fn optimize_graph_program<'gc>(
@@ -103,7 +110,52 @@ fn optimize_graph_program<'gc>(
 ) -> OptimizedGraphFunctionProgram<'gc> {
     let mut optimize_profile = ProfileScope::new("compiler.lower.gcps.run");
     let root = program.root();
-    let stats = optimize_graph(ctx, &mut program.graph, root, Some(DEFAULT_GAS));
+    let inline_mode = super::inline::InlineMode::from_flag(flags::gcps_inline());
+    let mut inline_stats = super::inline::InlineStats::default();
+    if inline_mode != super::inline::InlineMode::Off {
+        let mut profile = ProfileScope::new("compiler.lower.gcps.inline");
+        inline_stats += super::inline::inline_graph(
+            ctx,
+            &mut program.graph,
+            program.entry,
+            inline_mode,
+            flags::gcps_inline_max(),
+            flags::gcps_inline_small(),
+            flags::gcps_inline_product(),
+        );
+        if profile.is_enabled() {
+            profile.field("calls", inline_stats.calls_inlined);
+            profile.field("functions", inline_stats.functions_inlined);
+            profile.field("dead_functions", inline_stats.dead_functions);
+        }
+    }
+    let stats = optimize_graph(
+        ctx,
+        &mut program.graph,
+        program.entry,
+        root,
+        Some(DEFAULT_GAS),
+    );
+    if matches!(
+        inline_mode,
+        super::inline::InlineMode::Known | super::inline::InlineMode::Both
+    ) {
+        let mut profile = ProfileScope::new("compiler.lower.gcps.inline.after");
+        inline_stats += super::inline::inline_graph(
+            ctx,
+            &mut program.graph,
+            program.entry,
+            inline_mode,
+            flags::gcps_inline_max(),
+            flags::gcps_inline_small(),
+            flags::gcps_inline_product(),
+        );
+        if profile.is_enabled() {
+            profile.field("calls", inline_stats.calls_inlined);
+            profile.field("functions", inline_stats.functions_inlined);
+            profile.field("dead_functions", inline_stats.dead_functions);
+        }
+    }
     if optimize_profile.is_enabled() {
         let graph_stats = program.graph.stats();
         optimize_profile.field("iterations", stats.iterations);
@@ -124,6 +176,10 @@ fn optimize_graph_program<'gc>(
         optimize_profile.field("contified_functions", stats.contified_functions);
         optimize_profile.field("scc_contified_functions", stats.scc_contified_functions);
         optimize_profile.field("dom_contified_functions", stats.dom_contified_functions);
+        optimize_profile.field("loops_introduced", stats.loops_introduced);
+        optimize_profile.field("loop_self_calls", stats.loop_self_calls);
+        optimize_profile.field("loops_accumulated", stats.loops_accumulated);
+        optimize_profile.field("accumulated_self_calls", stats.accumulated_self_calls);
         optimize_profile.field("terms", graph_stats.terms);
         optimize_profile.field("free_occurrences", graph_stats.free_occurrences);
         optimize_profile.field("bound_vars", graph_stats.bound_vars);
@@ -140,8 +196,17 @@ fn optimize_graph_program<'gc>(
 pub fn optimize_graph_func_to_ssa<'gc>(
     ctx: MutationContext<'gc>,
     program: GraphFunctionProgram<'gc>,
+    dump_graph: bool,
 ) -> ConvertResult<OptimizedProgram<'gc>> {
     let mut program = optimize_graph_program(ctx, program);
+
+    let graph_cps = dump_graph.then(|| {
+        let root = program
+            .graph
+            .read_term_link(program.root())
+            .expect("graph root");
+        super::pretty::render_graph(&program.graph, root)
+    });
 
     // Reify before group merging (the merge needs `is_reified`). The merge
     // changes no bindings or uses, so `GraphReifyInfo` stays valid.
@@ -161,9 +226,7 @@ pub fn optimize_graph_func_to_ssa<'gc>(
     // Shared-environment analysis (disabled with CAPY_CLOSURE_SHARING=0,
     // decisions dumped with CAPY_SHARE_DUMP=1).
     let mut share_profile = ProfileScope::new("compiler.lower.gcps.closure_share");
-    // Shared environments were designed around reified continuation closures
-    // nesting inside one another. Continuations are frames now, so the
-    // analysis has nothing sound to say until it is redone for functions only.
+
     let sharing_enabled = false && flags::closure_sharing();
     let root = program
         .graph
@@ -235,15 +298,22 @@ pub fn optimize_graph_func_to_ssa<'gc>(
     Ok(OptimizedProgram {
         ssa,
         stats: program.stats,
+        graph_cps,
     })
 }
 
 pub fn optimize_graph<'gc>(
     ctx: MutationContext<'gc>,
     graph: &mut Graph<'gc>,
+    entry: FunctionId,
     root: Subterm,
     gas: Option<usize>,
 ) -> OptimizationStats {
+    let mut loops = super::introduce_loops::LoopStats::default();
+    if flags::gcps_loops() {
+        loops = super::introduce_loops::introduce_loops(ctx, graph, entry);
+    }
+
     let mut state = OptimizerState::new();
     let contify_mode = ContifyMode::current();
     {
@@ -260,7 +330,21 @@ pub fn optimize_graph<'gc>(
         }
     }
     state.run(ctx, graph, gas.unwrap_or(usize::MAX), contify_mode);
-    state.stats
+    let mut stats = state.stats;
+
+    // Simplification and contification expose new self tail calls.
+    if flags::gcps_loops() {
+        let more = super::introduce_loops::introduce_loops(ctx, graph, entry);
+        loops.loops += more.loops;
+        loops.self_calls += more.self_calls;
+        loops.loops_accumulated += more.loops_accumulated;
+        loops.accumulated_self_calls += more.accumulated_self_calls;
+    }
+    stats.loops_introduced = loops.loops;
+    stats.loop_self_calls = loops.self_calls;
+    stats.loops_accumulated = loops.loops_accumulated;
+    stats.accumulated_self_calls = loops.accumulated_self_calls;
+    stats
 }
 
 pub(super) struct OptimizerState {
@@ -1451,6 +1535,41 @@ impl OptimizerState {
             .collect()
     }
 
+    fn requeue_enclosing_fixes<'gc>(&mut self, graph: &Graph<'gc>, from: Subterm) {
+        let Some(mut term) = graph.read_term_link(from) else {
+            return;
+        };
+
+        // The walk ends at the root
+        for _ in 0..4096 {
+            let Some(parent) = graph.read_parent_link(graph[term].link) else {
+                return;
+            };
+            match parent {
+                Parent::Term(up) => {
+                    if matches!(graph[up].kind, TermKind::Fix(..))
+                        && let ActiveLinkStatus::ActiveSubterm(link) = graph.get_active_link_for(up)
+                    {
+                        self.worklist.add_subterm(link);
+                    }
+                    term = up;
+                }
+                Parent::Func(function) => {
+                    let Some(owner) = self.function_owner_defs[function] else {
+                        return;
+                    };
+                    let Some(up) = graph.read_term_link(owner) else {
+                        return;
+                    };
+                    if matches!(graph[up].kind, TermKind::Fix(..)) {
+                        self.worklist.add_subterm(owner);
+                    }
+                    term = up;
+                }
+            }
+        }
+    }
+
     fn contify_candidate<'gc>(
         &mut self,
         graph: &mut Graph<'gc>,
@@ -1552,6 +1671,7 @@ impl OptimizerState {
         self.transform_apps_to_continues(graph, site, &candidate.binders);
         self.collect_redexes(graph, site);
         self.worklist.add_subterm(site);
+        self.requeue_enclosing_fixes(graph, site);
         if !untouched_links.is_empty() {
             self.worklist.add_subterm(active_link);
         }

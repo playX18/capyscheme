@@ -6,10 +6,10 @@ use crate::heap::Gc;
 use crate::heap::alloc::Array;
 use crate::heap::cell::Lock;
 use crate::runtime::MutationContext;
+use crate::runtime::objectmodel::Symbol;
 use crate::runtime::prelude::*;
-use crate::runtime::value::Symbol;
 use crate::runtime::variable::Variable;
-use crate::{runtime::value::Value, static_symbols};
+use crate::{runtime::objectmodel::Value, static_symbols};
 use std::collections::HashMap;
 
 macro_rules! prim_names {
@@ -60,6 +60,11 @@ prim_names!(
     modulo = "modulo"
     exact_to_inexact = "exact->inexact"
     inexact_to_exact = "inexact->exact"
+    // The R7RS-preferred names. Libraries re-export these (sometimes renamed
+    // to the R5RS names above), and the bindings are the same native
+    // procedures as the primitives, so a call must compile to the primitive.
+    inexact = "inexact"
+    exact = "exact"
     expt = "expt"
     ash = "ash"
     //logand = "logand"
@@ -236,6 +241,7 @@ prim_names!(
     cddddr = "cddddr"
 
     length = "length"
+    reverse = "reverse"
 
     make_vector = "make-vector"
     vector_length = "vector-length"
@@ -432,7 +438,10 @@ macro_rules! primitive_expanders {
     };
 }
 
-/// Rewrites `(call/cc (lambda (k) e))` to `e` when `k` is unused.
+fn eq_immediate(v: Value<'_>) -> bool {
+    v.is_int32() || v.is_char() || v.is_bool() || v.is_null()
+}
+
 fn elide_unused_callcc<'gc>(
     _ctx: MutationContext<'gc>,
     args: &[TermRef<'gc>],
@@ -558,6 +567,11 @@ primitive_expanders!(
             return None;
         }
 
+        let immediate = |t: &TermRef<'gc>| matches!(t.kind, TermKind::Const(v) if eq_immediate(v));
+        if immediate(&args[0]) || immediate(&args[1]) {
+            return Some(prim_call_term(ctx, sym_eqp(ctx).into(), args, src));
+        }
+
         Some(prim_call_term(ctx, sym_eqvp(ctx).into(), args, src))
     }
 
@@ -599,7 +613,8 @@ primitive_expanders!(
         let len = ls.list_length();
         if len == 1 {
             let v1 = ls.list_ref(0).expect("invariant holds");
-            let check = prim_call_term(ctx, sym_eqp(ctx).into(), [key, constant(ctx, v1)], src);
+            let sym = if eq_immediate(v1) { sym_eqp(ctx) } else { sym_eqvp(ctx) };
+            let check = prim_call_term(ctx, sym.into(), [key, constant(ctx, v1)], src);
             return Some(if_term(ctx, check, constant(ctx, ls), constant(ctx, Value::new(false))));
         } else if len > 5 {
             // too much elements to check: reify into a normal call
@@ -614,7 +629,8 @@ primitive_expanders!(
             let rest_val = it;
             it = it.cdr();
 
-            let check = prim_call_term(ctx, sym_eqvp(ctx).into(), [key, constant(ctx, val)], src);
+            let sym = if eq_immediate(val) { sym_eqp(ctx) } else { sym_eqvp(ctx) };
+            let check = prim_call_term(ctx, sym.into(), [key, constant(ctx, val)], src);
             result = if_term(ctx, check, constant(ctx, rest_val), result);
         }
 
@@ -744,6 +760,22 @@ primitive_expanders!(
     }
 
     "inexact->exact" ex_inexact_to_exact<'gc>(ctx, args, src) {
+        if args.len() != 1 {
+            return None;
+        }
+
+        Some(prim_call_term(ctx, sym_inexact_to_exact(ctx).into(), args, src))
+    }
+
+    "inexact" ex_inexact<'gc>(ctx, args, src) {
+        if args.len() != 1 {
+            return None;
+        }
+
+        Some(prim_call_term(ctx, sym_exact_to_inexact(ctx).into(), args, src))
+    }
+
+    "exact" ex_exact<'gc>(ctx, args, src) {
         if args.len() != 1 {
             return None;
         }
@@ -1572,6 +1604,14 @@ primitive_expanders!(
     }
 
 
+    "reverse" ex_reverse<'gc>(ctx, args, src) {
+        if args.len() != 1 {
+            return None;
+        }
+
+        Some(prim_call_term(ctx, sym_reverse(ctx).into(), args, src))
+    }
+
     "list" ex_list<'gc>(ctx, args, src) {
         // replace (list a b c) with (cons a (cons b (cons c '())))
         if args.is_empty() {
@@ -1658,6 +1698,27 @@ primitive_expanders!(
         Some(prim_call_term(ctx, sym_vector_set(ctx).into(), args, src))
     }
 
+    "string-length" ex_string_length<'gc>(ctx, args, src) {
+        if args.len() != 1 {
+            return None;
+        }
+        Some(prim_call_term(ctx, sym_string_length(ctx).into(), args, src))
+    }
+
+    "string-ref" ex_string_ref<'gc>(ctx, args, src) {
+        if args.len() != 2 {
+            return None;
+        }
+        Some(prim_call_term(ctx, sym_string_ref(ctx).into(), args, src))
+    }
+
+    "string-set!" ex_string_set<'gc>(ctx, args, src) {
+        if args.len() != 3 {
+            return None;
+        }
+        Some(prim_call_term(ctx, sym_string_set(ctx).into(), args, src))
+    }
+
     "tuple-size" ex_tuple_size<'gc>(ctx, args, src) {
         if args.len() != 1 {
             return None;
@@ -1734,6 +1795,21 @@ fn is_lowered_directly<'gc>(ctx: MutationContext<'gc>, name: Value<'gc>, argc: u
         || (name == Symbol::from_str(ctx, "late-variable").into() && argc == 1)
 }
 
+fn is_fixed_arity_call(name: SymbolRef<'_>, argc: usize) -> bool {
+    use crate::runtime::prims::{calls::PRIM_ARITY, def::Primitive};
+
+    let key = name.as_str();
+    let machine = key.starts_with("fx")
+        || key.starts_with("fl")
+        || key.starts_with("bytevector-")
+        || key.starts_with("pointer-");
+    if !machine {
+        return false;
+    }
+    Primitive::from_name(&key)
+        .is_some_and(|prim| PRIM_ARITY.get(prim as u16 as usize) == Some(&(argc as i8)))
+}
+
 pub fn expand_primitive_calls<'gc>(ctx: MutationContext<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
     t.pre_order(ctx, |ctx, t| match &t.kind {
         TermKind::PrimCall(name, args) => {
@@ -1753,7 +1829,9 @@ pub fn expand_primitive_calls<'gc>(ctx: MutationContext<'gc>, t: TermRef<'gc>) -
 
                     call_term(ctx, prim_ref, args.as_slice(), t.source())
                 }
-            } else if is_lowered_directly(ctx, *name, args.len()) {
+            } else if is_lowered_directly(ctx, *name, args.len())
+                || is_fixed_arity_call(name.downcast(), args.len())
+            {
                 t
             } else {
                 // failed expansion: reify primitive into a function call to it instead

@@ -10,7 +10,7 @@ use libc::c_char;
 use crate::runtime::{
     MutationContext, Scheme,
     sni::{sni_globals, sni_locals},
-    value::Value,
+    objectmodel::Value,
 };
 
 /// Opaque Scheme value handle. Points into OopStorage.

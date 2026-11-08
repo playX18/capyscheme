@@ -145,6 +145,30 @@ fn rec<'gc>(
             })
         }
 
+        TermKind::CaseLambda(clauses) => {
+            let clauses = clauses
+                .iter()
+                .map(|proc| {
+                    let body = wrap_mutable(
+                        ctx,
+                        proc.args
+                            .iter()
+                            .copied()
+                            .chain(proc.variadic.iter().copied()),
+                        proc.body,
+                        substitutions,
+                    );
+                    proc.with_body(ctx, body)
+                })
+                .collect::<Vec<_>>();
+            ctx.allocate(Term {
+                source: term.source().into(),
+                kind: TermKind::CaseLambda(crate::heap::alloc::array::Array::from_slice(
+                    ctx, &clauses,
+                )),
+            })
+        }
+
         TermKind::Let(let_) => {
             assert!(
                 !matches!(let_.style, LetStyle::LetRec | LetStyle::LetRecStar),
@@ -391,6 +415,20 @@ impl<'gc> Term<'gc> {
                     arg.ref_count.set(0);
                 }
                 proc.body.count_refs();
+            }
+
+            TermKind::CaseLambda(clauses) => {
+                for proc in clauses.iter() {
+                    for arg in proc.args.iter() {
+                        arg.set_count.set(0);
+                        arg.ref_count.set(0);
+                    }
+                    if let Some(arg) = proc.variadic {
+                        arg.set_count.set(0);
+                        arg.ref_count.set(0);
+                    }
+                    proc.body.count_refs();
+                }
             }
 
             TermKind::Receive(vars, variadic, producer, consumer) => {

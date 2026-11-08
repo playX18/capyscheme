@@ -315,14 +315,14 @@ fn register_type_class_with_context<'gc>(
     id: ClassId,
     hooks: AllocationHooks,
 ) {
-    if !crate::runtime::class::class_table_initialized()
-        || crate::runtime::class::is_type_class_registered(id)
+    if !crate::runtime::objectmodel::class::class_table_initialized()
+        || crate::runtime::objectmodel::class::is_type_class_registered(id)
     {
         return;
     }
 
     if let Some(_guard) = TypeClassRegistrationGuard::enter() {
-        crate::runtime::class::register_internal_type_class_if_ready(ctx, id, hooks);
+        crate::runtime::objectmodel::class::register_internal_type_class_if_ready(ctx, id, hooks);
     } else {
         record_pending_type_class(id, hooks);
     }
@@ -387,6 +387,12 @@ pub(crate) fn type_class_header_word<'gc, T>(
         type_class_header_word_slow(ctx, hooks, addr);
     }
     addr.load() as u64
+}
+
+pub(crate) fn registered_type_class_header_word<T>() -> Option<u64> {
+    let addr = ClassIdRegistry::generic_static::<ClassIdOf<T>>();
+    let id = addr.load();
+    (id != 0).then_some(id as u64)
 }
 
 #[inline(never)]
@@ -561,46 +567,58 @@ impl GcObject {
         self.0.offset(-OBJECT_REF_OFFSET)
     }
 
+    #[cold]
+    #[inline(never)]
+    fn missing_primitive_hooks(self, op: &str) -> ! {
+        let header = self.header_address();
+        let raw_header = unsafe { header.load::<u64>() };
+        let mut neighbours = String::new();
+        for i in -2isize..=4 {
+            let word = unsafe { header.offset(i * 8).load::<u64>() };
+            neighbours.push_str(&format!(" [{:+}]={:#018x}", i * 8, word));
+        }
+        panic!(
+            "missing primitive GC hooks for class id {} while {} object at {:#x} \
+             (header {:#x} at {:#x}; words:{})",
+            raw_header & ((1u64 << 24) - 1),
+            op,
+            self.0.as_usize(),
+            raw_header,
+            header.as_usize(),
+            neighbours,
+        );
+    }
+
     pub fn trace(self, visitor: &mut Visitor) {
         if let Some(hooks) =
-            crate::runtime::class::primitive_layout_hooks_for_class_id(self.class_id())
+            crate::runtime::objectmodel::class::primitive_layout_hooks_for_class_id(self.class_id())
         {
             (hooks.trace())(self, visitor);
             return;
         }
 
-        panic!(
-            "missing primitive GC hooks for class id {} while tracing object at {:#x}",
-            self.class_id().bits(),
-            self.0.as_usize()
-        );
+        self.missing_primitive_hooks("tracing")
     }
 
     pub fn process_weak_refs(self, weak_processor: &mut WeakProcessor) {
         if let Some(hooks) =
-            crate::runtime::class::primitive_layout_hooks_for_class_id(self.class_id())
+            crate::runtime::objectmodel::class::primitive_layout_hooks_for_class_id(self.class_id())
         {
             (hooks.weak_proc())(self, weak_processor);
             return;
         }
 
-        panic!(
-            "missing primitive GC hooks for class id {} while processing weak refs",
-            self.class_id().bits()
-        );
+        self.missing_primitive_hooks("processing weak refs")
     }
 
     pub fn alignment(self) -> usize {
         if let Some(hooks) =
-            crate::runtime::class::primitive_layout_hooks_for_class_id(self.class_id())
+            crate::runtime::objectmodel::class::primitive_layout_hooks_for_class_id(self.class_id())
         {
             return (hooks.alignment() + hooks.compute_alignment().map_or(0, |f| f(self))).min(16);
         }
 
-        panic!(
-            "missing primitive GC hooks for class id {} while computing alignment",
-            self.class_id().bits()
-        );
+        self.missing_primitive_hooks("computing alignment")
     }
 
     pub fn current_size(self) -> usize {
@@ -621,18 +639,14 @@ impl GcObject {
 
     pub fn instance_size(self) -> usize {
         if let Some(hooks) =
-            crate::runtime::class::primitive_layout_hooks_for_class_id(self.class_id())
+            crate::runtime::objectmodel::class::primitive_layout_hooks_for_class_id(self.class_id())
         {
             return hooks.instance_size()
                 + hooks.compute_size().map_or(0, |f| f(self))
                 + size_of::<HeapObjectHeader>();
         }
 
-        panic!(
-            "missing primitive GC hooks for class id {} while computing instance size of object at {:#x}",
-            self.class_id().bits(),
-            self.0.as_usize()
-        );
+        self.missing_primitive_hooks("computing instance size")
     }
 
     fn bytes_used(self) -> usize {

@@ -2,7 +2,7 @@
 
 use std::ptr::NonNull;
 
-use crate::runtime::value::Value;
+use crate::runtime::objectmodel::Value;
 
 use super::storage::OopStorage;
 

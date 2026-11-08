@@ -6,7 +6,7 @@ use libc::c_char;
 
 use crate::runtime::{
     sni,
-    value::{Closure, Value},
+    objectmodel::{Closure, Value},
     vm::ExecutionResult,
 };
 

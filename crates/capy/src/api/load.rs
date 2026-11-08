@@ -2,7 +2,7 @@
 
 use libc::c_char;
 
-use crate::runtime::{value::Value, vm::load::load_thunk_in_vicinity};
+use crate::runtime::{objectmodel::Value, vm::load::load_thunk_in_vicinity};
 
 use super::env::{SCM_REF_NULL, ScmPtr, ScmRef, SniEnv, env_mut, ref_value, safe_cstr};
 

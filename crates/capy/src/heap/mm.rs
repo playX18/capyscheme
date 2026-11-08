@@ -1,11 +1,12 @@
 use mmtk::{
     MMTKBuilder,
-    util::{ObjectReference, heap::vm_layout::VMLayout, options::GCTriggerSelector},
+    util::{ObjectReference, heap::vm_layout::VMLayout},
     vm::{VMBinding, slot::UnimplementedMemorySlice},
 };
 #[cfg(feature = "aslr")]
 use mmtk::{
     util::Address, util::conversions::chunk_align_down, util::heap::vm_layout::BYTES_IN_CHUNK,
+    util::options::GCTriggerSelector,
 };
 #[cfg(feature = "aslr")]
 use rand::Rng;
@@ -89,7 +90,8 @@ fn is_address_maybe_mmaped(addr: Address, size: usize) -> bool {
 pub fn vm_layout(builder: &mut MMTKBuilder) {
     let mut vm_layout = VMLayout::default();
 
-    let _size = match *builder.options.gc_trigger {
+    #[cfg(feature = "aslr")]
+    let size = match *builder.options.gc_trigger {
         GCTriggerSelector::Delegated => super::heuristics::configured_max_heap_bytes(),
         _ => builder.options.gc_trigger.max_heap_size(),
     };

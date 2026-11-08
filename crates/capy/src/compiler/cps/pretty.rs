@@ -2,7 +2,7 @@
 
 use crate::runtime::{
     prims::def::Primitive,
-    value::{Str, Symbol, Value},
+    objectmodel::{Str, Symbol, Value},
 };
 use std::{
     collections::{HashMap, HashSet},

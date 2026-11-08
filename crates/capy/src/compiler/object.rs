@@ -8,7 +8,7 @@ use crate::runtime::vm::thunks::make_io_error;
 use crate::runtime::{
     MutationContext,
     stats::{CompilationBreakdownPhase, CompilationBreakdownScope},
-    value::{Str, Symbol, Value},
+    objectmodel::{Str, Symbol, Value},
 };
 use crate::utils::flags;
 
@@ -70,8 +70,17 @@ pub(crate) fn compile_lowered_to_fasl_bytes<'gc>(
         let mut text = String::new();
         for procedure in &program.procedures {
             text.push_str(&format!(
-                ";; {} ({:?}) arity {} frame {}\n",
-                procedure.name, procedure.code_id, procedure.arity, procedure.frame_size
+                ";; {} at {} ({:?}) arity {} frame {}\n",
+                procedure.name,
+                procedure
+                    .spans
+                    .iter()
+                    .next()
+                    .copied()
+                    .unwrap_or(Value::new(false)),
+                procedure.code_id,
+                procedure.arity,
+                procedure.frame_size
             ));
             text.push_str(&bytecode::disasm::disassemble(
                 &procedure.code,

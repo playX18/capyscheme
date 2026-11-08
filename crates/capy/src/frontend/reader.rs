@@ -10,7 +10,7 @@ use crate::{
     global, list,
     runtime::{
         MutationContext,
-        value::{ByteVector, ClassTagged, IntoValue, Keyword, Str, Symbol, Value, Vector},
+        objectmodel::{ByteVector, ClassTagged, IntoValue, Keyword, Str, Symbol, Value, Vector},
         vm::syntax::Syntax,
     },
 };

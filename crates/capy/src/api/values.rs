@@ -4,7 +4,7 @@ use libc::c_char;
 
 use crate::heap::Gc;
 use crate::prelude::*;
-use crate::runtime::value::conversions::*;
+use crate::runtime::objectmodel::conversions::*;
 
 use super::env::{SCM_REF_NULL, ScmRef, SniEnv, env_mut, ref_value, safe_cstr};
 use super::exceptions::{set_bounds_error, set_type_error};

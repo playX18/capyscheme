@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::runtime::value::Value;
+use crate::runtime::objectmodel::Value;
 
 use super::block::ActiveArray;
 use super::storage::OopStorage;

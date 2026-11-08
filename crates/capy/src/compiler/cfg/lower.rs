@@ -12,15 +12,15 @@ use crate::{
     expander::core::LVarRef,
     heap::Gc,
     runtime::{
+        objectmodel::{Symbol, Value},
         prims::def::Primitive,
-        value::{Symbol, Value},
         vm::exceptions::RaiseKind,
     },
 };
 
 use super::{
-    Block, BlockId, BranchTarget, CodeId, GraphCodeId, Instruction, Operand, Procedure, Program,
-    ReturnPoint, Terminator, UVar, finish_procedure,
+    Block, BlockId, BranchTarget, CaseGroup, CodeId, GraphCodeId, Instruction, Operand, Procedure,
+    Program, ReturnPoint, Terminator, UVar, finish_procedure,
 };
 
 pub fn lower_graph<'gc>(
@@ -30,13 +30,14 @@ pub fn lower_graph<'gc>(
 ) -> Program<'gc> {
     let primitives = collect_primitive_map(graph);
     let mut procedures = Vec::new();
+    let mut case_groups: Vec<CaseGroup> = Vec::new();
     // Continuations are blocks of the function that binds them, so every
     // procedure here is a function.
     for function in reify.functions.iter().copied() {
         let _p = crate::utils::pass_profile::ProfileScope::new("cfg.lower.function");
         let lowered = {
             let _c = crate::utils::pass_profile::ProfileScope::new("cfg.lower.convert");
-            lower_function(graph, reify, share, function, &primitives)
+            lower_function(graph, reify, share, function, &primitives, &mut case_groups)
         };
         procedures.push(finish_procedure(lowered));
     }
@@ -44,6 +45,7 @@ pub fn lower_graph<'gc>(
     Program {
         entry: graph_code_id(graph, reify.entrypoint),
         procedures,
+        case_groups,
     }
 }
 
@@ -66,6 +68,7 @@ fn lower_function<'gc>(
     share: &SharePlan,
     function: FunctionId,
     primitives: &HashMap<Value<'gc>, Primitive>,
+    case_groups: &mut Vec<CaseGroup>,
 ) -> Procedure<'gc> {
     let data = graph[function];
     let return_cont = data
@@ -79,7 +82,8 @@ fn lower_function<'gc>(
             data.name
         );
     }
-    let mut builder = ProcedureBuilder::new(graph, reify, share, primitives, return_cont);
+    let mut builder =
+        ProcedureBuilder::new(graph, reify, share, primitives, return_cont, case_groups);
     let binding = builder.uvar(data.var);
     let params = builder.uvars(graph.bound_vars_slice(&data.vars));
     let variadic = data.variadic.map(|var| builder.uvar(var));
@@ -257,6 +261,8 @@ struct ProcedureBuilder<'a, 'gc> {
     return_cont: BoundVar,
     next_uvar: u32,
     next_block: usize,
+    case_groups: &'a mut Vec<CaseGroup>,
+    case_clause_groups: HashMap<UVar, CodeId>,
 }
 
 impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
@@ -266,6 +272,7 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
         share: &'a SharePlan,
         primitives: &'a HashMap<Value<'gc>, Primitive>,
         return_cont: BoundVar,
+        case_groups: &'a mut Vec<CaseGroup>,
     ) -> Self {
         Self {
             graph,
@@ -282,6 +289,8 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
             return_cont,
             next_uvar: 0,
             next_block: 1,
+            case_groups,
+            case_clause_groups: HashMap::new(),
         }
     }
 
@@ -395,84 +404,134 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
 
             TermKind::Fix(functions, body) => {
                 let functions = self.graph.live_functions(&functions);
-                if let Some(site) = self.share.site(term) {
-                    let env_uvar = if site.allocate {
-                        // Allocate a fresh shared record holding the common
-                        // free variables.
-                        let env_uvar = self.fresh_temp();
-                        instructions.push(Instruction::MakeEnv {
-                            dst: env_uvar,
-                            size: site.record_vars.len(),
-                        });
-                        for (index, record_var) in site.record_vars.iter().enumerate() {
-                            instructions.push(Instruction::EnvSet {
-                                env: Operand::Local(env_uvar),
-                                index,
-                                value: Operand::Local(self.uvar(*record_var)),
-                            });
-                        }
-                        env_uvar
-                    } else {
-                        // Reuse: member closures point at this function's own
-                        // shared record.
-                        self.env_uvar
-                            .expect("reuse site requires an enclosing shared env")
-                    };
-                    for member in site.members.iter() {
-                        let own = physical_own_vars(self.graph, member);
-                        if member.flat {
-                            // Compacted member: flat closure, full captures,
-                            // no env record (hot functions).
-                            instructions.push(Instruction::MakeClosure {
-                                dst: self.uvar(self.graph[member.function].var),
-                                code: graph_code_id(self.graph, member.function),
-                                free_count: own.len(),
-                                env: None,
-                            });
-                        } else {
-                            instructions.push(Instruction::MakeClosure {
-                                dst: self.uvar(self.graph[member.function].var),
-                                code: graph_code_id(self.graph, member.function),
-                                free_count: 1 + own.len(),
-                                env: Some(Operand::Local(env_uvar)),
-                            });
+                let mut groups: Vec<(u32, Vec<FunctionId>)> = Vec::new();
+                for function in functions.iter().copied() {
+                    if let Some(group) = self.graph[function].case_group {
+                        match groups.iter_mut().find(|(id, _)| *id == group) {
+                            Some((_, members)) => members.push(function),
+                            None => groups.push((group, vec![function])),
                         }
                     }
-                    for member in site.members.iter() {
-                        let closure = self.uvar(self.graph[member.function].var);
-                        let own = physical_own_vars(self.graph, member);
-                        if member.flat {
-                            for (index, own_var) in own.iter().enumerate() {
-                                instructions.push(Instruction::ClosureSet {
-                                    closure: Operand::Local(closure),
+                }
+
+                if groups.is_empty() {
+                    if let Some(site) = self.share.site(term) {
+                        let env_uvar = if site.allocate {
+                            // Allocate a fresh shared record holding the common
+                            // free variables.
+                            let env_uvar = self.fresh_temp();
+                            instructions.push(Instruction::MakeEnv {
+                                dst: env_uvar,
+                                size: site.record_vars.len(),
+                            });
+                            for (index, record_var) in site.record_vars.iter().enumerate() {
+                                instructions.push(Instruction::EnvSet {
+                                    env: Operand::Local(env_uvar),
                                     index,
-                                    value: Operand::Local(self.uvar(*own_var)),
+                                    value: Operand::Local(self.uvar(*record_var)),
                                 });
                             }
+                            env_uvar
                         } else {
-                            for (index, own_var) in own.iter().enumerate() {
-                                instructions.push(Instruction::ClosureSet {
-                                    closure: Operand::Local(closure),
-                                    index: index + 1,
-                                    value: Operand::Local(self.uvar(*own_var)),
+                            // Reuse: member closures point at this function's own
+                            // shared record.
+                            self.env_uvar
+                                .expect("reuse site requires an enclosing shared env")
+                        };
+                        for member in site.members.iter() {
+                            let own = physical_own_vars(self.graph, member);
+                            if member.flat {
+                                // Compacted member: flat closure, full captures,
+                                // no env record (hot functions).
+                                instructions.push(Instruction::MakeClosure {
+                                    dst: self.uvar(self.graph[member.function].var),
+                                    code: graph_code_id(self.graph, member.function),
+                                    free_count: own.len(),
+                                    env: None,
+                                });
+                            } else {
+                                instructions.push(Instruction::MakeClosure {
+                                    dst: self.uvar(self.graph[member.function].var),
+                                    code: graph_code_id(self.graph, member.function),
+                                    free_count: 1 + own.len(),
+                                    env: Some(Operand::Local(env_uvar)),
                                 });
                             }
+                        }
+                        for member in site.members.iter() {
+                            let closure = self.uvar(self.graph[member.function].var);
+                            let own = physical_own_vars(self.graph, member);
+                            if member.flat {
+                                for (index, own_var) in own.iter().enumerate() {
+                                    instructions.push(Instruction::ClosureSet {
+                                        closure: Operand::Local(closure),
+                                        index,
+                                        value: Operand::Local(self.uvar(*own_var)),
+                                    });
+                                }
+                            } else {
+                                for (index, own_var) in own.iter().enumerate() {
+                                    instructions.push(Instruction::ClosureSet {
+                                        closure: Operand::Local(closure),
+                                        index: index + 1,
+                                        value: Operand::Local(self.uvar(*own_var)),
+                                    });
+                                }
+                            }
+                        }
+                    } else {
+                        for function in functions.iter().copied() {
+                            let free_vars =
+                                binder_set_to_vec(free_vars_of(self.graph, self.reify, function));
+                            let physical = physical_free_vars(self.graph, function, &free_vars);
+                            instructions.push(Instruction::MakeClosure {
+                                dst: self.uvar(self.graph[function].var),
+                                code: graph_code_id(self.graph, function),
+                                free_count: physical.len(),
+                                env: None,
+                            });
+                        }
+
+                        for function in functions {
+                            let closure = self.uvar(self.graph[function].var);
+                            let free_vars =
+                                binder_set_to_vec(free_vars_of(self.graph, self.reify, function));
+                            let physical = physical_free_vars(self.graph, function, &free_vars);
+                            emit_closure_sets(self, instructions, closure, &physical);
                         }
                     }
                 } else {
+                    let mut plan: Vec<(FunctionId, CodeId)> = Vec::with_capacity(functions.len());
+                    for (_, members) in &groups {
+                        let code = CodeId::CaseGroup(self.case_groups.len() as u32);
+                        let clauses = members
+                            .iter()
+                            .map(|function| graph_code_id(self.graph, *function))
+                            .collect();
+                        self.case_groups.push(CaseGroup { code, clauses });
+                        for function in members {
+                            let closure = self.uvar(self.graph[*function].var);
+                            self.case_clause_groups.insert(closure, code);
+                            plan.push((*function, code));
+                        }
+                    }
                     for function in functions.iter().copied() {
+                        if self.graph[function].case_group.is_none() {
+                            plan.push((function, graph_code_id(self.graph, function)));
+                        }
+                    }
+                    for (function, code) in plan.iter().copied() {
                         let free_vars =
                             binder_set_to_vec(free_vars_of(self.graph, self.reify, function));
                         let physical = physical_free_vars(self.graph, function, &free_vars);
                         instructions.push(Instruction::MakeClosure {
                             dst: self.uvar(self.graph[function].var),
-                            code: graph_code_id(self.graph, function),
+                            code,
                             free_count: physical.len(),
                             env: None,
                         });
                     }
-
-                    for function in functions {
+                    for (function, _) in plan.iter().copied() {
                         let closure = self.uvar(self.graph[function].var);
                         let free_vars =
                             binder_set_to_vec(free_vars_of(self.graph, self.reify, function));
@@ -622,12 +681,30 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
                     .unwrap_or_else(|| panic!("undefined primitive: {prim}"));
                 let args = self.atoms_for_prim(prim, &args);
                 let dst = self.uvar(binding);
-                instructions.push(Instruction::PrimCall {
-                    dst,
-                    prim,
-                    args,
-                    source: self.graph[expr].source,
-                });
+                if prim == Primitive::CaseLambda {
+                    let code = args
+                        .iter()
+                        .find_map(|operand| match operand {
+                            Operand::Local(var) => self.case_clause_groups.get(var).copied(),
+                            Operand::Constant(_) => None,
+                        })
+                        .unwrap_or_else(|| {
+                            panic!("case-lambda clause closure was not created at this site")
+                        });
+
+                    instructions.push(Instruction::MakeCaseClosure {
+                        dst,
+                        code,
+                        clauses: args,
+                    });
+                } else {
+                    instructions.push(Instruction::PrimCall {
+                        dst,
+                        prim,
+                        args,
+                        source: self.graph[expr].source,
+                    });
+                }
             }
         }
     }

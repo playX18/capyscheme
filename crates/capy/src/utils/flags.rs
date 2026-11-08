@@ -370,8 +370,29 @@ define_flags! {
     closure_sharing: Bool, "CAPY_CLOSURE_SHARING", Some("--closure-sharing"), "1", "compiler",
         "Let closures share environment records instead of each allocating its own.";
 
+    case_lambda: Bool, "CAPY_CASE_LAMBDA", None, "1", "compiler",
+        "Lower a `case-lambda` with several clauses to one multi-entry procedure (1, the default; 0 keeps the legacy `length` + `apply` expansion).";
+
     gcps_contify: Enum("0", "off", "none", "false", "scc", "legacy", "both", "dom+scc", "dom-then-scc", "dom", "dominator", "dominators"), "CAPY_GCPS_CONTIFY", Some("--gcps-contify"), "dom", "compiler",
         "Contification strategy: off (or 0), scc, dom, or both (dom+scc).";
+
+    gcps_loops: Bool, "CAPY_GCPS_LOOPS", Some("--gcps-loops"), "1", "compiler",
+        "Run loop recognition in graph CPS: turn a function's tail self-calls into a local loop.";
+
+    gcps_accumulate: Bool, "CAPY_GCPS_ACCUMULATE", Some("--gcps-accumulate"), "1", "compiler",
+        "Loop recognition for non-tail list-building self-calls: add an accumulator (cons+reverse, or an exact associative primitive) so the recursion becomes a back edge.";
+
+    gcps_inline: Enum("0", "off", "none", "false", "leaf", "known", "nonrecursive", "both", "all", "1", "on", "true"), "CAPY_GCPS_INLINE", Some("--gcps-inline"), "all", "compiler",
+        "MLton-style graph-CPS inlining: off, leaf (no calls, size-bounded), known (non-recursive, MLton product budget), or both.";
+
+    gcps_inline_max: Usize(1, None), "CAPY_GCPS_INLINE_MAX", None, "40", "compiler",
+        "Leaf inlining: maximum body size in terms/expressions (MLton inlineLeafB is 40).";
+
+    gcps_inline_small: Usize(0, None), "CAPY_GCPS_INLINE_SMALL", None, "60", "compiler",
+        "Non-recursive inlining: the `small` term in (calls-1)*(size-small) <= product (MLton inlineNonRec is 60).";
+
+    gcps_inline_product: Usize(0, None), "CAPY_GCPS_INLINE_PRODUCT", None, "320", "compiler",
+        "Non-recursive inlining: the `product` budget (MLton inlineNonRec is 320).";
 
     profile_passes: Bool, "CAPY_PROFILE_PASSES", Some("--profile-passes"), "0", "compiler",
         "Emit `;; PERF (capy)` phase timing lines to stderr.";
@@ -403,14 +424,23 @@ define_flags! {
     dump_dir: Path, "CAPY_DUMP_DIR", Some("--dump-dir"), "", "dump",
         "Shared fallback directory for all dump kinds (default: ./capy-dumps).";
 
-    gc_heuristic: Enum("adaptive", "static", "compact", "aggressive", "passive", "generational"), "CAPY_GC_HEURISTIC", Some("--gc-heuristic"), "adaptive", "gc",
-        "GC trigger heuristic: adaptive, static, compact, aggressive, passive, or generational.";
+    gc_heuristic: Enum("predictive", "generational", "runway", "goal", "proportional", "floor", "eager", "deferred", "banded", "overhead", "balanced", "concurrent"), "CAPY_GC_HEURISTIC", Some("--gc-heuristic"), "predictive", "gc",
+        "GC policy preset (sets --gc-trigger-policy, --gc-sizing and --gc-pacing). Trigger-only presets: predictive (Shenandoah-style predictor), generational, runway (ZGC-style), goal (Go-style), proportional (BDWGC-style), floor, eager, deferred. Sizing presets (plan-driven): banded (Ruby's ratio band), overhead (GC CPU controller), balanced (MemBalancer). concurrent = goal + balanced + tax pacing.";
+
+    gc_trigger_policy: Enum("predictive", "generational", "runway", "goal", "proportional", "floor", "eager", "deferred"), "CAPY_GC_TRIGGER_POLICY", Some("--gc-trigger-policy"), "", "gc",
+        "When to start a GC; overrides the trigger of the --gc-heuristic preset. runway, goal and proportional also decide when concurrent marking starts (replacing the plan's allocated > heap/2 rule).";
+
+    gc_sizing: Enum("free-target", "banded", "overhead", "balanced"), "CAPY_GC_SIZING", Some("--gc-sizing"), "", "gc",
+        "How big the heap is after a GC; overrides the sizing of the --gc-heuristic preset.";
+
+    gc_pacing: Enum("off", "tax"), "CAPY_GC_PACING", Some("--gc-pacing"), "", "gc",
+        "Mutator allocation pacing during concurrent marking; overrides the pacing of the --gc-heuristic preset. tax = Shenandoah-style bounded stalls.";
 
     gc_max_heap: Size, "CAPY_GC_MAX_HEAP", Some("--gc-max-heap"), "2G", "gc",
-        "Maximum heap size with optional K/M/G suffix (e.g. 2G).";
+        "Maximum heap size with optional K/M/G suffix (e.g. 2G). The value shown as the default is applied only when the variable is actually set; when it is unset the heap grows to fit MMTk's default cap (0.5 * physical RAM), not 2G.";
 
     gc_init_heap: Size, "CAPY_GC_INIT_HEAP", Some("--gc-init-heap"), "0", "gc",
-        "Initial heap size with optional K/M/G suffix; the heap grows up to --gc-max-heap (0 = fixed at max).";
+        "Initial heap size with optional K/M/G suffix; the heap grows up to --gc-max-heap. When unset, the start is sized from currently available memory (1/32 of it, between 32M and a quarter of max). 0 = fixed at max.";
 
     gc_heap_growth_free_percent: Usize(0, Some(99)), "CAPY_GC_HEAP_GROWTH_FREE_PERCENT", Some("--gc-heap-growth-free-percent"), "75", "gc",
         "Target free share of the heap after a GC when resizing (clamped to 0-99).";
@@ -418,23 +448,47 @@ define_flags! {
     gc_min_free_percent: Usize(0, Some(100)), "CAPY_GC_MIN_FREE_PERCENT", Some("--gc-min-free-percent"), "10", "gc",
         "Minimum free heap threshold, percent of the heap (clamped to 0-100).";
 
-    gc_init_free_percent: Usize(0, Some(100)), "CAPY_GC_INIT_FREE_PERCENT", Some("--gc-init-free-percent"), "70", "gc",
+    gc_init_free_percent: Usize(0, Some(100)), "CAPY_GC_INIT_FREE_PERCENT", Some("--gc-init-free-percent"), "50", "gc",
         "Initial free heap threshold, percent of the heap (clamped to 0-100).";
 
-    gc_allocation_threshold_percent: Usize(0, Some(100)), "CAPY_GC_ALLOCATION_THRESHOLD_PERCENT", Some("--gc-allocation-threshold-percent"), "0", "gc",
-        "Allocation-since-GC threshold, percent of the heap (compact mode; clamped to 0-100).";
+    gc_proportional_divisor: Usize(1, None), "CAPY_GC_PROPORTIONAL_DIVISOR", Some("--gc-proportional-divisor"), "3", "gc",
+        "proportional trigger: collect after allocating live / divisor bytes since the last GC.";
+
+    gc_proportional_min_trip: Size, "CAPY_GC_PROPORTIONAL_MIN_TRIP", Some("--gc-proportional-min-trip"), "8M", "gc",
+        "proportional trigger: lower bound on the allocation trip.";
+
+    gc_proportional_max_trip: Size, "CAPY_GC_PROPORTIONAL_MAX_TRIP", Some("--gc-proportional-max-trip"), "0", "gc",
+        "proportional trigger: upper bound on the allocation trip; 0 = half of the heap.";
+
+    gc_runway_spike_tolerance: F64, "CAPY_GC_RUNWAY_SPIKE_TOLERANCE", Some("--gc-runway-spike-tolerance"), "2.0", "gc",
+        "runway trigger: multiplier on the mean allocation rate before the 3.29-sigma margin is added.";
+
+    gc_runway_sample_ms: Usize(1, None), "CAPY_GC_RUNWAY_SAMPLE_MS", Some("--gc-runway-sample-ms"), "100", "gc",
+        "runway trigger: allocation-rate sampling period in milliseconds.";
+
+    gc_goal_growth_percent: Usize(1, None), "CAPY_GC_GOAL_GROWTH_PERCENT", Some("--gc-goal-growth-percent"), "100", "gc",
+        "goal trigger: heap goal is live * (1 + percent / 100).";
+
+    gc_pacing_max_delay_ms: Usize(0, None), "CAPY_GC_PACING_MAX_DELAY_MS", Some("--gc-pacing-max-delay-ms"), "10", "gc",
+        "tax pacing: longest a single allocation is stalled, in milliseconds.";
+
+    gc_pacing_cycle_slack_percent: Usize(0, Some(100)), "CAPY_GC_PACING_CYCLE_SLACK_PERCENT", Some("--gc-pacing-cycle-slack-percent"), "10", "gc",
+        "tax pacing: share of free space mutators may allocate without being taxed.";
+
+    gc_pacing_surcharge: F64, "CAPY_GC_PACING_SURCHARGE", Some("--gc-pacing-surcharge"), "1.1", "gc",
+        "tax pacing: factor keeping mutators slightly behind the collector (at least 1.0).";
 
     gc_alloc_spike_percent: Usize(0, Some(100)), "CAPY_GC_ALLOC_SPIKE_PERCENT", Some("--gc-alloc-spike-percent"), "5", "gc",
         "Allocation spike detection factor, percent (clamped to 0-100).";
 
     gc_learning_steps: Usize(0, None), "CAPY_GC_LEARNING_STEPS", Some("--gc-learning-steps"), "5", "gc",
-        "History length used by the adaptive heuristic.";
+        "Cycles the predictive trigger spends learning GC duration (and the runway warmup length) before trusting its history.";
 
-    gc_adaptive_confidence: F64, "CAPY_GC_ADAPTIVE_CONFIDENCE", Some("--gc-adaptive-confidence"), "1.8", "gc",
-        "Confidence multiplier for the adaptive heuristic.";
+    gc_predictive_confidence: F64, "CAPY_GC_PREDICTIVE_CONFIDENCE", Some("--gc-predictive-confidence"), "1.8", "gc",
+        "predictive trigger: confidence multiplier (standard deviations of margin).";
 
-    gc_adaptive_spike_threshold: F64, "CAPY_GC_ADAPTIVE_SPIKE_THRESHOLD", Some("--gc-adaptive-spike-threshold"), "1.8", "gc",
-        "Spike threshold for the adaptive heuristic.";
+    gc_predictive_spike_threshold: F64, "CAPY_GC_PREDICTIVE_SPIKE_THRESHOLD", Some("--gc-predictive-spike-threshold"), "1.8", "gc",
+        "predictive trigger: momentary-spike threshold in standard deviations.";
 
     gc_acceleration_sample_period_ms: Usize(0, None), "CAPY_GC_ACCELERATION_SAMPLE_PERIOD_MS", Some("--gc-acceleration-sample-period-ms"), "15", "gc",
         "Acceleration sampling period in milliseconds.";
@@ -448,6 +502,21 @@ define_flags! {
     gc_guaranteed_interval_ms: Usize(0, None), "CAPY_GC_GUARANTEED_INTERVAL_MS", Some("--gc-guaranteed-interval-ms"), "300000", "gc",
         "Force a GC at least this often; 0 = off.";
 
+    gc_banded_min_ratio: F64, "CAPY_GC_BANDED_MIN_RATIO", Some("--gc-banded-min-ratio"), "0.2", "gc",
+        "banded sizing: minimum free ratio over live data before the heap grows.";
+
+    gc_banded_goal_ratio: F64, "CAPY_GC_BANDED_GOAL_RATIO", Some("--gc-banded-goal-ratio"), "0.4", "gc",
+        "banded sizing: heap target as live * (1 + ratio) when resizing.";
+
+    gc_banded_max_ratio: F64, "CAPY_GC_BANDED_MAX_RATIO", Some("--gc-banded-max-ratio"), "0.65", "gc",
+        "banded sizing: free ratio over live data above which the heap shrinks.";
+
+    gc_overhead_target: F64, "CAPY_GC_OVERHEAD_TARGET", Some("--gc-overhead-target"), "0.15", "gc",
+        "overhead sizing: target fraction of process CPU time spent in GC.";
+
+    gc_overhead_window: Usize(1, None), "CAPY_GC_OVERHEAD_WINDOW", Some("--gc-overhead-window"), "3", "gc",
+        "overhead sizing: number of recent full GCs averaged.";
+
     gc_plan: Text, "MMTK_PLAN", Some("--gc-plan"), "", "gc",
         "MMTk GC plan: StickyImmix, ConcurrentImmix, MarkSweep, Immix, SemiSpace, GenImmix or GenCopy (default ConcurrentImmix).";
 
@@ -460,7 +529,7 @@ define_flags! {
     jit: Bool, "CAPY_JIT", Some("--jit"), "1", "jit",
         "Enable Just In Time compilation.";
 
-    jit_threshold: Usize(0, None), "CAPY_JIT_THRESHOLD", Some("--jit-threshold"), "10", "jit",
+    jit_threshold: Usize(0, None), "CAPY_JIT_THRESHOLD", Some("--jit-threshold"), "100", "jit",
         "Entries or back-edges before a procedure compiles.";
 
     jit_max_code: Usize(0, None), "CAPY_JIT_MAX_CODE", Some("--jit-max-code"), "max", "jit",
@@ -482,22 +551,77 @@ define_flags! {
         "Report every resume into compiled code (very verbose).";
 
     jit_stats: Bool, "CAPY_JIT_STATS", Some("--jit-stats"), "0", "jit",
-        "Report compile, resume and slow-path counts at exit.";
+        "Report compile, resume, slow-path and per-site deopt counts at exit.";
 
     jit_dump_dir: Path, "CAPY_JIT_DUMP_DIR", Some("--jit-dump-dir"), "", "jit",
         "Write each compiled procedure's listing and ELF to this directory.";
 
     jit_workers: Usize(0, None), "CAPY_JIT_WORKERS", Some("--jit-workers"), "1", "jit",
-        "Tier-up worker threads; 0 compiles synchronously on the requesting thread.";
+        "Maximum tier-up worker threads (the pool starts with one and grows under queue pressure); 0 compiles synchronously on the requesting thread.";
 
-    jit_tiers: Text, "CAPY_JIT_TIERS", Some("--jit-tiers"), "", "jit",
-        "Comma-separated tiers allowed to compile (default: baseline).";
+    opt_jit: Bool, "CAPY_OPT_JIT", Some("--opt-jit"), "1", "jit",
+        "Run the optimizing tier (Tier 2) once a procedure is hot.";
 
     jit_gdb: Bool, "CAPY_JIT_GDB", Some("--jit-gdb"), "0", "jit",
         "Register every loaded image with GDB's JIT interface (copies all image code).";
 
+    jit_stable_entry: Bool, "CAPY_JIT_STABLE_ENTRY", Some("--jit-stable-entry"), "1", "jit",
+        "Heal closures to the baseline redirect instead of a Tier 2 entry.";
+
     jit_filter: Text, "CAPY_JIT_FILTER", Some("--jit-filter"), "", "jit",
         "Compile only procedures whose metadata contains this text, to bisect a miscompile.";
+
+    jit_opt_threshold: Usize(0, None), "CAPY_JIT_OPT_THRESHOLD", None, "1000", "jit",
+        "Baseline entries or back-edges before a procedure is considered for the optimizing tier.";
+
+    jit_entry_heat: Usize(0, None), "CAPY_JIT_ENTRY_HEAT", None, "25", "jit",
+        "Heat a procedure entry adds. Calls heat a block faster than loop iterations so a few calls tier it up.";
+
+    jit_loop_heat: Usize(0, None), "CAPY_JIT_LOOP_HEAT", None, "1", "jit",
+        "Heat a loop iteration adds.";
+
+
+    opt_version: Bool, "CAPY_OPT_VERSION", Some("--opt-version"), "0", "jit",
+        "Optimizing tier: version a loop on the invariant guards in its body. Off by default";
+
+    opt_unswitch: Bool, "CAPY_OPT_UNSWITCH", Some("--opt-unswitch"), "0", "jit",
+        "Optimizing tier: unswitch a loop on a loop-invariant branch. Off by default";
+
+    opt_spec_hoist: Bool, "CAPY_OPT_SPEC_HOIST", Some("--opt-spec-hoist"), "0", "jit",
+        "Optimizing tier: hoist a guard on loop-invariant operands out of a conditionally executed block of a loop. Off by default.";
+
+    opt_predicate: Bool, "CAPY_OPT_PREDICATE", Some("--opt-predicate"), "0", "jit",
+        "Optimizing tier: loop predication. A counted loop that indexes an invariant vector with its counter gets one preheader test (start >= 0, bound <= length) that deopts to the loop entry, and its per-iteration bounds checks are dropped. Off by default.";
+
+    opt_unroll_all: Bool, "CAPY_OPT_UNROLL_ALL", Some("--opt-unroll-all"), "0", "jit",
+        "Optimizing tier: replicate small innermost loops that the counted 2x unroller does not handle, keeping every exit test, so the copies chain into one longer iteration. Off by default.";
+
+    opt_layout: Bool, "CAPY_OPT_LAYOUT", Some("--opt-layout"), "0", "jit",
+        "Optimizing tier: reorder blocks for fallthrough using static loop weights. Off by default.";
+
+    opt_generics: Bool, "CAPY_OPT_GENERICS", Some("--opt-generics"), "0", "jit",
+        "Optimizing tier: devirtualize a generic accessor call through the descriptor's slot cache, guarded by class identity, layout stamp and the epoch seqlock. Off by default.";
+
+    opt_align: Text, "CAPY_OPT_ALIGN", Some("--opt-align"), "loop64", "jit",
+        "Optimizing tier: block alignment, as `kindNN` pairs separated by commas (`loop`, `switch`; NN bytes, 0 disables). Loop headers get a cache line by default.";
+
+    opt_verify: Bool, "CAPY_OPT_VERIFY", Some("--opt-verify"), "0", "jit",
+        "Optimizing tier: verify the IR after every pass (always on in debug builds).";
+
+    opt_dump: Text, "CAPY_OPT_DUMP", Some("--opt-dump"), "", "jit",
+        "Optimizing tier: comma list of stage names whose IR/LIR is written to CAPY_JIT_DUMP_DIR.";
+
+    opt_annotate: Bool, "CAPY_OPT_ANNOTATE", Some("--opt-annotate"), "0", "jit",
+        "Optimizing tier: keep each unit's LIR instruction text and IR values with its machine-code offsets, so %jit-disassembly annotates every line.";
+
+    opt_stress_deopt: Usize(0, None), "CAPY_OPT_STRESS_DEOPT", Some("--opt-stress-deopt"), "0", "jit",
+        "Optimizing tier: deoptimize at every n-th guard (0 disables).";
+
+    opt_max_spills: Usize(0, None), "CAPY_OPT_MAX_SPILLS", Some("--opt-max-spills"), "0", "jit",
+        "Optimizing tier install quality guard: reject a unit whose register allocation needs more than this many spill slots, leaving the code block on baseline (0, the default, disables the budget).";
+
+    opt_max_unit_instrs: Usize(0, None), "CAPY_OPT_MAX_UNIT_INSTRS", Some("--opt-max-unit-instrs"), "0", "jit",
+        "Optimizing tier install quality guard: reject a unit with more than this many LIR instructions after register allocation, leaving the code block on baseline (0, the default, disables the budget).";
 
     perf_map: Bool, "CAPY_PERF_MAP", Some("--perf-map"), "0", "jit",
         "Append loaded image symbols to /tmp/perf-<pid>.map for perf.";
@@ -519,6 +643,12 @@ define_flags! {
 
     prim_stats: Bool, "CAPY_PRIM_STATS", Some("--prim-stats"), "0", "engine",
         "Count primitive calls and report at exit.";
+
+    equal_fast: Bool, "CAPY_EQUAL_FAST", None, "1", "engine",
+        "Run the non-allocating acyclic fast path in `equal?`/`r5rs_equal`, falling back to the visited-set walk on a cycle or when the work/depth budget is exhausted (0 keeps the visited-set walk for every comparison).";
+
+    format_fast: Bool, "CAPY_FORMAT_FAST", None, "1", "engine",
+        "Use the native `format` fast path for the no-port case (directives ~a, ~s, ~w, ~c, ~f, ~x, ~o, ~%, ~~, literals and ~,Nf), falling back to the Scheme formatter for anything else (0 keeps the Scheme formatter for every call).";
 
     fasl_debug: Bool, "CAPY_FASL_DEBUG", Some("--fasl-debug"), "0", "engine",
         "Load FASL files with debug entries.";

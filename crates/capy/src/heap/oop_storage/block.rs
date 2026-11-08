@@ -6,7 +6,7 @@ use std::mem::{align_of, offset_of, size_of};
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
-use crate::runtime::value::Value;
+use crate::runtime::objectmodel::Value;
 
 /// Number of Value slots per block (`BitsPerWord`).
 pub const SLOTS_PER_BLOCK: usize = usize::BITS as usize;

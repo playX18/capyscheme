@@ -23,15 +23,15 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use crate::bytecode::def::{self as bc, *};
 use crate::compiler::cfg::{
-    Block, BlockId, BranchTarget, CodeId, Instruction, Operand, Procedure, Program, RestPredicate,
-    SwitchCase, SwitchCaseValue, SwitchKind, Terminator, UVar,
+    Block, BlockId, BranchTarget, CaseGroup, CodeId, Instruction, Operand, Procedure, Program,
+    RestPredicate, SwitchCase, SwitchCaseValue, SwitchKind, Terminator, UVar,
 };
 use crate::heap::Gc;
 use crate::runtime::interp::runtime_procs::RuntimeProc;
+use crate::runtime::objectmodel::Symbol;
+use crate::runtime::objectmodel::Value;
+use crate::runtime::objectmodel::proc::SRC_FLAG_SYNTHETIC;
 use crate::runtime::prims::def::Primitive;
-use crate::runtime::value::Symbol;
-use crate::runtime::value::Value;
-use crate::runtime::value::proc::SRC_FLAG_SYNTHETIC;
 use bytecodegen::{Label, LinkedBytecodeView};
 
 /// One entry of a code block's constant pool.
@@ -79,24 +79,199 @@ pub struct CompiledProgram<'gc> {
     pub entry: usize,
 }
 
+struct Emitted<'gc> {
+    atoms: Vec<Atom>,
+    sources: Vec<(usize, Value<'gc>)>,
+    switch_fixups: Vec<SwitchFixup>,
+    size: u32,
+    arity: i32,
+    name: Value<'gc>,
+    meta: Value<'gc>,
+    source: Value<'gc>,
+}
+
+struct CaseRow {
+    min: u32,
+    max: u32,
+    label: Label,
+    frame: u32,
+    rest_base: u32,
+    rest_cnt: u32,
+}
+
+struct CaseMerge {
+    enter_atom: usize,
+    rows: Vec<CaseRow>,
+}
+
 pub fn compile_program<'gc>(program: &Program<'gc>) -> Result<CompiledProgram<'gc>, String> {
-    let procedures = program
-        .procedures
+    let mut clause_codes: HashSet<CodeId> = HashSet::new();
+    for group in &program.case_groups {
+        clause_codes.extend(group.clauses.iter().copied());
+    }
+    let mut procedures = Vec::with_capacity(program.procedures.len());
+    for procedure in &program.procedures {
+        if clause_codes.contains(&procedure.code) {
+            continue;
+        }
+
+        let mut arena = Arena::new();
+        let mut lower = Lower::new(procedure, &mut arena);
+        lower.run()?;
+        procedures.push(lower.finish()?);
+    }
+    for group in &program.case_groups {
+        let mut arena = Arena::new();
+        procedures.push(compile_case_group(program, group, &mut arena)?);
+    }
+    let entry = procedures
         .iter()
-        .map(compile_procedure)
-        .collect::<Result<Vec<_>, _>>()?;
-    let entry = program
-        .procedures
-        .iter()
-        .position(|procedure| procedure.code == program.entry)
+        .position(|procedure| procedure.code_id == program.entry)
         .expect("entry procedure is part of the program");
     Ok(CompiledProgram { procedures, entry })
+}
+
+fn compile_case_group<'gc>(
+    program: &Program<'gc>,
+    group: &CaseGroup,
+    arena: &mut Arena<'gc>,
+) -> Result<CompiledProcedure<'gc>, String> {
+    let mut parts = Vec::with_capacity(group.clauses.len());
+    for code in &group.clauses {
+        let procedure = program
+            .procedures
+            .iter()
+            .find(|procedure| procedure.code == *code)
+            .ok_or_else(|| format!("case-lambda clause {code:?} is not in the program"))?;
+        let lower = Lower::new(procedure, arena);
+        parts.push(lower.emit_parts()?);
+    }
+    let frame_size = parts.iter().map(|part| part.size).max().unwrap_or(1);
+    let name = parts
+        .first()
+        .map(|part| part.name)
+        .unwrap_or(Value::new(false));
+    let meta = parts.first().map(|part| part.meta).unwrap_or(Value::null());
+    let source = parts
+        .first()
+        .map(|part| part.source)
+        .unwrap_or(Value::new(false));
+
+    let mut atoms: Vec<Atom> = vec![Atom::Ins {
+        ins: OpEnterCase {
+            table: PoolReference(0),
+            frame: Count(frame_size),
+        }
+        .into(),
+    }];
+    let mut sources = Vec::new();
+    let mut switch_fixups = Vec::new();
+    let mut rows = Vec::with_capacity(parts.len());
+    for Emitted {
+        atoms: mut part_atoms,
+        sources: part_sources,
+        switch_fixups: part_fixups,
+        size: part_size,
+        arity,
+        ..
+    } in parts
+    {
+        let (min, max, rest_base, rest_cnt) = if arity < 0 {
+            // A variadic clause: `arity = -(required + 1)`. The dispatch
+            // performs the extras move into `base` and stores their count in
+            // `cnt`, so the clause's own `enter_rest` is replaced by a `nop`.
+            // The atom stays (indices and source runs stay stable); the label
+            // then points at the nop, just before the clause body.
+            let required = (-arity - 1) as u32;
+            let (cnt, base) = match &part_atoms[0] {
+                Atom::Ins {
+                    ins: bc::LinkableInstruction::OpEnterRest(op),
+                } => (op.cnt.0, op.base.0),
+                _ => {
+                    return Err(format!(
+                        "variadic case-lambda clause does not start with enter_rest"
+                    ));
+                }
+            };
+            part_atoms[0] = Atom::Ins {
+                ins: bc::OpNop {}.into(),
+            };
+            (required, u32::MAX, base, cnt)
+        } else {
+            (
+                arity as u32,
+                arity as u32,
+                bc::CASE_NO_REST,
+                bc::CASE_NO_REST,
+            )
+        };
+        let label = Label::new();
+        atoms.push(Atom::Label(label));
+        let base = atoms.len();
+        atoms.extend(part_atoms);
+        for (pos, source) in part_sources {
+            sources.push((base + pos, source));
+        }
+        for fixup in part_fixups {
+            switch_fixups.push(shift_switch_fixup(fixup, base));
+        }
+        rows.push(CaseRow {
+            min,
+            max,
+            label,
+            frame: part_size,
+            rest_base,
+            rest_cnt,
+        });
+    }
+    Lower::link_parts(
+        group.code,
+        atoms,
+        sources,
+        switch_fixups,
+        arena,
+        name,
+        meta,
+        source,
+        i32::MIN,
+        frame_size,
+        Some(CaseMerge {
+            enter_atom: 0,
+            rows,
+        }),
+    )
+}
+
+fn shift_switch_fixup(fixup: SwitchFixup, base: usize) -> SwitchFixup {
+    match fixup {
+        SwitchFixup::Int {
+            atom,
+            default,
+            cases,
+        } => SwitchFixup::Int {
+            atom: atom + base,
+            default,
+            cases,
+        },
+        SwitchFixup::Sym {
+            atom,
+            mask,
+            default,
+            cases,
+        } => SwitchFixup::Sym {
+            atom: atom + base,
+            mask,
+            default,
+            cases,
+        },
+    }
 }
 
 pub fn compile_procedure<'gc>(
     procedure: &Procedure<'gc>,
 ) -> Result<CompiledProcedure<'gc>, String> {
-    let mut lower = Lower::new(procedure);
+    let mut arena = Arena::new();
+    let mut lower = Lower::new(procedure, &mut arena);
     lower.run()?;
     lower.finish()
 }
@@ -272,6 +447,31 @@ fn metadata_kind_counts(link_counts: &[u32]) -> [u32; bc::NUM_METADATA_KINDS] {
     bc::for_each_metadata!(collect)
 }
 
+/// Constant pool and metadata shared by every clause of one compiled code
+/// block. A `case-lambda` compiles its clauses with one arena so their pool
+/// indices, constants and masks are already global when the atoms merge.
+struct Arena<'gc> {
+    constants: Vec<Constant<'gc>>,
+    value_index: HashMap<u64, u32>,
+    code_index: HashMap<CodeId, u32>,
+    cell_index: HashMap<u64, u32>,
+    pool: Vec<u32>,
+    mask_index: HashMap<Vec<u32>, u32>,
+}
+
+impl<'gc> Arena<'gc> {
+    fn new() -> Self {
+        Self {
+            constants: Vec::new(),
+            value_index: HashMap::new(),
+            code_index: HashMap::new(),
+            cell_index: HashMap::new(),
+            pool: Vec::new(),
+            mask_index: HashMap::new(),
+        }
+    }
+}
+
 struct Lower<'a, 'gc> {
     procedure: &'a Procedure<'gc>,
     blocks: HashMap<BlockId, &'a Block<'gc>>,
@@ -289,22 +489,17 @@ struct Lower<'a, 'gc> {
 
     atoms: Vec<Atom>,
     labels: HashMap<BlockId, Label>,
-    constants: Vec<Constant<'gc>>,
-    value_index: HashMap<u64, u32>,
-    code_index: HashMap<CodeId, u32>,
-    cell_index: HashMap<u64, u32>,
+    arena: &'a mut Arena<'gc>,
     sources: Vec<(usize, Value<'gc>)>,
     /// Atom indices of `enter_rest`/`rest_ref`/`rest_list` instructions
     /// whose `base` is patched once the rest area is known.
     rest_fixups: Vec<usize>,
-    pool: Vec<u32>,
-    mask_index: HashMap<Vec<u32>, u32>,
     switch_fixups: Vec<SwitchFixup>,
     slot_stubs: Vec<SlotStub<'gc>>,
 }
 
 impl<'a, 'gc> Lower<'a, 'gc> {
-    fn new(procedure: &'a Procedure<'gc>) -> Self {
+    fn new(procedure: &'a Procedure<'gc>, arena: &'a mut Arena<'gc>) -> Self {
         let blocks = procedure
             .blocks
             .iter()
@@ -325,14 +520,9 @@ impl<'a, 'gc> Lower<'a, 'gc> {
             extent: 0,
             atoms: Vec::new(),
             labels: HashMap::new(),
-            constants: Vec::new(),
-            value_index: HashMap::new(),
-            code_index: HashMap::new(),
-            cell_index: HashMap::new(),
+            arena,
             sources: Vec::new(),
             rest_fixups: Vec::new(),
-            pool: Vec::new(),
-            mask_index: HashMap::new(),
             switch_fixups: Vec::new(),
             slot_stubs: Vec::new(),
         }
@@ -736,32 +926,32 @@ impl<'a, 'gc> Lower<'a, 'gc> {
     }
 
     fn value_constant(&mut self, value: Value<'gc>) -> u32 {
-        if let Some(index) = self.value_index.get(&value.bits()) {
+        if let Some(index) = self.arena.value_index.get(&value.bits()) {
             return *index;
         }
-        let index = self.constants.len() as u32;
-        self.constants.push(Constant::Value(value));
-        self.value_index.insert(value.bits(), index);
+        let index = self.arena.constants.len() as u32;
+        self.arena.constants.push(Constant::Value(value));
+        self.arena.value_index.insert(value.bits(), index);
         index
     }
 
     fn code_constant(&mut self, code: CodeId) -> u32 {
-        if let Some(index) = self.code_index.get(&code) {
+        if let Some(index) = self.arena.code_index.get(&code) {
             return *index;
         }
-        let index = self.constants.len() as u32;
-        self.constants.push(Constant::Code(code));
-        self.code_index.insert(code, index);
+        let index = self.arena.constants.len() as u32;
+        self.arena.constants.push(Constant::Code(code));
+        self.arena.code_index.insert(code, index);
         index
     }
 
     fn cell_constant(&mut self, key: Value<'gc>) -> u32 {
-        if let Some(index) = self.cell_index.get(&key.bits()) {
+        if let Some(index) = self.arena.cell_index.get(&key.bits()) {
             return *index;
         }
-        let index = self.constants.len() as u32;
-        self.constants.push(Constant::Cell(key));
-        self.cell_index.insert(key.bits(), index);
+        let index = self.arena.constants.len() as u32;
+        self.arena.constants.push(Constant::Cell(key));
+        self.arena.cell_index.insert(key.bits(), index);
         index
     }
 
@@ -877,13 +1067,13 @@ impl<'a, 'gc> Lower<'a, 'gc> {
     /// Pool index of a liveness mask, shared with identical masks.
     fn mask_ref(&mut self, live: impl Iterator<Item = UVar>) -> PoolReference {
         let bits = self.mask(live);
-        if let Some(index) = self.mask_index.get(&bits) {
+        if let Some(index) = self.arena.mask_index.get(&bits) {
             return PoolReference(*index);
         }
-        let index = self.pool.len() as u32;
-        self.pool.push(bits.len() as u32);
-        self.pool.extend_from_slice(&bits);
-        self.mask_index.insert(bits, index);
+        let index = self.arena.pool.len() as u32;
+        self.arena.pool.push(bits.len() as u32);
+        self.arena.pool.extend_from_slice(&bits);
+        self.arena.mask_index.insert(bits, index);
         PoolReference(index)
     }
 
@@ -978,19 +1168,74 @@ impl<'a, 'gc> Lower<'a, 'gc> {
     }
 
     fn finish(mut self) -> Result<CompiledProcedure<'gc>, String> {
-        let procedure = self.procedure;
         let size = self.extent + 1;
+        let arity = if self.procedure.variadic.is_some() {
+            -(self.procedure.params.len() as i32 + 1)
+        } else {
+            self.procedure.params.len() as i32
+        };
+        Self::link_parts(
+            self.procedure.code,
+            std::mem::take(&mut self.atoms),
+            std::mem::take(&mut self.sources),
+            std::mem::take(&mut self.switch_fixups),
+            self.arena,
+            self.procedure.name,
+            self.procedure.meta,
+            self.procedure.source,
+            arity,
+            size,
+            None,
+        )
+    }
 
+    fn emit_parts(mut self) -> Result<Emitted<'gc>, String> {
+        self.order_blocks();
+        self.compute_liveness();
+        self.allocate_registers();
+        self.emit_procedure()?;
+        let size = self.extent + 1;
+        let arity = if self.procedure.variadic.is_some() {
+            -(self.procedure.params.len() as i32 + 1)
+        } else {
+            self.procedure.params.len() as i32
+        };
+        Ok(Emitted {
+            atoms: std::mem::take(&mut self.atoms),
+            sources: std::mem::take(&mut self.sources),
+            switch_fixups: std::mem::take(&mut self.switch_fixups),
+            size,
+            arity,
+            name: self.procedure.name,
+            meta: self.procedure.meta,
+            source: self.procedure.source,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn link_parts(
+        code_id: CodeId,
+        mut atoms: Vec<Atom>,
+        sources: Vec<(usize, Value<'gc>)>,
+        mut switch_fixups: Vec<SwitchFixup>,
+        arena: &mut Arena<'gc>,
+        name: Value<'gc>,
+        meta: Value<'gc>,
+        source: Value<'gc>,
+        arity: i32,
+        size: u32,
+        case: Option<CaseMerge>,
+    ) -> Result<CompiledProcedure<'gc>, String> {
         let mut pending: Vec<(usize, usize, Label)> = Vec::new();
-        for fixup in std::mem::take(&mut self.switch_fixups) {
+        for fixup in std::mem::take(&mut switch_fixups) {
             match fixup {
                 SwitchFixup::Int {
                     atom,
                     default,
                     cases,
                 } => {
-                    let table = PoolReference(self.pool.len() as u32);
-                    match &mut self.atoms[atom] {
+                    let table = PoolReference(arena.pool.len() as u32);
+                    match &mut atoms[atom] {
                         Atom::Ins {
                             ins: bc::LinkableInstruction::OpSwitchFixnum(op),
                             ..
@@ -1004,11 +1249,11 @@ impl<'a, 'gc> Lower<'a, 'gc> {
                     // `cases` is sorted and deduplicated by key.
                     let keys: Vec<i32> = cases.iter().map(|(key, _)| *key).collect();
                     let dense = dense_span_for_keys(&keys);
-                    pending.push((self.pool.len(), atom, default));
-                    self.pool.push(0);
+                    pending.push((arena.pool.len(), atom, default));
+                    arena.pool.push(0);
                     if let Some((min, span)) = dense {
-                        self.pool.push(span as u32 | bc::SWITCH_DENSE_FLAG);
-                        self.pool.push(min as u32);
+                        arena.pool.push(span as u32 | bc::SWITCH_DENSE_FLAG);
+                        arena.pool.push(min as u32);
                         let mut cases = cases.iter().peekable();
                         for offset in 0..span {
                             let key = min.wrapping_add(offset as i32);
@@ -1018,23 +1263,20 @@ impl<'a, 'gc> Lower<'a, 'gc> {
                                 }
                                 _ => default,
                             };
-                            pending.push((self.pool.len(), atom, target));
-                            self.pool.push(0);
+                            pending.push((arena.pool.len(), atom, target));
+                            arena.pool.push(0);
                         }
                     } else {
                         // The count shares its word with the dense flag, so it
                         // must stay below bit 31.
                         if cases.len() >= 1 << 31 {
-                            return Err(format!(
-                                "switch in {} has too many cases",
-                                self.procedure.name
-                            ));
+                            return Err(format!("switch in {} has too many cases", name));
                         }
-                        self.pool.push(cases.len() as u32);
+                        arena.pool.push(cases.len() as u32);
                         for (key, target) in cases {
-                            self.pool.push(key as u32);
-                            pending.push((self.pool.len(), atom, target));
-                            self.pool.push(0);
+                            arena.pool.push(key as u32);
+                            pending.push((arena.pool.len(), atom, target));
+                            arena.pool.push(0);
                         }
                     }
                 }
@@ -1044,29 +1286,49 @@ impl<'a, 'gc> Lower<'a, 'gc> {
                     default,
                     cases,
                 } => {
-                    let table = PoolReference(self.pool.len() as u32);
-                    match &mut self.atoms[atom] {
+                    let table = PoolReference(arena.pool.len() as u32);
+                    match &mut atoms[atom] {
                         Atom::Ins {
                             ins: bc::LinkableInstruction::OpSwitchSymbol(op),
                             ..
                         } => op.table = table,
                         _ => unreachable!("switch fixup names a switch instruction"),
                     }
-                    pending.push((self.pool.len(), atom, default));
-                    self.pool.push(0);
-                    self.pool.push(cases.len() as u32);
-                    self.pool.push(mask as u32);
-                    self.pool.push((mask >> 32) as u32);
+                    pending.push((arena.pool.len(), atom, default));
+                    arena.pool.push(0);
+                    arena.pool.push(cases.len() as u32);
+                    arena.pool.push(mask as u32);
+                    arena.pool.push((mask >> 32) as u32);
                     for (key, target) in cases {
-                        self.pool.push(key as u32);
-                        self.pool.push((key >> 32) as u32);
-                        pending.push((self.pool.len(), atom, target));
-                        self.pool.push(0);
+                        arena.pool.push(key as u32);
+                        arena.pool.push((key >> 32) as u32);
+                        pending.push((arena.pool.len(), atom, target));
+                        arena.pool.push(0);
                     }
                 }
             }
         }
-        let atoms = std::mem::take(&mut self.atoms);
+        if let Some(case) = case {
+            let table = arena.pool.len() as u32;
+            match &mut atoms[case.enter_atom] {
+                Atom::Ins {
+                    ins: bc::LinkableInstruction::OpEnterCase(op),
+                    ..
+                } => op.table = PoolReference(table),
+                _ => unreachable!("case fixup names an enter_case instruction"),
+            }
+            arena.pool.push(case.rows.len() as u32);
+            for row in case.rows {
+                arena.pool.push(row.min);
+                arena.pool.push(row.max);
+                pending.push((arena.pool.len(), case.enter_atom, row.label));
+                arena.pool.push(0);
+                arena.pool.push(row.frame);
+                arena.pool.push(row.rest_base);
+                arena.pool.push(row.rest_cnt);
+            }
+        }
+        let atoms = std::mem::take(&mut atoms);
         let mut label_at: Vec<Option<Label>> = Vec::with_capacity(atoms.len());
         let linkables = atoms.into_iter().map(|atom| match atom {
             Atom::Ins { ins } => {
@@ -1078,8 +1340,7 @@ impl<'a, 'gc> Lower<'a, 'gc> {
                 bc::bind(label)
             }
         });
-        let linked = bc::link(linkables)
-            .map_err(|err| format!("cannot link {}: {err:?}", self.procedure.name))?;
+        let linked = bc::link(linkables).map_err(|err| format!("cannot link {}: {err:?}", name))?;
 
         let code = linked.bytes().to_vec();
         let mut atom_offsets = vec![0u32; label_at.len() + 1];
@@ -1107,21 +1368,17 @@ impl<'a, 'gc> Lower<'a, 'gc> {
         }
         for (slot, atom, target) in pending {
             let disp = labels[&target] as i64 - atom_offsets[atom] as i64;
-            let disp = i32::try_from(disp).map_err(|_| {
-                format!(
-                    "switch displacement in {} overflows i32",
-                    self.procedure.name
-                )
-            })?;
-            self.pool[slot] = disp as u32;
+            let disp = i32::try_from(disp)
+                .map_err(|_| format!("switch displacement in {} overflows i32", name))?;
+            arena.pool[slot] = disp as u32;
         }
 
         let code_len = code.len() as u32;
         let atom_count = label_at.len();
         let mut spans: Vec<Value<'gc>> = Vec::new();
         let mut span_ids: HashMap<u64, u32> = HashMap::new();
-        let mut srcmap: Vec<SrcRun> = Vec::with_capacity(self.sources.len());
-        let mut notes = self.sources.into_iter().peekable();
+        let mut srcmap: Vec<SrcRun> = Vec::with_capacity(sources.len());
+        let mut notes = sources.into_iter().peekable();
         while let Some((atom, source)) = notes.next() {
             let end_atom = notes.peek().map_or(atom_count, |(next, _)| *next);
             if end_atom <= atom {
@@ -1161,22 +1418,17 @@ impl<'a, 'gc> Lower<'a, 'gc> {
                 }),
             }
         }
-        let arity = if procedure.variadic.is_some() {
-            -(procedure.params.len() as i32 + 1)
-        } else {
-            procedure.params.len() as i32
-        };
         Ok(CompiledProcedure {
-            code_id: procedure.code,
+            code_id,
             code,
-            pool: self.pool,
+            pool: std::mem::take(&mut arena.pool),
             metadata_counts: metadata_kind_counts(linked.metadata_counts()),
-            constants: self.constants,
+            constants: std::mem::take(&mut arena.constants),
             arity,
             frame_size: size,
-            name: procedure.name,
-            meta: procedure.meta,
-            source: procedure.source,
+            name,
+            meta,
+            source,
             srcmap,
             spans,
         })
@@ -1234,6 +1486,29 @@ impl<'a, 'gc> Lower<'a, 'gc> {
                             .into(),
                         );
                     }
+                }
+            }
+            Instruction::MakeCaseClosure { dst, code, clauses } => {
+                let dst = self.register(*dst);
+                let index = self.code_constant(*code);
+                self.ins(
+                    OpClosure {
+                        dst: Register(dst),
+                        constant: Constant(index),
+                        nfree: Count(clauses.len() as u32),
+                    }
+                    .into(),
+                );
+                for (slot, clause) in clauses.iter().enumerate() {
+                    let src = self.operand(*clause, slot as u32 + 1);
+                    self.ins(
+                        OpClosureSet {
+                            closure: Register(dst),
+                            index: Count(slot as u32),
+                            src: Register(src),
+                        }
+                        .into(),
+                    );
                 }
             }
             Instruction::MakeEnv { dst, size } => {
@@ -1732,6 +2007,11 @@ impl<'a, 'gc> Lower<'a, 'gc> {
                 let ins = OpVectorRef::new(Register(dst), Register(vector), Register(index))
                     .with_metadata(Default::default());
                 self.ins(ins);
+            }
+            (P::VectorLength, 1) => {
+                let vector = self.operand(args[0], 0);
+                let ins = OpVectorLength::new(Register(dst), Register(vector));
+                self.ins(bc::LinkableInstruction::OpVectorLength(ins));
             }
             (P::VectorSet, 3) => {
                 let vector = self.operand(args[0], 0);

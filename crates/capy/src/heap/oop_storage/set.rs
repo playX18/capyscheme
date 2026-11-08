@@ -6,7 +6,7 @@ use mmtk::vm::RootsWorkFactory;
 use parking_lot::Mutex;
 
 use crate::heap::ObjectSlot;
-use crate::runtime::value::Value;
+use crate::runtime::objectmodel::Value;
 
 use super::storage::OopStorage;
 
@@ -26,7 +26,7 @@ impl OopStorageSet {
     fn init() -> Self {
         let vm_global = Box::leak(OopStorage::create_strong("VM Global"));
         let sni_locals = Box::leak(OopStorage::create_strong("SNI Locals"));
-        let sni_globals = Box::leak(OopStorage::create_strong("SNI Globals"));
+        let sni_globals = Box::leak(OopStorage::create_strong("SNI VmState"));
         Self {
             strong: Mutex::new(vec![vm_global, sni_locals, sni_globals]),
             weak: Mutex::new(Vec::new()),

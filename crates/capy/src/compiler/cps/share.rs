@@ -147,12 +147,7 @@ impl NestedSites {
         // level) is collected for the enclosing function only, member bodies
         // are collected when their own function is processed (a shared
         // visited set would let the enclosing walk steal them).
-        for function in reify
-            .functions
-            .iter()
-            .chain(reify.continuations.iter())
-            .copied()
-        {
+        for function in reify.functions.iter().copied() {
             let mut visited = HashSet::new();
             let mut collected = Vec::new();
             walk_body_sites(
@@ -276,7 +271,14 @@ impl<'a, 'gc> Collector<'a, 'gc> {
             TermKind::LetVal(_, body) => walk_link(self, body),
             TermKind::Fix(functions, body) => {
                 let live = self.graph.live_functions(&functions);
-                let decision = self.decide_site(term, &live, env);
+                let flat = live
+                    .iter()
+                    .any(|function| self.graph[*function].case_group.is_some());
+                let decision = if flat {
+                    None
+                } else {
+                    self.decide_site(term, &live, env)
+                };
                 for function in live.iter().copied() {
                     let body = self.graph[function].body;
                     if let Some(child) = self.graph.read_term_link(body) {
@@ -292,27 +294,15 @@ impl<'a, 'gc> Collector<'a, 'gc> {
                 walk_link(self, body);
             }
             TermKind::Letk(functions, body) => {
+                debug_assert!(
+                    self.graph
+                        .live_functions(&functions)
+                        .iter()
+                        .all(|function| !self.graph[*function].is_reified),
+                    "a continuation is reified again; the share analysis must be reworked"
+                );
                 let live = self.graph.live_functions(&functions);
-                let (reified, local): (Vec<_>, Vec<_>) = live
-                    .into_iter()
-                    .partition(|function| self.graph[*function].is_reified);
-                let decision = self.decide_site(term, &reified, env);
-                for function in reified.iter().copied() {
-                    let body = self.graph[function].body;
-                    if let Some(child) = self.graph.read_term_link(body) {
-                        let member_env = match &decision {
-                            Some(record) if self.by_function.contains_key(&function) => {
-                                Some(*record)
-                            }
-                            _ => None,
-                        };
-                        self.walk_term(child, member_env);
-                    }
-                }
-                // Non-reified continuations are inlined into the enclosing
-                // procedure, the enclosing record (this term's env) stays
-                // accessible to their nested sites.
-                for function in local.iter().copied() {
+                for function in live.iter().copied() {
                     if let Some(child) = self.graph.read_term_link(self.graph[function].body) {
                         self.walk_term(child, env);
                     }

@@ -3,8 +3,8 @@
 use crate::heap::Global;
 use crate::heap::Trace;
 use crate::runtime::MutationContext;
-use crate::runtime::value::*;
-use crate::runtime::value::{Number, Value};
+use crate::runtime::objectmodel::*;
+use crate::runtime::objectmodel::{Number, Value};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -26,12 +26,6 @@ impl<'gc> FoldingTable<'gc> {
     }
 }
 
-// SAFETY: FoldingTable stores `Value` keys in a HashMap. During GC tracing we must update
-// moved pointers in-place. The `*const Value as *mut Value` cast is safe here because:
-// 1. We hold `&mut self` (exclusive access) during tracing, no concurrent readers exist.
-// 2. The HashMap keys' addresses are stable during iteration (no rehashing occurs).
-// 3. The GC only updates pointer bits inside Values, not their hash or equality behavior
-//    (NaN-boxed cell pointers preserve their bucket identity after forwarding).
 unsafe impl<'gc> Trace for FoldingTable<'gc> {
     // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::heap::Visitor) {

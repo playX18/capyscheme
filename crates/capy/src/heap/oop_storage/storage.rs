@@ -14,7 +14,7 @@ use crate::heap::{
     scanning::RootSlotVisitor,
     traits::Trace,
 };
-use crate::runtime::value::Value;
+use crate::runtime::objectmodel::Value;
 
 use super::block::{ActiveArray, AllocationList, Block, is_empty_bitmask, is_full_bitmask};
 use super::synchronizer::{CriticalSection, SingleWriterSynchronizer};

@@ -12,6 +12,8 @@ use crate::heap::{
     traits::Trace,
 };
 
+pub const CHECK_EDGES: bool = false;
+
 #[derive(Default)]
 pub struct Collection;
 
@@ -108,6 +110,36 @@ pub struct Visitor<'a> {
 
 impl<'a> SlotVisitor<ObjectSlot> for Visitor<'a> {
     fn visit_slot(&mut self, slot: ObjectSlot) {
+        if CHECK_EDGES
+            && let Some(value) = slot.load()
+            && !mmtk::memory_manager::is_in_mmtk_spaces(value)
+        {
+            let slot_addr = slot.untagged_address().as_usize();
+            match self.current_object {
+                Some(parent) => {
+                    let parent_addr = parent.to_raw_address().as_usize();
+                    // SAFETY: `parent` is a valid heap object being scanned.
+                    let header = unsafe { ((parent_addr - 8) as *const u64).read() };
+                    crate::heap::logging::ensure_max_level(log::LevelFilter::Error);
+                    log::error!(
+                        target: "capy::gc",
+                        "bad heap edge: object {parent_addr:#x} (class {class}) \
+                         slot {slot_addr:#x} (offset {offset}) holds {value:#x}",
+                        class = header & 0xff_ffff,
+                        offset = slot_addr as isize - parent_addr as isize,
+                        value = value.to_raw_address().as_usize(),
+                    );
+                }
+                None => {
+                    crate::heap::logging::ensure_max_level(log::LevelFilter::Error);
+                    log::error!(
+                        target: "capy::gc",
+                        "bad root edge at {slot_addr:#x} holds {:#x}",
+                        value.to_raw_address().as_usize(),
+                    );
+                }
+            }
+        }
         match &mut self.kind {
             VisitorKind::Slot(sv) => {
                 sv.visit_slot(slot);

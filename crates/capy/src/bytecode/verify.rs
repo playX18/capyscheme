@@ -4,8 +4,6 @@
 //! We simply establish safety of bytecode during FASL load times. This verifier
 //! is best effort to verify safety of programs.
 
-use std::collections::{HashMap, HashSet};
-
 use super::def::{self, Instruction, OpcodeId};
 use crate::runtime::prims::def::Primitive;
 
@@ -22,17 +20,28 @@ fn fail<T>(pc: usize, message: impl std::fmt::Display) -> Result<T, String> {
     Err(format!("bytecode verification failed at {pc}: {message}"))
 }
 
+struct Landing(Vec<bool>);
+
+impl Landing {
+    fn contains(&self, pc: &usize) -> bool {
+        self.0.get(*pc).copied().unwrap_or(false)
+    }
+}
+
 /// Check that `shape` is safe to interpret.
 pub fn verify(shape: &CodeShape<'_>) -> Result<(), String> {
     let mut order: Vec<usize> = Vec::new();
-    let mut decoded: HashMap<usize, Instruction> = HashMap::new();
+
+    let mut decoded: Vec<Instruction> = Vec::new();
+    let mut index_at: Vec<u32> = vec![u32::MAX; shape.code.len() + 1];
     let mut pc = 0usize;
     while pc < shape.code.len() {
         let Some((ins, _, len)) = Instruction::decode_slice(shape.code, pc) else {
             return fail(pc, "undecodable instruction");
         };
         order.push(pc);
-        decoded.insert(pc, ins);
+        index_at[pc] = decoded.len() as u32;
+        decoded.push(ins);
         pc += len;
     }
     if order.is_empty() {
@@ -60,17 +69,18 @@ pub fn verify(shape: &CodeShape<'_>) -> Result<(), String> {
             );
         }
     }
-    let at = |pc: usize| -> &Instruction { &decoded[&pc] };
+    let at = |pc: usize| -> &Instruction { &decoded[index_at[pc] as usize] };
     let opcode_at = |pc: usize| -> OpcodeId { at(pc).opcode_id() };
 
     // Jumps and switches may land on any instruction except the entry and
     // the return points: those expect `w` and a frame that only a call or a
     // return sets up.
-    let landing: HashSet<usize> = order
-        .iter()
-        .copied()
-        .filter(|pc| !opcode_at(*pc).is_entry() && !opcode_at(*pc).is_return_point())
-        .collect();
+    let mut landing = Landing(vec![false; shape.code.len() + 1]);
+    for &pc in &order {
+        if !opcode_at(pc).is_entry() && !opcode_at(pc).is_return_point() {
+            landing.0[pc] = true;
+        }
+    }
 
     // Running off the end would execute the aux pool.
     let last = *order.last().expect("checked non-empty above");
@@ -179,7 +189,13 @@ pub fn verify(shape: &CodeShape<'_>) -> Result<(), String> {
             _ => {}
         }
         if pc != order[0] && opcode.is_entry() {
-            return fail(pc, "entry instruction in the middle of a code block");
+            // A `case-lambda` block concatenates clause bodies behind one
+            // `enter_case`, so clause entries legitimately sit in the middle
+            // of the block. They are only reachable through the dispatch
+            // table (ordinary jumps may not target entries) and every entry
+            // re-checks its own arity and frame, so this is safe even for a
+            // corrupt block that falls into one.
+            let _ = previous;
         }
 
         if let Some(id) = ins.metadata_id() {
@@ -360,6 +376,12 @@ pub fn verify(shape: &CodeShape<'_>) -> Result<(), String> {
                 let (lhs, rhs) = jump_regs(ins);
                 register(pc, lhs)?;
                 register(pc, rhs)?;
+            }
+            Instruction::OpEnterCase(op) => {
+                if op.frame.0 as u64 > shape.frame_size as u64 {
+                    return fail(pc, "entry frame size exceeds the code block's");
+                }
+                verify_case_table(shape, &landing, pc, op.table.0)?;
             }
             Instruction::OpSwitchFixnum(op) => {
                 register(pc, op.src.0)?;
@@ -601,7 +623,10 @@ pub fn verify(shape: &CodeShape<'_>) -> Result<(), String> {
 
 impl OpcodeId {
     pub fn is_entry(self) -> bool {
-        matches!(self, OpcodeId::OpEnter | OpcodeId::OpEnterRest)
+        matches!(
+            self,
+            OpcodeId::OpEnter | OpcodeId::OpEnterRest | OpcodeId::OpEnterCase
+        )
     }
 
     pub const fn is_return_point(self) -> bool {
@@ -651,9 +676,80 @@ fn arith_regs(ins: &Instruction) -> (u32, u32, u32) {
     }
 }
 
+fn verify_case_table(
+    shape: &CodeShape<'_>,
+    landing: &Landing,
+    pc: usize,
+    table: u32,
+) -> Result<(), String> {
+    const ROW: usize = 6;
+    let table = table as usize;
+    let Some(count) = shape.pool.get(table).copied() else {
+        return fail(pc, "case table outside the pool");
+    };
+    if table as u64 + 1 + ROW as u64 * count as u64 > shape.pool.len() as u64 {
+        return fail(pc, "case table runs past the pool");
+    }
+    let check = |pc: usize, disp: u32| {
+        let destination = pc as i64 + disp as i32 as i64;
+        if destination < 0 {
+            return fail(pc, format!("case target {destination} is negative"));
+        }
+        let destination = destination as usize;
+        let is_clause_entry = destination != 0 && shape_is_entry_at(shape, destination);
+        if !landing.contains(&destination) && !is_clause_entry {
+            fail(
+                pc,
+                format!("case target {destination} is not a jump target"),
+            )
+        } else {
+            Ok(())
+        }
+    };
+    for row in 0..count as usize {
+        let at = table + 1 + row * ROW;
+        let min = shape.pool[at];
+        let max = shape.pool[at + 1];
+        if min > max {
+            return fail(pc, format!("case row {row} has min {min} above max {max}"));
+        }
+        let frame = shape.pool[at + 3] as u64;
+        if frame > shape.frame_size as u64 {
+            return fail(
+                pc,
+                format!("case row {row} frame {frame} exceeds the block's"),
+            );
+        }
+        let rest_base = shape.pool[at + 4];
+        let rest_cnt = shape.pool[at + 5];
+        if (rest_base == def::CASE_NO_REST) != (rest_cnt == def::CASE_NO_REST) {
+            return fail(pc, format!("case row {row} has half a rest area"));
+        }
+        if rest_base != def::CASE_NO_REST {
+            if rest_base as u64 >= shape.frame_size as u64
+                || rest_cnt as u64 >= shape.frame_size as u64
+            {
+                return fail(
+                    pc,
+                    format!("case row {row} rest registers outside the frame"),
+                );
+            }
+        }
+        check(pc, shape.pool[at + 2])?;
+    }
+    Ok(())
+}
+
+fn shape_is_entry_at(shape: &CodeShape<'_>, pc: usize) -> bool {
+    matches!(
+        def::Instruction::decode_slice(shape.code, pc),
+        Some((ins, _, _)) if ins.opcode_id().is_entry()
+    )
+}
+
 fn verify_int_switch(
     shape: &CodeShape<'_>,
-    landing: &HashSet<usize>,
+    landing: &Landing,
     pc: usize,
     table: u32,
 ) -> Result<(), String> {
@@ -698,7 +794,7 @@ fn verify_int_switch(
 
 fn verify_sym_switch(
     shape: &CodeShape<'_>,
-    landing: &HashSet<usize>,
+    landing: &Landing,
     pc: usize,
     table: u32,
 ) -> Result<(), String> {

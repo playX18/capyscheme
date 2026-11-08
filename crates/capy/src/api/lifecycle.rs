@@ -6,7 +6,7 @@ use libc::c_void;
 
 use crate::{
     heap::{Gc, Mutator},
-    runtime::{MutationContext, Scheme, State, value::Value, vm::threading::ThreadObject},
+    runtime::{MutationContext, Scheme, SchemeState, objectmodel::Value, vm::threading::ThreadObject},
 };
 
 use super::env::{SCM_REF_NULL, Scm, ScmPtr, ScmRef, SniEnv, env_mut};
@@ -155,7 +155,7 @@ pub unsafe extern "C" fn scm_fork(
             let thread_object: Gc<'_, ThreadObject<'_>> =
                 unsafe { Gc::from_ptr(thread_object_bits as _) };
             thread_object.bind_current_runtime_thread();
-            mc.init_state(State::new(mc, thread_object));
+            mc.init_state(SchemeState::new(mc, thread_object));
         });
         mutator.mutate(|ctx, _| {
             ctx.state()

@@ -1,7 +1,7 @@
 use crate::{
     compiler::cps::graph::BranchHint,
     expander::core::LVarRef,
-    runtime::{prims::def::Primitive, value::Value, vm::exceptions::RaiseKind},
+    runtime::{objectmodel::Value, prims::def::Primitive, vm::exceptions::RaiseKind},
 };
 use smallvec::{SmallVec, smallvec};
 use std::collections::HashMap;
@@ -31,12 +31,20 @@ pub struct GraphCodeId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CodeId {
     GraphFunction(GraphCodeId),
+    CaseGroup(u32),
+}
+
+#[derive(Debug, Clone)]
+pub struct CaseGroup {
+    pub code: CodeId,
+    pub clauses: Vec<CodeId>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Program<'gc> {
     pub entry: CodeId,
     pub procedures: Vec<Procedure<'gc>>,
+    pub case_groups: Vec<CaseGroup>,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +112,14 @@ pub enum Instruction<'gc> {
         /// closures at this site, stored in slot 0, private captures in
         /// slots 1.. `free_count`.
         env: Option<Operand<'gc>>,
+    },
+    /// Allocate one closure holding the clause closures of a `case-lambda`,
+    /// in `clauses` (source) order. Calling it dispatches on arity inside the
+    /// group's one code block.
+    MakeCaseClosure {
+        dst: UVar,
+        code: CodeId,
+        clauses: Vec<Operand<'gc>>,
     },
     /// Allocate a shared closure environment record with `size` value slots.
     MakeEnv {
@@ -295,6 +311,7 @@ impl<'gc> Instruction<'gc> {
             Self::Assign { dst, .. }
             | Self::Const { dst, .. }
             | Self::MakeClosure { dst, .. }
+            | Self::MakeCaseClosure { dst, .. }
             | Self::MakeEnv { dst, .. }
             | Self::EnvRef { dst, .. }
             | Self::ClosureRef { dst, .. }
@@ -323,6 +340,7 @@ impl<'gc> Instruction<'gc> {
             Self::Assign { src, .. } => vec![*src],
             Self::Const { .. } => vec![],
             Self::MakeClosure { env, .. } => env.map_or(vec![], |env| vec![env]),
+            Self::MakeCaseClosure { clauses, .. } => clauses.clone(),
             Self::MakeEnv { .. } => vec![],
             Self::EnvRef { env, .. } => vec![*env],
             Self::EnvSet { env, value, .. } => vec![*env, *value],

@@ -77,6 +77,23 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
                 env_part
             )
         }
+        Instruction::MakeCaseClosure {
+            dst,
+            code,
+            clauses,
+        } => {
+            let parts = clauses
+                .iter()
+                .map(|operand| render_operand(*operand))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "{} = make_case_closure {} [{}]",
+                render_uvar(*dst),
+                render_code_id(code),
+                parts
+            )
+        }
         Instruction::MakeEnv { dst, size } => {
             format!("{} = make_env {}", render_uvar(*dst), size)
         }
@@ -328,6 +345,7 @@ fn render_uvars(vars: &[UVar]) -> String {
 fn render_code_id(code: &CodeId) -> String {
     match code {
         CodeId::GraphFunction(function) => format!("gf{}", function.0),
+        CodeId::CaseGroup(group) => format!("cg{group}"),
     }
 }
 

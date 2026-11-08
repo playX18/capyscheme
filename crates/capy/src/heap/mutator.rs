@@ -12,7 +12,7 @@ use crate::{
         },
         traits::Trace,
     },
-    runtime::{State, Tc},
+    runtime::{SchemeState, ThreadContext},
 };
 use mmtk::{
     AllocationSemantics, BarrierSelector, MutatorContext,
@@ -277,6 +277,8 @@ pub fn user_collect_garbage() -> bool {
         current_thread().to_mutator_thread(),
         true,
     );
+
+    crate::runtime::codegen::reclaim::drain_if_needed();
     drop(guard);
     Thread::enter_native();
 
@@ -316,14 +318,14 @@ unsafe impl Send for Mutation<'_> {}
 unsafe impl Sync for Mutation<'_> {}
 
 impl<'gc> Deref for Mutation<'gc> {
-    type Target = State<'gc>;
+    type Target = SchemeState<'gc>;
 
     fn deref(&self) -> &Self::Target {
         debug_assert!(
             self.thread().is_thread_state_initialized(),
             "thread state is not initialized"
         );
-        unsafe { &*(self.g().state_ptr() as *const State<'gc>) }
+        unsafe { &*(self.g().state_ptr() as *const SchemeState<'gc>) }
     }
 }
 
@@ -430,18 +432,18 @@ impl<'gc> Mutation<'gc> {
     }
 
     #[inline(always)]
-    pub fn state(&self) -> &'gc State<'gc> {
+    pub fn state(&self) -> &'gc SchemeState<'gc> {
         debug_assert!(
             self.thread().is_thread_state_initialized(),
             "thread state is not initialized"
         );
-        unsafe { &*(self.g().state_ptr() as *const State<'gc>) }
+        unsafe { &*(self.g().state_ptr() as *const SchemeState<'gc>) }
     }
 
     #[inline(always)]
-    pub fn tc(&self) -> &'gc Tc<'gc> {
+    pub fn tc(&self) -> &'gc ThreadContext<'gc> {
         // The thread context is built with the thread and needs no init gate.
-        unsafe { &*(self.g().tc_ptr() as *const Tc<'gc>) }
+        unsafe { &*(self.g().tc_ptr() as *const ThreadContext<'gc>) }
     }
 
     pub fn as_ptr(self) -> *const () {
@@ -469,7 +471,7 @@ impl<'gc> Mutation<'gc> {
     }
 
     #[inline(always)]
-    pub fn init_state(&self, state: State<'gc>) {
+    pub fn init_state(&self, state: SchemeState<'gc>) {
         assert!(
             !self.thread().is_thread_state_initialized(),
             "thread state is already initialized"
@@ -630,8 +632,28 @@ impl<'gc> Mutation<'gc> {
                 }
             }
 
+            self.pace_allocation(size, semantics);
             self.allocate_out_of_line(size, alignment, header_word, semantics)
         }
+    }
+
+    /// Taxes an allocation slow path while the `tax` pacer is armed.
+    #[inline(never)]
+    unsafe fn pace_allocation(&self, size: usize, semantics: AllocationSemantics) {
+        use super::heuristics::pacer::PACER;
+        if !PACER.is_active() {
+            return;
+        }
+        let window = if semantics == AllocationSemantics::Default {
+            self.nd().lab_window.replace(0)
+        } else {
+            0
+        };
+        PACER.pace(size.saturating_add(window), |delay| {
+            Thread::enter_native();
+            std::thread::sleep(delay);
+            Thread::leave_native();
+        });
     }
 
     /// Allocate through MMTk, bypassing the TLAB.
@@ -677,6 +699,13 @@ impl<'gc> Mutation<'gc> {
                 )
             };
             self.refill_tlab();
+
+            if object_start.is_zero() {
+                panic!(
+                    "out of memory: MMTk could not allocate {bytes} bytes \
+                     (payload {size}, {semantics:?} space)"
+                );
+            }
 
             self.finish_unpublished_object_with_header(object_start, size, header_word, semantics)
         }
@@ -768,6 +797,8 @@ impl<'gc> Mutation<'gc> {
 
         let (cursor, limit) = (window.cursor, window.limit);
         window.reset(Address::ZERO, Address::ZERO);
+        // Remembered so the pacer can charge the window once it is used up.
+        self.nd().lab_window.set(limit - cursor);
         unsafe { (*self.virtual_thread_ptr()).lab_rebind(cursor, limit) };
     }
 

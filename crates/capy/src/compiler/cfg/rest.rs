@@ -176,7 +176,15 @@ fn has_incompatible_rest_use<'gc>(
         }
 
         if terminator_mentions_rest(&block.terminator, rest, aliases) {
-            return true;
+            let compatible = !is_loop_block
+                && matches!(
+                    &block.terminator,
+                    Terminator::BranchPrim { prim, args, .. }
+                        if rest_rewrite_for_prim(*prim, args, rest, aliases).is_some()
+                );
+            if !compatible {
+                return true;
+            }
         }
     }
 
@@ -228,6 +236,7 @@ fn rewrite_rest_uses<'gc>(
     rest: ValueId,
     aliases: &HashMap<ValueId, RestAlias>,
 ) {
+    let mut next = max_uvar(procedure).map_or(0, |max| max + 1);
     for block in &mut procedure.blocks {
         let mut lowered = Vec::with_capacity(block.instructions.len());
         for instruction in block.instructions.drain(..) {
@@ -271,5 +280,77 @@ fn rewrite_rest_uses<'gc>(
             }
         }
         block.instructions = lowered;
+
+        let fused = match &block.terminator {
+            Terminator::BranchPrim {
+                prim,
+                args,
+                consequent,
+                alternative,
+                hints,
+            } => rest_rewrite_for_prim(*prim, args, rest, aliases).map(|rewrite| {
+                (
+                    rewrite,
+                    consequent.clone(),
+                    alternative.clone(),
+                    hints.clone(),
+                )
+            }),
+            _ => None,
+        };
+        if let Some((RestRewrite::Predicate(alias, predicate), consequent, alternative, hints)) =
+            fused
+        {
+            let dst = ValueId(next);
+            next += 1;
+            block.instructions.push(Instruction::RestPredicate {
+                dst,
+                rest: alias.rest,
+                predicate,
+                skip: alias.skip,
+                source: block.source,
+            });
+            block.terminator = Terminator::Branch {
+                test: Operand::Local(dst),
+                consequent,
+                alternative,
+                hints,
+            };
+        }
     }
+}
+
+fn max_uvar<'gc>(procedure: &Procedure<'gc>) -> Option<u32> {
+    let mut max: Option<u32> = None;
+    let mut bump = |var: UVar| {
+        max = Some(max.map_or(var.0, |m: u32| m.max(var.0)));
+    };
+    for &param in &procedure.params {
+        bump(param);
+    }
+    if let Some(rest) = procedure.variadic {
+        bump(rest);
+    }
+    bump(procedure.binding);
+    for &free in &procedure.free_vars {
+        bump(free);
+    }
+    for block in &procedure.blocks {
+        for instruction in &block.instructions {
+            if let Some(dst) = instruction.def() {
+                bump(dst);
+            }
+            for operand in instruction.uses() {
+                if let Operand::Local(var) = operand {
+                    bump(var);
+                }
+            }
+        }
+        for operand in block.terminator.uses() {
+            if let Operand::Local(var) = operand {
+                bump(var);
+            }
+        }
+    }
+    max
 }

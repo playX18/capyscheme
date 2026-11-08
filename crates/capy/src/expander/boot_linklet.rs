@@ -22,7 +22,7 @@ use crate::{
     runtime::{
         MutationContext,
         linklet::{registry_lookup, root_registry},
-        value::{Symbol, Value},
+        objectmodel::{Symbol, Value},
     },
 };
 

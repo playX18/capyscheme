@@ -4,10 +4,10 @@ use libc::c_char;
 
 use crate::heap::object::builtin_class_ids;
 use crate::prelude::*;
-use crate::runtime::class::{
+use crate::runtime::objectmodel::class::{
     ClassCategory, ClassDescriptor, class_table, generic_descriptor_from_value, try_scheme_instance,
 };
-use crate::runtime::value::Tuple;
+use crate::runtime::objectmodel::Tuple;
 
 use super::env::{SCM_REF_NULL, ScmRef, SniEnv, env_mut, ref_value, safe_cstr};
 use super::exceptions::set_type_error;

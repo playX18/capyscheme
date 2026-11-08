@@ -3,4 +3,4 @@
 pub mod disasm;
 pub mod lower;
 
-pub use lower::{CompiledProcedure, CompiledProgram, Constant, compile_program};
+pub use lower::{Constant, compile_program};

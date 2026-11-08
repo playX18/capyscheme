@@ -1,5 +1,4 @@
-//! Dominator-based contification candidates for the optimizer worklist.
-
+//! Dominator-based contification candidates
 use super::graph::verbose_log;
 use std::collections::HashMap;
 
@@ -28,9 +27,12 @@ enum Destination {
 #[derive(Clone, Copy, Debug)]
 struct CallFact {
     caller: Option<FunctionId>,
+    /// The procedure (nearest enclosing lambda) containing the call.
+    proc: Option<FunctionId>,
     callee: FunctionId,
     cont: BoundVar,
     is_tail: bool,
+    arg_count: usize,
 }
 
 struct DomFacts {
@@ -38,6 +40,9 @@ struct DomFacts {
     live_binders: EntitySet<BoundVar>,
     calls: Vec<CallFact>,
     escaped_binders: EntitySet<BoundVar>,
+    /// Functions the contification transform cannot rewrite: variadic,
+    /// case-lambda clauses, or a call with the wrong arity.
+    ineligible: EntitySet<BoundVar>,
 }
 
 pub(super) fn find_candidate<'gc>(
@@ -51,7 +56,25 @@ pub(super) fn find_candidate<'gc>(
     let facts = collect_facts(graph, live, body);
     let reachable = reachable_functions(&facts);
     let groups = analyze_dominators(graph, live, &facts, &reachable);
-    choose_candidate(state, graph, active_link, live, body, groups)
+
+    let destinations: HashMap<FunctionId, Destination> = groups
+        .iter()
+        .flat_map(|(destination, functions)| {
+            functions
+                .iter()
+                .map(move |function| (*function, *destination))
+        })
+        .collect();
+    choose_candidate(
+        state,
+        graph,
+        active_link,
+        live,
+        body,
+        &facts,
+        &destinations,
+        groups,
+    )
 }
 
 fn collect_facts<'gc>(
@@ -64,18 +87,34 @@ fn collect_facts<'gc>(
         live_binders: EntitySet::new(),
         calls: Vec::new(),
         escaped_binders: EntitySet::new(),
+        ineligible: EntitySet::new(),
     };
 
     for (_, function) in live.iter().copied() {
-        let binder = graph[function].var;
+        let data = graph[function];
+        let binder = data.var;
         facts.functions_by_binder[binder] = Some(function);
         facts.live_binders.insert(binder);
+        if data.cont.is_none()
+            || data.is_variadic
+            || data.variadic.is_some()
+            || data.case_group.is_some()
+        {
+            facts.ineligible.insert(binder);
+        }
     }
 
-    collect_calls(graph, &mut facts, body, None, None);
+    collect_calls(graph, &mut facts, body, None, None, None);
     for (_, function) in live.iter().copied() {
         let data = graph[function];
-        collect_calls(graph, &mut facts, data.body, Some(function), data.cont);
+        collect_calls(
+            graph,
+            &mut facts,
+            data.body,
+            Some(function),
+            data.cont,
+            Some(function),
+        );
     }
 
     facts
@@ -87,6 +126,7 @@ fn collect_calls<'gc>(
     link: Subterm,
     caller: Option<FunctionId>,
     current_return_cont: Option<BoundVar>,
+    proc: Option<FunctionId>,
 ) {
     let Some(term) = graph.read_term_link(link) else {
         return;
@@ -97,15 +137,22 @@ fn collect_calls<'gc>(
             if let Some(expr) = graph.read_expr_link(expr) {
                 mark_expr_escapes(graph, facts, expr);
             }
-            collect_calls(graph, facts, body, caller, current_return_cont);
+            collect_calls(graph, facts, body, caller, current_return_cont, proc);
         }
         TermKind::Fix(functions, body) => {
-            collect_calls(graph, facts, body, caller, current_return_cont);
+            collect_calls(graph, facts, body, caller, current_return_cont, proc);
             for link in graph.function_links_slice(&functions).iter().copied() {
                 let Some(function) = graph.read_function_link(link) else {
                     continue;
                 };
-                collect_calls(graph, facts, graph[function].body, None, None);
+                collect_calls(
+                    graph,
+                    facts,
+                    graph[function].body,
+                    None,
+                    None,
+                    Some(function),
+                );
             }
         }
         TermKind::Letk(functions, body) => {
@@ -119,14 +166,15 @@ fn collect_calls<'gc>(
                     graph[function].body,
                     caller,
                     current_return_cont,
+                    proc,
                 );
             }
-            collect_calls(graph, facts, body, caller, current_return_cont);
+            collect_calls(graph, facts, body, caller, current_return_cont, proc);
         }
         TermKind::If(test, then_branch, else_branch, _) => {
             mark_if_live_binder_escapes(graph, facts, test);
-            collect_calls(graph, facts, then_branch, caller, current_return_cont);
-            collect_calls(graph, facts, else_branch, caller, current_return_cont);
+            collect_calls(graph, facts, then_branch, caller, current_return_cont, proc);
+            collect_calls(graph, facts, else_branch, caller, current_return_cont, proc);
         }
         TermKind::Continue(cont, vars) => {
             mark_if_live_binder_escapes(graph, facts, cont);
@@ -148,12 +196,22 @@ fn collect_calls<'gc>(
             let Some(callee) = facts.functions_by_binder[callee_binder] else {
                 return;
             };
+            let arg_count = graph.free_vars_slice(&args).len();
+            let data = graph[callee];
+            if data.is_variadic
+                || data.variadic.is_some()
+                || arg_count != graph.bound_vars_slice(&data.vars).len()
+            {
+                facts.ineligible.insert(callee_binder);
+            }
             let cont_binder = graph.free_binder(cont);
             facts.calls.push(CallFact {
                 caller,
+                proc,
                 callee,
                 cont: cont_binder,
                 is_tail: current_return_cont == Some(cont_binder),
+                arg_count,
             });
         }
     }
@@ -273,7 +331,10 @@ fn analyze_dominators<'gc>(
 
     for (_, function) in live.iter().copied() {
         let binder = graph[function].var;
-        if facts.escaped_binders.contains(binder) || !reachable.contains(function) {
+        if facts.escaped_binders.contains(binder)
+            || facts.ineligible.contains(binder)
+            || !reachable.contains(function)
+        {
             continue;
         }
 
@@ -364,6 +425,8 @@ fn choose_candidate<'gc>(
     active_link: Subterm,
     live: &[(FunctionLink, FunctionId)],
     body: Subterm,
+    facts: &DomFacts,
+    destinations: &HashMap<FunctionId, Destination>,
     groups: Vec<(Destination, Vec<FunctionId>)>,
 ) -> Option<ContifyCandidate> {
     for (destination, functions) in groups {
@@ -378,12 +441,44 @@ fn choose_candidate<'gc>(
                 if binders.contains(graph[function].var) {
                     continue;
                 }
-                let Some(return_cont) = graph[function].cont else {
+                let Some(return_cont) = resolve_destination_cont(graph, destinations, function)
+                else {
                     continue;
                 };
                 return_cont
             }
         };
+        if !calls_return_to(graph, facts, &functions, return_cont) {
+            continue;
+        }
+        // A contified `Letk` is a block of one procedure; calls from two
+        // different procedures cannot reach it.
+        let mut proc = None;
+        let mut first = true;
+        let mut shared = true;
+        for call in &facts.calls {
+            if !functions.contains(&call.callee) {
+                continue;
+            }
+            // A call made from inside the group (a loop's own back edge, or
+            // `inner` calling `loop`) becomes a jump within the block the
+            // group turns into, so only the calls from outside decide which
+            // procedure the group lands in.
+            if call.proc.is_some_and(|caller| functions.contains(&caller)) {
+                continue;
+            }
+            if first {
+                proc = call.proc;
+                first = false;
+            } else if call.proc != proc {
+                shared = false;
+                break;
+            }
+        }
+        if !shared {
+            continue;
+        }
+
         let site = scc_contify::contification_site(graph, active_link, live, body, &binders)?;
 
         let Some(insertion) =
@@ -401,5 +496,45 @@ fn choose_candidate<'gc>(
         });
     }
 
+    None
+}
+
+/// Every call to a group member must return to the group's common
+/// continuation. Calls whose continuation is one of the members' own tail
+/// labels are covered because the transform substitutes those binders too.
+fn calls_return_to<'gc>(
+    graph: &Graph<'gc>,
+    facts: &DomFacts,
+    functions: &[FunctionId],
+    return_cont: BoundVar,
+) -> bool {
+    let mut tails = EntitySet::new();
+    for function in functions.iter().copied() {
+        if let Some(cont) = graph[function].cont {
+            tails.insert(cont);
+        }
+    }
+    facts.calls.iter().all(|call| {
+        if !functions.contains(&call.callee) {
+            return true;
+        }
+        call.cont == return_cont || tails.contains(call.cont)
+    })
+}
+
+/// Follow `Func` destinations until a continuation.
+fn resolve_destination_cont<'gc>(
+    graph: &Graph<'gc>,
+    destinations: &HashMap<FunctionId, Destination>,
+    function: FunctionId,
+) -> Option<BoundVar> {
+    let mut current = function;
+    for _ in 0..=destinations.len() {
+        match destinations.get(&current).copied() {
+            Some(Destination::Cont(cont)) => return Some(cont),
+            Some(Destination::Func(next)) if next != current => current = next,
+            _ => return graph[current].cont,
+        }
+    }
     None
 }

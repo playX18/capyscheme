@@ -197,10 +197,11 @@ impl<'gc, T> Gc<'gc, T> {
     /// Triggers a write barrier on this `Gc`, allowing for safe mutation.
     ///
     ///
-    /// At the moment this triggers object remembering barrier which is used by generatonal
-    /// plans in MMTk. Technically it is a *post* write barrier (meaning it should be called after the write)
-    /// but in practice it does not matter. In future, when MMTk gets LXR or any other GC where
-    /// write barrier order is strictly enforced this function will be behind a feature flag.
+    /// Call it before the write, which the returned [`Write`] enforces. The
+    /// object-remembering barrier of the generational plans works either way,
+    /// but the SATB barrier of ConcurrentImmix snapshots the object's current
+    /// fields, so a barrier after the write loses the overwritten value and
+    /// the collector can free an object that is still reachable.
     pub fn write(mc: impl Into<Mutation<'gc>>, this: Self) -> &'gc Write<T> {
         let mc = mc.into();
         unsafe {
@@ -368,7 +369,22 @@ impl ObjectSlot {
 
 impl Slot for ObjectSlot {
     fn load(&self) -> Option<ObjectReference> {
-        unsafe { self.addr.load() }
+        let object: Option<ObjectReference> = unsafe { self.addr.load() };
+        if let Some(obj) = object
+            && crate::heap::collection::CHECK_EDGES
+            && !mmtk::memory_manager::is_in_mmtk_spaces(obj)
+        {
+            // A GC edge that is not a heap object: a stale or raw word in a
+            // slot the collector was told holds a reference.
+            crate::heap::logging::ensure_max_level(log::LevelFilter::Error);
+            log::error!(
+                target: "capy::gc",
+                "edge at {:#x} holds {:#x}, outside MMTk spaces",
+                self.addr.as_usize(),
+                obj.to_raw_address().as_usize(),
+            );
+        }
+        object
     }
 
     fn store(&self, object: ObjectReference) {

@@ -9,7 +9,7 @@
 use std::ptr;
 
 use crate::runtime::sni::sni_globals;
-use crate::runtime::value::Value;
+use crate::runtime::objectmodel::Value;
 
 use super::call::sni_call_n;
 use super::env::{SCM_REF_NULL, ScmRef, SniEnv, env_mut, ref_value};

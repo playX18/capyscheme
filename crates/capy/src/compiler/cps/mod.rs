@@ -27,6 +27,8 @@ pub mod fixmerge;
 pub mod flow;
 pub mod fold;
 pub mod graph;
+pub mod inline;
+pub mod introduce_loops;
 pub mod optimize;
 pub mod pretty;
 pub mod reify;

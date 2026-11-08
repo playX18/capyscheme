@@ -189,6 +189,7 @@ impl<'a, 'gc> GraphClone<'a, 'gc> {
                 is_noinline: data.is_noinline,
                 is_reified: data.is_reified,
                 meta: data.meta,
+                case_group: data.case_group,
             });
             let clone_link = self.graph.new_function_link(Some(clone));
             cloned_links.push(clone_link);

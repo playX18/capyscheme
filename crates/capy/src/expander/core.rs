@@ -14,7 +14,7 @@ use crate::{
     list,
     runtime::{
         MutationContext,
-        value::{Str, Symbol, Value},
+        objectmodel::{Str, Symbol, Value},
         vm::syntax::props_to_sourcev,
     },
     static_symbols,
@@ -23,10 +23,10 @@ use crate::{
 // Re-export types from focused submodules for backward compatibility.
 pub use crate::compiler::tree::{
     Fix, GlobalSlot, LVar, LVarRef, Let, LetStyle, LinkletTerm, Proc, ProcRef, Term, TermKind,
-    TermRef, call_term, constant, fix_term, global_ref, global_set, if_term, let_term,
-    linklet_term, lref, lset, prim_call_term, proc_term, seq, seq_from_slice,
+    TermRef, call_term, constant, global_ref, global_set, if_term, let_term, linklet_term, lref,
+    lset, prim_call_term, proc_term, seq_from_slice,
 };
-pub use crate::expander::cenv::{Cenv, Denotations, Frame};
+pub use crate::expander::cenv::{Cenv, Denotations};
 
 type RootedDenotations = crate::Rootable!(Denotations<'_>);
 
@@ -40,6 +40,7 @@ static_symbols!(
     DENOTATION_OF_LET_REC_STAR = "letrec*"
     DENOTATION_OF_LAMBDA = "lambda"
     DENOTATION_OF_CASE_LAMBDA = "case-lambda"
+    DENOTATION_OF_CORE_CASE_LAMBDA = "#%case-lambda"
     DENOTATION_OF_BEGIN = "begin"
     DENOTATION_OF_IF = "if"
     DENOTATION_OF_QUOTE = "quote"
@@ -182,6 +183,10 @@ pub fn expand<'gc>(cenv: &mut Cenv<'gc>, program: Value<'gc>) -> Result<TermRef<
             expand_define(cenv, program)
         } else if proc == cenv.denotations.denotation_of_lambda {
             expand_lambda(cenv, program)
+        } else if proc == cenv.denotations.denotation_of_case_lambda
+            || proc == Value::from(denotation_of_core_case_lambda(cenv.ctx))
+        {
+            expand_case_lambda(cenv, program)
         } else if proc == cenv.denotations.denotation_of_let {
             expand_let(cenv, program)
         } else if proc == cenv.denotations.denotation_of_let_rec {
@@ -1030,6 +1035,19 @@ fn collect_formals<'gc>(
 }
 
 fn expand_lambda<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
+    let proc = expand_lambda_proc(cenv, form)?;
+    Ok(cenv.ctx.allocate(Term {
+        source: Lock::new(datum_sourcev(cenv.ctx, form)),
+        kind: TermKind::Proc(proc),
+    }))
+}
+
+/// Expand a `(formals body ...)` lambda form into its procedure, without
+/// wrapping it in a `&proc` term. `case-lambda` clauses reuse this.
+fn expand_lambda_proc<'gc>(
+    cenv: &mut Cenv<'gc>,
+    form: Value<'gc>,
+) -> Result<ProcRef<'gc>, Error<'gc>> {
     if form.list_length() < 3 {
         return Err(Box::new(CompileError {
             message: "lambda requires at least formals and one body expression".to_string(),
@@ -1084,19 +1102,147 @@ fn expand_lambda<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
     let body_term = expand_body(cenv, body, datum_sourcev(cenv.ctx, form))?;
     cenv.pop_frame();
 
-    let proc = cenv.ctx.allocate(Proc {
+    Ok(cenv.ctx.allocate(Proc {
         name: Value::new(false),
         args: Array::from_slice(cenv.ctx, args),
         variadic,
         body: body_term,
         source: datum_sourcev(cenv.ctx, form),
         meta,
-    });
-
-    Ok(cenv.ctx.allocate(Term {
-        source: Lock::new(datum_sourcev(cenv.ctx, form)),
-        kind: TermKind::Proc(proc),
     }))
+}
+
+fn expand_case_lambda<'gc>(
+    cenv: &mut Cenv<'gc>,
+    form: Value<'gc>,
+) -> Result<TermRef<'gc>, Error<'gc>> {
+    let mut clauses = Vec::new();
+    let mut rest = form.cdr();
+    while rest.is_pair() {
+        let clause = rest.car();
+        if !clause.is_pair() {
+            return Err(Box::new(CompileError {
+                message: "case-lambda clause must be a list".to_string(),
+                irritants: vec![clause],
+                sourcev: datum_sourcev(cenv.ctx, clause),
+            }));
+        }
+
+        let lambda_sym: Value<'gc> = Symbol::from_str(cenv.ctx, "lambda").into();
+        let is_lambda_form = clause.car() == lambda_sym && clause.list_length() >= 3;
+        clauses.push(if is_lambda_form {
+            clause
+        } else {
+            Value::cons(cenv.ctx, lambda_sym, clause)
+        });
+        rest = rest.cdr();
+    }
+    if !rest.is_null() {
+        return Err(Box::new(CompileError {
+            message: "improper case-lambda clause list".to_string(),
+            irritants: vec![form],
+            sourcev: datum_sourcev(cenv.ctx, form),
+        }));
+    }
+
+    // A single clause is exactly a lambda, variadic or not.
+    if clauses.len() == 1 {
+        return expand_lambda(cenv, clauses[0]);
+    }
+
+    let mut procs = Vec::with_capacity(clauses.len());
+    for clause in &clauses {
+        // Validate the formals even though the clause is built below.
+        let _ = collect_formals(cenv.ctx, clause.cadr())?;
+        procs.push(expand_lambda_proc(cenv, *clause)?);
+    }
+
+    if !procs.is_empty() && crate::utils::flags::case_lambda() {
+        return Ok(cenv.ctx.allocate(Term {
+            source: Lock::new(datum_sourcev(cenv.ctx, form)),
+            kind: TermKind::CaseLambda(Array::from_slice(cenv.ctx, &procs)),
+        }));
+    }
+
+    // Variadic fallback
+    let ctx = cenv.ctx;
+    let args = fresh_lvar(
+        ctx,
+        Symbol::from_str_uninterned(ctx, "case-lambda-args", None).into(),
+    );
+    let n = fresh_lvar(
+        ctx,
+        Symbol::from_str_uninterned(ctx, "case-lambda-n", None).into(),
+    );
+    let length = prim_call_term(
+        ctx,
+        Symbol::from_str(ctx, "length").into(),
+        &[lref(ctx, args)],
+        Value::new(false),
+    );
+    let sym = |name: &str| constant(ctx, Symbol::from_str(ctx, name).into());
+
+    let mut chain = {
+        let message = constant(
+            ctx,
+            Str::new(ctx, "unexpected number of arguments, got ~a", true).into(),
+        );
+        call_term(
+            ctx,
+            sym("assertion-violation"),
+            &[
+                constant(ctx, Symbol::from_str(ctx, "case-lambda").into()),
+                call_term(
+                    ctx,
+                    sym("format"),
+                    &[constant(ctx, Value::new(false)), message, lref(ctx, n)],
+                    Value::new(false),
+                ),
+                lref(ctx, args),
+            ],
+            Value::new(false),
+        )
+    };
+
+    for (clause, proc) in clauses.iter().zip(procs.iter()).rev() {
+        let (required, variadic) = collect_formals(ctx, clause.cadr())?;
+        let arity = constant(ctx, Value::new(required.len() as i32));
+        let test = prim_call_term(
+            ctx,
+            Symbol::from_str(ctx, if variadic.is_some() { ">=" } else { "=" }).into(),
+            &[lref(ctx, n), arity],
+            Value::new(false),
+        );
+        let clause_term = ctx.allocate(Term {
+            source: Lock::new(datum_sourcev(ctx, *clause)),
+            kind: TermKind::Proc(*proc),
+        });
+        let apply = call_term(
+            ctx,
+            sym("apply"),
+            &[clause_term, lref(ctx, args)],
+            Value::new(false),
+        );
+        chain = if_term(ctx, test, apply, chain);
+    }
+
+    let body = let_term(
+        ctx,
+        LetStyle::Let,
+        Array::from_slice(ctx, &[n]),
+        Array::from_slice(ctx, &[length]),
+        chain,
+        Value::new(false),
+    );
+    Ok(proc_term(
+        ctx,
+        Value::new(false),
+        Array::from_slice(ctx, &[args]),
+        None,
+        body,
+        datum_sourcev(ctx, form),
+        Value::null(),
+    ))
 }
 
 fn expand_let<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {

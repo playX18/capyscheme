@@ -169,6 +169,40 @@ where
                 }
             }
 
+            TermKind::CaseLambda(clauses) => {
+                let mut changed = false;
+                let nprocs = clauses
+                    .iter()
+                    .map(|proc| {
+                        let nbody = rec(ctx, pre, post, proc.body);
+                        if Gc::ptr_eq(nbody, proc.body) {
+                            *proc
+                        } else {
+                            changed = true;
+                            ctx.allocate(Proc {
+                                name: proc.name,
+                                variadic: proc.variadic,
+                                args: proc.args,
+                                body: nbody,
+                                source: proc.source,
+                                meta: proc.meta,
+                            })
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                if changed {
+                    let term = ctx.allocate(Term {
+                        source: x.source.get().into(),
+                        kind: TermKind::CaseLambda(crate::heap::alloc::array::Array::from_slice(
+                            ctx, &nprocs,
+                        )),
+                    });
+                    post(ctx, term)
+                } else {
+                    post(ctx, x)
+                }
+            }
+
             TermKind::Fix(fix) => {
                 let mut rhs = Vec::with_capacity(fix.rhs.len());
                 let mut changed = false;
@@ -339,6 +373,9 @@ pub fn fold_tree<'gc, ACC>(
                 foldts(tail, down, up, acc)
             }
             TermKind::Proc(proc) => foldts(proc.body, down, up, acc),
+            TermKind::CaseLambda(clauses) => clauses
+                .iter()
+                .fold(acc, |a, proc| foldts(proc.body, down, up, a)),
             TermKind::Fix(fix) => {
                 let acc = fix.rhs.iter().fold(acc, |a, r| foldts(r.body, down, up, a));
                 foldts(fix.body, down, up, acc)

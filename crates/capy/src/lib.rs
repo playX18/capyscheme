@@ -22,13 +22,13 @@
 //! CapyScheme: R6RS/R7RS Scheme compiler and runtime.
 
 pub mod api;
-pub mod bytecode;
-pub mod compiler;
-pub mod expander;
-pub mod frontend;
+pub(crate) mod bytecode;
+pub(crate) mod compiler;
+pub(crate) mod expander;
+pub(crate) mod frontend;
 pub mod heap;
 pub mod runtime;
-pub mod utils;
+pub(crate) mod utils;
 
 pub use capy_derive::__unelide_lifetimes;
 pub use capy_derive::Trace;
@@ -49,9 +49,9 @@ pub mod prelude {
     pub use crate::global;
     pub use crate::heap::{Ephemeron, Frame, Gc, Pin, Scope, Space, Trace, Weak, Write, barrier};
     pub use crate::list;
-    pub use crate::runtime::global::Global;
+    pub use crate::runtime::global::GlobalSlot;
     pub use crate::runtime::prelude::*;
-    pub use crate::runtime::vm::Call;
+    pub use crate::runtime::vm::NativeCall;
     pub use crate::vector;
     pub use capy_derive::scheme;
     pub use capy_derive::scm_match;

@@ -9,7 +9,7 @@ use crate::expander::{
     recursive_bindings::rewrite_recursive_bindings, well_known_procs::expand_well_known_procs,
 };
 use crate::runtime::stats::{CompilationBreakdownPhase, CompilationBreakdownScope};
-use crate::runtime::{MutationContext, value::Value};
+use crate::runtime::{MutationContext, objectmodel::Value};
 use crate::utils::pass_profile::ProfileScope;
 
 #[derive(Clone)]
@@ -17,6 +17,8 @@ pub struct LoweredProgram<'gc> {
     pub(crate) original_il: TermRef<'gc>,
     pub(crate) optimized_il: TermRef<'gc>,
     pub(crate) graph_cps: Option<String>,
+    /// The optimized graph (loops, contification, inlining) when requested.
+    pub(crate) graph_cps_optimized: Option<String>,
     pub(crate) ssa: Program<'gc>,
 }
 
@@ -135,24 +137,23 @@ pub(crate) fn lower_expanded_to_cps<'gc>(
 
     let graph_cps =
         dump_graph.then(|| crate::compiler::cps::pretty::render_graph(&graph.graph, graph_root));
-    let ssa = {
+    let optimized = {
         let _profile = ProfileScope::new("compiler.lower.gcps.optimize");
-        optimize_graph_func_to_ssa(ctx, graph)
-            .map_err(|err| {
-                crate::runtime::vm::exceptions::make_assertion_violation(
-                    ctx,
-                    Some("gcps-optimize"),
-                    &format!("compiler error: {err}"),
-                    &[],
-                )
-            })?
-            .ssa
+        optimize_graph_func_to_ssa(ctx, graph, dump_graph).map_err(|err| {
+            crate::runtime::vm::exceptions::make_assertion_violation(
+                ctx,
+                Some("gcps-optimize"),
+                &format!("compiler error: {err}"),
+                &[],
+            )
+        })?
     };
     Ok(LoweredProgram {
         original_il,
         optimized_il,
         graph_cps,
-        ssa,
+        graph_cps_optimized: optimized.graph_cps,
+        ssa: optimized.ssa,
     })
 }
 
@@ -204,6 +205,14 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
             dump::COMPILE_ARTIFACTS.warn_write("GCPS", &path, &err);
         }
         dump::COMPILE_ARTIFACTS.log_path("GCPS", &path);
+    }
+
+    if let Some(graph_cps) = &lowered.graph_cps_optimized {
+        let path = dump::resolve_artifact_dump_path(destination, ".gcps.opt.txt");
+        if let Err(err) = std::fs::write(&path, graph_cps) {
+            dump::COMPILE_ARTIFACTS.warn_write("GCPS optimized", &path, &err);
+        }
+        dump::COMPILE_ARTIFACTS.log_path("GCPS optimized", &path);
     }
 
     if options.dump_ssa {

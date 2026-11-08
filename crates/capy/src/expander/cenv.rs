@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use crate::{
     expander::{boot_linklet::BootLinklet, term::LVarRef},
     heap::Trace,
-    runtime::{MutationContext, value::Value},
+    runtime::{MutationContext, objectmodel::Value},
 };
 
 pub struct Cenv<'gc> {

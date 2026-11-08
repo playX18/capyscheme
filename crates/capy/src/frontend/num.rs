@@ -14,7 +14,7 @@ use num::{BigInt, BigRational, Num, One, ToPrimitive, Zero};
 use std::{fmt, hash::Hash, rc::Rc};
 
 use crate::runtime::MutationContext;
-use crate::runtime::value::Complex;
+use crate::runtime::objectmodel::Complex;
 
 /// R6RS Numerical Tower
 #[derive(Debug, Clone, PartialEq)]
@@ -55,7 +55,7 @@ unsafe impl Trace for Number {
     }
 }
 
-use crate::runtime::value::number::Number as RNumber;
+use crate::runtime::objectmodel::number::Number as RNumber;
 
 impl Number {
     pub fn to_vm_number<'gc>(self, ctx: MutationContext<'gc>) -> RNumber<'gc> {
@@ -63,14 +63,14 @@ impl Number {
             Number::ExactFixnum(n) => RNumber::from_i64(ctx, n),
 
             Number::ExactInteger(n) => RNumber::BigInt(
-                crate::runtime::value::number::BigInt::from_num_bigint(ctx, &n),
+                crate::runtime::objectmodel::number::BigInt::from_num_bigint(ctx, &n),
             ),
 
             Number::InexactReal(f) => RNumber::Flonum(f),
             Number::ExactComplex(c) => {
                 let (real, imag) = c.as_ref();
-                let real = crate::runtime::value::number::BigInt::from_num_bigint(ctx, real);
-                let imag = crate::runtime::value::number::BigInt::from_num_bigint(ctx, imag);
+                let real = crate::runtime::objectmodel::number::BigInt::from_num_bigint(ctx, real);
+                let imag = crate::runtime::objectmodel::number::BigInt::from_num_bigint(ctx, imag);
                 let cn = Complex::new(
                     ctx,
                     RNumber::BigInt(real).normalize_integer(),
@@ -90,7 +90,7 @@ impl Number {
 
             Number::PartiallyExactComplex { real, imag } => {
                 let real = RNumber::Flonum(real);
-                let imag = crate::runtime::value::number::BigInt::from_num_bigint(ctx, &imag);
+                let imag = crate::runtime::objectmodel::number::BigInt::from_num_bigint(ctx, &imag);
                 let cn = Complex::new(ctx, real, RNumber::BigInt(imag).normalize_integer());
 
                 RNumber::Complex(cn)
@@ -98,12 +98,12 @@ impl Number {
 
             Number::ExactRational(rational) => {
                 let numerator =
-                    crate::runtime::value::number::BigInt::from_num_bigint(ctx, rational.numer());
+                    crate::runtime::objectmodel::number::BigInt::from_num_bigint(ctx, rational.numer());
                 let denominator =
-                    crate::runtime::value::number::BigInt::from_num_bigint(ctx, rational.denom());
+                    crate::runtime::objectmodel::number::BigInt::from_num_bigint(ctx, rational.denom());
                 let nume = RNumber::BigInt(numerator).normalize_integer();
                 let denom = RNumber::BigInt(denominator).normalize_integer();
-                let rational = crate::runtime::value::number::Rational::new(ctx, nume, denom);
+                let rational = crate::runtime::objectmodel::number::Rational::new(ctx, nume, denom);
 
                 RNumber::Rational(rational)
             }

@@ -10,7 +10,7 @@ use crate::{
     },
     runtime::{
         MutationContext,
-        value::{Symbol, Value},
+        objectmodel::{Symbol, Value},
     },
 };
 
@@ -66,6 +66,7 @@ pub enum TermKind<'gc> {
 
     Values(ArrayRef<'gc, TermRef<'gc>>),
     Proc(ProcRef<'gc>),
+    CaseLambda(ArrayRef<'gc, ProcRef<'gc>>),
 
     Call(TermRef<'gc>, ArrayRef<'gc, TermRef<'gc>>),
     PrimCall(Value<'gc>, ArrayRef<'gc, TermRef<'gc>>),
@@ -627,6 +628,11 @@ impl<'gc> Term<'gc> {
             TermKind::Let(l) => l.pretty(alloc),
             TermKind::Fix(f) => f.pretty(alloc),
             TermKind::Proc(proc) => proc.pretty(alloc),
+            TermKind::CaseLambda(clauses) => alloc
+                .intersperse(clauses.iter().map(|p| p.pretty(alloc)), alloc.line())
+                .append(alloc.text("case-lambda"))
+                .parens()
+                .group(),
         }
     }
 

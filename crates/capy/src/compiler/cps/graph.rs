@@ -13,7 +13,7 @@ use std::{
 };
 
 use crate::runtime::vm::exceptions::RaiseKind;
-use crate::{expander::core::LVarRef, runtime::value::Value};
+use crate::{expander::core::LVarRef, runtime::objectmodel::Value};
 use cranelift_entity::{
     EntityList, EntityRef, EntitySet, ListPool, PrimaryMap,
     packed_option::{PackedOption, ReservedValue},
@@ -358,6 +358,7 @@ pub struct Function<'gc> {
     pub is_noinline: bool,
     pub is_reified: bool,
     pub meta: Value<'gc>,
+    pub case_group: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -695,6 +696,15 @@ impl<'gc> Graph<'gc> {
         self.set_free_occ_prev(next, prev);
         self.set_free_occ_prev(occ, occ);
         self.set_free_occ_next(occ, occ);
+    }
+
+    pub fn remove_free_occ(&mut self, occ: FreeOcc) {
+        let binder = self.free_binder(occ);
+        let next = self.free_occ_next(occ);
+        self.free_occ_remove(occ);
+        if self.bound_var_occ(binder) == Some(occ) {
+            self.set_bound_var_occ(binder, (next != occ).then_some(next));
+        }
     }
 
     pub fn free_occ_to_vec(&self, occ: FreeOcc) -> Vec<FreeOcc> {

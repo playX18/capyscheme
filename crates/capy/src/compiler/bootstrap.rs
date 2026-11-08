@@ -1,13 +1,13 @@
 use std::path::Path;
 
 use crate::compiler::LoweredProgram;
-use crate::runtime::{MutationContext, value::Value};
+use crate::runtime::{MutationContext, objectmodel::Value};
 
 #[cfg(feature = "bootstrap")]
 use crate::{
     compiler::lower_to_cps,
     expander::core::denotations,
-    runtime::value::Str,
+    runtime::objectmodel::Str,
     runtime::vm::thunks::{make_io_error, make_lexical_violation},
 };
 

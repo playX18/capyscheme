@@ -8,7 +8,7 @@ use crate::frontend::error::LexicalError;
 use crate::frontend::reader::TreeSitter;
 use crate::heap::{Gc, Global};
 use crate::{
-    runtime::{MutationContext, value::*},
+    runtime::{MutationContext, objectmodel::*},
     static_symbols,
 };
 use std::sync::OnceLock;

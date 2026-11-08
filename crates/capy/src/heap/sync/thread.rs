@@ -3,7 +3,7 @@ use crate::heap::{
     traits::Trace,
 };
 use crate::runtime::sched::scheduler::VirtualThreadSched;
-use crate::runtime::{State, Tc};
+use crate::runtime::{SchemeState, ThreadContext};
 use crate::utils::easy_bitfield::*;
 use mmtk::{
     AllocationSemantics, BarrierSelector, Mutator,
@@ -290,7 +290,7 @@ impl Thread {
         true
     }
 
-    /// Store 0 into the thread's `Tc.esp` so its next procedure entry fails
+    /// Store 0 into the thread's `ThreadContext.esp` so its next procedure entry fails
     /// its overflow check, the overflow path restores the real limit and
     /// takes the yield slow path. The flag above is stored first, and
     /// this store is `Release`, so a thread that observes the poke also
@@ -300,7 +300,7 @@ impl Thread {
     /// data alive. A no-op for an unbound thread.
     fn poke_esp(&self) {
         // SAFETY: the caller holds `monitor`, so a non-null pointer is a live
-        // slot with a built `Tc`, and `esp` is atomic precisely for this
+        // slot with a built `ThreadContext`, and `esp` is atomic precisely for this
         // cross-thread poke.
         if let Some(nd) = unsafe { self.native_data.load(Ordering::Acquire).as_ref() } {
             unsafe { &*(*nd.current_virtual_thread).tc.get() }
@@ -467,6 +467,22 @@ impl Thread {
         self.status_word
             .update::<ThreadStateField>(ThreadState::Mutating);
         self.status_word.update::<IsBlocking>(false);
+    }
+
+    /// Acknowledge a pending GC block request on the current thread.
+    ///
+    /// The scheduler's idle loop cannot rely on the yieldpoint flag: a worker
+    /// parked between tasks carries that flag on the last virtual thread it
+    /// ran, while the collector sets the request on the `Thread` itself. Check
+    /// the Thread-level request and enter `check_block` directly, so a worker
+    /// that is idle when a collection starts still stops for it.
+    pub fn block_if_gc_requested() {
+        let nd = current_native_data();
+        let thread = nd.thread();
+        if GC_BLOCK_ADAPTER.has_block_request(thread) {
+            let mut guard = thread.monitor.lock();
+            thread.check_block(&mut guard);
+        }
     }
 
     #[inline(never)]
@@ -720,24 +736,24 @@ impl Thread {
         self.virtual_thread().sched.state_ready.get()
     }
 
-    pub(crate) unsafe fn initialize_state<'gc>(&self, state: State<'gc>) {
+    pub(crate) unsafe fn initialize_state<'gc>(&self, state: SchemeState<'gc>) {
         unsafe {
             assert!(!self.is_thread_state_initialized());
             let thread = self.virtual_thread_mut_ptr();
             let state_ptr = (*thread).state.get();
             state_ptr.write(MaybeUninit::new(std::mem::transmute::<
-                State<'gc>,
-                State<'static>,
+                SchemeState<'gc>,
+                SchemeState<'static>,
             >(state)));
             (*thread).sched.state_ready.set(true);
         }
     }
 
-    pub(crate) fn state_ptr(&self) -> *mut State<'static> {
+    pub(crate) fn state_ptr(&self) -> *mut SchemeState<'static> {
         self.virtual_thread().state_ptr()
     }
 
-    pub(crate) fn tc_ptr(&self) -> *mut Tc<'static> {
+    pub(crate) fn tc_ptr(&self) -> *mut ThreadContext<'static> {
         self.virtual_thread().tc_ptr()
     }
 
@@ -859,6 +875,25 @@ impl Thread {
         crate::runtime::profile::maybe_arm_from_env();
     }
 
+    /// Stop participating in collections before `std::process::exit` tears the
+    /// process down. An exiting thread never reaches another safepoint, so a
+    /// collection that starts during teardown must not wait for it.
+    pub(crate) fn begin_process_exit() {
+        let Some(thread) = Self::try_current_thread() else {
+            return;
+        };
+        if !thread.is_managed() {
+            return;
+        }
+        {
+            let mut guard = thread.monitor.lock();
+            thread.set_is_about_to_terminate(true);
+            thread.status_word.update::<ActiveMutatorContext>(false);
+            guard.notify_all();
+        }
+        GarbageCollector::get().threads.remove_current_thread();
+    }
+
     pub(crate) fn unregister() {
         {
             let this = current_thread();
@@ -962,6 +997,8 @@ pub struct NativeCtx {
     /// Allocation window taken back from a parked thread, waiting for the
     /// next thread that has none. Only the worker touches it while running.
     pub(crate) lab_spare: Cell<(Address, Address)>,
+    /// Size of the allocation window handed out by the last refill, for the pacer.
+    pub(crate) lab_window: Cell<usize>,
     /// Nonzero while a runtime-critical section on this worker (allocator slow
     /// path, GC handshake, scheduler code) is running. The `SIGURG` handler
     /// does nothing while it is set.
@@ -990,8 +1027,8 @@ pub struct VirtualThread {
     pub(crate) mutation_ptr: *const NativeCtx,
     /// Yieldpoint request flag, written by other threads.
     pub(crate) take_yieldpoint: AtomicI32,
-    pub(crate) tc: UnsafeCell<Tc<'static>>,
-    pub(crate) state: UnsafeCell<MaybeUninit<State<'static>>>,
+    pub(crate) tc: UnsafeCell<ThreadContext<'static>>,
+    pub(crate) state: UnsafeCell<MaybeUninit<SchemeState<'static>>>,
     /// Scheduler state: saved context, task, stack, mutator, debug counters.
     pub(crate) sched: VirtualThreadSched,
 }
@@ -999,11 +1036,11 @@ pub struct VirtualThread {
 const _: () = assert!(std::mem::size_of::<Address>() == std::mem::size_of::<usize>());
 
 impl VirtualThread {
-    pub(crate) fn state_ptr(&self) -> *mut State<'static> {
-        self.state.get() as *mut State<'static>
+    pub(crate) fn state_ptr(&self) -> *mut SchemeState<'static> {
+        self.state.get() as *mut SchemeState<'static>
     }
 
-    pub(crate) fn tc_ptr(&self) -> *mut Tc<'static> {
+    pub(crate) fn tc_ptr(&self) -> *mut ThreadContext<'static> {
         self.tc.get()
     }
 
@@ -1143,6 +1180,7 @@ pub(crate) fn init_current_thread(thread: Arc<Thread>) {
         home_virtual_thread: virtual_thread_ptr,
         epoch: 0,
         lab_spare: Cell::new((Address::ZERO, Address::ZERO)),
+        lab_window: Cell::new(0),
         no_preempt: AtomicU32::new(0),
         pthread: AtomicUsize::new(0),
         preempt_epoch: AtomicU64::new(0),
@@ -1155,7 +1193,7 @@ pub(crate) fn init_current_thread(thread: Arc<Thread>) {
             eap: Address::ZERO,
             mutation_ptr: ctx_ptr as *const NativeCtx,
             take_yieldpoint: AtomicI32::new(0),
-            tc: UnsafeCell::new(Tc::new()),
+            tc: UnsafeCell::new(ThreadContext::new()),
             state: UnsafeCell::new(MaybeUninit::uninit()),
             sched: VirtualThreadSched::home(),
         });

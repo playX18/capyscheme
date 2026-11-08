@@ -393,6 +393,7 @@ pub fn instruction_effects(instruction: &Instruction<'_>) -> Effects {
     match instruction {
         Instruction::Assign { .. } | Instruction::Const { .. } => Effects::pure(),
         Instruction::MakeClosure { .. }
+        | Instruction::MakeCaseClosure { .. }
         | Instruction::MakeEnv { .. }
         | Instruction::RestToList { .. } => Effects::allocate(),
         Instruction::EnvRef { .. }
@@ -530,6 +531,9 @@ pub fn primitive_effects(primitive: Primitive) -> Effects {
         }
         Primitive::StringRef => {
             Effects::read(MemoryRegion::Heap, SemanticEffects::STRING).checked()
+        }
+        Primitive::StringSet => {
+            Effects::write(MemoryRegion::Heap, SemanticEffects::STRING).checked_write()
         }
         Primitive::BytevectorU8Ref => {
             Effects::read(MemoryRegion::Heap, SemanticEffects::BYTEVECTOR).checked()

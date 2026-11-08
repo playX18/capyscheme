@@ -5,7 +5,7 @@ use crate::{
     expander::core::{
         GlobalSlot, LVarRef, LetStyle, ProcRef, Term, TermKind, TermRef, constant, seq_from_slice,
     },
-    runtime::{MutationContext, value::Value},
+    runtime::{MutationContext, objectmodel::Value},
 };
 
 fn compute_ids<'gc>(t: &Term<'gc>) -> Map<LVarRef<'gc>, u32> {
@@ -65,6 +65,23 @@ fn compute_ids<'gc>(t: &Term<'gc>) -> Map<LVarRef<'gc>, u32> {
                     *counter += 1;
                 }
                 rec(&proc.body, counter, map);
+            }
+
+            TermKind::CaseLambda(clauses) => {
+                for proc in clauses.iter() {
+                    for &var in proc.args.iter() {
+                        let id = *counter;
+                        map.insert(var, id);
+                        *counter += 1;
+                    }
+
+                    if let Some(var) = proc.variadic {
+                        let id = *counter;
+                        map.insert(var, id);
+                        *counter += 1;
+                    }
+                    rec(&proc.body, counter, map);
+                }
             }
 
             TermKind::If(test, cons, alt) => {
@@ -597,6 +614,10 @@ impl<'a, 'gc> ComputeFreeVariables<'gc, 'a> {
                     .chain(proc.variadic.iter().map(|var| self.sym_id[var]))
                     .collect(),
             ),
+
+            TermKind::CaseLambda(clauses) => {
+                self.recurse_many_procs(clauses.iter().copied())
+            }
 
             TermKind::Fix(fix) => difference(
                 union(

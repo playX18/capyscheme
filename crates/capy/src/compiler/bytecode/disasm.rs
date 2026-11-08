@@ -6,7 +6,7 @@ use bytecodegen::OperandWidth;
 
 use crate::bytecode::def::Instruction;
 use crate::runtime::prims::def::Primitive;
-use crate::runtime::value::proc::{SRC_FLAG_SYNTHETIC, SpanHit, span_short};
+use crate::runtime::objectmodel::proc::{SRC_FLAG_SYNTHETIC, SpanHit, span_short};
 
 fn render_mnemonic_and_operands(ins: &Instruction, suffix: &str, pc: usize, out: &mut String) {
     match ins {
@@ -27,6 +27,11 @@ fn render_mnemonic_and_operands(ins: &Instruction, suffix: &str, pc: usize, out:
                 " #:required {} #:cnt r{} #:base r{} #:frame {}",
                 op.required.0, op.cnt.0, op.base.0, op.frame.0
             );
+        }
+        Instruction::OpEnterCase(op) => {
+            out.push_str("(enter-case");
+            out.push_str(suffix);
+            let _ = write!(out, " #:table @{} #:frame {}", op.table.0, op.frame.0);
         }
         Instruction::OpReturnPoint(op) => {
             out.push_str("(return-point");

@@ -17,9 +17,9 @@ use crate::heap::alloc::array::Array;
 use crate::heap::object::builtin_class_ids;
 use crate::heap::{Gc, Global, Trace, barrier};
 use crate::runtime::MutationContext;
+use crate::runtime::objectmodel::Value;
+use crate::runtime::objectmodel::{Str, Vector};
 use crate::runtime::prelude::*;
-use crate::runtime::value::Value;
-use crate::runtime::value::{Str, Vector};
 use crate::runtime::vm::exceptions::RaiseKind;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -85,6 +85,8 @@ pub struct GraphCpsBuilder<'gc> {
     /// Slots whose reads check for an unbound variable: the namespace slots of a namespace
     /// linklet (its meta is `(#%namespace . key)`, its first import group is the namespace's).
     unbound_checked: std::collections::HashSet<LVarRef<'gc>>,
+    /// Identity of the next `case-lambda` clause group.
+    case_group_count: u32,
 }
 
 impl<'gc> GraphCpsBuilder<'gc> {
@@ -97,7 +99,14 @@ impl<'gc> GraphCpsBuilder<'gc> {
             varcount: 0,
             current_meta: Value::null(),
             unbound_checked: std::collections::HashSet::new(),
+            case_group_count: 0,
         }
+    }
+
+    fn fresh_case_group(&mut self) -> u32 {
+        let id = self.case_group_count;
+        self.case_group_count += 1;
+        id
     }
 
     pub fn finish(self, entry: FunctionId) -> GraphFunctionProgram<'gc> {
@@ -540,6 +549,7 @@ impl<'gc> GraphCpsBuilder<'gc> {
             is_noinline: noinline,
             is_reified: false,
             meta,
+            case_group: None,
         })
     }
 
@@ -581,6 +591,7 @@ impl<'gc> GraphCpsBuilder<'gc> {
             is_noinline: false,
             is_reified: false,
             meta: proc.meta,
+            case_group: None,
         })
     }
 }
@@ -919,77 +930,6 @@ pub fn ensure_pair<'gc>(
     cps.emit_letk(owner, &[not_pair_cont, k_cont], body, Value::new(false))
 }
 
-pub fn ensure_vector<'gc>(
-    cps: &mut GraphCpsBuilder<'gc>,
-    owner: Subterm,
-    src: Value<'gc>,
-    op: Value<'gc>,
-    x: Atom<'gc>,
-    have_length: impl FnOnce(&mut GraphCpsBuilder<'gc>, Subterm, Atom<'gc>) -> TermId,
-) -> TermId {
-    let not_vector = cps.fresh_variable("not_vector");
-    let k = cps.fresh_variable("k");
-
-    let not_vector_body = cps.new_child_link();
-    assertion_violation(cps, not_vector_body, src, op, "not a vector", &[x]);
-    let not_vector_cont = cps.make_cont(
-        not_vector,
-        &[],
-        None,
-        not_vector_body,
-        Value::new(false),
-        true,
-        false,
-        Value::new(false),
-    );
-
-    let k_body = cps.new_child_link();
-    cps.let_prim(
-        k_body,
-        "length",
-        Symbol::from_str(cps.ctx, "%refptr").into(),
-        [
-            x,
-            Atom::Constant(Value::new(offset_of!(Vector, length) as i32)),
-        ],
-        src,
-        |cps, owner, length| have_length(cps, owner, Atom::Local(length)),
-    );
-    let k_cont = cps.make_cont(
-        k,
-        &[],
-        None,
-        k_body,
-        Value::new(false),
-        false,
-        false,
-        Value::new(false),
-    );
-
-    let body = cps.new_child_link();
-    cps.let_prim(
-        body,
-        "is_vector",
-        Symbol::from_str(cps.ctx, "vector?").into(),
-        [x],
-        src,
-        |cps, owner, is_vector| {
-            cps.emit_if_continue(
-                owner,
-                Atom::Local(is_vector),
-                k,
-                &[],
-                not_vector,
-                &[],
-                [BranchHint::Normal, BranchHint::Normal],
-                Value::new(false),
-            )
-        },
-    );
-
-    cps.emit_letk(owner, &[not_vector_cont, k_cont], body, Value::new(false))
-}
-
 fn ensure_variable<'gc>(
     cps: &mut GraphCpsBuilder<'gc>,
     owner: Subterm,
@@ -1114,16 +1054,15 @@ primitive_transformers!(
                 Value::new(false),
             ));
         }
-        Some(ensure_vector(cps, owner, src, op, x, |cps, owner, len| {
-            cps.let_prim(
-                owner,
-                "vlen",
-                Symbol::from_str(cps.ctx, "usize->value").into(),
-                [len],
-                src,
-                |cps, owner, vlen| cps.emit_continue(owner, k, [Atom::Local(vlen)], Value::new(false)),
-            )
-        }))
+
+        Some(cps.let_prim(
+            owner,
+            "vlen",
+            Symbol::from_str(cps.ctx, "vector-length").into(),
+            [x],
+            src,
+            |cps, owner, vlen| cps.emit_continue(owner, k, [Atom::Local(vlen)], Value::new(false)),
+        ))
     }
 
     "car" => car(cps, owner, src, _op, args, k) {
@@ -2312,6 +2251,33 @@ pub fn convert<'gc>(
             let body = cps.new_child_link();
             cps.emit_continue(body, k, [Atom::Local(tmp)], src);
             cps.emit_fix(owner, &[func], body, src)
+        }),
+
+        TermKind::CaseLambda(clauses) => with_pop_1(cps, owner, src, k, mode, |cps, k, owner| {
+            let group = cps.fresh_case_group();
+            let mut bindings = Vec::with_capacity(clauses.len());
+            let funcs = clauses
+                .iter()
+                .map(|proc| {
+                    let binding = cps.fresh_variable("case-lambda-clause");
+                    bindings.push(binding);
+                    let func = cps.make_proc_func(proc, binding, true);
+                    cps.graph[func].case_group = Some(group);
+                    func
+                })
+                .collect::<Vec<_>>();
+            let vars = bindings.into_iter().map(Atom::Local).collect::<Vec<_>>();
+
+            let fix_body = cps.new_child_link();
+            cps.let_prim(
+                fix_body,
+                "case-lambda",
+                Symbol::from_str(cps.ctx, "%case-lambda").into(),
+                vars,
+                src,
+                |cps, body, value| cps.emit_continue(body, k, [Atom::Local(value)], src),
+            );
+            cps.emit_fix(owner, &funcs, fix_body, src)
         }),
 
         TermKind::Call(proc, args) => {

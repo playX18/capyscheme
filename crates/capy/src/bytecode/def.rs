@@ -569,8 +569,22 @@ bytecode_list! {
                 link: CallLinkInfo,
             }
         }
+
+        /// Multi-entry entry of a `case-lambda`: select the clause whose
+        /// `[min, max]` arity range contains `argc` and jump to its bytecode
+        /// entry.
+        ///
+        /// ```text
+        ///   [count, (min, max, target, frame, rest_base, rest_cnt) * count]
+        /// ```
+        OpEnterCase {
+            args { table: PoolReference, frame: Count }
+        }
     }
 }
+
+/// `rest_base`/`rest_cnt` of a fixed clause in an [`OpEnterCase`] table.
+pub const CASE_NO_REST: u32 = u32::MAX;
 
 /// Header size of a capy instruction at width `W`.
 #[inline(always)]
