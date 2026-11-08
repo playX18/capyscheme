@@ -1732,9 +1732,9 @@ dependencies = [
 
 [[package]]
 name = "offlineasm-backend"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a9a8dab079d7c91a1e84fe556f675b4c676e453af6052d5974b28ce84e6c869a"
+checksum = "d01b46c4f184743ed3d3bbe701af1d70944130281cc455af0d97f3908851530b"
 dependencies = [
  "offlineasm-ir",
  "proc-macro2",
@@ -1744,9 +1744,9 @@ dependencies = [
 
 [[package]]
 name = "offlineasm-ir"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b36d2e990311dff277108b0156f56cc6179e1e04383496218d13bf325897f77"
+checksum = "1e1877ec45c6864459ef6adedaa1de0dc306f3300faae113baa668e9c0f6f861"
 dependencies = [
  "smallvec",
 ]
@@ -1778,9 +1778,9 @@ dependencies = [
 
 [[package]]
 name = "onlineasm-macros"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f3eeaa5965354cbf9a4b34ab594a4eb3bcfa447e8b8ef9c66cb819084274e2e"
+checksum = "a06eac6cfd187e6fb211c7029eaf09a5ad72e200d74fe3aaa0947b953d620a34"
 dependencies = [
  "offlineasm-ir",
  "proc-macro2",

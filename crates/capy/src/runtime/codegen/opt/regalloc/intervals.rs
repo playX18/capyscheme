@@ -426,11 +426,17 @@ pub(crate) fn build(
         for op in term_ops(func, term) {
             if op.role == Role::Use {
                 if let Constraint::Fixed(role) = op.constraint {
+                    let reg = phys_for(regs, role)?;
                     specials[op.vreg].push(Special {
                         lo: tpos,
                         hi: tpos + 1,
-                        assign: Assign::Reg(phys_for(regs, role)?),
+                        assign: Assign::Reg(reg),
                     });
+                    // Linear scan only sees a pre-assigned piece through
+                    // `fixed`. Without this, a dead block parameter defined
+                    // at the same position can take the same register, and
+                    // its edge move then overwrites the returned value.
+                    fixed.entry(reg).or_default().push((tpos, tpos + 1));
                 }
                 open.entry(op.vreg).or_insert(tpos + 1);
             }
