@@ -35,323 +35,6 @@
   (define (canonicalize-paths paths)
     (map canonicalize-path-string paths))
 
-  ;; Generated from FLAG_DEFS in crates/capy/src/utils/flags.rs. The launcher
-  ;; turns these into environment variables before Scheme starts, so the
-  ;; entries here only make the options appear in --help.
-  (define (add-flag-options! parser)
-    (argparser-add-separator! parser "Compiler tuning options:")
-    (add-option! parser
-      "share-min-overlap"
-      (defaults-to "2")
-      (value-help "N")
-      (help "Min record-resident free vars per member for a site to join a shared env record."))
-    (add-option! parser
-      "share-chain-cost"
-      (defaults-to "3")
-      (value-help "N")
-      (help "Cross-site chain-head record cost in words."))
-    (add-flag! parser
-      "share-order"
-      (defaults-to #f)
-      not-negatable
-      (help "Only share a closure environment when every use of the shared variables comes before every use of the member's own captures."))
-    (add-flag! parser
-      "share-dump"
-      (defaults-to #f)
-      not-negatable
-      (help "Print per-site closure-sharing decisions (allocate/reuse, record size, members) and flow stats. Toggles log target `capy::share`."))
-    (add-flag! parser
-      "closure-sharing"
-      (defaults-to #t)
-      (help "Let closures share environment records instead of each allocating its own."))
-    (add-option! parser
-      "gcps-contify"
-      (defaults-to "dom")
-      (allowed (list "0" "off" "none" "false" "scc" "legacy" "both" "dom+scc" "dom-then-scc" "dom" "dominator" "dominators"))
-      (value-help "MODE")
-      (help "Contification strategy: off (or 0), scc, dom, or both (dom+scc)."))
-    (add-flag! parser
-      "profile-passes"
-      (defaults-to #f)
-      not-negatable
-      (help "Emit `;; PERF (capy)` phase timing lines to stderr."))
-    (add-flag! parser
-      "strip-spans"
-      (defaults-to #f)
-      not-negatable
-      (help "Omit bytecode source maps from emitted FASLs (backtraces fall back to procedure metadata)."))
-    (argparser-add-separator! parser "Dump options:")
-    (add-option! parser
-      "dump-compile"
-      (allowed (list "ir" "graph" "gcps" "ssa" "bytecode" "bc" "asm" "disassembly" "noopt" "all" "1"))
-      (value-help "LIST")
-      (help "Per-compilation artifact dumps (comma-separated): ir, gcps, ssa, bytecode, noopt, or all."))
-    (add-flag! parser
-      "compile-dump-noopt"
-      (defaults-to #f)
-      not-negatable
-      (help "Also dump the unoptimized (pre-lowering) IR."))
-    (add-option! parser
-      "compile-dump-dir"
-      (value-help "PATH")
-      (help "Directory for CAPY_COMPILE_DUMP artifacts (fallback: CAPY_DUMP_DIR or ./capy-dumps)."))
-    (add-option! parser
-      "compile-dump-limit"
-      (defaults-to "max")
-      (value-help "N")
-      (help "Cap the number of compilations that dump artifacts (max = unlimited)."))
-    (add-option! parser
-      "dump-gcps-contify"
-      (allowed (list "0" "off" "none" "false" "1" "on" "true" "all" "scc" "legacy" "dom" "dominator" "dominators"))
-      (value-help "LIST")
-      (help "GCPS contification dumps: off/0, scc, dom, or all/1 for both sources."))
-    (add-option! parser
-      "gcps-dump-dir"
-      (value-help "PATH")
-      (help "Directory for CAPY_GCPS_DUMP_CONTIFY dumps (fallback: CAPY_DUMP_DIR or ./capy-dumps)."))
-    (add-option! parser
-      "gcps-dump-limit"
-      (defaults-to "max")
-      (value-help "N")
-      (help "Cap the number of GCPS contification dumps (max = unlimited)."))
-    (add-option! parser
-      "dump-dir"
-      (value-help "PATH")
-      (help "Shared fallback directory for all dump kinds (default: ./capy-dumps)."))
-    (argparser-add-separator! parser "Garbage collection options:")
-    (add-option! parser
-      "gc-heuristic"
-      (defaults-to "adaptive")
-      (allowed (list "adaptive" "static" "compact" "aggressive" "passive" "generational"))
-      (value-help "MODE")
-      (help "GC trigger heuristic: adaptive, static, compact, aggressive, passive, or generational."))
-    (add-option! parser
-      "gc-max-heap"
-      (defaults-to "2G")
-      (value-help "SIZE")
-      (help "Maximum heap size with optional K/M/G suffix (e.g. 2G)."))
-    (add-option! parser
-      "gc-min-free-percent"
-      (defaults-to "10")
-      (value-help "N")
-      (help "Minimum free heap threshold, percent of the heap (clamped to 0-100)."))
-    (add-option! parser
-      "gc-init-free-percent"
-      (defaults-to "70")
-      (value-help "N")
-      (help "Initial free heap threshold, percent of the heap (clamped to 0-100)."))
-    (add-option! parser
-      "gc-allocation-threshold-percent"
-      (defaults-to "0")
-      (value-help "N")
-      (help "Allocation-since-GC threshold, percent of the heap (compact mode; clamped to 0-100)."))
-    (add-option! parser
-      "gc-alloc-spike-percent"
-      (defaults-to "5")
-      (value-help "N")
-      (help "Allocation spike detection factor, percent (clamped to 0-100)."))
-    (add-option! parser
-      "gc-learning-steps"
-      (defaults-to "5")
-      (value-help "N")
-      (help "History length used by the adaptive heuristic."))
-    (add-option! parser
-      "gc-adaptive-confidence"
-      (defaults-to "1.8")
-      (value-help "N")
-      (help "Confidence multiplier for the adaptive heuristic."))
-    (add-option! parser
-      "gc-adaptive-spike-threshold"
-      (defaults-to "1.8")
-      (value-help "N")
-      (help "Spike threshold for the adaptive heuristic."))
-    (add-option! parser
-      "gc-acceleration-sample-period-ms"
-      (defaults-to "15")
-      (value-help "N")
-      (help "Acceleration sampling period in milliseconds."))
-    (add-option! parser
-      "gc-acceleration-sample-count"
-      (defaults-to "8")
-      (value-help "N")
-      (help "Number of acceleration samples."))
-    (add-option! parser
-      "gc-momentary-spike-sample-count"
-      (defaults-to "3")
-      (value-help "N")
-      (help "Number of momentary spike samples."))
-    (add-option! parser
-      "gc-guaranteed-interval-ms"
-      (defaults-to "300000")
-      (value-help "N")
-      (help "Force a GC at least this often; 0 = off."))
-    (add-option! parser
-      "gc-plan"
-      (defaults-to "GenImmix")
-      (allowed (list "StickyImmix" "ConcurrentImmix" "MarkSweep" "Immix" "SemiSpace" "GenImmix" "GenCopy"))
-      (value-help "PLAN")
-      (help "MMTk GC plan."))
-    (add-option! parser
-      "gc-trigger"
-      (value-help "TEXT")
-      (help "MMTk GC trigger override; also read by MMTk itself, capy uses it for the default max heap."))
-    (argparser-add-separator! parser "Engine options:")
-    (add-option! parser
-      "engine"
-      (allowed (list "rust" "template"))
-      (value-help "MODE")
-      (help "Execution engine: rust, template, or unset for the build default."))
-    (add-flag! parser
-      "template-alloc-stats"
-      (defaults-to #f)
-      not-negatable
-      (help "Count generated-code allocations (fast path vs capy_op_alloc) and report at exit."))
-    (add-flag! parser
-      "template-bail-stats"
-      (defaults-to #f)
-      not-negatable
-      (help "Report bailed-opcode counts of the template interpreter at exit."))
-    (add-flag! parser
-      "template-bail-oneway"
-      (defaults-to #f)
-      not-negatable
-      (help "Make capy_bail one-way: stay in the Rust engine after the first bail."))
-    (add-flag! parser
-      "template-op-stats"
-      (defaults-to #f)
-      not-negatable
-      (help "Count executed opcodes in the template interpreter (emitted at generation time) and report at exit."))
-    (add-option! parser
-      "template-bail"
-      (value-help "TEXT")
-      (help "Comma-separated opcode names forced to bail to the Rust engine."))
-    (add-flag! parser
-      "prim-stats"
-      (defaults-to #f)
-      not-negatable
-      (help "Count primitive calls and report at exit."))
-    (add-flag! parser
-      "fasl-debug"
-      (defaults-to #f)
-      not-negatable
-      (help "Load FASL files with debug entries."))
-    (add-option! parser
-      "profile-out"
-      (value-help "PATH")
-      (help "Arm the SIGPROF profiler at startup and write folded stacks to this file."))
-    (add-flag! parser
-      "ic-log"
-      (defaults-to #f)
-      not-negatable
-      (help "Log generic-dispatch slot-protocol fires (inline-cache invalidations). Toggles log target `capy::ic`."))
-    (add-option! parser
-      "rust-log"
-      (value-help "TEXT")
-      (help "Log filter in env_logger syntax (e.g. info, capy=debug); mmtk stays silent unless named."))
-    (add-option! parser
-      "compile-threads"
-      (defaults-to "0")
-      (value-help "N")
-      (help "Background compile service threads; 0 means one per core, at most 2."))
-    (add-option! parser
-      "compile-stack-kb"
-      (defaults-to "0")
-      (value-help "N")
-      (help "Stack size of compile service threads in KiB; 0 means 262144 (256 MiB)."))
-    (argparser-add-separator! parser "JIT options:")
-    (add-flag! parser
-      "jit"
-      (defaults-to #t)
-      (help "Enable Just In Time compilation."))
-    (add-option! parser
-      "jit-threshold"
-      (defaults-to "10")
-      (value-help "N")
-      (help "Entries or back-edges before a procedure compiles."))
-    (add-option! parser
-      "jit-max-code"
-      (defaults-to "max")
-      (value-help "N")
-      (help "Total live compiled code in bytes past which tier-up stops (max = unlimited)."))
-    (add-option! parser
-      "jit-max-code-per-block"
-      (defaults-to "max")
-      (value-help "N")
-      (help "Largest single compiled code block in bytes; larger procedures stay interpreted (max = unlimited)."))
-    (add-option! parser
-      "jit-limit"
-      (defaults-to "max")
-      (value-help "N")
-      (help "Compile only the first n procedures, to bisect a miscompile (max = unlimited)."))
-    (add-flag! parser
-      "jit-log"
-      (defaults-to #f)
-      not-negatable
-      (help "Report compiles and returns to compiled code."))
-    (add-flag! parser
-      "jit-log-verbose"
-      (defaults-to #f)
-      not-negatable
-      (help "Add bulky per-procedure detail (bytecode dump, address maps, control-flow trace) to the JIT log."))
-    (add-flag! parser
-      "jit-log-resume"
-      (defaults-to #f)
-      not-negatable
-      (help "Report every resume into compiled code (very verbose)."))
-    (add-flag! parser
-      "jit-stats"
-      (defaults-to #f)
-      not-negatable
-      (help "Report compile, resume and slow-path counts at exit."))
-    (add-option! parser
-      "jit-dump-dir"
-      (value-help "PATH")
-      (help "Write each compiled procedure's listing and ELF to this directory."))
-    (add-option! parser
-      "jit-workers"
-      (defaults-to "1")
-      (value-help "N")
-      (help "Tier-up worker threads; 0 compiles synchronously on the requesting thread."))
-    (add-option! parser
-      "jit-tiers"
-      (value-help "TEXT")
-      (help "Comma-separated tiers allowed to compile (default: baseline)."))
-    (add-flag! parser
-      "jit-gdb"
-      (defaults-to #f)
-      not-negatable
-      (help "Register every loaded image with GDB's JIT interface (copies all image code)."))
-    (add-option! parser
-      "jit-filter"
-      (value-help "TEXT")
-      (help "Compile only procedures whose metadata contains this text, to bisect a miscompile."))
-    (add-flag! parser
-      "perf-map"
-      (defaults-to #f)
-      not-negatable
-      (help "Append loaded image symbols to /tmp/perf-<pid>.map for perf."))
-    (argparser-add-separator! parser "Scheduler options:")
-    (add-option! parser
-      "workers"
-      (defaults-to "0")
-      (value-help "N")
-      (help "Thread scheduler worker threads; 0 means one per core."))
-    (add-option! parser
-      "thread-stack-kb"
-      (defaults-to "0")
-      (value-help "N")
-      (help "Thread stack size in KiB; 0 means 2048 (2 MiB)."))
-    (add-option! parser
-      "thread-quantum-ms"
-      (defaults-to "0")
-      (value-help "N")
-      (help "Thread preemption quantum in milliseconds; 0 means 10."))
-    (add-flag! parser
-      "signal-preempt"
-      (defaults-to #t)
-      (help "Send SIGURG to preempt long-running threads. Set to 0 to rely on the cooperative flag alone."))
-    (if #f #f))
-
   (define (parse-entrypoint str)
     (read (open-input-string str)))
 
@@ -384,9 +67,13 @@
     (define (run)
       (with-exception-handler
         (lambda (c)
-          (format (current-error-port) "Failed to parse command line arguments: ~a: ~a~%"
-            (if (who-condition? c) (condition-who c) '?)
-            (if (message-condition? c) (condition-message c) c))
+          (let ([message (if (message-condition? c) (condition-message c) c)])
+            (if (who-condition? c)
+              (format (current-error-port) "Failed to parse command line arguments (~a): ~a~%"
+                (condition-who c)
+                message)
+              (format (current-error-port) "Failed to parse command line arguments: ~a~%"
+                message)))
           (exit 1))
         (lambda ()
           (define res (parse-args parser (cdr args)))
@@ -395,23 +82,38 @@
             (format #t "CapyScheme ~a~%" (implementation-version))
             (exit 0))
 
-          (if (arg-results-ref res "log-warn")
-            (log:set-max-level! log:warn))
-          (if (arg-results-ref res "log-error")
-            (log:set-max-level! log:error))
-          (if (arg-results-ref res "log-info")
-            (log:set-max-level! log:info))
-          (if (arg-results-ref res "log-debug")
-            (log:set-max-level! log:debug))
-          (if (arg-results-ref res "log-trace")
-            (begin
-              (log:set-max-level! log:trace)
-              (gc-logging-enable! #t)))
+          (let ([log-level (arg-results-ref res "log-level")])
+            (cond
+              [(equal? log-level "trace")
+                (log:set-max-level! log:trace)
+                (gc-logging-enable! #t)]
+              [(equal? log-level "debug") (log:set-max-level! log:debug)]
+              [(equal? log-level "info") (log:set-max-level! log:info)]
+              [(equal? log-level "warn") (log:set-max-level! log:warn)]
+              [(equal? log-level "error") (log:set-max-level! log:error)]
+              [else
+                (if (arg-results-ref res "log-warn")
+                  (log:set-max-level! log:warn))
+                (if (arg-results-ref res "log-error")
+                  (log:set-max-level! log:error))
+                (if (arg-results-ref res "log-info")
+                  (log:set-max-level! log:info))
+                (if (arg-results-ref res "log-debug")
+                  (log:set-max-level! log:debug))
+                (if (arg-results-ref res "log-trace")
+                  (begin
+                    (log:set-max-level! log:trace)
+                    (gc-logging-enable! #t)))]))
           (if (not (zero? (log:max-level)))
             (log:set-logger! *simple-logger*))
           (when (arg-results-ref res "help")
             (format #t "CapyScheme ~a~%" (implementation-version))
-            (format #t "Usage:~%~a~%" (argparser-usage parser))
+            (format #t "Usage: capy [options] [--] [file.scm [args ...]]~%~a~%" (argparser-usage parser))
+            (format #t "Examples:~%")
+            (format #t "  capy script.scm arg ...    Run script.scm with arguments~%")
+            (format #t "  capy -c '(display \"hi\")'   Evaluate an expression and exit~%")
+            (format #t "  capy -L lib -l init.scm    Load init.scm with an extra load path~%")
+            (format #t "Run `capy --help-flags` for the full list of runtime flags (environment variables).~%")
             (exit 0))
           (when (arg-results-ref res "entrypoint")
             (set! entrypoint (parse-entrypoint (arg-results-ref res "entrypoint"))))
@@ -419,7 +121,8 @@
             (cli-error "Cannot specify both --r7rs and --r6rs modes"))
           (cond
             [(arg-results-ref res "r7rs") (install-r7rs!)]
-            [(arg-results-ref res "r6rs") (install-r6rs!)])
+            [(arg-results-ref res "r6rs") (install-r6rs!)]
+            [else (install-compat!)])
           (set! %load-path (append (canonicalize-paths (reverse (arg-results-ref res "load-path"))) %load-path))
           (set! %load-path (append %load-path (canonicalize-paths (reverse (arg-results-ref res "append-load-path")))))
           (set! %load-compiled-path (append (canonicalize-paths (reverse (arg-results-ref res "compiled-load-path"))) %load-compiled-path))
@@ -472,6 +175,7 @@
       (help "Run in R6RS compatibility mode"))
     (add-flag! parser
       "help"
+      (abbreviation "h")
       not-negatable
       (help "Show this help message and exit"))
     (add-flag! parser
@@ -553,28 +257,38 @@
       (defaults-to #f)
       not-negatable
       (help "Enable debug stack traces for FASL code (including stdlib)"))
-    (add-flag-options! parser)
     (argparser-add-separator! parser "Logging options:")
+    (add-option! parser
+      "log-level"
+      (allowed (list "trace" "debug" "info" "warn" "error"))
+      (value-help "LEVEL")
+      (defaults-to #f)
+      (help "Set the log level; overrides the legacy --log-trace, --log-debug, --log-info, --log-warn and --log-error flags"))
     (add-flag! parser
       "log-trace"
       not-negatable
-      (help "Enable trace logging"))
+      hide
+      (help "Legacy alias, prefer --log-level trace"))
     (add-flag! parser
       "log-info"
       not-negatable
-      (help "Enable info logging"))
+      hide
+      (help "Legacy alias, prefer --log-level info"))
     (add-flag! parser
       "log-debug"
       not-negatable
-      (help "Enable debug logging"))
+      hide
+      (help "Legacy alias, prefer --log-level debug"))
     (add-flag! parser
       "log-warn"
       not-negatable
-      (help "Enable warn logging"))
+      hide
+      (help "Legacy alias, prefer --log-level warn"))
     (add-flag! parser
       "log-error"
       not-negatable
-      (help "Enable error logging"))
+      hide
+      (help "Legacy alias, prefer --log-level error"))
     (add-flag! parser
       "version"
       not-negatable
@@ -589,7 +303,11 @@
 
   (define (print-help)
     (format #t "CapyScheme Compiler ~a~%" (implementation-version))
-    (format #t "Usage:~%~a~%" (argparser-usage parser))
+    (format #t "Usage: capyc [options] file ...~%~a~%" (argparser-usage parser))
+    (format #t "Examples:~%")
+    (format #t "  capyc -o prog.fasl prog.scm             Compile prog.scm to prog.fasl~%")
+    (format #t "  capyc --static --output prog prog.scm   Link prog.scm and its dependencies into one file~%")
+    (format #t "Run `capyc --help-flags` for the full list of runtime flags (environment variables).~%")
     (exit 0))
 
   (define (run)
@@ -636,7 +354,8 @@
       (cli-error "Cannot specify both --r7rs and --r6rs modes"))
     (cond
       [r7rs-mode (install-r7rs!)]
-      [r6rs-mode (install-r6rs!)])
+      [r6rs-mode (install-r6rs!)]
+      [else (install-compat!)])
     (set! %load-path (append (canonicalize-paths load-path) %load-path))
     (set! %load-path (append %load-path (canonicalize-paths append-load-path)))
     (set! %load-compiled-path (append (canonicalize-paths (reverse compiled-load-path)) %load-compiled-path))
@@ -668,14 +387,16 @@
     (define static-mode (arg-results-ref res "static-mode"))
     (define static-dry-run (arg-results-ref res "static-dry-run"))
     (define static-no-shake (arg-results-ref res "static-no-shake"))
+    (define static-dump-tree-il (arg-results-ref res "static-dump-tree-il"))
+    (define static-dump-bytecode (arg-results-ref res "static-dump-bytecode"))
     (when (and static (not out-file))
       (cli-error "--static needs --output"))
     (when (and static (not (= (length source-files) 1)))
       (cli-error "--static takes exactly one input file"))
     (when (and static boot-expander)
       (cli-error "--static and --boot-expander cannot be combined"))
-    (when (and (or no-shebang static-report static-size static-why static-mode static-dry-run static-no-shake) (not static))
-      (cli-error "--no-shebang, --static-report, --static-size and --static-why need --static"))
+    (when (and (or no-shebang static-report static-size static-why static-mode static-dry-run static-no-shake static-dump-tree-il static-dump-bytecode) (not static))
+      (cli-error "--no-shebang, --static-report, --static-size, --static-why, --static-dump-tree-il and --static-dump-bytecode need --static"))
 
     (when (and out-file
            (or (null? source-files)
@@ -717,6 +438,8 @@
                               [else '()])
                             (if static-dry-run '(dry-run) '())
                             (if static-no-shake '(no-shake) '())
+                            (if static-dump-tree-il '(tree-il) '())
+                            (if static-dump-bytecode '(bytecode) '())
                             (if exe '(exe) '())
                             (if verbose '(verbose) '())))
                         out-file]
@@ -782,6 +505,14 @@
     "static-dry-run"
     not-negatable
     (help "With --static, analyse and report but do not compile or write the output"))
+  (add-flag! parser
+    "static-dump-tree-il"
+    not-negatable
+    (help "With --static, write the merged bundle body as Scheme (tree-il->scheme) to OUT.tree-il.scm, and the body after the compiler passes to OUT.tree-il.opt.scm"))
+  (add-flag! parser
+    "static-dump-bytecode"
+    not-negatable
+    (help "With --static, dump the compiled bundle bytecode (into the compile dump directory, like --dump-compile bytecode)"))
   (add-option! parser
     "static-why"
     (value-help "NAME")
@@ -846,7 +577,6 @@
     not-negatable
     (help "Dump native-code disassembly for each compiled file"))
 
-  (add-flag-options! parser)
 
   (add-multi-option! parser
     "load-path"
@@ -876,6 +606,7 @@
 
   (add-flag! parser
     "help"
+    (abbreviation "h")
     not-negatable
     (help "Show this help message and exit"))
   (add-flag! parser

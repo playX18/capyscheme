@@ -42,6 +42,9 @@
 (|#%provide| all-defined)
 
 
+(define %format-fast-on? (%format-fast-enabled?))
+
+
 (define (format-fixed-flonum x digits)
   (let* ([scale (expt 10 digits)]
          [scaled (round (* (abs (inexact->exact x)) scale))]
@@ -220,7 +223,9 @@
         (error 'format "not a textual output port" arg1))
       (apply $format arg1 args)]
     [(boolean? arg1) (apply $format arg1 args)]
-    [else (apply $format #f (cons arg1 args))]))
+    [else
+     (or (and %format-fast-on? (%format-fast arg1 args))
+         (apply $format #f (cons arg1 args)))]))
 
 (define (printf cntl . args)
   (apply format (current-output-port) cntl args))

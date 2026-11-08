@@ -210,17 +210,28 @@
             (get-output-bytevector p)))))
     (assertion-violation 'string->bytevector "illegal argument(s)" s t)))
 
-(define (read-char . rest)
-  (let ([p (if (null? rest) (current-input-port) (car rest))])
-    (get-char p)))
+;; Fixed-arity entry points (no rest list) over the checked fast path in
+;; textual-ports.scm. `|#%case-lambda|` is the core form in both front ends
+;; (the Rust boot expander and psyntax, which `capyc --static` re-expands
+;; boot files with); the `case-lambda` macro is not visible here.
+(define read-char
+  (|#%case-lambda|
+    (lambda ()
+      (read-char (current-input-port)))
+    (lambda (p)
+      (%ports/read-char-checked p #f 'read-char))))
 
-(define (peek-char . rest)
-  (let ([p (if (null? rest) (current-input-port) (car rest))])
-    (lookahead-char p)))
+(define peek-char
+  (|#%case-lambda|
+    (lambda ()
+      (peek-char (current-input-port)))
+    (lambda (p)
+      (%ports/read-char-checked p #t 'peek-char))))
 
-(define (write-char c . rest)
-  (let ([p (if (null? rest) (current-output-port) (car rest))])
-    (put-char p c)))
+(define write-char
+  (|#%case-lambda|
+    (lambda (c) (put-char (current-output-port) c))
+    (lambda (c p) (put-char p c))))
 
 (define (read-string k . rest)
   (let ([p (if (null? rest) (current-input-port) (car rest))])

@@ -637,8 +637,9 @@
 ;;                 the name the library binds: a definition of the instance, or a binding
 ;;                 of an import (a re-export)
 ;;   imports       ((mode . import-set) ...) in the order they were imported. MODE is the
-;;                 execution mode the import set was read in, which decides how names
-;;                 like `(srfi 1)` and `(srfi :1)` resolve
+;;                 execution mode the import set was read in (`r7rs`, `r6rs` or the
+;;                 permissive `compat`), which decides how names like `(srfi 1)` and
+;;                 `(srfi :1)` resolve
 ;;   replacements  the public names exported with `export!`
 ;;
 ;; The meta of a namespace linklet is `(#%namespace key . imports)`, where IMPORTS are the

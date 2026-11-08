@@ -1,6 +1,11 @@
 (|#%require| (boot prim) (late (boot raise) error))
 (|#%provide| all-defined)
 
+;; The lexical mode a new port reader starts in. The loader binds it to the
+;; language of the file it is about to read, so a .sls/.sps file is read with
+;; R6RS lexical rules and a .sld file with R7RS ones even without a directive.
+(define %source-reader-mode (make-parameter 'capy))
+
 
 (define (->bool x) (not (not x)))
 

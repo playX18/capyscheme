@@ -1184,15 +1184,18 @@
     (eq? (capy:execution-mode) 'r7rs))
   (define (r6rs-mode?)
     (eq? (capy:execution-mode) 'r6rs))
+  (define (compat-mode?)
+    (eq? (capy:execution-mode) 'compat))
   (define (module-name-part? stx)
     (let ((part (syntax->datum stx)))
       (cond
         ((symbol? part) #t)
-        ((and (exact-nonnegative-integer? part) (r7rs-mode?)) #t)
+        ((and (exact-nonnegative-integer? part)
+              (or (r7rs-mode?) (compat-mode?))) #t)
         ((number? part)
           (syntax-violation
             #f
-            "numeric module name components are only valid in R7RS mode"
+            "numeric module name components are not valid in R6RS mode"
             stx))
         (else #f))))
   (define (module-name? stx)
@@ -1200,15 +1203,24 @@
       ((name name* ...)
         (and-map module-name-part? #'(name name* ...)))
       (_ #f)))
+  ;; `(srfi N rest ...)` with an integer N is a library reference whose first
+  ;; name component is rewritten to the R6RS `:N` spelling; the trailing names
+  ;; are kept. The already-canonical `(srfi :N ...)` form must not match, or the
+  ;; rewrite would loop.
+  (define (srfi-name-shape? stx require-rest?)
+    (syntax-case stx (srfi)
+      ((srfi n rest ...)
+        (and (and-map r6rs-import-sym? #'(rest ...))
+          (or (not require-rest?) (pair? (syntax->datum #'(rest ...))))
+          (r6rs-import-n? #'n)))
+      (_ #f)))
   (define (r6rs-srfi-name? stx)
-    (and (r6rs-mode?)
-      (syntax-case stx (srfi)
-        ((srfi n rest ...)
-          (and (and-map r6rs-import-sym? #'(rest ...))
-            (r6rs-import-n? #'n)))
-        (_ #f))))
+    (and (r6rs-mode?) (srfi-name-shape? stx #f)))
+  (define (compat-srfi-name? stx)
+    (and (compat-mode?) (srfi-name-shape? stx #t)))
   (define (library-reference-name? stx)
     (or (r6rs-srfi-name? stx)
+      (compat-srfi-name? stx)
       (module-name? stx)))
   (define (make-r6rs-srfi-n context n)
     (datum->syntax
@@ -1237,7 +1249,8 @@
         (module-and-uses mod)))
     (syntax-case import-spec (library only except prefix rename srfi)
       ((library (srfi n rest ... (version ...)))
-        (r6rs-srfi-name? #'(srfi n rest ...))
+        (or (r6rs-srfi-name? #'(srfi n rest ...))
+            (compat-srfi-name? #'(srfi n rest ...)))
         (let ((srfi-n (make-r6rs-srfi-n #'srfi #'n)))
           (resolve-r6rs-interface*
             (syntax-case #'(rest ...) ()
@@ -1248,7 +1261,9 @@
 
       ((library (name name* ... (version ...)))
         (module-name? #'(name name* ...))
-        (resolve-env-interface (syntax->datum #'(name name* ...)) #f '() #f))
+        (resolve-env-interface
+          (capy:compat-library-key (syntax->datum #'(name name* ...)))
+          #f '() #f))
 
       ((library (name name* ...))
         (module-name? #'(name name* ...))
@@ -3395,6 +3410,42 @@
                 [_ (expand-simple-lambda e r w s mod req rest meta body)])))])))
 
   (global-extend 'core 'with-ellipsis expand-with-ellipsis)
+
+  ;; One clause of a multi-entry `case-lambda`: a lambda term whose body is
+  ;; expanded in its own variable environment. Docstrings and leading meta
+  ;; alists are handled like `lambda`.
+  (define (expand-case-lambda-clause e r w s mod)
+    (syntax-case e ()
+      [(_ args e1 e2 ...)
+        (receive (req opt rest kw) (lambda-formals #'args)
+          (let lp ([body #'(e1 e2 ...)] [meta '()])
+            (syntax-case body ()
+              [(docstring e1 e2 ...)
+                (string? (syntax->datum #'docstring))
+                (lp #'(e1 e2 ...)
+                  (append meta
+                    `((documentation . ,(syntax->datum #'docstring)))))]
+              [(#((k . v) ...) e1 e2 ...)
+                (lp #'(e1 e2 ...)
+                  (append meta (syntax->datum #'((k . v) ...))))]
+              [_ (expand-simple-lambda e r w s mod req rest meta body)])))]))
+
+  ;; `(|#%case-lambda| clause ...)`: the clause expressions are `&proc`
+  ;; terms; the Rust lowering recognises the primcall and builds one
+  ;; multi-entry code block from them. The user-facing `case-lambda` macro
+  ;; emits this form only when every clause is fixed arity.
+  (global-extend 'core '|#%case-lambda|
+    (lambda (e r w s mod)
+      (syntax-case e ()
+        [(_ clause ...)
+          (let lp ([cs #'(clause ...)] [acc '()])
+            (syntax-case cs ()
+              [() (make-primcall s '%case-lambda (reverse acc))]
+              [(clause . rest)
+                (lp #'rest
+                  (cons (expand-case-lambda-clause #'clause r w s mod) acc))]))]
+        [_ (syntax-violation 'case-lambda "bad case-lambda form"
+             (source-wrap e w s mod))])))
 
   (global-extend 'core 'let
     (let ()

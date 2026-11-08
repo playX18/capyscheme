@@ -1151,10 +1151,31 @@
 ;; `define-class` accessor options may name a generic an earlier class already
 ;; defined (`#:accessor name` on several classes). Reuse a bound generic so the
 ;; new class adds a method to it instead of replacing it.
-(define (%reusable-generic var name)
-  (if (and var (variable-bound? var) (generic? (variable-ref var)))
-    (variable-ref var)
-    (make-generic name)))
+
+(define %shared-generics (make-core-hash-eq))
+
+(define (%remembered-generic env name)
+  (let ([table (core-hash-ref %shared-generics env #f)])
+    (and table (core-hash-ref table name #f))))
+
+(define (%remember-generic! env name generic)
+  (let ([table (or (core-hash-ref %shared-generics env #f)
+                  (let ([fresh (make-core-hash-eq)])
+                    (core-hash-put! %shared-generics env fresh)
+                    fresh))])
+    (core-hash-put! table name generic)
+    generic))
+
+(define (%reusable-generic env var name)
+  (cond
+    [(and var (variable-bound? var))
+      (if (generic? (variable-ref var))
+        (variable-ref var)
+        (make-generic name))]
+    [var (make-generic name)]
+    [else
+      (or (%remembered-generic env name)
+        (%remember-generic! env name (make-generic name)))]))
 
 (define (%ensure-setter-generic! getter name)
   (unless (generic? (setter getter))
@@ -1164,7 +1185,7 @@
   (syntax-rules ()
     [(_ name)
       (define name
-        (%reusable-generic (env-local-variable (expansion-env) 'name) 'name))]))
+        (%reusable-generic (expansion-env) (env-local-variable (expansion-env) 'name) 'name))]))
 
 (define-syntax %ensure-accessor-setter
   (syntax-rules ()
@@ -1901,13 +1922,13 @@
                     [required-dispatch-args required-dispatch-args]
                     [(option-form ...) (generic-option-forms name options)])
         #'(begin
-           (define name (make-generic 'name required-dispatch-args))
+           (define name (%remember-generic! (expansion-env) 'name (make-generic 'name required-dispatch-args)))
            option-form
            ...)))
     (syntax-case x (setter)
       [(_ name)
         (identifier? #'name)
-        #'(define name (make-generic 'name))]
+        #'(define name (%remember-generic! (expansion-env) 'name (make-generic 'name)))]
       [(_ name option value ...)
         (and (identifier? #'name)
           (or (keyword? (syntax->datum #'option))
@@ -1921,7 +1942,7 @@
         (expand-setter-generic #'name #'1 #'(option value ...))]
       [(_ name required-dispatch-args)
         (identifier? #'name)
-        #'(define name (make-generic 'name required-dispatch-args))]
+        #'(define name (%remember-generic! (expansion-env) 'name (make-generic 'name required-dispatch-args)))]
       [(_ name required-dispatch-args option value ...)
         (identifier? #'name)
         (expand-generic #'name #'required-dispatch-args #'(option value ...))]

@@ -179,30 +179,115 @@ Barrier kinds by plan:
 
 Allowed MMTk plans:
 StickyImmix, ConcurrentImmix, MarkSweep, Immix, SemiSpace, GenImmix, GenCopy.
-The plan is selected with `--gc-plan` (default GenImmix). An unsupported
-plan also falls back to GenImmix.
+The plan is selected with `--gc-plan` (default ConcurrentImmix). An unsupported
+plan also falls back to ConcurrentImmix.
 
 ## Heuristics and tuning
 
-The GC trigger policy is Capy’s own, installed through the
-MMTk `create_gc_trigger` hook. When `MMTK_GC_TRIGGER` is unset the trigger is
-`Delegated` and Capy selects default heuristic (`adaptive`). Configruation env vars:
+Capy decides when a collection starts, how large the heap limit is, and whether
+allocating threads are paced. MMTk still performs the collection. The code is in
+`crates/capy/src/heap/heuristics/`. `mod.rs` holds the presets and the trigger
+dispatch.
 
-| Variable | Meaning | Default |
-|----------|---------|---------|
-| `CAPY_GC_HEURISTIC` | `adaptive`, `static`, `compact`, `aggressive`, `passive`, `generational` (only with `MMTK_PLAN=GenImmix`, `GenCopy` or `StickyImmix`; otherwise falls back to `adaptive`) | `adaptive` |
-| `CAPY_GC_MAX_HEAP` | Max heap size (`2G`, `512M`, …) | 2 GiB |
-| `CAPY_GC_INIT_HEAP` | Initial heap limit; grows up to the max (`0` = fixed at max). Triggers always use the max as capacity. | 0 |
-| `CAPY_GC_HEAP_GROWTH_FREE_PERCENT` | Target free share after a GC when the heap is growing | 75 |
-| `CAPY_GC_MIN_FREE_PERCENT` | Min free heap threshold | 10 |
-| `CAPY_GC_INIT_FREE_PERCENT` | Initial free heap threshold | 70 |
-| `CAPY_GC_GUARANTEED_INTERVAL_MS` | Force a GC at least this often (0 = off) | 5 min |
-| `MMTK_GC_TRIGGER` | MMTk trigger override (disables Capy heuristics) | unset |
+Three core options:
 
-`--log-trace` (before `--`) enables GC trace logging and per-collection
-summary lines on stderr. CLI flags `--gc-plan`, `--gc-trigger`,
-`--gc-max-heap`, `--gc-heuristic`, `--gc-min-free-percent`,
-`--gc-init-free-percent` map onto these (`lib/boot/cli.scm`).
+- Trigger: when a collection starts, by default `predictive` heuristic
+- Heap sizing: how heap resizes after a GC cycle, by default `free-target`
+- Pacing of mutators: whether mutators are paced to allow concurrent marking to finish. By default is off.
+
+### Defaults
+
+- Plan: `ConcurrentImmix`, unless `MMTK_PLAN` is set to any other plan.
+- Max heap: `--gc-max-heap` if set. Otherwise MMTk's default, which is half of
+  physical memory. 
+- Initial heap: available memory / 32, clamped to [32 MiB, max / 4].
+  `--gc-init-heap=0` forces heap to be at max size.
+- The first five cycles (`--gc-learning-steps`) trigger at 50% free space.
+- A collection is forced at least every 5 minutes (`--gc-guaranteed-interval-ms`).
+
+### Presets
+
+| Preset | Trigger | Sizing | Pacing | Use when |
+|--------|---------|--------|--------|----------|
+| `predictive` (default) | predictive | free-target | off | General use |
+| `generational` | generational | free-target | off | Only with a generational plan (`MMTK_PLAN=GenImmix`, `GenCopy`, `StickyImmix`). Otherwise falls back to `predictive` |
+| `runway` | runway | free-target | off | Steady allocators, ZGC-style |
+| `goal` | goal | free-target | off | Concurrent plans, with a heap-size goal |
+| `proportional` | proportional | free-target | off | Simple; triggers on live data |
+| `floor` | floor | free-target | off | Least GC work, at the cost of late collections and larger pauses |
+| `eager` | eager | free-target | off | GC stress tests |
+| `deferred` | deferred | free-target | off | Only the plan decides when to collect |
+| `banded` | deferred | banded | off | Memory-bounded runs with a steady live set |
+| `overhead` | deferred | overhead | off | Keeping GC CPU near 15% |
+| `balanced` | deferred | balanced | off | Footprint-aware general use |
+| `concurrent` | goal | balanced | tax | Lower latency under allocation pressure |
+
+### Triggers
+
+- **predictive**: starts when the predicted allocation during the expected GC
+  time exceeds usable free space. It uses GC-time history, the mean and spread of
+  the allocation rate, and short spikes. Ported from Shenandoah. Its parameters
+  are adjusted after each cycle from the free space that cycle left.
+- **generational**: predictive for young cycles. An old cycle starts when old
+  usage grows past a threshold.
+- **runway**: starts when free space would run out before a worst-case GC
+  finishes (ZGC's director rule). Allocation is sampled every 100 ms. The first
+  three cycles use fixed points, at 10%, 20% and 30% of the heap allocated.
+- **goal**: starts marking so that it finishes as the heap reaches
+  `live × 2` (growth 100%). Ported from Go's pacer.
+- **proportional**: starts after allocating `live / 3`, bounded to [8 MiB, half
+  the heap]. It also has a 30 s guaranteed interval.
+- **floor / eager / deferred**: min-free and interval only / every evaluation /
+  the plan alone.
+
+### Sizing
+
+Sizing sets the heap limit:
+
+- **free-target**: after each collection, the target is `used / (1 − 75%)`. The
+  heap grows at once, and shrinks only after three cycles under half its size.
+  With the default, the heap settles at about four times live data.
+- **banded**: after full-heap pauses, keeps used memory between 1.2× and 1.65×
+  live.
+- **overhead**: after full-heap pauses, adjusts the size toward 15% GC CPU.
+- **balanced**: after every collection, sizes headroom from the allocation rate
+  and the collection speed (MemBalancer).
+
+### Pacing
+
+`tax` works only under a concurrent plan. It arms when concurrent marking starts
+and disarms when marking ends. While armed, each allocation slow path is charged
+against an allowance. A thread over its allowance sleeps with backoff for at most
+10 ms, then proceeds. Stalls are bounded, and the cost is some throughput under
+heavy allocation.
+
+### Flags
+
+| Flag / env | Default | Effect |
+|------------|---------|--------|
+| `--gc-heuristic` / `CAPY_GC_HEURISTIC` | `predictive` | Preset |
+| `--gc-trigger-policy` | from preset | Overrides the trigger |
+| `--gc-sizing` | from preset | Overrides the sizing |
+| `--gc-pacing` | from preset | `off` or `tax` |
+| `--gc-plan` / `MMTK_PLAN` | `ConcurrentImmix` | MMTk plan |
+| `--gc-max-heap` / `CAPY_GC_MAX_HEAP` | MMTk default | Hard max heap |
+| `--gc-init-heap` / `CAPY_GC_INIT_HEAP` | auto | Starting limit. `0` means fixed at max |
+| `--gc-heap-growth-free-percent` | 75 | Free-target headroom after a GC |
+| `--gc-min-free-percent` | 10 | Min-free trigger |
+| `--gc-init-free-percent` | 50 | Learning-phase trigger threshold |
+| `--gc-guaranteed-interval-ms` | 300000 | Forced interval. `0` disables |
+| `--gc-learning-steps` | 5 | Cycles before adaptive triggers are trusted |
+
+
+### Logging
+
+- `--log-trace` before `--`, or `(gc-logging-enable! #t)`, turns GC logging on.
+- `RUST_LOG=capy::gc=info` shows trigger and resize decisions.
+- Useful messages: `GC trigger accepted (...)`, `GC cycle finished (...)`,
+  `heap resized A -> B`, `GC #N: pause=...`.
+- `(gc-statistics)` returns collections, used bytes, bytes reclaimed, GC CPU ms
+  and GC real ms.
+
 
 ## Marking constraints
 

@@ -1,6 +1,7 @@
 #!r6rs
 
 (import (rnrs)
+  (only (capy) format)
   (tests r6rs test)
   (prefix (srfi :64) test:)
   (tests r6rs base)

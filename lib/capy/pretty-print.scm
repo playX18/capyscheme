@@ -216,7 +216,10 @@
             (and (out (make-string 1 #\newline) col) (spaces to 0))
             (spaces (- to col) col))))
 
+      ;; COL is #f once the output procedure asked to stop (see the header comment).
       (define (pr obj col extra pp-pair lvl)
+        (if (not col)
+          #f
         (if (or (pair? obj) (vector? obj)) ; may have to split on mult. lines
           (let ((result '())
                 (left (min (+ (- (- width col) extra) 1) max-expr-width)))
@@ -236,7 +239,7 @@
                   extra
                   pp-expr
                   lvl))))
-          (wr obj col lvl)))
+          (wr obj col lvl))))
 
       (define (pp-expr expr col extra lvl)
         (if (read-macro? expr)
@@ -391,43 +394,27 @@
       (out (make-string 1 #\newline) (pp obj 0 lvl0))
       (wr obj 0 lvl0)))
 
-  ; Don't let the pretty printer go into an infinite loop.
-
-  (define circular:limit 200)
-  (define circular:notation
-    ";;; circularity detected by pretty printer; giving up\n#<WEIRD>")
-
+  ;; The layout algorithm walks the object as a tree, so it cannot be used on circular
+  ;; input. Such an object is written on one line with datum labels (`#0=`, `#0#`) by
+  ;; `write`, as `write` does for any circular object, instead of giving up.
   (define (pretty obj . opt)
     (let* ((port (if (pair? opt) (car opt) (current-output-port)))
-           (circular? (object-is-circular? obj))
-           (char-count 0)
            (lvl (or (print-level) -1))
            (len (or (print-length) -1)))
-      (call-with-current-continuation
-        (lambda (quit)
-
-          (define (abandon-circular-output)
-            (newline port)
-            (display-simple circular:notation port)
-            (newline port)
-            ;(quit (unspecified))
-            #f)
-
-          (%generic-write obj
-            #f
-            (memq (transcoder-codec (port-transcoder port))
-              '(utf-8 utf-16))
-            (line-length)
-            (lambda (s)
-              (display-simple s port)
-              (set! char-count
-                (+ char-count (string-length s)))
-              (if (and circular?
-                   (> char-count circular:limit))
-                (abandon-circular-output)
-                #t))
-            lvl
-            len)))
+      (if (object-is-circular? obj)
+        (begin
+          (write obj port)
+          (newline port))
+        (%generic-write obj
+          #f
+          (memq (transcoder-codec (port-transcoder port))
+            '(utf-8 utf-16))
+          (line-length)
+          (lambda (s)
+            (display-simple s port)
+            #t)
+          lvl
+          len))
       (unspecified)))
 
   (define line-length

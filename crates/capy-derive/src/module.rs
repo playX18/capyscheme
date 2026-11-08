@@ -174,7 +174,7 @@ impl Module {
         items.extend(quote_spanned! {
             rust_name.span() =>
 
-            pub fn register<'gc>(ctx: MutationContext<'gc>) -> Gc<'gc, crate::runtime::linklet::Instance<'gc>> {
+            pub fn register<'gc>(ctx: MutationContext<'gc>) -> Gc<'gc, crate::runtime::linklet::LibraryInstance<'gc>> {
                 let _ = #hint;
                 #(#register_calls)*
                 ctx.globals().capy_instance()
@@ -197,8 +197,8 @@ impl Module {
                 unsafe {
                     #(
                         let index = indexes.next().expect("Not enough global variable indexes provided");
-                        #metas.set(Global::from_index(index))
-                            .unwrap_or_else(|_| panic!("Global variable index out of bounds"));
+                        #metas.set(GlobalSlot::from_index(index))
+                            .unwrap_or_else(|_| panic!("GlobalSlot variable index out of bounds"));
                     )*
                 }
             }

@@ -46,7 +46,7 @@ impl Variable {
         quote_spanned! {
             item.span() =>
 
-            #vis static #loc_static: ::std::sync::OnceLock<Global<
+            #vis static #loc_static: ::std::sync::OnceLock<GlobalSlot<
                 crate::Rootable!(
                     VariableRef<'_>
                 )
@@ -65,7 +65,7 @@ impl Variable {
                     #name,
                     init
                 );
-                #loc_static.set(Global::new(ctx, var)).is_ok()
+                #loc_static.set(GlobalSlot::new(ctx, var)).is_ok()
             }
 
             #[allow(non_snake_case)]

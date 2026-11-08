@@ -266,15 +266,38 @@
           (%ports/read-char-slow p lookahead?)))
       (%ports/read-char-slow p lookahead?))))
 
+
+(define (%ports/read-char-checked p lookahead? who)
+  (if (and (tuple? p)
+       (> (tuple-size p) 27)
+       (eq? (tuple-ref p 0) '<port>)
+       (eq? (tuple-ref p 2) 'input)
+       (tuple-ref p 3)
+       (not (eq? (tuple-ref p 6) 'closed))
+       (eq? (tuple-ref p 21) 1)
+       (not (tuple-ref p 27)))
+    (let ([ptr (tuple-ref p 9)])
+      (if (< ptr (tuple-ref p 10))
+        (let ([b (bytevector-u8-ref (tuple-ref p 8) ptr)]
+              [n (+ (tuple-ref p 13) 1)])
+          (if (and (< b 128) (not (eq? b 10)) (not (eq? b 13))
+               (< n (tuple-ref p 24)))
+            (begin
+              (unless lookahead?
+                (tuple-set! p 9 (+ ptr 1))
+                (tuple-set! p 13 n))
+              (integer->char b))
+            (%ports/read-char p lookahead?)))
+        (%ports/read-char p lookahead?)))
+    (if (%ports/textual-input? p)
+      (%ports/read-char p lookahead?)
+      (assertion-violation who "not an open textual input port" p))))
+
 (define (get-char p)
-  (if (%ports/textual-input? p)
-    (%ports/read-char p #f)
-    (assertion-violation 'get-char "not an open textual input port" p)))
+  (%ports/read-char-checked p #f 'get-char))
 
 (define (lookahead-char p)
-  (if (%ports/textual-input? p)
-    (%ports/read-char p #t)
-    (assertion-violation 'lookahead-char "not an open textual input port" p)))
+  (%ports/read-char-checked p #t 'lookahead-char))
 
 ;;; ---------------------------------------------------------------
 ;;; Bulk input.

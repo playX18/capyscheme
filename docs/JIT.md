@@ -5,12 +5,14 @@ procedure into machine code, one image per procedure, using the same
 templates the template interpreter uses. The code is generated at run time
 with `onlineasm`. 
 
-This file covers the JIT pipeline.
+There are two tiers. The baseline tier is the template JIT described first. Tier 2
+(`codegen/opt/`) is the optimizing compiler, described in its own section below.
+Tier 2 builds an SSA form of a hot procedure, runs optimization passes over it,
+and emits code through the same `CodeUnit` and `CodeMemory` path as the baseline.
 
+## Baseline pipeline
 
-## Pipeline
-
-The JIT compiles one procedure at a time, straight from its bytecode:
+The baseline JIT compiles one procedure at a time, straight from its bytecode:
 
 1. `build_image` (`jit/compile.rs`) decodes each instruction of the
    `CodeBuffer`.
@@ -36,6 +38,92 @@ mutator.
 Machine code is allocated through `CodeMemory` (`runtime/code_memory.rs`),
 which wraps asmkit's `JitAllocator`. Patching live code goes through the same
 type.
+
+## Optimizing tier
+
+Tier 2 lives in `crates/capy/src/runtime/codegen/opt/`. `OptimizingCompiler`
+(`opt/mod.rs`) implements `TierCompiler`, so the work to publish, compile, etc
+is the same as with baseline.
+
+### When a procedure reaches Optimizing JIT
+
+- A procedure first runs in baseline. Its heat reaches `CAPY_JIT_THRESHOLD`
+  (default 100) on entries and back-edges, and baseline code is installed.
+- `request_optimized` then queues a Tier 2 compile once the
+  block's `hot_count` reaches `CAPY_JIT_OPT_THRESHOLD` (default 1000). 
+- Tier 2 is in the tier set unless `CAPY_OPT_JIT=0`.
+- A procedure that deoptimizes is limited by the exit profile
+  (`runtime/code/exits.rs`). Four deopts at one pc
+  (`SPECULATION_EXIT_LIMIT`) stop the next compile from speculating there.
+  Sixty-four deopts of one installed unit (`INVALIDATE_AFTER`) invalidate it.
+
+### Optimizing compiler pipeline
+
+1. **Build** (`build/`). Bytecode becomes a `Func` (`ir/func.rs`). Block
+   parameters carry the registers that are live on entry
+   (`build/liveness.rs`). Each instruction that can deopt, and each call, gets a
+   `FrameState` (`ir/frame_state.rs`) that references the bytecode frames to rebuild.
+   Speculation comes from the profile words (`build/profile.rs`). Each
+   arithmetic site gets a plan (`build/arith.rs`), and each call site uses its
+   recorded callees (`build/calls.rs`). Inlining is in `build/inline.rs`. Record
+   accessors and generic dispatch are devirtualized in `build/records.rs` and
+   `build/generics.rs`.
+2. **Passes** (`passes/`). See the next section.
+3. **Constants** (`constants.rs`). The constant table and code slots of the unit.
+4. **Lower** (`lir/`). SSA becomes architecture-neutral LIR on virtual
+   registers. Each value has a `VRepr` that fixes its class (GPR or FPR) and
+   whether a stack map reports it. `lir/schedule.rs` places each pure value in
+   the block with the lowest loop depth that its uses allow.
+5. **Register allocation** (`regalloc/`). Wimmer–Franz linear scan with
+   lifetime holes and interval splitting. It reuses spill slots, resolves
+   parallel moves and writes the stack maps.
+6. **Layout** (`passes/layout.rs`). Runs only with `CAPY_OPT_LAYOUT`. Without
+   it, blocks stay in reverse postorder.
+7. **Install guard** (`opt/mod.rs`). A unit above `CAPY_OPT_MAX_UNIT_INSTRS`
+   instructions or `CAPY_OPT_MAX_SPILLS` spill slots is rejected before anything
+   is emitted. 
+8. **Emit** (`emit/`, `emit/x64.rs`, `emit/aarch64.rs`). Onlineasm is generated:
+   function prologue, blocks in the allocation order, then slow-paths, and deopt code. 
+9. **Deopt** (`deopt/`). A failed guard jumps to its exit. Deopt code saves
+   the registers and calls `capy_opt_deopt` (`deopt/runtime.rs`). That function
+   rebuilds the baseline frames, including inlined callees and objects that
+   scalar replacement removed, and returns the baseline resume address.
+
+
+### Fixpoint
+
+`passes::run` (`passes/mod.rs`) runs the optimization pipeline in fixpoint. Each function gets a budget of `DEFAULT_GAS`
+work units (400,000). A pass is charged for the instructions and blocks it
+visits. When the budget runs out, the driver stops optimizations.
+
+### Passes
+
+The passes run in this order. "always" means the pass has no toggle and runs on
+every compile. "off" means the flag defaults to 0, and the pass does nothing
+until the flag is set.
+
+| Pass | When | What it does |
+|---|---|---|
+| `simplify` | always | Constant folding on raw bits, branch folding, trivial block parameters, block merging. |
+| `range` | always | Forward interval analysis on `Int32`/`Int64`. Proves guards succeed, branches constant, and checked i64 arithmetic cannot overflow. |
+| `typeprop` | always | Removes redundant guards along the dominator tree. A `CheckInt32` under a `TestInt32` branch becomes a plain unbox. |
+| `gvn` | always | Dominator-scoped value numbering of pure values and guards. Also forwards loads past non-clobbering code in an extended basic block. |
+| `devirt` | always | Turns a `CallGeneric` on a closure with known code into a `CallKnown`. The return policy is kept. |
+| `peel` | always | Copies the first iteration of a loop out of it when its guards test loop-invariant values. `typeprop` and `gvn` then remove the in-loop guards, and `licm` can hoist the loads. |
+| `licm` | always; `CAPY_OPT_SPEC_HOIST` (off) also hoists guards out of conditional blocks | Moves invariant pure operations, loads and header guards to a preheader. The innermost loop goes first, one move per step. |
+| `version` | `CAPY_OPT_VERSION` (off) | Duplicates a loop behind a pure test on the invariant guards. The fast clone has no guards, and the original loop runs otherwise. |
+| `unswitch` | `CAPY_OPT_UNSWITCH` (off) | Splits a loop on a loop-invariant branch into two clones, each with the branch folded to one arm. |
+| `strength` | always | Multiplies by powers of two become shifts or adds. Quotient, remainder and modulo by constants fold, using range facts. |
+| `unroll` | always | 2x unrolling of counted loops with a canonical `±1` counter. The original header stays as the one-iteration tail. |
+| `unroll_all` | always (see Known gaps) | Replicates small innermost loops that are not counted. |
+| `forward` | always | Store-to-load forwarding within an extended basic block. Removes write barriers on objects allocated in the same block. |
+| `bce` | always | Drops bounds checks that a dominating `index < length` test and a non-negative counter prove. |
+| `predicate` | `CAPY_OPT_PREDICATE` (off) | In a counted loop, replaces the per-iteration index checks with one test in the preheader. |
+| `sroa` | always | Whole-function escape analysis. Scalar-replaces pairs, closures, envs, vectors, tuples and instances that do not escape. Frame states name the objects, and deopt rebuilds them. |
+| `cells` | always | Local cell elimination. A `make-variable` box that cannot escape becomes SSA values. Deopt rebuilds the variable from a remat descriptor. |
+| `repr` | always | Typed block parameters, so a loop-carried flonum stays in an FPR. Raw frame states. |
+| `dce` | always | Dead pure instructions and unreachable blocks. Values named by a live frame state stay live. |
+
 
 ## Template contexts
 
@@ -252,12 +340,12 @@ four traits directly, as `InterpreterTemplateContext` does. A template bound by
 ## Environment variables
 
 - `CAPY_JIT=0` turns the JIT off. Any other value leaves it on.
-- `CAPY_JIT_THRESHOLD=n`: entries or back-edges before a procedure compiles.
-  Default 10.
+- `CAPY_JIT_THRESHOLD=n`: entries or back-edges before a procedure compiles
+  at baseline. Default 100.
+- `CAPY_JIT_ENTRY_HEAT=n` and `CAPY_JIT_LOOP_HEAT=n`: the heat each procedure
+  entry and each loop back-edge adds in baseline code. Defaults 25 and 1.
 - `CAPY_JIT_WORKERS=n`: tier-up worker threads. Default 1. `0` compiles on the
   requesting thread.
-- `CAPY_JIT_TIERS=list`: tiers that may compile, for example
-  `baseline,lbbv`. Default `baseline`.
 - `CAPY_JIT_LOG=1`: the decision log. The log target is `capy::jit`, and `capy::jit::resume` has the resume trace.
 - `CAPY_JIT_LOG_VERBOSE=1`: adds bulky per-procedure detail (bytecode dump,
   full address maps, control-flow trace) to the decision log.
@@ -269,4 +357,28 @@ four traits directly, as `InterpreterTemplateContext` does. A template bound by
   stay interpreted.
 - `CAPY_JIT_LIMIT=n` compiles only the first `n` procedures
 - `CAPY_JIT_FILTER=name` compiles only procedures whose metadata mentions `name`.
+
+### Tier 2 variables
+
+Defaults are in `utils/flags.rs`.
+
+- `CAPY_OPT_JIT=0` turns Tier 2 off. Default 1.
+- `CAPY_JIT_OPT_THRESHOLD=n`: hot count before a baseline procedure is queued for
+  Tier 2. Default 1000.
+- `CAPY_OPT_VERSION`, `CAPY_OPT_UNSWITCH`, `CAPY_OPT_PREDICATE`,
+  `CAPY_OPT_SPEC_HOIST`, `CAPY_OPT_LAYOUT`, `CAPY_OPT_GENERICS`,
+  `CAPY_OPT_LAZY`: off by default. See the pass and option tables above.
+- `CAPY_OPT_LAZY_CALLS`, `CAPY_OPT_LAZY_SLOTS`, `CAPY_OPT_LAZY_RECORDS`,
+  `CAPY_OPT_LAZY_GENERICS`: on by default. They apply only with `CAPY_OPT_LAZY`.
+- `CAPY_OPT_UNROLL_ALL`: parsed, but never read. See Known gaps.
+- `CAPY_OPT_VERIFY=1`: verify the IR after every pass. Always on in debug builds.
+- `CAPY_OPT_DUMP=stage,...`: write the IR of each named stage to
+  `CAPY_JIT_DUMP_DIR`.
+- `CAPY_OPT_ANNOTATE=1`: keep the per-instruction text for annotated listings.
+- `CAPY_OPT_STRESS_DEOPT=n`: deopt at every n-th guard. Default 0 (off).
+- `CAPY_OPT_MAX_SPILLS=n` and `CAPY_OPT_MAX_UNIT_INSTRS=n`: install limits for a
+  unit. Default 0 (no limit).
+- `CAPY_OPT_ALIGN=loop64`: alignment of loop heads in emitted code.
+- `CAPY_JIT_STATS=1` also prints a `tier 2 stats` line at exit: installs,
+  entries, deopt exits, OSR transfers, remat objects and build failures.
 

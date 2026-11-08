@@ -34,6 +34,8 @@
       modulo
       exact->inexact
       inexact->exact
+      inexact
+      exact
       expt
       ash
       logtest
@@ -187,6 +189,7 @@
       cdddar
       cddddr
       length
+      reverse
       make-vector
       vector-length
       vector-ref
@@ -285,13 +288,14 @@
             (define key (global-ref-key x))
             (define name (global-ref-name x))
             (define slot (global-ref-slot x))
+            (define (interesting-global? var)
+              (and var
+                (cond
+                  [(symbol? slot) (equal? key '(|#%capy|))]
+                  [else (eq? slot var)])))
             (define prim-var (hashtable-ref *primitive-name->variable* name #f))
             (cond
-              [(and prim-var
-                  (cond
-                    [(symbol? slot) (equal? key '(|#%capy|))]
-                    [else (eq? slot prim-var)]))
-                (make-primref src name)]
+              [(interesting-global? prim-var) (make-primref src name)]
               [else x])]
           [(application? x)
             (if (primref? (application-operator x))
@@ -385,7 +389,21 @@
       [else #f]))
 
   (define-primitive-expansion eq? (x y) (eq? x y))
-  (define-primitive-expansion eqv? (x y) (eqv? x y))
+
+  ;; Constants whose identity is their bit pattern: `eqv?` against them is `eq?`.
+  (define (eq-immediate? v)
+    (or (char? v) (boolean? v) (null? v) (symbol? v) (fixnum? v)))
+
+  (define (eq-immediate-constant? term)
+    (and (constant? term) (eq-immediate? (constant-value term))))
+
+  (define-primitive-expansion* eqv? (src args)
+    (match args
+      [(x y)
+        (make-primcall src
+          (if (or (eq-immediate-constant? x) (eq-immediate-constant? y)) 'eq? 'eqv?)
+          (list x y))]
+      [_ #f]))
   (define-primitive-expansion equal? (x y) (equal? x y))
 
   (define (expand-list-search src args op)
@@ -393,11 +411,13 @@
       [(and (= (length args) 2)
           (constant? (cadr args))
           (list? (constant-value (cadr args)))
-          (< (length (constant-value (cadr args))) 5))
+          (< (length (constant-value (cadr args))) 6))
         (define key (car args))
         (define ls (constant-value (cadr args)))
         (case (length ls)
-          [(1) (make-if src (make-primcall src op (list key (make-constant src (car ls))))
+          [(1) (make-if src (make-primcall src
+                             (if (and (eq? op 'eqv?) (eq-immediate? (car ls))) 'eq? op)
+                             (list key (make-constant src (car ls))))
                 (make-constant src ls)
                 (make-constant src #f))]
           [else
@@ -412,7 +432,9 @@
                     (loop
                       it
                       (make-if src
-                        (make-primcall src op (list key (make-constant src val)))
+                        (make-primcall src
+                          (if (and (eq? op 'eqv?) (eq-immediate? val)) 'eq? op)
+                          (list key (make-constant src val)))
                         (make-constant src rest-val)
                         result)))]))])]
       [else #f]))
@@ -556,6 +578,15 @@
     (exact->inexact x))
 
   (define-primitive-expansion inexact->exact
+    (x)
+    (inexact->exact x))
+
+  ;; The R7RS-preferred names compile to the same primitives.
+  (define-primitive-expansion inexact
+    (x)
+    (exact->inexact x))
+
+  (define-primitive-expansion exact
     (x)
     (inexact->exact x))
 
@@ -757,6 +788,7 @@
   (define-primitive-expansion cdddar (x) (cdr (cdr (cdr (car x)))))
   (define-primitive-expansion cddddr (x) (cdr (cdr (cdr (cdr x)))))
   (define-primitive-expansion length (x) (length x))
+  (define-primitive-expansion reverse (x) (reverse x))
   (define-primitive-expansion* list (src args)
     (cond
       [(null? args) (make-constant src '())]
@@ -838,6 +870,10 @@
   (define-primitive-expansion vector? (x) (vector? x))
   (define-primitive-expansion vector-length (x) (vector-length x))
   (define-primitive-expansion vector-ref (x i) (vector-ref x i))
+  (define-primitive-expansion vector-set! (x i v) (vector-set! x i v))
+  (define-primitive-expansion string-length (x) (string-length x))
+  (define-primitive-expansion string-ref (x i) (string-ref x i))
+  (define-primitive-expansion string-set! (x i c) (string-set! x i c))
   (define-primitive-expansion vector-set! (x i v) (vector-set! x i v))
 
   (define-primitive-expansion tuple-size (x) (tuple-size x))
@@ -970,6 +1006,9 @@
               [args (primcall-args x)]
               [expand (hashtable-ref *primitive-expanders* (primcall-prim x) #f)])
           (cond
+            ;; The multi-entry case-lambda marker is consumed by the Rust
+            ;; lowering, which needs the clause `&proc` terms intact.
+            [(eq? (primcall-prim x) '%case-lambda) x]
             ;; if expander exists and returns a term, use it.
             [(and expand (apply expand src args))
               =>

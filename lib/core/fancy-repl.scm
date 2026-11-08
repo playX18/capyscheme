@@ -8,7 +8,10 @@
     fancy-repl-reader-diagnostic
     fancy-repl-incomplete-input?
     fancy-repl-render-input
-    fancy-repl-value-class)
+    fancy-repl-value-class
+    fancy-repl-history-path
+    fancy-repl-history-load
+    fancy-repl-history-save!)
 
   (import (capy)
     (capy session)
@@ -17,6 +20,7 @@
     (capy term command)
     (core control)
     (core exceptions)
+    (core files)
     (core parameters)
     (core primitives)
     (only (core repl) current-exception-printer)
@@ -372,9 +376,121 @@
     (newline)
     (flush-output-port (current-output-port)))
 
+  ;; Persistent input history. The line editor already keeps the session's
+  ;; lines for Up/Down recall; these helpers additionally carry them across
+  ;; sessions through one line-per-entry file under the cache directory.
+  ;; Everything is best-effort: history must never break the REPL.
+  (define repl-history-limit 500)
+
+  (define (repl-history-disabled?)
+    (let ([v (getenv "CAPY_REPL_HISTORY")])
+      (and (string? v)
+        (let ([s (string-downcase v)])
+          (or (string=? s "0")
+            (string=? s "off")
+            (string=? s "no")
+            (string=? s "false"))))))
+
+  (define (repl-history-dir)
+    (or (getenv "XDG_CACHE_HOME")
+      (let ([home (home-directory)])
+        (and (string? home) (string-append home "/.cache")))))
+
+  (define (repl-history-file)
+    (and (not (repl-history-disabled?))
+      (let ([dir (repl-history-dir)])
+        (and (string? dir) (fancy-repl-history-path dir)))))
+
+  (define (fancy-repl-history-path dir)
+    (string-append dir "/capy/history"))
+
+  ;; Lines of the history file, oldest first; '() when there is nothing
+  ;; readable (no file yet, a directory moved away, bad permissions).
+  (define (fancy-repl-history-load path)
+    (if (or (not (string? path)) (not (file-exists? path)))
+      '()
+      (guard (e [else '()])
+        (call-with-input-file path
+          (lambda (in)
+            (let loop ([lines '()])
+              (let ([line (get-line in)])
+                (if (eof-object? line)
+                  (reverse lines)
+                  (loop (cons line lines))))))))))
+
+  (define (history-blank? line)
+    (let ([n (string-length line)])
+      (let loop ([i 0])
+        (cond
+          [(= i n) #t]
+          [(char-whitespace? (string-ref line i)) (loop (+ i 1))]
+          [else #f]))))
+
+  (define (history-multiline? line)
+    (let ([n (string-length line)])
+      (let loop ([i 0])
+        (cond
+          [(= i n) #f]
+          [(char=? (string-ref line i) #\newline) #t]
+          [else (loop (+ i 1))]))))
+
+  ;; Merge session lines after the stored ones, dropping blanks,
+  ;; multi-line entries and repeats of the previous line.
+  (define (merge-history-lines old-lines new-lines)
+    (let ([last (let loop ([lines old-lines] [prev #f])
+                  (if (null? lines) prev (loop (cdr lines) (car lines))))])
+      (let loop ([lines new-lines] [last last] [out '()])
+        (cond
+          [(null? lines) (append old-lines (reverse out))]
+          [else
+            (let ([line (car lines)])
+              (if (and (string? line)
+                    (not (history-blank? line))
+                    (not (history-multiline? line))
+                    (not (equal? line last)))
+                (loop (cdr lines) line (cons line out))
+                (loop (cdr lines) last out)))]))))
+
+  (define (history-dirname path)
+    (let loop ([i (- (string-length path) 1)])
+      (cond
+        [(< i 0) "."]
+        [(char=? (string-ref path i) #\/) (substring path 0 i)]
+        [else (loop (- i 1))])))
+
+  (define (ensure-history-dir dir)
+    (unless (or (string=? dir "") (string=? dir "/") (file-exists? dir))
+      (ensure-history-dir (history-dirname dir))
+      (guard (e [else #f])
+        (create-directory dir))))
+
+  ;; Append this session's lines to the stored history, keeping the newest
+  ;; `repl-history-limit` entries. The file is re-read through OLD-LINES by
+  ;; the caller so concurrently running REPLs merge instead of clobbering.
+  (define (fancy-repl-history-save! path old-lines new-lines)
+    (when (string? path)
+      (guard (e [else #f])
+        (let* ([old (if (list? old-lines) old-lines '())]
+               [merged (merge-history-lines old
+                         (if (list? new-lines) new-lines '()))]
+               [trimmed (if (> (length merged) repl-history-limit)
+                          (list-tail merged
+                            (- (length merged) repl-history-limit))
+                          merged)])
+          (ensure-history-dir (history-dirname path))
+          (call-with-output-file path
+            (lambda (out)
+              (for-each (lambda (line)
+                          (display line out)
+                          (newline out))
+                trimmed)))))))
+
   (define (read-eval-print-loop)
+    (define history-path (repl-history-file))
+    (define session-lines '())
     (define editor
       (make-line-editor
+        #:history (fancy-repl-history-load history-path)
         #:completer
         (lambda (text cursor)
           (completion-strings text cursor))
@@ -393,10 +509,14 @@
                      (styled-string (fancy-repl-prompt) 'bold 'green))])
           (cond
             [(not line)
+              (fancy-repl-history-save! history-path
+                (fancy-repl-history-load history-path)
+                (reverse session-lines))
               (format #t "Goodbye!~%")
               (flush-output-port (current-output-port))
               (exit 0)]
             [else
+              (set! session-lines (cons line session-lines))
               (call-with-input-string line
                 (lambda (in)
                   (let loop ()

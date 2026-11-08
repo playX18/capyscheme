@@ -387,15 +387,15 @@ impl Expander {
 
 				quote! {
 					#[allow(non_snake_case)]
-					fn #ident<'gc>(ctx: crate::runtime::MutationContext<'gc>) -> crate::runtime::value::Value<'gc> {
+					fn #ident<'gc>(ctx: crate::runtime::MutationContext<'gc>) -> crate::runtime::objectmodel::Value<'gc> {
 						static VALUE: ::std::sync::OnceLock<
-							crate::runtime::global::Global<
-								crate::Rootable!(crate::runtime::value::Value<'_>)
+							crate::runtime::global::GlobalSlot<
+								crate::Rootable!(crate::runtime::objectmodel::Value<'_>)
 							>
 						> = ::std::sync::OnceLock::new();
 
 						VALUE
-							.get_or_init(|| crate::runtime::global::Global::new(ctx, #init))
+							.get_or_init(|| crate::runtime::global::GlobalSlot::new(ctx, #init))
 							.fetch(ctx)
 					}
 				}

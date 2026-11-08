@@ -42,6 +42,7 @@
   (import (rnrs)
     (rnrs hashtables)
     (capy)
+    (capy pretty-print)
     (capy compiler tree-il terms)
     (only (capy compiler tree-il) tree-il->scheme)
     (capy compiler tree-il primitives)
@@ -62,6 +63,11 @@
   (define the-core-env (boot-ref '(boot environments) 'the-core-env))
   (define library-name->path (boot-ref '(boot library-manager) 'library-name->path))
   (define call-with-program-load (boot-ref '(boot eval) 'call-with-program-load))
+  (define capy-execution-mode (boot-ref '(boot library-manager) 'capy:execution-mode))
+  (define capy-call-with-file-language
+    (boot-ref '(boot library-manager) 'capy:call-with-file-language))
+  (define capy-compat-library-key
+    (boot-ref '(boot library-manager) 'capy:compat-library-key))
 
   (define static-key '(boot static))
   (define capy-key '(|#%capy|))
@@ -173,23 +179,27 @@
   (define import-modifiers '(only except prefix rename library for))
 
   (define (import-set-key spec)
+    (define (canonical key) (and key (capy-compat-library-key key)))
     (cond
       [(not (pair? spec)) #f]
       [(and (memq (car spec) import-modifiers) (pair? (cdr spec)) (pair? (cadr spec)))
         (import-set-key (cadr spec))]
       [else
-        (let loop ([s spec] [out '()])
-          (cond
-            [(null? s) (reverse out)]
-            [(and (pair? (car s)) (null? (cdr s))) (reverse out)]
-            [else (loop (cdr s) (cons (car s) out))]))]))
+        (canonical
+          (let loop ([s spec] [out '()])
+            (cond
+              [(null? s) (reverse out)]
+              [(and (pair? (car s)) (null? (cdr s))) (reverse out)]
+              [else (loop (cdr s) (cons (car s) out))])))]))
 
   (define (meta-import-keys meta)
     (if (and (pair? meta) (eq? (car meta) '|#%library|) (> (length meta) 4))
       (filter-map
         (lambda (entry)
           (import-set-key
-            (if (and (pair? entry) (memq (car entry) '(r7rs r6rs))) (cdr entry) entry)))
+            (if (and (pair? entry) (memq (car entry) '(r7rs r6rs compat)))
+              (cdr entry)
+              entry)))
         (list-ref meta 4))
       '()))
 
@@ -210,6 +220,8 @@
     (define forced-mode (cond [(memq 'open options) 'open] [(memq 'closed options) 'closed] [else #f]))
     (define verbose? (and (memq 'verbose options) #t))
     (define exe? (and (memq 'exe options) #t))
+    (define dump-tree-il? (and (memq 'tree-il options) #t))
+    (define dump-bytecode? (and (memq 'bytecode options) #t))
     (define dry-run? (and (memq 'dry-run options) #t))
     (define why-names (filter-map (lambda (o) (and (pair? o) (eq? (car o) 'why) (cdr o))) options))
     (define shake-options (append (if verbose? '(trace-unknown) '()) (if (memq 'no-shake options) '(no-shake) '())))
@@ -231,10 +243,12 @@
     ;;; Expanding
 
     (define (expand-file path env)
-      (note ";; static: expanding ~a~%" path)
-      (call-with-values
-        (lambda () (compile-tree-il (read-forms path) env path))
-        (lambda (code a b) (unwrap-linklets code))))
+      (note ";; static: expanding ~a (~a mode)~%" path (capy-execution-mode))
+      (capy-call-with-file-language path (capy-execution-mode)
+        (lambda ()
+          (call-with-values
+            (lambda () (compile-tree-il (read-forms path) env path))
+            (lambda (code a b) (unwrap-linklets code))))))
 
     (define (register-linklets! path boot? terms)
       (for-each
@@ -307,7 +321,8 @@
         ((boot cli) . "boot/cli")))
 
     (define (key-path key)
-      (let* ([name (cond
+      (let* ([key (capy-compat-library-key key)]
+             [name (cond
                      [(assoc key virtual-library-files) => cdr]
                      [(boot-key? key) (string-append "boot/" (symbol->string (cadr key)))]
                      [else (library-name->path key)])]
@@ -315,40 +330,43 @@
         (and found (cadr found))))
 
     (define (find-node key strict?)
-      (or (hashtable-ref nodes key #f)
-        (and (not (hashtable-ref missing key #f))
-          (let ([path (key-path key)])
-            (cond
-              [path
-                (load-file! path)
-                (or (hashtable-ref nodes key #f)
-                  (begin (hashtable-set! missing key #t) #f))]
-              [else
-                (hashtable-set! missing key #t)
-                #f])))
-        (begin
-          (when strict?
-            (error 'static-link "no linklet found for" key))
-          (set! skipped-keys (cons key skipped-keys))
-          #f)))
+      (let ([key (capy-compat-library-key key)])
+        (or (hashtable-ref nodes key #f)
+          (and (not (hashtable-ref missing key #f))
+            (let ([path (key-path key)])
+              (cond
+                [path
+                  (load-file! path)
+                  (or (hashtable-ref nodes key #f)
+                    (begin (hashtable-set! missing key #t) #f))]
+                [else
+                  (hashtable-set! missing key #t)
+                  #f])))
+          (begin
+            (when strict?
+              (error 'static-link "no linklet found for" key))
+            (set! skipped-keys (cons key skipped-keys))
+            #f))))
 
     ;;; The program
 
     (define program-node
-      (let ([forms (read-forms file)])
-        (call-with-values
-          (lambda ()
-            (call-with-program-load #t
-              (lambda () (compile-tree-il forms (current-namespace) file))))
-          (lambda (code a b)
-          (let ([terms (unwrap-linklets code)])
-            (unless (and (pair? terms) (null? (cdr terms))
-                      (pair? (linklet-term-name (car terms)))
-                      (eq? (car (linklet-term-name (car terms))) '%program))
-              (error 'static-link "not a program: it needs an (import ...) form" file))
-            (let ([n (make-node (linklet-term-name (car terms)) (car terms) file #f 'new)])
-              (hashtable-set! nodes (node-key n) n)
-              n))))))
+      (capy-call-with-file-language file (capy-execution-mode)
+        (lambda ()
+          (let ([forms (read-forms file)])
+            (call-with-values
+              (lambda ()
+                (call-with-program-load #t
+                  (lambda () (compile-tree-il forms (current-namespace) file))))
+              (lambda (code a b)
+              (let ([terms (unwrap-linklets code)])
+                (unless (and (pair? terms) (null? (cdr terms))
+                          (pair? (linklet-term-name (car terms)))
+                          (eq? (car (linklet-term-name (car terms))) '%program))
+                  (error 'static-link "not a program: it needs an (import ...) form" file))
+                (let ([n (make-node (linklet-term-name (car terms)) (car terms) file #f 'new)])
+                  (hashtable-set! nodes (node-key n) n)
+                  n))))))))
 
     ;;; Dependencies of a node: (values regular late), both lists of (key . strict?).
     (define (node-dependencies n)
@@ -395,10 +413,11 @@
         current-error-port print-condition exit))
 
     ;; The linklets that install the runtime hooks the Rust runtime calls instead of looking
-    ;; names up (`install-runtime-hook!`).
+    ;; names up (`install-runtime-hook!`). An open bundle also installs the unit runner
+    ;; (`boot/main.scm` is not part of a bundle): it runs what `load` and `eval` compile.
     (define (hook-installers open?)
       (if open?
-        '((boot exceptions) (boot raise) (boot base) (boot expand))
+        '((boot exceptions) (boot raise) (boot base) (boot expand) (boot unit-runner))
         '((boot exceptions) (boot raise) (boot base))))
 
     ;; The nodes in the order they run
@@ -1081,6 +1100,13 @@
           body
           (list '|#%boot| static-key))))
 
+    ;; --static-dump-tree-il: the merged body as Scheme, next to OUT.
+    (when dump-tree-il?
+      (call-with-output-file (string-append out ".tree-il.scm")
+        (lambda (port)
+          (pretty-print (tree-il->scheme body) port)
+          (newline port))))
+
     ;;; Compile and write.
     (define tmp (string-append out ".part.fasl"))
     (define (remove-part!)
@@ -1096,7 +1122,12 @@
                        [code (fix-letrec code)]
                        [code (expand-well-known-procs code)]
                        [code (eliminate-assignments code)])
-                  (%compile code tmp #f '() #t))
+                  (when dump-tree-il?
+                    (call-with-output-file (string-append out ".tree-il.opt.scm")
+                      (lambda (port)
+                        (write (tree-il->scheme code) port)
+                        (newline port))))
+                  (%compile code tmp #f (if dump-bytecode? '(bytecode) '()) #t))
                 (set! t-compiled (current-jiffy))
                 (when size?
                   (print-size-report tmp)

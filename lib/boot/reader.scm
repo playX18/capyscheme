@@ -877,7 +877,7 @@
       r
       (begin
         (let ([reader (make-reader port (or fn (port-name port)))])
-          (reader-mode-set! reader 'capy)
+          (reader-mode-set! reader (%source-reader-mode))
           (%ports/port-reader-set! port reader)
           reader)))))
 

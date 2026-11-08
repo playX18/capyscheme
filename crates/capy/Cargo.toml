@@ -23,7 +23,7 @@ object = { version = "0.37.3", default-features = false, features = [
     "read",
     "write",
 ] }
-onlineasm = { git = "https://codeberg.org/playxe/offlineasm", rev = "e25e0b92148b76db78f22cc043a3f3aff1cd21d6" }
+onlineasm.workspace = true
 rand.workspace = true
 mmtk.workspace = true
 simplehash.workspace = true

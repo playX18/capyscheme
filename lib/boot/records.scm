@@ -67,11 +67,7 @@
             (apply p field-values)))))))
 
 (define (make-simple-conser desc rtd argc)
-  ((%rcd-protocol desc)
-    (lambda field-values
-      (cond
-        [(= (length field-values) argc) (apply tuple rtd field-values)]
-        [else (assertion-violation (rtd-name rtd) "wrong-number of arguments" field-values)]))))
+  ((%rcd-protocol desc) (%make-record-constructor rtd argc)))
 
 (define (make-nested-conser desc rtd argc)
   ((%rcd-protocol desc)
@@ -96,31 +92,16 @@
 
 (define make-accessor
   (lambda (rtd k)
-    (lambda (obj)
-      (if (not (record? obj))
-        (assertion-violation 'record-accessor "expected a record" obj))
-      (if (or (eq? rtd (tuple-ref obj 0))
-           (rtd-ancestor? rtd (tuple-ref obj 0)))
-        (tuple-ref obj k)
-        (assertion-violation "record accessor" "invalid record type" obj rtd)))))
+    (%make-record-accessor rtd k)))
 
 (define (wrong-type-argument-message . args) args)
 
 (define make-mutator
   (lambda (rtd k)
-    (lambda (obj datum)
-      (if (not (record? obj))
-        (assertion-violation "record mutator" "expected a record" obj))
-      (if (or (eq? rtd (tuple-ref obj 0))
-           (rtd-ancestor? rtd (tuple-ref obj 0)))
-        (tuple-set! obj k datum)
-        (assertion-violation "record mutator" (wrong-type-argument-message (format "record of type ~a" (rtd-name rtd)) (list obj datum)))))))
+    (%make-record-mutator rtd k)))
 
 (define (make-predicate rtd)
-  (lambda (obj)
-    "Predicate for object"
-    (and (tuple? obj) (or (eq? rtd (tuple-ref obj 0))
-                       (rtd-ancestor? rtd (tuple-ref obj 0))))))
+  (%make-record-predicate rtd))
 
 (define (record-constructor desc)
   (or (record-constructor-descriptor? desc)

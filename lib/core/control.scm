@@ -89,13 +89,39 @@
           #'(let ((r args)) b ...)))))
 
   (define-syntax case-lambda
-    (syntax-rules ()
-      ((_ (fmls b1 b2 ...))
-        (lambda fmls b1 b2 ...))
-      ((_ (fmls b1 b2 ...) ...)
-        (lambda args
-          (let ((n (length args)))
-            (case-lambda-aux args n (fmls b1 b2 ...) ...))))))
+    (lambda (x)
+      ;; A proper list of identifiers is a fixed-arity formals list. Anything
+      ;; else (a dotted list, e.g.) keeps the legacy arity dispatch.
+      (define (fixed-formals? f)
+        (syntax-case f ()
+          (() #t)
+          ((a . d) (and (identifier? #'a) (fixed-formals? #'d)))
+          (_ #f)))
+      (define (all-fixed? clauses)
+        (syntax-case clauses ()
+          (() #t)
+          (((fmls b ...) rest ...)
+            (and (fixed-formals? #'fmls) (all-fixed? #'(rest ...))))
+          (_ #f)))
+      (syntax-case x ()
+        ;; One clause is exactly a lambda, variadic or not.
+        [(_ (fmls b1 b2 ...))
+          #'(lambda fmls b1 b2 ...)]
+        ;; Several clauses (fixed, variadic or mixed) lower to one multi-entry
+        ;; procedure. `%case-lambda` is a core form in both front ends. The
+        ;; multi-entry lowering is on by default (`CAPY_CASE_LAMBDA=1`); set
+        ;; the variable to 0 to keep the legacy expansion. Both paths must
+        ;; behave identically.
+        [(_ (fmls b1 b2 ...) ...)
+          (let ((clauses? (pair? (syntax->datum #'((fmls b1 b2 ...) ...))))
+                (multi-entry? #t))
+            (if (and clauses? multi-entry?)
+              #'(|#%case-lambda| (lambda fmls b1 b2 ...) ...)
+              ;; A zero-clause case-lambda has no body to lower; the legacy
+              ;; expansion raises on every call.
+              #'(lambda args
+                  (let ((n (length args)))
+                    (case-lambda-aux args n (fmls b1 b2 ...) ...)))))])))
 
   (define %stacktrace-key '|stacktrace-key b8bec3ca-8174-4219-a964-b1aa2aa53ed5|)
 

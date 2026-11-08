@@ -332,11 +332,46 @@
             (apply proc (car lst))
             (for-each-n proc (cdr lst))))))
 
+    ;; The two- and three-list forms walk the lists together instead of
+    ;; transposing them first. They stop at the shortest list, as
+    ;; `list-transpose*` does, and both operands are checked with `list?` up
+    ;; front so an improper or circular list raises exactly where the
+    ;; transpose path would have (the remainder of a longer list is checked
+    ;; even when the shorter one ends first).
+    (define for-each-2-loop
+      (lambda (proc a b)
+        (if (or (null? a) (null? b))
+          (unspecified)
+          (begin
+            (proc (car a) (car b))
+            (for-each-2-loop proc (cdr a) (cdr b))))))
+
+    (define for-each-2
+      (lambda (proc a b)
+        (if (and (list? a) (list? b))
+          (for-each-2-loop proc a b)
+          (assertion-violation 'for-each "expected proper finite lists" (list proc a b)))))
+
+    (define for-each-3-loop
+      (lambda (proc a b c)
+        (if (or (null? a) (null? b) (null? c))
+          (unspecified)
+          (begin
+            (proc (car a) (car b) (car c))
+            (for-each-3-loop proc (cdr a) (cdr b) (cdr c))))))
+
+    (define for-each-3
+      (lambda (proc a b c)
+        (if (and (list? a) (list? b) (list? c))
+          (for-each-3-loop proc a b c)
+          (assertion-violation 'for-each "expected proper finite lists" (list proc a b c)))))
+
     (define for-each
       (lambda (proc lst1 . lst2)
-        (if (null? lst2)
-          (for-each-1 proc lst1)
-          (for-each-n proc (apply list-transpose* lst1 lst2)))))
+        (cond ((null? lst2) (for-each-1 proc lst1))
+          ((null? (cdr lst2)) (for-each-2 proc lst1 (car lst2)))
+          ((null? (cddr lst2)) (for-each-3 proc lst1 (car lst2) (cadr lst2)))
+          (else (for-each-n proc (apply list-transpose* lst1 lst2))))))
 
     (define map-1
       (lambda (proc lst)
@@ -350,11 +385,40 @@
           (else (cons (apply proc (car lst))
                  (map-n proc (cdr lst)))))))
 
+    ;; The fixed-arity two- and three-list entry points for `map`; see the
+    ;; `for-each` comment above for the length and proper-list semantics.
+    (define map-2-loop
+      (lambda (proc a b)
+        (if (or (null? a) (null? b))
+          '()
+          (cons (proc (car a) (car b))
+            (map-2-loop proc (cdr a) (cdr b))))))
+
+    (define map-2
+      (lambda (proc a b)
+        (if (and (list? a) (list? b))
+          (map-2-loop proc a b)
+          (assertion-violation 'map "expected proper finite lists" (list proc a b)))))
+
+    (define map-3-loop
+      (lambda (proc a b c)
+        (if (or (null? a) (null? b) (null? c))
+          '()
+          (cons (proc (car a) (car b) (car c))
+            (map-3-loop proc (cdr a) (cdr b) (cdr c))))))
+
+    (define map-3
+      (lambda (proc a b c)
+        (if (and (list? a) (list? b) (list? c))
+          (map-3-loop proc a b c)
+          (assertion-violation 'map "expected proper finite lists" (list proc a b c)))))
+
     (define map
       (lambda (proc lst1 . lst2)
-        (if (null? lst2)
-          (map-1 proc lst1)
-          (map-n proc (apply list-transpose* lst1 lst2)))))
+        (cond ((null? lst2) (map-1 proc lst1))
+          ((null? (cdr lst2)) (map-2 proc lst1 (car lst2)))
+          ((null? (cddr lst2)) (map-3 proc lst1 (car lst2) (cadr lst2)))
+          (else (map-n proc (apply list-transpose* lst1 lst2))))))
 
     (define bytevector
       (lambda args

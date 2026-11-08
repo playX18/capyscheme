@@ -133,7 +133,7 @@ impl FunctionDefinition {
     }
 
     pub fn build(&mut self) {
-        // The body's declared output is kept as-is: `Call::run` converts it.
+        // The body's declared output is kept as-is: `NativeCall::run` converts it.
         // Only the `'gc` lifetime is injected for `Value<'gc>` argument types.
         let lifetime = &self.gc_lifetime;
         self.transformed_function
@@ -169,7 +169,7 @@ impl FunctionDefinition {
         let body = quote_spanned! {
             self.transformed_function.span() =>
             {
-                Call::invoke(ctx, sfp, |call| {
+                NativeCall::invoke(ctx, sfp, |call| {
                     type Args<#gc_lifetime> = (#(#arg_tys1),*);
 
                     let arity = <Args<#gc_lifetime> as FromValues>::ARITY;
@@ -291,7 +291,7 @@ impl FunctionDefinition {
         self.transformed_function.sig.inputs.insert(
             0,
             syn::parse2(quote! {
-                #call: &Call<'_, #lifetime>
+                #call: &NativeCall<'_, #lifetime>
             })
             .expect("parsing function argument"),
         );
@@ -428,6 +428,7 @@ in CPS with `call.tail`."
                     );
 
                     let props = list!(ctx,
+                        Value::cons(ctx, ctx.intern("name"), ctx.intern(#scm_name)),
                         Value::cons(ctx, ctx.intern("source"), loc.into()),
                         Value::cons(ctx, ctx.intern("documentation"), ctx.str(#doc))
                     );

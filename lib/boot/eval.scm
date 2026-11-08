@@ -161,12 +161,14 @@
 ;; file or just compile and return. If its #f use load-thunk-in-vicinity
 (define (compile-file filename compiled-path env load-thunk? . maybe-dump-options)
   (define (compile)
-    ((%%file-compiler)
-      filename
-      compiled-path
-      env
-      load-thunk?
-      (if (null? maybe-dump-options) '() (car maybe-dump-options))))
+    (capy:call-with-file-language filename (capy:execution-mode)
+      (lambda ()
+        ((%%file-compiler)
+          filename
+          compiled-path
+          env
+          load-thunk?
+          (if (null? maybe-dump-options) '() (car maybe-dump-options))))))
   (if (%time-loads?)
     ($as-time-goes-by (list 'compile-file filename) compile)
     (compile)))
@@ -176,12 +178,18 @@
     (let ()
       (define thunk-or-path (try-load-thunk-in-vicinity filename #t directory))
       (cond
-        [(procedure? thunk-or-path) ($run-unit-thunk thunk-or-path (script-env))]
+        [(procedure? thunk-or-path)
+          (capy:call-with-file-language filename (capy:execution-mode)
+            (lambda () ($run-unit-thunk thunk-or-path (script-env))))]
         [else
           (let ([filename (list-ref thunk-or-path 0)]
                 [full-filename (list-ref thunk-or-path 1)]
                 [compiled-path (list-ref thunk-or-path 2)])
-            ($run-unit-thunk (compile-file full-filename compiled-path (expansion-env) #t) (script-env)))]))))
+            (capy:call-with-file-language full-filename (capy:execution-mode)
+              (lambda ()
+                ($run-unit-thunk
+                  (compile-file full-filename compiled-path (expansion-env) #t)
+                  (script-env)))))]))))
 
 ; The namespace a script loads into: the current namespace, when there is one.
 (define (script-env)
@@ -209,45 +217,49 @@
         (define thunk-or-path (try-load-thunk-in-vicinity filename #t))
         (cond
           [(procedure? thunk-or-path)
-            (with-exception-handler
-              (lambda (exn)
-                (format (current-error-port) ";; Error loading file '~a'~%" filename)
-                (raise exn))
+            (capy:call-with-file-language filename (capy:execution-mode)
               (lambda ()
-                (*raw-log* log:info
-                  '(capy)
-                  'load
-                  "Loading file ~a"
-                  filename)
-                (if (%time-loads?)
-                  ($as-time-goes-by
-                    (list 'load filename)
-                    (lambda () ($run-unit-thunk thunk-or-path (script-env))))
-                  ($run-unit-thunk thunk-or-path (script-env)))))]
+                (with-exception-handler
+                  (lambda (exn)
+                    (format (current-error-port) ";; Error loading file '~a'~%" filename)
+                    (raise exn))
+                  (lambda ()
+                    (*raw-log* log:info
+                      '(capy)
+                      'load
+                      "Loading file ~a"
+                      filename)
+                    (if (%time-loads?)
+                      ($as-time-goes-by
+                        (list 'load filename)
+                        (lambda () ($run-unit-thunk thunk-or-path (script-env))))
+                      ($run-unit-thunk thunk-or-path (script-env)))))))]
           [else
             (let* ([filename (list-ref thunk-or-path 0)]
                    [full-filename (list-ref thunk-or-path 1)]
-                   [compiled-path (list-ref thunk-or-path 2)]
-                   [unit
-                     (with-exception-handler
-                       (lambda (exn)
-                         (format (current-error-port) ";; Error compiling file '~a'~%" filename)
-                         (raise exn))
-                       (lambda ()
-                         (*raw-log* log:info
-                           '(capy)
-                           'load
-                           "Compiling file ~a"
-                           filename)
-                         (call-with-program-load program?
-                           (lambda ()
-                             (compile-file full-filename compiled-path (script-env) #t)))))])
-              (with-exception-handler
-                (lambda (exn)
-                  (format (current-error-port) ";; Error loading file '~a'~%" filename)
-                  (raise exn))
+                   [compiled-path (list-ref thunk-or-path 2)])
+              (capy:call-with-file-language full-filename (capy:execution-mode)
                 (lambda ()
-                  ($run-unit-thunk unit (script-env)))))]))))))
+                  (define unit
+                    (with-exception-handler
+                      (lambda (exn)
+                        (format (current-error-port) ";; Error compiling file '~a'~%" filename)
+                        (raise exn))
+                      (lambda ()
+                        (*raw-log* log:info
+                          '(capy)
+                          'load
+                          "Compiling file ~a"
+                          filename)
+                        (call-with-program-load program?
+                          (lambda ()
+                            (compile-file full-filename compiled-path (script-env) #t))))))
+                  (with-exception-handler
+                    (lambda (exn)
+                      (format (current-error-port) ";; Error loading file '~a'~%" filename)
+                      (raise exn))
+                    (lambda ()
+                      ($run-unit-thunk unit (script-env)))))))]))))))
 
 ;; Whether the datum X is a `library` or `define-library` form.
 (define (library-form? x)
