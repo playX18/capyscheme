@@ -1765,9 +1765,9 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "onlineasm"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a6a3a730786663da619423326e23e9195adde93e24763859a8d2696022b3fbd"
+checksum = "7530544eb606cf6ca8b51f30966c9daf390f1e3bae0aa0fcb3dd6be4c7a2844b"
 dependencies = [
  "asmkit-rs",
  "offlineasm-backend",
