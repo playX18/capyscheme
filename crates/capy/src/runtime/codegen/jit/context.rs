@@ -27,10 +27,11 @@ use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use bytecodegen::OperandWidth;
 use onlineasm::{Label, VReg, onlineasm};
 
-use super::super::addr::imm;
 use super::super::emission::{Deferred, Emission};
 use super::super::lazy::Lazies;
+use super::super::lazy::call::CallSite;
 use super::super::lazy::edge::{EdgeKind, emit_hit_block};
+use super::super::lazy::slot::SlotSite;
 use super::super::masm::Masm;
 #[cfg(target_arch = "aarch64")]
 use super::super::reloc::{Reloc, masm_move_patchable};
@@ -129,10 +130,10 @@ impl DecodedInstruction {
         let index = self.raw(field, false) as usize;
         let addr = self.constant_pointer - 8 * (3 + index);
         // On x86-64 a slot in the low 2 GiB folds into the access (one
-        // absolute `[disp32]` load instead of `movabs` plus a dependent
-        // load). AArch64 has no absolute addressing mode: its backend
-        // would materialize the address into a scratch register anyway,
-        // so it keeps the unfolded form.
+        // absolute `[disp32]` load instead of a materialized address plus a
+        // dependent load). Otherwise the address comes from a shared
+        // PC-relative island: one instruction on AArch64 instead of
+        // `movz`+`movk*` (2-5), and smaller than `movabs` on x86-64.
         #[cfg(target_arch = "x86_64")]
         if let Ok(disp) = i32::try_from(addr) {
             let slot = onlineasm::Mem::absolute(onlineasm::Disp::Const(disp));
@@ -141,9 +142,9 @@ impl DecodedInstruction {
             );
             return;
         }
+        masm.load_u64_const(dst, addr as u64);
         let slot = masm.assembler().mem(dst, 0);
         onlineasm!(*masm.assembler();
-            move {dst}, {addr as i64};
             loadq {dst}, {slot};
         );
     }
@@ -151,7 +152,7 @@ impl DecodedInstruction {
     /// Address of metadata `field` of kind `kind` -> `dst`.
     pub(crate) fn metadata(&self, masm: &mut Masm, kind: usize, field: usize, dst: VReg) {
         let addr = self.metadata_addr(kind, field);
-        onlineasm!(*masm.assembler(); move {dst}, {addr as i64};);
+        masm.load_u64_const(dst, addr as u64);
     }
 }
 
@@ -662,8 +663,8 @@ impl<T: Targets, S: SpecSource> Operands for CompiledContext<'_, T, S> {
 
     fn machine_entry(&mut self, masm: &mut Masm, dst: VReg) {
         let enter =
-            interpreter_enter_if_loaded().expect("the JIT runs on the template interpreter") as i64;
-        onlineasm!(*masm.assembler(); move {dst}, {enter};);
+            interpreter_enter_if_loaded().expect("the JIT runs on the template interpreter") as u64;
+        masm.load_u64_const(dst, enter);
     }
 }
 
@@ -742,8 +743,7 @@ impl<T: Targets, S: SpecSource> Flow for CompiledContext<'_, T, S> {
                 onlineasm!(*masm.assembler(); leap {tmp::T0}, {label};);
             }
             Target::Absolute(addr) => {
-                let addr = imm(addr);
-                onlineasm!(*masm.assembler(); move {tmp::T0}, {addr};);
+                masm.load_u64_const(tmp::T0, addr.as_usize() as u64);
             }
         }
         onlineasm!(*masm.assembler(); storep {ra}, {tmp::T0};);
@@ -872,6 +872,119 @@ impl<T: Targets, S: SpecSource> Flow for CompiledContext<'_, T, S> {
         self.bind_hits(masm, hits);
         masm.bind(fallthrough);
         self.next(masm);
+    }
+
+    fn enter_case(&mut self, masm: &mut Masm, table: usize, slow: Label, overflow: Label) {
+        // The whole clause table is known now: emit one arity test per row.
+        let at = self.insn.raw(table, false) as usize;
+        let pool = self.switch_pool();
+        // SAFETY: the table lies inside the verified pool.
+        let count = unsafe { pool.add(at).read() } as usize;
+        let pc = self.insn.pc() as i64;
+        let ac = regs::AC;
+        let sfp = regs::SFP;
+        for row in 0..count {
+            let base = at + 1 + row * 6;
+            let min = unsafe { pool.add(base).read() } as i64;
+            let max = unsafe { pool.add(base + 1).read() } as i64;
+            let disp = unsafe { pool.add(base + 2).read() } as i32;
+            let frame = unsafe { pool.add(base + 3).read() } as i64;
+            let rest_base = unsafe { pool.add(base + 4).read() };
+            let rest_cnt = unsafe { pool.add(base + 5).read() } as i64;
+            let next = masm.label();
+            if min > 0 {
+                onlineasm!(*masm.assembler(); bqb {ac}, {min}, {next};);
+            }
+            if max < u32::MAX as i64 {
+                onlineasm!(*masm.assembler(); bqa {ac}, {max}, {next};);
+            }
+
+            if rest_base != crate::bytecode::def::CASE_NO_REST {
+                onlineasm!(*masm.assembler();
+                    subp {tmp::T1}, {ac}, {min};
+                    move {tmp::T3}, {frame};
+                    addp {tmp::T3}, {tmp::T3}, {tmp::T1};
+                );
+                masm.check_frame_limit(tmp::T3, tmp::T1, tmp::T2, overflow);
+            }
+            // Match: r1 = r1[row].
+            let clo_at = masm.assembler().mem(sfp, 8);
+            onlineasm!(*masm.assembler();
+                move {tmp::T2}, {row as i64};
+                loadq {tmp::T3}, {clo_at};
+            );
+            let slot = masm
+                .assembler()
+                .mem_indexed(tmp::T3, tmp::T2, 8, sabi::CLOSURE_FREE as i32);
+            onlineasm!(*masm.assembler();
+                loadq {tmp::T3}, {slot};
+                storeq {clo_at}, {tmp::T3};
+            );
+
+            if rest_base != crate::bytecode::def::CASE_NO_REST {
+                // T3 = extras (the copy count); T2 = src, T1 = dst.
+                onlineasm!(*masm.assembler();
+                    subp {tmp::T3}, {ac}, {min};
+                    move {tmp::T0}, {min};
+                );
+                let src = masm.assembler().mem_indexed(sfp, tmp::T0, 8, 16);
+                onlineasm!(*masm.assembler();
+                    leap {tmp::T2}, {src};
+                    move {tmp::T0}, {rest_base as i64};
+                );
+                let dst = masm.assembler().mem_indexed(sfp, tmp::T0, 8, 0);
+                onlineasm!(*masm.assembler();
+                    leap {tmp::T1}, {dst};
+                );
+                let (fwd, bwd, done) = (masm.label(), masm.label(), masm.label());
+                let src_at = masm.assembler().mem(tmp::T2, 0);
+                let dst_at = masm.assembler().mem(tmp::T1, 0);
+                let src_end = masm.assembler().mem_indexed(tmp::T2, tmp::T3, 8, 0);
+                let dst_end = masm.assembler().mem_indexed(tmp::T1, tmp::T3, 8, 0);
+                onlineasm!(*masm.assembler();
+                    bqbeq {tmp::T1}, {tmp::T2}, {fwd};
+                    leap {tmp::T2}, {src_end};
+                    leap {tmp::T1}, {dst_end};
+                );
+                masm.bind(bwd);
+                onlineasm!(*masm.assembler();
+                    btqz {tmp::T3}, {done};
+                    subp {tmp::T2}, {tmp::T2}, 8;
+                    subp {tmp::T1}, {tmp::T1}, 8;
+                    loadq {tmp::T0}, {src_at};
+                    storeq {dst_at}, {tmp::T0};
+                    subq {tmp::T3}, {tmp::T3}, 1;
+                    jmp {bwd};
+                );
+                masm.bind(fwd);
+                onlineasm!(*masm.assembler();
+                    btqz {tmp::T3}, {done};
+                    loadq {tmp::T0}, {src_at};
+                    storeq {dst_at}, {tmp::T0};
+                    addp {tmp::T2}, {tmp::T2}, 8;
+                    addp {tmp::T1}, {tmp::T1}, 8;
+                    subq {tmp::T3}, {tmp::T3}, 1;
+                    jmp {fwd};
+                );
+                masm.bind(done);
+                onlineasm!(*masm.assembler();
+                    subp {tmp::T0}, {ac}, {min};
+                );
+                masm.box_int32(tmp::T0, tmp::T0);
+                onlineasm!(*masm.assembler();
+                    move {tmp::T1}, {rest_cnt};
+                    lshiftq {tmp::T1}, 3;
+                    addp {tmp::T1}, {sfp}, {tmp::T1};
+                );
+                let cnt_at = masm.assembler().mem(tmp::T1, 0);
+                onlineasm!(*masm.assembler();
+                    storeq {cnt_at}, {tmp::T0};
+                );
+            }
+            self.jump_to_pc(masm, (pc + disp as i64) as usize);
+            masm.bind(next);
+        }
+        onlineasm!(*masm.assembler(); jmp {slow};);
     }
 }
 
@@ -1021,5 +1134,56 @@ impl<T: Targets, S: SpecSource> Slow for CompiledContext<'_, T, S> {
 impl<T: Targets, S: SpecSource> Speculation for CompiledContext<'_, T, S> {
     fn arith_site(&mut self, kind: usize, field: usize) -> ArithSpec {
         self.spec.arith_site(&self.insn, kind, field)
+    }
+
+    fn lazy_calls(&self) -> bool {
+        self.targets.placement() == Placement::Deferred && self.link_checks()
+    }
+
+    fn lazy_call_edge(
+        &mut self,
+        masm: &mut Masm,
+        kind: usize,
+        field: usize,
+        base: usize,
+        tail: bool,
+    ) -> Option<Label> {
+        if !self.lazy_calls() || self.insn.md == 0 {
+            return None;
+        }
+        let link = self.insn.metadata_addr(kind, field);
+        let site = CallSite::new(self.insn.pc(), self.insn.ip, link, base, tail);
+        Some(self.em.edge(masm, EdgeKind::Indirect, site))
+    }
+
+    fn lazy_slots(&self) -> bool {
+        self.targets.placement() == Placement::Deferred
+    }
+
+    fn lazy_slot_edge(
+        &mut self,
+        masm: &mut Masm,
+        label: Label,
+        kind: usize,
+        field: usize,
+        is_put: bool,
+        obj: usize,
+        arg: usize,
+    ) -> bool {
+        if !self.lazy_slots() || self.insn.md == 0 {
+            return false;
+        }
+        let meta = self.insn.metadata_addr(kind, field);
+        let site = SlotSite::new(
+            self.insn.pc(),
+            self.insn.ip,
+            self.insn.pc() + self.insn.len,
+            is_put,
+            meta,
+            self.insn.raw(obj, false) as i32,
+            self.insn.raw(arg, false) as i32,
+        );
+        self.em.edge_at(masm, label, EdgeKind::Indirect, site);
+        true
     }
 }

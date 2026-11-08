@@ -282,6 +282,18 @@ fn patch_tables(
     memory.patch_many(loaded.span_mut(), &patches)
 }
 
+pub(crate) fn publish_perf_map_range(name: &str, start: usize, end: usize) {
+    if !flags::perf_map() || end <= start {
+        return;
+    }
+    publish_perf_map(&[LoadedSymbol {
+        name: name.to_owned(),
+        addr: start,
+        len: end - start,
+        kind: SymbolKind::Function,
+    }]);
+}
+
 fn publish_perf_map(symbols: &[LoadedSymbol]) {
     if !crate::utils::flags::perf_map() {
         return;

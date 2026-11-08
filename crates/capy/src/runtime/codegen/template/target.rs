@@ -3,7 +3,6 @@
 use mmtk::util::Address;
 use onlineasm::{Label, onlineasm};
 
-use super::super::addr::imm;
 use super::super::emission::Emission;
 use super::super::masm::Masm;
 use super::{
@@ -56,9 +55,8 @@ pub(crate) fn emit_jump_to(masm: &mut Masm, target: Target) {
             onlineasm!(*masm.assembler(); jmp {label};);
         }
         Target::Absolute(addr) => {
-            let imm = imm(addr);
+            masm.load_u64_const(tmp::T0, addr.as_usize() as u64);
             onlineasm!(*masm.assembler();
-                move {tmp::T0}, {imm};
                 jmp {tmp::T0};
             );
         }

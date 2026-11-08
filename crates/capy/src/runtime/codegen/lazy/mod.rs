@@ -24,14 +24,13 @@
 //! address a [`Reloc::Cell`](super::reloc::Reloc::Cell)) and after
 //! ([`MaterializeCx`]: the cell is allocated now and its address baked), so
 //! code materialized from an edge can declare edges of its own.
-//!
-//! Hits run on the hitting mutator with Scheme state saved, never on a
-//! worker: a frame is waiting on them. [`HitCx`] and [`MaterializeCx`] carry
-//! that mutator's `'gc`. The only erasure is the FFI entry
-//! [`capy_lazy_hit`], whose C signature cannot name `'gc`.
 
 pub(crate) mod builder;
+pub(crate) mod call;
 pub(crate) mod edge;
+pub(crate) mod generic;
+pub(crate) mod record;
+pub(crate) mod slot;
 
 use std::io;
 use std::pin::Pin;
@@ -49,8 +48,9 @@ use self::builder::StubBuilder;
 pub(crate) use self::edge::EdgeKind;
 use self::edge::{DirectSite, DirectSpan};
 use super::addr::CodeOffset;
+use super::cache::{self, Partition};
 use super::image::LoadedImage;
-use super::jit::registry::{LIVE_CODE_BYTES, ResumeTable};
+use super::jit::registry::ResumeTable;
 use super::masm::{Masm, SymbolKind};
 use super::template::SiteOperand;
 use crate::runtime::MutationContext;
@@ -72,7 +72,7 @@ pub(crate) trait Lazy: Sized + 'static {
     /// The bytecode offset this lazy stands for, for logs and listings.
     fn pc(&self) -> usize;
 
-    /// The bytecode address the hit block stages in `PC`: where `Tc::ip`
+    /// The bytecode address the hit block stages in `PC`: where `ThreadContext::ip`
     /// points when the hit runs.
     fn ip(&self) -> Ip;
 
@@ -449,7 +449,7 @@ impl<'gc> HitCx<'gc> {
         if !matches!(from, CellState::Slow | CellState::Specialized) {
             return None;
         }
-        if LIVE_CODE_BYTES.load(Relaxed) >= flags::jit_max_code() {
+        if !cache::admit(Partition::Lazy, 0) {
             return None;
         }
         let mut cx = MaterializeCx::new(self.mutator, self.cell, from);
@@ -660,7 +660,7 @@ impl<'gc> MaterializeCx<'gc> {
             image: loaded,
             bytes,
         });
-        LIVE_CODE_BYTES.fetch_add(bytes, Relaxed);
+        cache::charge(Partition::Lazy, bytes);
         let entry = base + start_off;
         self.entry = Some(entry);
         self.bytes = bytes;

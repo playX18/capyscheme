@@ -15,7 +15,7 @@ use crate::runtime::codegen::template::{PrimSlowId, TemplateContext, ftmp, tmp};
 use crate::runtime::prims::def::Primitive;
 use crate::runtime::prims::memory::Elem;
 use crate::runtime::sabi::{self, builtin_class_ids};
-use crate::runtime::value::Value;
+use crate::runtime::objectmodel::Value;
 
 #[derive(Clone, Copy)]
 enum Space {

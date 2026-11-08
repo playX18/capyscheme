@@ -18,16 +18,7 @@
 //! 4-byte store so later executions skip the thunk. A thread already inside
 //! the thunk (or one that read the old jump) lands at `cell.target`, which is
 //! right either way, and a target out of the jump's range just keeps going
-//! through the thunk. A conditional branch to a lazy target is `jcc` to the
-//! edge label, i.e. a conditional branch to the local direct jump, so the
-//! short conditional range (AArch64 `b.cond`, +-1 MB) never has to reach the
-//! code.
-//!
-//! The hit block stages the bytecode `PC`, then leaves through
-//! [`capy_lazy_hit`](super::capy_lazy_hit) with the cell in the second C
-//! argument, exactly as [`emit_control`](super::super::template::emit_control)
-//! leaves through a slow path. At an edge only SABI state is live: template
-//! code keeps every value in a frame slot.
+//! through the thunk.
 
 use mmtk::util::Address;
 use onlineasm::asmkit::Span;
@@ -141,7 +132,7 @@ pub(crate) fn direct_patch_policy(
 }
 
 #[cfg(target_arch = "aarch64")]
-fn encode_jump(field_addr: Address, target: Address) -> Option<u32> {
+pub(crate) fn encode_jump(field_addr: Address, target: Address) -> Option<u32> {
     const B: u32 = 0x1400_0000;
     let delta = target.as_usize() as i128 - field_addr.as_usize() as i128;
     // imm26 counts instructions: +-2^25 of them, +-128 MB.
@@ -152,7 +143,7 @@ fn encode_jump(field_addr: Address, target: Address) -> Option<u32> {
 }
 
 #[cfg(not(target_arch = "aarch64"))]
-fn encode_jump(field_addr: Address, target: Address) -> Option<u32> {
+pub(crate) fn encode_jump(field_addr: Address, target: Address) -> Option<u32> {
     let delta = target.as_usize() as i128 - (field_addr.as_usize() as i128 + 4);
     i32::try_from(delta).ok().map(|rel| rel as u32)
 }

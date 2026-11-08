@@ -8,71 +8,125 @@ use crate::utils::flags;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct TierSet(u8);
 
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct ParsedTiers {
-    pub(crate) set: TierSet,
-    pub(crate) unknown: Vec<String>,
-}
-
 impl TierSet {
     pub(crate) const BASELINE: TierSet = TierSet(1 << Tier::Baseline as u8);
 
     pub(crate) fn contains(self, tier: Tier) -> bool {
         self.0 & (1 << tier as u8) != 0
     }
-
-    pub(crate) fn is_empty(self) -> bool {
-        self.0 == 0
-    }
-
-    pub(crate) fn iter(self) -> impl Iterator<Item = Tier> {
-        Tier::ALL
-            .into_iter()
-            .filter(move |tier| self.contains(*tier))
-    }
-
-    pub(crate) fn parse(raw: &str) -> ParsedTiers {
-        let mut set = TierSet(0);
-        let mut unknown = Vec::new();
-        for name in raw
-            .split(',')
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-        {
-            match Tier::from_name(name) {
-                Some(tier) => set.0 |= 1 << tier as u8,
-                None => unknown.push(name.to_string()),
-            }
-        }
-        ParsedTiers { set, unknown }
-    }
 }
 
 pub(crate) fn tiers() -> TierSet {
     static TIERS: OnceLock<TierSet> = OnceLock::new();
     *TIERS.get_or_init(|| {
-        let Some(raw) = flags::jit_tiers() else {
-            return TierSet::BASELINE;
-        };
-        let parsed = TierSet::parse(raw);
-        for name in &parsed.unknown {
-            log::warn!(target: crate::heap::logging::JIT_LOG_TARGET, " CAPY_JIT_TIERS: unknown tier {name:?} ignored");
+        let mut set = TierSet::BASELINE;
+        if flags::opt_jit() && Tier::Optimizing.implemented() {
+            set.0 |= 1 << Tier::Optimizing as u8;
         }
-        for tier in parsed.set.iter().filter(|tier| !tier.implemented()) {
-            log::warn!(
-                target: crate::heap::logging::JIT_LOG_TARGET,
-                "jit: CAPY_JIT_TIERS: tier {} is not available in this build",
-                tier.name()
-            );
-        }
-        if parsed.set.is_empty() {
-            if !raw.trim().is_empty() {
-                log::warn!(target: crate::heap::logging::JIT_LOG_TARGET, " CAPY_JIT_TIERS={raw:?} names no tier, using baseline");
-            }
-            return TierSet::BASELINE;
-        }
-        parsed.set
+        set
     })
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PassToggles {
+    disabled: Vec<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ParsedPasses {
+    pub(crate) toggles: PassToggles,
+    pub(crate) invalid: Vec<String>,
+}
+
+impl PassToggles {
+    pub(crate) fn parse(raw: &str) -> ParsedPasses {
+        let mut disabled = Vec::new();
+        let mut invalid = Vec::new();
+        for entry in raw
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+        {
+            match entry.strip_prefix('-').map(str::trim) {
+                Some(name) if !name.is_empty() => disabled.push(name.to_string()),
+                _ => invalid.push(entry.to_string()),
+            }
+        }
+        ParsedPasses {
+            toggles: PassToggles { disabled },
+            invalid,
+        }
+    }
+
+    pub(crate) fn enabled(&self, pass: &str) -> bool {
+        !self.disabled.iter().any(|name| name == pass)
+    }
+}
+
+/// Tier 2 (optimizing) settings
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OptConfig {
+    /// Baseline entries or back-edges before a unit is considered for Tier 2.
+    pub(crate) threshold: usize,
+
+    /// From `CAPY_OPT_VERSION`: version a loop on the invariant guards in its
+    /// body, running a guard-free clone when the tests pass and the original
+    /// loop otherwise. Off by default, no significant perf gains yet
+    pub(crate) version: bool,
+    /// From `CAPY_OPT_UNSWITCH`: split a loop on a loop-invariant branch into
+    /// two clones with the branch folded. Off by default
+    pub(crate) unswitch: bool,
+    /// From `CAPY_OPT_UNROLL_ALL`: replicate small innermost loops that are
+    /// not counted.
+    pub(crate) unroll_all: bool,
+    /// From `CAPY_OPT_SPEC_HOIST`: hoist invariant guards out of conditional
+    /// loop blocks, deopting to the loop entry.
+    pub(crate) spec_hoist: bool,
+    /// From `CAPY_OPT_PREDICATE`: loop predication of bounds checks.
+    pub(crate) predicate: bool,
+    /// From `CAPY_OPT_LAYOUT`: reorder blocks after allocation for
+    /// fallthrough, using static loop weights
+    pub(crate) layout: bool,
+    /// Always true in debug builds.
+    pub(crate) verify: bool,
+    /// Stage names whose IR/LIR is written to `CAPY_JIT_DUMP_DIR`.
+    pub(crate) dump: Vec<String>,
+    /// Keep per-instruction LIR/IR text so listings can annotate machine
+    /// code (`CAPY_OPT_ANNOTATE`). Off by default
+    pub(crate) annotate: bool,
+    /// Deoptimize at every n-th guard
+    pub(crate) stress_deopt: usize,
+}
+
+impl OptConfig {
+    pub(crate) fn from_flags() -> Self {
+        let dump = flags::opt_dump()
+            .unwrap_or("")
+            .split(',')
+            .map(str::trim)
+            .filter(|stage| !stage.is_empty())
+            .map(str::to_string)
+            .collect();
+        let config = OptConfig {
+            threshold: flags::jit_opt_threshold(),
+            version: flags::opt_version(),
+            unswitch: flags::opt_unswitch(),
+            unroll_all: flags::opt_unroll_all(),
+            spec_hoist: flags::opt_spec_hoist(),
+            predicate: flags::opt_predicate(),
+            layout: flags::opt_layout(),
+            verify: flags::opt_verify() || cfg!(debug_assertions),
+            dump,
+            annotate: flags::opt_annotate(),
+            stress_deopt: flags::opt_stress_deopt(),
+        };
+        config
+    }
+}
+
+pub(crate) fn opt() -> &'static OptConfig {
+    static OPT: OnceLock<OptConfig> = OnceLock::new();
+    OPT.get_or_init(|| OptConfig::from_flags())
 }
 
 pub(crate) enum Bisect {
@@ -103,6 +157,26 @@ pub(crate) static SLOW_HELPER: std::sync::atomic::AtomicU64 = std::sync::atomic:
 pub(crate) static SLOW_CONTROL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Lazily generated stubs.
 pub(crate) static MATH_STUBS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Tier 2 units installed
+pub(crate) static OPT_INSTALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Entries into installed Tier 2 code through its normal entry. The prologue
+/// bumps it with a plain add, and only when `CAPY_JIT_STATS` was on at its
+/// compile, so a run without stats emits no counter. Mutator-only.
+pub(crate) static OPT_ENTRIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Deoptimizing exits taken from Tier 2 code (`capy_opt_deopt`).
+pub(crate) static OPT_DEOPTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Objects rebuilt from remat descriptors during deopt.
+pub(crate) static OPT_REMAT_OBJECTS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+/// Transfers from baseline frames into Tier 2 code at a loop (`osr_entry`).
+pub(crate) static OPT_OSR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// OSR transfers refused because the unit was retired while the frame
+/// looked its loop up. They fall back to baseline.
+pub(crate) static OPT_OSR_REFUSED_INVALID: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+/// Tier 2 builds that failed (a pass, the verifier, lowering or emission).
+pub(crate) static OPT_BUILD_FAILURES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 extern "C" fn print_jit_stats() {
     let compiles = COMPILES.load(Relaxed);
@@ -118,6 +192,32 @@ extern "C" fn print_jit_stats() {
          {uncompiled} resume uncompiled, {helper} helper slow paths, {control} control slow paths, \
          {stubs} math stubs"
     );
+    log::info!(
+        target: crate::heap::logging::STATS_LOG_TARGET,
+        "tier 2 stats: {} installs, {} entries, {} deopt exits, {} OSR transfers ({} refused invalid), {} remat objects, {} build failures",
+        OPT_INSTALLS.load(Relaxed),
+        OPT_ENTRIES.load(Relaxed),
+        OPT_DEOPTS.load(Relaxed),
+        OPT_OSR.load(Relaxed),
+        OPT_OSR_REFUSED_INVALID.load(Relaxed),
+        OPT_REMAT_OBJECTS.load(Relaxed),
+        OPT_BUILD_FAILURES.load(Relaxed),
+    );
+    log::info!(
+        target: crate::heap::logging::STATS_LOG_TARGET,
+        "{}",
+        crate::runtime::codegen::cache::report()
+    );
+    log::info!(
+        target: crate::heap::logging::STATS_LOG_TARGET,
+        "{}",
+        crate::runtime::codegen::opt::build::calls::report()
+    );
+    // Per-site deopt totals: the guard kind, the call site and the inlined
+    // code block, so an inlined exit can be told apart from a root one.
+    for line in crate::runtime::codegen::opt::deopt::exits::report_exit_sites() {
+        log::info!(target: crate::heap::logging::STATS_LOG_TARGET, "{line}");
+    }
 }
 
 unsafe extern "C" {

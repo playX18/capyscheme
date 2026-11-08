@@ -14,8 +14,8 @@ use crate::runtime::codegen::template::{
     Operand, SlowPath, TemplateContext, operand_register, operand_register_in, tmp,
 };
 use crate::runtime::interp::profile::{CallLinkInfo, LINK_MEGA};
+use crate::runtime::objectmodel::CodeBlockKind;
 use crate::runtime::sabi::{TC_AC, builtin_class_ids, regs};
-use crate::runtime::value::CodeBlockKind;
 
 const _: () = {
     assert!(CodeBlockKind::Bytecode as u8 == 0);
@@ -39,10 +39,20 @@ fn link_check<C: TemplateContext>(
     block: onlineasm::VReg,
     miss: onlineasm::Label,
 ) {
+    // A lazy call site owns the whole dispatch: the materialized stub
+    // checks the callee cases (and can specialize a monomorphic callee the
+    // inline check would have entered first). Everything not matched falls
+    // back through the cell, which records the callee and grows the stub.
+    if context.lazy_calls() {
+        onlineasm!(*masm.assembler(); jmp {miss};);
+        return;
+    }
     if !context.link_checks() {
         return;
     }
     let link_ok = masm.label();
+    let mono_hit = masm.label();
+    let poly_hit = masm.label();
     let has_stub = masm.label();
     context.metadata(masm, kind, link_field, tmp::T0, tmp::T2);
     let callee_at = masm
@@ -56,14 +66,30 @@ fn link_check<C: TemplateContext>(
         .mem(tmp::T0, offset_of!(CallLinkInfo, polymorphic) as i32);
     onlineasm!(*masm.assembler();
         loadq {tmp::T2}, {callee_at};
-        bqeq {tmp::T2}, {block}, {link_ok};
+        bqeq {tmp::T2}, {block}, {mono_hit};
         loadi {tmp::T2}, {poly_at};
-        bieq {tmp::T2}, {LINK_MEGA as i64}, {link_ok};
+        bieq {tmp::T2}, {LINK_MEGA as i64}, {poly_hit};
         loadq {tmp::T2}, {stub_at};
         bqneq {tmp::T2}, 0, {has_stub};
         loadi {tmp::T2}, {poly_at};
-        bqneq {tmp::T2}, 0, {link_ok};
+        bqneq {tmp::T2}, 0, {poly_hit};
         jmp {miss};
+    );
+
+    masm.bind(mono_hit);
+
+    stubs::emit_bump_counter(masm, tmp::T0, offset_of!(CallLinkInfo, hits), tmp::T2);
+    stubs::emit_bump_counter(masm, tmp::T0, offset_of!(CallLinkInfo, case_hits), tmp::T2);
+
+    onlineasm!(*masm.assembler();
+        jmp {link_ok};
+    );
+    masm.bind(poly_hit);
+
+    stubs::emit_bump_counter(masm, tmp::T0, offset_of!(CallLinkInfo, hits), tmp::T2);
+
+    onlineasm!(*masm.assembler();
+        jmp {link_ok};
     );
     masm.bind(has_stub);
     onlineasm!(*masm.assembler();
@@ -101,12 +127,12 @@ pub fn op_call<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     let miss = masm.label();
     let (sfp, cp, ac) = (regs::SFP, regs::CP, regs::AC);
 
-    let jit = match context.operand(masm, OpCall::OPERAND_BASE, OpCall::SIGNED_BASE) {
+    let (jit, base_slots) = match context.operand(masm, OpCall::OPERAND_BASE, OpCall::SIGNED_BASE) {
         Operand::Immediate(base) => {
             onlineasm!(*masm.assembler();
                 move {tmp::T0}, {base};
             );
-            true
+            (true, base as usize)
         }
         Operand::Register(r) => {
             if r != tmp::T0 {
@@ -114,7 +140,7 @@ pub fn op_call<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
                     move {tmp::T0}, {r};
                 );
             }
-            false
+            (false, 0)
         }
     };
     let frame = masm.assembler().mem_indexed(sfp, tmp::T0, 8, 0);
@@ -160,14 +186,24 @@ pub fn op_call<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     context.enter_callee(masm);
     masm.bind(miss);
     if jit {
-        context.metadata(
+        if let Some(edge) = context.lazy_call_edge(
             masm,
             OpCall::METADATA_KIND,
             OpCall::METADATA_LINK,
-            tmp::T0,
-            tmp::T2,
-        );
-        jit_miss(masm, RuntimeExtern::IcMissCall, tmp::T0, tmp::T1);
+            base_slots,
+            false,
+        ) {
+            onlineasm!(*masm.assembler(); jmp {edge};);
+        } else {
+            context.metadata(
+                masm,
+                OpCall::METADATA_KIND,
+                OpCall::METADATA_LINK,
+                tmp::T0,
+                tmp::T2,
+            );
+            jit_miss(masm, RuntimeExtern::IcMissCall, tmp::T0, tmp::T1);
+        }
     } else {
         context.control(masm, SlowPath::CallSlow);
     }
@@ -216,14 +252,24 @@ pub fn op_tail_call<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     context.enter_callee(masm);
     masm.bind(miss);
     if jit {
-        context.metadata(
+        if let Some(edge) = context.lazy_call_edge(
             masm,
             OpTailCall::METADATA_KIND,
             OpTailCall::METADATA_LINK,
-            tmp::T0,
-            tmp::T2,
-        );
-        jit_miss(masm, RuntimeExtern::IcMissTcall, tmp::T0, sfp);
+            0,
+            true,
+        ) {
+            onlineasm!(*masm.assembler(); jmp {edge};);
+        } else {
+            context.metadata(
+                masm,
+                OpTailCall::METADATA_KIND,
+                OpTailCall::METADATA_LINK,
+                tmp::T0,
+                tmp::T2,
+            );
+            jit_miss(masm, RuntimeExtern::IcMissTcall, tmp::T0, sfp);
+        }
     } else {
         context.control(masm, SlowPath::CallSlow);
     }
@@ -233,22 +279,23 @@ pub fn op_call_self<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     let miss = masm.label();
     let (sfp, cp, ac) = (regs::SFP, regs::CP, regs::AC);
     // The context probe doubles as the base operand (see `op_call`).
-    let jit = match context.operand(masm, OpCallSelf::OPERAND_BASE, OpCallSelf::SIGNED_BASE) {
-        Operand::Immediate(base) => {
-            onlineasm!(*masm.assembler();
-                move {tmp::T0}, {base};
-            );
-            true
-        }
-        Operand::Register(r) => {
-            if r != tmp::T0 {
+    let (jit, base_slots) =
+        match context.operand(masm, OpCallSelf::OPERAND_BASE, OpCallSelf::SIGNED_BASE) {
+            Operand::Immediate(base) => {
                 onlineasm!(*masm.assembler();
-                    move {tmp::T0}, {r};
+                    move {tmp::T0}, {base};
                 );
+                (true, base as usize)
             }
-            false
-        }
-    };
+            Operand::Register(r) => {
+                if r != tmp::T0 {
+                    onlineasm!(*masm.assembler();
+                        move {tmp::T0}, {r};
+                    );
+                }
+                (false, 0)
+            }
+        };
     let frame = masm.assembler().mem_indexed(sfp, tmp::T0, 8, 0);
     let closure_at = masm.assembler().mem(sfp, 8);
     let callee_at = masm.assembler().mem(tmp::T1, 8);
@@ -292,14 +339,24 @@ pub fn op_call_self<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     if jit || context.link_checks() {
         masm.bind(miss);
         if jit {
-            context.metadata(
+            if let Some(edge) = context.lazy_call_edge(
                 masm,
                 OpCallSelf::METADATA_KIND,
                 OpCallSelf::METADATA_LINK,
-                tmp::T0,
-                tmp::T2,
-            );
-            jit_miss(masm, RuntimeExtern::IcMissCall, tmp::T0, tmp::T1);
+                base_slots,
+                false,
+            ) {
+                onlineasm!(*masm.assembler(); jmp {edge};);
+            } else {
+                context.metadata(
+                    masm,
+                    OpCallSelf::METADATA_KIND,
+                    OpCallSelf::METADATA_LINK,
+                    tmp::T0,
+                    tmp::T2,
+                );
+                jit_miss(masm, RuntimeExtern::IcMissCall, tmp::T0, tmp::T1);
+            }
         } else {
             context.control(masm, SlowPath::CallSlow);
         }
@@ -353,14 +410,24 @@ pub fn op_tail_call_self<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     if jit || context.link_checks() {
         masm.bind(miss);
         if jit {
-            context.metadata(
+            if let Some(edge) = context.lazy_call_edge(
                 masm,
                 OpTailCallSelf::METADATA_KIND,
                 OpTailCallSelf::METADATA_LINK,
-                tmp::T0,
-                tmp::T2,
-            );
-            jit_miss(masm, RuntimeExtern::IcMissTcall, tmp::T0, sfp);
+                0,
+                true,
+            ) {
+                onlineasm!(*masm.assembler(); jmp {edge};);
+            } else {
+                context.metadata(
+                    masm,
+                    OpTailCallSelf::METADATA_KIND,
+                    OpTailCallSelf::METADATA_LINK,
+                    tmp::T0,
+                    tmp::T2,
+                );
+                jit_miss(masm, RuntimeExtern::IcMissTcall, tmp::T0, sfp);
+            }
         } else {
             context.control(masm, SlowPath::CallSlow);
         }

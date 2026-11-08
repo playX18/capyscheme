@@ -37,6 +37,13 @@ pub(crate) enum Reloc {
         index: usize,
         pc: usize,
     },
+    /// Word `index` of the dense switch table at `table` becomes the address
+    /// of the block at `target`.
+    TableLabel {
+        table: Label,
+        index: usize,
+        target: Label,
+    },
     /// The patchable load at `at` becomes the address of the pending lazy
     /// cell `pending` (an index into the emission's pending cells).
     Cell { at: Label, pending: usize },

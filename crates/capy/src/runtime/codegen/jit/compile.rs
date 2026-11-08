@@ -2,7 +2,8 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
+use std::mem::size_of;
+use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
 use bytecodegen::OperandWidth;
 use onlineasm::Label;
@@ -11,30 +12,36 @@ use super::super::addr::BytecodePc;
 use super::super::emission::{Emission, Layout, Linked};
 use super::super::image::LoadedImage;
 use super::super::lazy::ErasedCell;
+use super::super::lazy::edge::encode_jump;
 use super::super::masm::{HeaderTarget, Masm, SymbolKind, TOPLINK_TO_IMAGE_START};
+use super::super::opt::OptimizingCompiler;
 use super::super::reloc::Reloc;
 use super::super::template::emit;
 use super::super::template_image::{declare_slow_paths, ensure_loaded};
-use super::super::unit::{CodeUnit, Listing, Native, Tier};
-use super::config::{Bisect, COMPILES, bisect, template_interpreter};
+use super::super::unit::{Annotation, CodeUnit, Listing, OptInfo, PublishedCode, Tier};
+use super::config::{
+    Bisect, COMPILES, OPT_BUILD_FAILURES, OPT_INSTALLS, bisect, template_interpreter,
+};
 use super::context::{DecodedInstruction, JitTemplateContext, ProcTargets, ProfileSpec};
-use super::registry::{DataRange, InstructionRange, LIVE_CODE_BYTES, NEXT_ID, ResumeTable};
+use super::entry::emit_optimized_redirect;
+use super::registry::{DataRange, InstructionRange, NEXT_ID, ResumeTable};
 use crate::bytecode::def::{self, MV_ERROR, OpcodeId};
 use crate::heap::{Gc, barrier};
 use crate::runtime::MutationContext;
+use crate::runtime::code_memory::code_memory;
+use crate::runtime::objectmodel::{CodeBlock, CodeBuffer, CodeImage, Value};
 use crate::runtime::sabi::{self, RpCompactHeader};
-use crate::runtime::value::{CodeBlock, CodeBuffer, CodeImage, Promotion};
 use crate::utils::flags;
 use mmtk::util::Address;
 
-pub(crate) fn compile_allowed<'gc>(code_block: Gc<'gc, CodeBlock<'gc>>) -> bool {
-    let constant_pointer = Address::from_ptr(code_block.buffer.entry());
+pub(crate) fn compile_allowed<'gc>(
+    code_block: Gc<'gc, CodeBlock<'gc>>,
+    partition: super::super::cache::Partition,
+) -> bool {
+    let label = crate::runtime::objectmodel::proc::procedure_label(code_block);
 
-    if LIVE_CODE_BYTES.load(Relaxed) >= flags::jit_max_code() {
-        super::super::reclaim::drain();
-    }
-    if LIVE_CODE_BYTES.load(Relaxed) >= flags::jit_max_code() {
-        log::info!(target: crate::heap::logging::JIT_LOG_TARGET, "skip constant_pointer={constant_pointer} (over the code budget)");
+    if !super::super::cache::admit(partition, 0) {
+        log::info!(target: crate::heap::logging::JIT_LOG_TARGET, "skip {label} (over the code budget)");
 
         return false;
     }
@@ -45,13 +52,13 @@ pub(crate) fn compile_allowed<'gc>(code_block: Gc<'gc, CodeBlock<'gc>>) -> bool 
         Bisect::PastLimit(limit) => {
             log::info!(
                 target: crate::heap::logging::JIT_LOG_TARGET,
-                "skip constant_pointer={constant_pointer} (past CAPY_JIT_LIMIT={limit})"
+                "skip {label} (past CAPY_JIT_LIMIT={limit})"
             );
 
             false
         }
         Bisect::FilteredOut => {
-            log::info!(target: crate::heap::logging::JIT_LOG_TARGET, "jit: skip constant_pointer={constant_pointer} (filtered out)");
+            log::info!(target: crate::heap::logging::JIT_LOG_TARGET, "jit: skip {label} (filtered out)");
 
             false
         }
@@ -64,16 +71,14 @@ pub(crate) fn log_tier_up_request<'gc>(
     threshold: u32,
     id: usize,
 ) {
+    let label = crate::runtime::objectmodel::proc::procedure_label(code_block);
     log::info!(
         target: crate::heap::logging::JIT_LOG_TARGET,
-        "tier-up constant_pointer={} {} (heat={heat} threshold={threshold})",
-        code_block.buffer.entry() as usize,
-        code_block.metadata.get(),
+        "tier-up {label} (heat={heat} threshold={threshold})"
     );
     log::info!(
         target: crate::heap::logging::JIT_LOG_TARGET,
-        "#{id}: {} ({} bytes of bytecode)",
-        code_block.metadata.get(),
+        "#{id}: {label} ({} bytes of bytecode)",
         code_block.code().len()
     );
 
@@ -144,7 +149,7 @@ fn falls_through(instructions: &[(usize, OpcodeId, OperandWidth, usize)], index:
     }
 }
 
-pub(crate) struct CompileRequest<'a> {
+pub(crate) struct CompileRequest<'a, 'gc> {
     /// The bytecode.
     pub(crate) code: &'a [u8],
     /// The metadata area, 0 for none.
@@ -153,14 +158,25 @@ pub(crate) struct CompileRequest<'a> {
     pub(crate) pool: &'a [u32],
     /// The procedure's `file:line:col` for the image symbol.
     pub(crate) label: Option<&'a str>,
+    /// The procedure, rooted by the caller for the whole build.
+    pub(crate) code_block: Gc<'gc, CodeBlock<'gc>>,
+    /// The closure whose entry requested the compile, when known. Only
+    /// Tier 2 reads it (to fold globals through its free variables).
+    pub(crate) closure: Option<Gc<'gc, crate::runtime::objectmodel::proc::Closure<'gc>>>,
+    /// The mutation scope the build runs in.
+    pub(crate) mutation: MutationContext<'gc>,
 }
 
 pub(crate) trait TierCompiler: Send + Sync {
     /// The tier this compiler produces.
     fn tier(&self) -> Tier;
 
-    /// Compile `req`
-    fn build(&self, req: &CompileRequest<'_>) -> io::Result<Option<BuiltUnit>>;
+    /// Compile `req` into `masm`
+    fn build<'a, 'gc>(
+        &self,
+        req: &CompileRequest<'a, 'gc>,
+        masm: &mut Masm,
+    ) -> io::Result<Option<BuiltUnit<'gc>>>;
 }
 
 /// The baseline compiler: the interpreter's templates with operands as
@@ -172,8 +188,12 @@ impl TierCompiler for BaselineCompiler {
         Tier::Baseline
     }
 
-    fn build(&self, req: &CompileRequest<'_>) -> io::Result<Option<BuiltUnit>> {
-        build_image(req.code, req.md, req.pool, req.label)
+    fn build<'a, 'gc>(
+        &self,
+        req: &CompileRequest<'a, 'gc>,
+        masm: &mut Masm,
+    ) -> io::Result<Option<BuiltUnit<'gc>>> {
+        build_image(masm, req.code, req.md, req.pool, req.label)
     }
 }
 
@@ -181,32 +201,334 @@ impl TierCompiler for BaselineCompiler {
 pub(crate) fn compiler_for(tier: Tier) -> Option<Box<dyn TierCompiler>> {
     match tier {
         Tier::Baseline => Some(Box::new(BaselineCompiler)),
-        Tier::Lbbv | Tier::Optimizing | Tier::Trace => None,
+        Tier::Optimizing => Some(Box::new(OptimizingCompiler)),
+        Tier::Lbbv | Tier::Trace => None,
     }
+}
+
+/// Record the outcome of a Tier 2 build for `code_block`. A finished unit is
+/// installed as the block's optimized code. Any other outcome leaves the
+/// block on baseline code, and `Failed` is terminal.
+pub(crate) fn finish_optimized<'gc>(
+    mutator: MutationContext<'gc>,
+    code_block: Gc<'gc, CodeBlock<'gc>>,
+    id: usize,
+    generation: super::super::install::Generation,
+    result: Result<BuiltUnit<'gc>, ()>,
+) {
+    let installed = match result {
+        Ok(built) => install_optimized(mutator, code_block, built, id, generation).map_err(|err| {
+            log::warn!(
+                target: crate::heap::logging::JIT_LOG_TARGET,
+                "job #{id} cannot install optimized code: {err}"
+            );
+        }),
+        Err(()) => Err(()),
+    };
+    if installed.is_err() {
+        // A failed build may be transient (an install race, a worker panic,
+        // a worker evicted at the wrong moment). Retry it up to
+        // `MAX_RECOMPILES` times instead of dropping the procedure to
+        // baseline forever
+        if flags::jit_stats() {
+            OPT_BUILD_FAILURES.fetch_add(1, Relaxed);
+        }
+        let next = code_block.fail_opt(generation);
+        log::warn!(
+            target: crate::heap::logging::JIT_LOG_TARGET,
+            "job #{id}: optimized build failed; state {next:?}"
+        );
+    }
+}
+
+/// Install a finished Tier 2 unit as `code_block`'s optimized code.
+fn install_optimized<'gc>(
+    mutator: MutationContext<'gc>,
+    code_block: Gc<'gc, CodeBlock<'gc>>,
+    built: BuiltUnit<'gc>,
+    id: usize,
+    generation: super::super::install::Generation,
+) -> io::Result<()> {
+    let BuiltUnit {
+        tier,
+        loaded,
+        rows,
+        entry_addr,
+        cells,
+        masks,
+        ranges,
+        code_start,
+        annotations,
+        data,
+        slows_start_off,
+        end_off,
+        owner_at,
+        opt,
+        constants,
+        dependencies,
+        class_dependencies,
+    } = built;
+    let opt: OptInfo = opt.ok_or_else(|| io::Error::other("an optimized build has no OptInfo"))?;
+    if code_block.machine.load(Acquire).is_none() {
+        return Err(io::Error::other("no baseline unit to fall back to"));
+    }
+    let sites = opt.constant_sites.clone();
+
+    let mut refs = vec![Value::null(); 1 + constants.len() + 1];
+    let refs_base = refs.as_ptr() as usize;
+    let perf_start = loaded.base().as_usize() + code_start;
+    let perf_end = loaded.base().as_usize() + end_off;
+    let mut unit = CodeUnit::new(
+        tier,
+        loaded,
+        entry_addr,
+        ResumeTable::new(rows, cells),
+        masks,
+        id,
+        Address::from_ptr(code_block.buffer.entry()),
+        Listing {
+            code_start,
+            ranges,
+            annotations,
+            data,
+            slows_start: slows_start_off,
+            code_end: end_off,
+        },
+    );
+    for &(at, slot) in &sites {
+        if slot == 0 || slot as usize > constants.len() {
+            return Err(io::Error::other(format!(
+                "constant table slot {slot} is missing"
+            )));
+        }
+        let addr = refs_base + slot as usize * size_of::<Value>();
+        unit.image.patch(at.get(), &(addr as u64).to_ne_bytes())?;
+    }
+    unit.generation = generation;
+    unit.opt = Some(opt);
+    let owner = CodeImage::alloc(mutator, PublishedCode::Unit(unit));
+    let unit = CodeUnit::of_image(owner).expect("an owner of a unit holds one");
+    unit.resume.bind();
+    // The baseline image is read now, after the allocation, from the block
+    // that keeps it alive.
+    let baseline = code_block
+        .machine
+        .get()
+        .ok_or_else(|| io::Error::other("no baseline unit to fall back to"))?;
+    refs[0] = Value::from(baseline);
+    for (slot, constant) in refs[1..].iter_mut().zip(&constants) {
+        *slot = *constant;
+    }
+
+    if !flags::jit_stable_entry()
+        && let Some(previous) = code_block.optimized.load(Acquire)
+    {
+        let last = refs.len() - 1;
+        refs[last] = Value::from(previous);
+    }
+    let refs = refs.into_boxed_slice();
+    if refs.as_ptr() as usize != refs_base {
+        return Err(io::Error::other(
+            "the reference box moved before it was owned",
+        ));
+    }
+    // SAFETY: the owner was allocated just above and is unpublished, and the
+    // mutation scope is the one it was allocated in.
+    unsafe { owner.set_refs(refs) };
+    let slot_addr = owner.owner_slot().as_usize() as u64;
+    unit.image
+        .patch_unpublished(owner_at, &slot_addr.to_ne_bytes())?;
+
+    // Register the unit with each global it folded
+    for dependency in &dependencies {
+        let (variable, folded) = (dependency.variable, dependency.value);
+        let variable = variable.downcast::<crate::runtime::variable::Variable>();
+        let set = variable.watch_set(mutator);
+        let registered = crate::runtime::watchpoint::WatchpointSet::add(
+            set,
+            mutator,
+            crate::runtime::watchpoint::Dependent::code(code_block, owner),
+        );
+        std::sync::atomic::fence(AcqRel);
+        if !registered || variable.get() != folded {
+            return Err(io::Error::other(
+                "a global that the unit folded changed during the compile",
+            ));
+        }
+    }
+
+    // Register the unit with each class layout it assumed
+    for dependency in &class_dependencies {
+        let value = dependency.class;
+        let Some(class) = value.try_as::<crate::runtime::objectmodel::class::ClassDescriptor>()
+        else {
+            return Err(io::Error::other(
+                "a class dependency is not a class descriptor",
+            ));
+        };
+        let id = crate::heap::object::ClassId::new(dependency.id)
+            .ok_or_else(|| io::Error::other("a class dependency names no class"))?;
+        let current = crate::runtime::objectmodel::class::class_table(mutator).lookup(id);
+        if current.map(|current| current.as_ptr()) != Some(class.as_ptr())
+            || class.layout_stamp() != dependency.stamp
+        {
+            return Err(io::Error::other(
+                "a class that the unit specialized changed during the compile",
+            ));
+        }
+        let set = class.redefinition_wp();
+
+        let registered = crate::runtime::watchpoint::WatchpointSet::add(
+            set,
+            mutator,
+            crate::runtime::watchpoint::Dependent::code(code_block, owner),
+        );
+        std::sync::atomic::fence(AcqRel);
+        if !registered || class.layout_stamp() != dependency.stamp {
+            return Err(io::Error::other(
+                "a class that the unit specialized was redefined during the compile",
+            ));
+        }
+    }
+    barrier::field!(Gc::write(mutator, code_block), CodeBlock, optimized)
+        .atomic_swap(Some(owner), Release);
+    code_block.entry.publish(unit.entry);
+    if unit
+        .opt
+        .as_ref()
+        .is_some_and(|opt| opt.invalid.load(Acquire) != 0)
+    {
+        if let Some(baseline) = code_block.baseline_entry.entry(Acquire) {
+            let _ = code_block.entry.replace(unit.entry, baseline);
+        } else {
+            code_block.entry.reset_if(unit.entry);
+        }
+        return Err(io::Error::other(
+            "the unit was invalidated while it was installed",
+        ));
+    }
+    if !code_block.commit_opt(generation) {
+        if let Some(baseline) = code_block.baseline_entry.entry(Acquire) {
+            let _ = code_block.entry.replace(unit.entry, baseline);
+        } else {
+            code_block.entry.reset_if(unit.entry);
+        }
+        return Err(io::Error::other("the install was retired while it ran"));
+    }
+
+    super::super::image::publish_perf_map_range(
+        &crate::runtime::objectmodel::proc::procedure_label(code_block),
+        perf_start,
+        perf_end,
+    );
+    if flags::jit_stats() {
+        COMPILES.fetch_add(1, Relaxed);
+        OPT_INSTALLS.fetch_add(1, Relaxed);
+    }
+    log::info!(
+        target: crate::heap::logging::JIT_LOG_TARGET,
+        "#{id}: installed optimized code for {}",
+        crate::runtime::objectmodel::proc::procedure_label(code_block)
+    );
+    log::debug!(
+        target: crate::heap::logging::JIT_LOG_TARGET,
+        "#{id}: {}: optimized entry at {:#x} ({} bytes)",
+        crate::runtime::objectmodel::proc::procedure_label(code_block),
+        unit.entry,
+        unit.image.code_size()
+    );
+    Ok(())
+}
+
+/// Invalidate `code_block`'s optimized code, whose assumption broke.
+pub(crate) fn invalidate_optimized<'gc>(
+    code_block: Gc<'gc, CodeBlock<'gc>>,
+    owner: Gc<'gc, CodeImage<'gc>>,
+) -> Option<super::super::install::Generation> {
+    let Some(unit) = CodeUnit::of_image(owner) else {
+        return None;
+    };
+    let Some(opt) = unit.opt.as_ref() else {
+        return None;
+    };
+    if opt.invalid.load(Acquire) != 0 {
+        return None;
+    }
+    opt.invalid.store(1, std::sync::atomic::Ordering::Release);
+    let generation = unit.generation;
+    let mut retired = None;
+
+    if code_block
+        .optimized
+        .load(Acquire)
+        .map(|current| current.as_ptr())
+        == Some(owner.as_ptr())
+    {
+        match code_block.baseline_entry.entry(Acquire) {
+            Some(baseline) => {
+                let _ = code_block.entry.replace(unit.entry, baseline);
+            }
+            None => code_block.entry.reset_if(unit.entry),
+        }
+
+        if flags::jit_stable_entry() {
+            let _ = code_block
+                .optimized
+                .compare_exchange(Some(owner), None, AcqRel, Acquire);
+        }
+
+        if code_block.retire_opt(generation) {
+            retired = Some(generation);
+        }
+    }
+    let base = unit.image.base();
+    let word = encode_jump(base + opt.entry_jump, base + opt.reheal)
+        .expect("the re-heal stub is within a jump of the entry");
+    let mut span = unit.image.span();
+    // The one store that retargets the entry. A failure would leave the
+    // entry running invalid code, so it is not recoverable.
+    code_memory()
+        .patch_live_u32(&mut span, opt.entry_jump.get(), word)
+        .expect("the entry jump is patchable");
+    retired
 }
 
 /// A compiled unit awaiting attachment: built by a [`TierCompiler`] on a
 /// worker (or the requesting mutator when workers are off), then
-/// [`attach`]ed to its code buffer on a mutator thread.
-pub(crate) struct BuiltUnit {
-    tier: Tier,
-    loaded: LoadedImage,
-    rows: Vec<(BytecodePc, Address)>,
-    entry_addr: Address,
-    cells: Box<[ErasedCell]>,
-    masks: Vec<Box<[u64]>>,
-    ranges: Vec<InstructionRange>,
-    data: Vec<DataRange>,
-    slows_start_off: usize,
-    end_off: usize,
+/// [`attach`]ed to its code buffer on a mutator thread. An optimized unit
+/// carries its [`OptInfo`] and is installed by `install_optimized` instead.
+pub(crate) struct BuiltUnit<'gc> {
+    pub(crate) tier: Tier,
+    pub(crate) loaded: LoadedImage,
+    pub(crate) rows: Vec<(BytecodePc, Address)>,
+    pub(crate) entry_addr: Address,
+    pub(crate) cells: Box<[ErasedCell]>,
+    pub(crate) masks: Vec<Box<[u64]>>,
+    pub(crate) ranges: Vec<InstructionRange>,
+    /// Image offset where the code starts, past the owner word.
+    pub(crate) code_start: usize,
+    /// LIR/IR comments at machine-code offsets, sorted by offset.
+    pub(crate) annotations: Vec<Annotation>,
+    pub(crate) data: Vec<DataRange>,
+    pub(crate) slows_start_off: usize,
+    pub(crate) end_off: usize,
     /// Image offset of the owner word, which [`attach`] patches.
-    owner_at: usize,
+    pub(crate) owner_at: usize,
+    /// Tier 2 metadata, `None` for baseline units.
+    pub(crate) opt: Option<OptInfo>,
+    /// Constant-table values, in reference-slot order. Empty for baseline
+    /// units.
+    pub(crate) constants: Vec<Value<'gc>>,
+    /// Watchpoint assumptions the install registers. Empty for baseline.
+    pub(crate) dependencies: Vec<super::super::unit::Dependency<'gc>>,
+    /// Class layout assumptions the install registers. Empty for baseline.
+    pub(crate) class_dependencies: Vec<super::super::unit::ClassDependency<'gc>>,
 }
 
 pub(crate) fn attach<'gc>(
     mutator: MutationContext<'gc>,
     buffer: Gc<'gc, CodeBuffer<'gc>>,
-    built: BuiltUnit,
+    built: BuiltUnit<'gc>,
     id: usize,
 ) -> io::Result<()> {
     // Release what the last collections found dead
@@ -219,12 +541,22 @@ pub(crate) fn attach<'gc>(
         cells,
         masks,
         ranges,
+        code_start,
+        annotations,
         data,
         slows_start_off,
         end_off,
         owner_at,
+        opt,
+        constants,
+        dependencies,
+        class_dependencies,
     } = built;
-    let unit = CodeUnit::new(
+    debug_assert!(
+        constants.is_empty() && dependencies.is_empty() && class_dependencies.is_empty(),
+        "baseline units carry no constant table or watchpoint assumptions"
+    );
+    let mut unit = CodeUnit::new(
         tier,
         loaded,
         entry_addr,
@@ -233,16 +565,19 @@ pub(crate) fn attach<'gc>(
         id,
         Address::from_ptr(buffer.entry()),
         Listing {
+            code_start,
             ranges,
+            annotations,
             data,
             slows_start: slows_start_off,
             code_end: end_off,
         },
     );
+    unit.opt = opt;
 
     // The owner holds the unit. Its slot never moves, and its address goes
     // into the code's header before the code is published.
-    let owner = CodeImage::alloc(mutator, Native::Unit(unit));
+    let owner = CodeImage::alloc(mutator, PublishedCode::Unit(unit));
     let unit = CodeUnit::of_image(owner).expect("an owner of a unit holds one");
     // The unit sits where it stays: its cells can point at its table.
     unit.resume.bind();
@@ -277,11 +612,11 @@ fn publish<'gc>(mutator: MutationContext<'gc>, code_block: Gc<'gc, CodeBlock<'gc
         );
     }
     barrier::field!(Gc::write(mutator, code_block), CodeBlock, machine)
-        .unlock()
-        .set(Some(owner));
+        .atomic_swap(Some(owner), Release);
     // Publish the resume table before the entry: a resume that observes the
     // entry then always finds the table.
-    code_block.jit_entry.publish(unit.entry);
+    code_block.baseline_entry.publish(unit.entry);
+    code_block.entry.publish(unit.entry);
     if flags::jit_stats() {
         COMPILES.fetch_add(1, Relaxed);
     }
@@ -291,20 +626,12 @@ fn publish<'gc>(mutator: MutationContext<'gc>, code_block: Gc<'gc, CodeBlock<'gc
 
 /// Mark `code_block` never to compile.
 pub(crate) fn poison(code_block: Gc<'_, CodeBlock<'_>>) {
-    code_block.jit_entry.poison();
+    code_block.entry.poison();
 }
 
 /// Take the right to install `code_block`'s attached code, once.
 fn claim_install(code_block: Gc<'_, CodeBlock<'_>>) -> bool {
-    code_block
-        .promotion
-        .compare_exchange(
-            Promotion::Submitted as u8,
-            Promotion::Installed as u8,
-            AcqRel,
-            Relaxed,
-        )
-        .is_ok()
+    code_block.commit_baseline(code_block.install.generation())
 }
 
 /// Install the code a compile attached to `code_block`'s buffer, if the
@@ -316,7 +643,7 @@ pub(crate) fn install<'gc>(
     mutator: MutationContext<'gc>,
     code_block: Gc<'gc, CodeBlock<'gc>>,
 ) -> bool {
-    if code_block.jit_entry.is_decided(Acquire) {
+    if code_block.entry.is_decided(Acquire) {
         return true;
     }
     let buffer = code_block.buffer;
@@ -325,7 +652,7 @@ pub(crate) fn install<'gc>(
         return true;
     }
     if buffer.built.is_none() || !claim_install(code_block) {
-        return code_block.jit_entry.is_decided(Acquire);
+        return code_block.entry.is_decided(Acquire);
     }
     if !publish(mutator, code_block) {
         poison(code_block);
@@ -340,7 +667,7 @@ pub fn compile<'gc>(
     mutator: MutationContext<'gc>,
     code_block: Gc<'gc, CodeBlock<'gc>>,
 ) -> io::Result<()> {
-    if code_block.jit_entry.is_decided(Acquire) || !claim_compile(code_block) {
+    if code_block.entry.is_decided(Acquire) || !claim_compile(code_block) {
         return Ok(());
     }
     let id = NEXT_ID.fetch_add(1, Relaxed);
@@ -355,15 +682,7 @@ pub fn compile<'gc>(
 /// until its code is installed. A second image would replace the first's
 /// owner while closures healed to the first still jump into it.
 pub(crate) fn claim_compile(code_block: Gc<'_, CodeBlock<'_>>) -> bool {
-    code_block
-        .promotion
-        .compare_exchange(
-            Promotion::Interpreted as u8,
-            Promotion::Submitted as u8,
-            AcqRel,
-            Relaxed,
-        )
-        .is_ok()
+    code_block.claim_baseline_compile().is_some()
 }
 
 /// Build, attach and install `code_block`'s code on the calling thread.
@@ -378,14 +697,20 @@ pub(crate) fn compile_claimed<'gc>(
     // Compiled code jumps into the interpreter image.
     ensure_loaded();
     let buffer = code_block.buffer;
-    let label = crate::runtime::value::proc::procedure_span_short(mutator, code_block);
+    let label = Some(crate::runtime::objectmodel::proc::procedure_label(
+        code_block,
+    ));
     let request = CompileRequest {
         code: code_block.code(),
         md: Address::from_ptr(buffer.metadata()),
         pool: buffer.pool(),
         label: label.as_deref(),
+        code_block,
+        closure: None,
+        mutation: mutator,
     };
-    let Some(built) = compiler.build(&request)? else {
+    let mut masm = Masm::new();
+    let Some(built) = compiler.build(&request, &mut masm)? else {
         // Over the per-block limit: never retry.
         poison(code_block);
         return Ok(());
@@ -398,18 +723,20 @@ pub(crate) fn compile_claimed<'gc>(
 }
 
 /// Build (but do not publish) the image for live code
-fn build_image(
+fn build_image<'gc>(
+    masm: &mut Masm,
     code: &[u8],
     md: Address,
     pool: &[u32],
     label: Option<&str>,
-) -> std::io::Result<Option<BuiltUnit>> {
+) -> std::io::Result<Option<BuiltUnit<'gc>>> {
     let entry = code.as_ptr();
     let constant_pointer = Address::from_ptr(entry);
+    let display = label.unwrap_or("<unknown procedure>");
 
     log::debug!(
         target: crate::heap::logging::JIT_LOG_TARGET,
-        "constant_pointer={constant_pointer} md={md} pool={} words",
+        "{display}: pool={} words",
         pool.len()
     );
 
@@ -423,14 +750,19 @@ fn build_image(
         pc += len;
     }
 
-    let mut masm = Masm::new();
-    let paths = declare_slow_paths(&mut masm);
+    masm.reset();
+    let paths = declare_slow_paths(masm);
     let start = masm.label();
     masm.bind(start);
     // The chunk header: the owner slot's address, patched at publish.
     let owner = masm.label();
     masm.bind(owner);
     masm.reserve_words(8);
+
+    let redirect = masm.label();
+    masm.bind(redirect);
+    let mut emission = Emission::default();
+    emit_optimized_redirect(masm, &mut emission, redirect);
     let labels: HashMap<usize, Label> = instructions
         .iter()
         .map(|(pc, ..)| (*pc, masm.label()))
@@ -442,7 +774,6 @@ fn build_image(
         .expect("a procedure compiles at least one instruction");
     // SAFETY: `first_pc` is a decoded instruction start within the code.
     let first_ip = unsafe { entry.add(first_pc) };
-    let mut emission = Emission::default();
     let mut context = JitTemplateContext::new(
         DecodedInstruction {
             op: first_op,
@@ -552,7 +883,7 @@ fn build_image(
             },
             fallthrough,
         );
-        emit::emit_template(&mut masm, &mut context, op);
+        emit::emit_template(masm, &mut context, op);
     }
     let labels = context.into_targets().into_labels();
     emission.reloc(Reloc::OwnerSlot { at: owner });
@@ -560,17 +891,12 @@ fn build_image(
     // above falls through to the next instruction.
     let slows_start = masm.label();
     masm.bind(slows_start);
-    emission.emit_deferred(&mut masm, paths);
+    emission.emit_deferred(masm, paths);
     let end = masm.label();
     masm.bind(end);
     masm.cfi_region(start, end, sabi::SCHEME_ENTRY_CFA_OFFSET as u32);
-    // Span-annotated when the block carries its procedure's source, so
-    // `CAPY_PERF_MAP` lines attribute JIT code to `file:line:col`, bare
-    // otherwise (yesterday's format, still parseable).
-    let name = match label {
-        Some(span) => format!("jit:{constant_pointer} {span}"),
-        None => format!("jit:{constant_pointer}"),
-    };
+
+    let name = format!("jit:{}", display.replace(char::is_whitespace, "_"));
     masm.define_symbol(&name, start, end, SymbolKind::Function);
 
     let image = masm.finish().map_err(std::io::Error::other)?;
@@ -582,7 +908,7 @@ fn build_image(
     if bytes > block_limit {
         log::info!(
             target: crate::heap::logging::JIT_LOG_TARGET,
-            "{constant_pointer} exceeds the per-block code limit ({bytes} > {block_limit} bytes)"
+            "{display} exceeds the per-block code limit ({bytes} > {block_limit} bytes)"
         );
 
         return Ok(None);
@@ -597,6 +923,7 @@ fn build_image(
         ranges,
         slows_start_off,
         end_off,
+        entry_off,
         owner_at,
     } = emission.link(
         image,
@@ -605,13 +932,14 @@ fn build_image(
             pcs: &pcs,
             slows_start,
             end,
+            entry: Some(redirect),
         },
     )?;
     let base = loaded.base();
 
     log::debug!(
         target: crate::heap::logging::JIT_LOG_TARGET,
-        "constant_pointer={constant_pointer} sites={}",
+        "{display}: sites={}",
         cells.len()
     );
 
@@ -624,13 +952,20 @@ fn build_image(
             )
         })
         .collect();
-    let entry_addr = base + offsets[&0];
+    let entry_addr = base + entry_off.expect("a baseline unit names its entry");
 
-    log::info!(target: crate::heap::logging::JIT_LOG_TARGET, "base={base}, entry={entry_addr}");
+    log::info!(
+        target: crate::heap::logging::JIT_LOG_TARGET,
+        "{display}: loaded {bytes} bytes"
+    );
+    log::debug!(
+        target: crate::heap::logging::JIT_LOG_TARGET,
+        "{display}: base={base}, entry={entry_addr}"
+    );
     if log::log_enabled!(target: crate::heap::logging::JIT_LOG_TARGET, log::Level::Debug) {
         let mut sorted = rows.clone();
         sorted.sort();
-        log::debug!(target: crate::heap::logging::JIT_LOG_TARGET, "labels={sorted:x?}")
+        log::debug!(target: crate::heap::logging::JIT_LOG_TARGET, "{display}: labels={sorted:x?}")
     }
 
     Ok(Some(BuiltUnit {
@@ -640,10 +975,16 @@ fn build_image(
         entry_addr,
         cells,
         masks,
+        code_start: ranges.first().map_or(0, |range| range.offset),
         ranges,
+        annotations: Vec::new(),
         data,
         slows_start_off,
         end_off,
         owner_at,
+        opt: None,
+        constants: Vec::new(),
+        dependencies: Vec::new(),
+        class_dependencies: Vec::new(),
     }))
 }

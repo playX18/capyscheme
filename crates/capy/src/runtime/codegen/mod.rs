@@ -8,13 +8,16 @@ macro_rules! unsupported_target {
 }
 
 pub mod addr;
+pub(crate) mod cache;
 pub(crate) mod emission;
 pub mod gc;
 pub mod image;
+pub(crate) mod install;
 pub mod jit;
 pub(crate) mod lazy;
 pub mod masm;
 pub mod operation;
+pub(crate) mod opt;
 pub(crate) mod reclaim;
 pub(crate) mod reloc;
 pub mod slow;

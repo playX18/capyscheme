@@ -17,7 +17,7 @@ use crate::runtime::interp::template_interp::{
     InterpreterTemplateContext, MAP_ENTER_SLOT, MAP_TABLE_SLOTS,
 };
 use crate::runtime::sabi;
-use crate::runtime::value::NativeReturn;
+use crate::runtime::objectmodel::NativeReturn;
 use crate::runtime::{Engine, MutationContext};
 
 /// Proves the template consts are reachable from the generator. Decoding
@@ -180,6 +180,7 @@ pub(crate) fn declare_slow_paths(masm: &mut Masm) -> SlowPaths {
         hot_loop: masm.declare_rust_fn(RuntimeExtern::HotLoop),
         overflow: masm.declare_rust_fn(RuntimeExtern::Overflow),
         arity: masm.declare_rust_fn(RuntimeExtern::Arity),
+        enter_case: masm.declare_rust_fn(RuntimeExtern::EnterCase),
         call_slow: masm.declare_rust_fn(RuntimeExtern::CallSlow),
         return_mv: masm.declare_rust_fn(RuntimeExtern::ReturnMv),
         raise: masm.declare_rust_fn(RuntimeExtern::Raise),
@@ -238,7 +239,7 @@ fn generate() -> io::Result<(LoadedImage, [[HandlerKind; 256]; 3])> {
     masm.define_symbol("exit_glue", exit_glue, exit_glue_end, SymbolKind::Glue);
 
     let scheme_exit = masm.emit_rp_header_self(0, 0, 0);
-    stubs::emit_stub(&mut masm, exit_path);
+    stubs::emit_stub(&mut masm, exit_path, true);
     let scheme_exit_end = masm.label();
     masm.bind(scheme_exit_end);
     masm.define_symbol(
@@ -251,7 +252,7 @@ fn generate() -> io::Result<(LoadedImage, [[HandlerKind; 256]; 3])> {
     macro_rules! stub_with_header {
         ($name:literal, $path:expr, $livemask:expr, $frame_size:expr) => {{
             let ra = masm.emit_rp_header_self($livemask, 0, $frame_size);
-            stubs::emit_stub(&mut masm, $path);
+            stubs::emit_stub(&mut masm, $path, true);
             let end = masm.label();
             masm.bind(end);
             masm.define_symbol($name, ra, end, SymbolKind::Stub);
@@ -261,7 +262,7 @@ fn generate() -> io::Result<(LoadedImage, [[HandlerKind; 256]; 3])> {
         ($name:literal, $path:expr) => {{
             let start = masm.label();
             masm.bind(start);
-            stubs::emit_stub(&mut masm, $path);
+            stubs::emit_stub(&mut masm, $path, false);
             let end = masm.label();
             masm.bind(end);
             masm.define_symbol($name, start, end, SymbolKind::Stub);

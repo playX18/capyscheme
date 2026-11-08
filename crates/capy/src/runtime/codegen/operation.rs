@@ -105,8 +105,15 @@ pub(crate) fn emit_operation_call(
         OpResult::None => None,
     };
 
-    // The frame: every register to spill, each argument, then both
-    // return words.
+    let (a0, a1, a2, a3, a4) = stubs::arg_regs5();
+    let dests = [a1, a2, a3, a4];
+    let direct = call.args.len() <= dests.len()
+        && call.args.iter().enumerate().all(|(index, arg)| match *arg {
+            OpArg::Imm(_) => true,
+            OpArg::Reg(reg) => reg == dests[index],
+            _ => false,
+        });
+
     let mut saved: Vec<VReg> = Vec::new();
     let mut save = |reg: VReg| {
         if !saved.contains(&reg) {
@@ -117,10 +124,12 @@ pub(crate) fn emit_operation_call(
         .chain(&call.preserve)
         .copied()
         .for_each(&mut save);
-    for arg in &call.args {
-        match *arg {
-            OpArg::Reg(reg) | OpArg::Scaled { reg, .. } => save(reg),
-            _ => {}
+    if !direct {
+        for arg in &call.args {
+            match *arg {
+                OpArg::Reg(reg) | OpArg::Scaled { reg, .. } => save(reg),
+                _ => {}
+            }
         }
     }
     if let OpTarget::PrimIndexed(reg) = call.target {
@@ -134,7 +143,7 @@ pub(crate) fn emit_operation_call(
         );
     }
     let arg_base = saved.len();
-    let ret_base = arg_base + call.args.len();
+    let ret_base = arg_base + if direct { 0 } else { call.args.len() };
     let bytes = (8 * (ret_base + 2)).next_multiple_of(16);
     let sp = onlineasm::regs::sp;
     let at = |masm: &mut Masm, index: usize| masm.assembler().mem(sp, 8 * index as i32);
@@ -149,47 +158,54 @@ pub(crate) fn emit_operation_call(
         onlineasm!(*masm.assembler(); storeq {slot}, {*reg};);
     }
 
-    // Stage: every register source reads its spilled copy, so the scratch
-    // may be any of them.
-    let scratch = tmp::T0;
-    for (index, arg) in call.args.iter().enumerate() {
-        match *arg {
-            OpArg::Imm(value) => onlineasm!(*masm.assembler(); move {scratch}, {value};),
-            OpArg::Reg(reg) => {
-                let from = saved_at(masm, reg);
-                onlineasm!(*masm.assembler(); loadq {scratch}, {from};);
-            }
-            OpArg::Scaled { reg, shift, add } => {
-                let from = saved_at(masm, reg);
-                onlineasm!(*masm.assembler(); loadq {scratch}, {from};);
-                if shift != 0 {
-                    onlineasm!(*masm.assembler(); lshiftq {scratch}, {shift as i64};);
+    // Stage arguments: every register source reads its spilled copy, so the
+    // scratch may be any of them. A direct call skips this and reads its
+    // arguments from the ABI registers they are already in.
+    if !direct {
+        let scratch = tmp::T0;
+        for (index, arg) in call.args.iter().enumerate() {
+            match *arg {
+                OpArg::Imm(value) => onlineasm!(*masm.assembler(); move {scratch}, {value};),
+                OpArg::Reg(reg) => {
+                    let from = saved_at(masm, reg);
+                    onlineasm!(*masm.assembler(); loadq {scratch}, {from};);
                 }
-                if add != 0 {
-                    onlineasm!(*masm.assembler(); addp {scratch}, {scratch}, {add};);
+                OpArg::Scaled { reg, shift, add } => {
+                    let from = saved_at(masm, reg);
+                    onlineasm!(*masm.assembler(); loadq {scratch}, {from};);
+                    if shift != 0 {
+                        onlineasm!(*masm.assembler(); lshiftq {scratch}, {shift as i64};);
+                    }
+                    if add != 0 {
+                        onlineasm!(*masm.assembler(); addp {scratch}, {scratch}, {add};);
+                    }
                 }
+                OpArg::FrameSlot(slot) => {
+                    let from = masm.assembler().mem(regs::SFP, 8 * slot);
+                    onlineasm!(*masm.assembler(); loadq {scratch}, {from};);
+                }
+                OpArg::Field { .. } | OpArg::Slot(_) => load(masm, *arg, scratch),
             }
-            OpArg::FrameSlot(slot) => {
-                let from = masm.assembler().mem(regs::SFP, 8 * slot);
-                onlineasm!(*masm.assembler(); loadq {scratch}, {from};);
-            }
-            OpArg::Field { .. } | OpArg::Slot(_) => load(masm, *arg, scratch),
+            let to = at(masm, arg_base + index);
+            onlineasm!(*masm.assembler(); storeq {to}, {scratch};);
         }
-        let to = at(masm, arg_base + index);
-        onlineasm!(*masm.assembler(); storeq {to}, {scratch};);
     }
 
     // Call. `T2`/`T3` are no C argument register on either target.
     masm.save_scheme_state_below(bytes);
-    let (a0, a1, a2, a3, a4) = stubs::arg_regs5();
     onlineasm!(*masm.assembler(); move {a0}, {regs::TC};);
-    for (index, reg) in [a1, a2, a3, a4]
-        .into_iter()
-        .take(call.args.len())
-        .enumerate()
-    {
-        let from = at(masm, arg_base + index);
-        onlineasm!(*masm.assembler(); loadq {reg}, {from};);
+    if direct {
+        for (index, arg) in call.args.iter().enumerate() {
+            if let OpArg::Imm(value) = *arg {
+                let dest = dests[index];
+                onlineasm!(*masm.assembler(); move {dest}, {value};);
+            }
+        }
+    } else {
+        for (index, reg) in dests.into_iter().take(call.args.len()).enumerate() {
+            let from = at(masm, arg_base + index);
+            onlineasm!(*masm.assembler(); loadq {reg}, {from};);
+        }
     }
     match call.target {
         OpTarget::Runtime(helper) => {

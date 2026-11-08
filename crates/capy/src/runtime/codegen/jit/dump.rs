@@ -21,24 +21,27 @@ use crate::bytecode::def::Instruction;
 use crate::compiler::bytecode::disasm::disassemble_insn;
 use crate::heap::Gc;
 use crate::runtime::gdb_jit::{JitSymbol, build_symfile};
-use crate::runtime::value::{CodeBlock, CodeBlockKind};
+use crate::runtime::objectmodel::{CodeBlock, CodeBlockKind};
 use crate::utils::flags;
 
 /// The listing of `code_block`'s compiled code, or `None` when it has
 /// none: bytecode interleaved with native disassembly, with embedded
-/// data as words.
-pub fn listing_for(code_block: Gc<'_, CodeBlock<'_>>) -> Option<String> {
+/// data as words. Shows the installed optimizing-tier unit when there is
+/// one (whole-image, since its blocks have no per-bytecode ranges), else
+/// the baseline unit. Each machine instruction carries a `; LIR ...`
+/// comment when the unit was compiled with `CAPY_OPT_ANNOTATE`.
+pub fn listing_for<'gc>(code_block: Gc<'gc, CodeBlock<'gc>>) -> Option<String> {
     if code_block.kind != CodeBlockKind::Bytecode {
         return None;
     }
     let code = code_block.code();
-    let snapshot = snapshot_of(&code_block)?;
+    let snapshot = snapshot_of(code_block)?;
     Some(render(&snapshot, code, &code_block.buffer.pool()))
 }
 
 /// Write `code_block`'s listing and ELF to `CAPY_JIT_DUMP_DIR`, if set.
 /// Failures warn and leave compilation alone: dumps are debugging aids.
-pub(crate) fn maybe_dump(code_block: Gc<'_, CodeBlock<'_>>) {
+pub(crate) fn maybe_dump<'gc>(code_block: Gc<'gc, CodeBlock<'gc>>) {
     let Some(dir) = flags::jit_dump_dir() else {
         return;
     };
@@ -46,11 +49,12 @@ pub(crate) fn maybe_dump(code_block: Gc<'_, CodeBlock<'_>>) {
         return;
     }
     let code = code_block.code();
-    let Some(snapshot) = snapshot_of(&code_block) else {
+    let Some(snapshot) = snapshot_of(code_block) else {
         return;
     };
     if let Err(err) = dump_to_dir(dir, &snapshot, code, &code_block.buffer.pool()) {
-        log::warn!(target: crate::heap::logging::JIT_LOG_TARGET, " cannot write dump to {}: {err}", dir.display());
+        crate::heap::logging::ensure_max_level(log::LevelFilter::Info);
+        log::warn!(target: crate::heap::logging::DUMP_LOG_TARGET, "cannot write dump to {}: {err}", dir.display());
     }
 }
 
@@ -64,16 +68,16 @@ pub(crate) fn dump_to_dir(
 ) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let stem = format!(
-        "jit-{:04}-{:x}",
+        "jit-{:04}-{}",
         snapshot.id,
-        snapshot.constant_pointer.as_usize()
+        crate::runtime::codegen::opt::file_safe(&snapshot.label)
     );
     std::fs::write(
         dir.join(format!("{stem}.txt")),
         render(snapshot, bytecode, pool),
     )?;
-    let name = format!("jit:{:#x}", snapshot.constant_pointer.as_usize());
-    let entry = snapshot.ranges.first().map_or(0, |range| range.offset);
+    let name = format!("jit:{}", snapshot.label.replace(char::is_whitespace, "_"));
+    let entry = snapshot.code_start;
     let symbols = [JitSymbol {
         name: &name,
         address: snapshot.base.as_usize() + entry,
@@ -82,10 +86,12 @@ pub(crate) fn dump_to_dir(
     let elf = build_symfile(snapshot.base.as_usize(), &snapshot.bytes, &symbols, None);
     std::fs::write(dir.join(format!("{stem}.elf")), elf)?;
 
+    crate::heap::logging::ensure_max_level(log::LevelFilter::Info);
     log::info!(
-        target: crate::heap::logging::JIT_LOG_TARGET,
-        "#{}: dumped to {}/{stem}.{{elf,txt}}",
+        target: crate::heap::logging::DUMP_LOG_TARGET,
+        "#{} {}: dumped to {}/{stem}.{{elf,txt}}",
         snapshot.id,
+        snapshot.label,
         dir.display()
     );
 
@@ -94,21 +100,35 @@ pub(crate) fn dump_to_dir(
 
 fn render(snapshot: &CompiledSnapshot, bytecode: &[u8], pool: &[u32]) -> String {
     let mut out = String::new();
-    let entry = snapshot.base.as_usize() + snapshot.ranges.first().map_or(0, |range| range.offset);
-    let instructions = if snapshot.ranges.len() == 1 {
-        "instruction"
+    let entry = snapshot.base.as_usize() + snapshot.code_start;
+    // An optimized unit has no per-bytecode ranges: its blocks do not map
+    // one-to-one to instructions, so its listing shows the whole body.
+    let optimized = snapshot.ranges.is_empty();
+    if optimized {
+        let _ = writeln!(
+            out,
+            "jit #{} {}: optimizing code, {} machine bytes at {:#x} (entry {entry:#x})",
+            snapshot.id,
+            snapshot.label,
+            snapshot.bytes.len(),
+            snapshot.base.as_usize(),
+        );
     } else {
-        "instructions"
-    };
-    let _ = writeln!(
-        out,
-        "jit #{} jit:{:#x}: {} bytecode {instructions}, {} machine bytes at {:#x} (entry {entry:#x})",
-        snapshot.id,
-        snapshot.constant_pointer.as_usize(),
-        snapshot.ranges.len(),
-        snapshot.bytes.len(),
-        snapshot.base.as_usize(),
-    );
+        let instructions = if snapshot.ranges.len() == 1 {
+            "instruction"
+        } else {
+            "instructions"
+        };
+        let _ = writeln!(
+            out,
+            "jit #{} {}: {} bytecode {instructions}, {} machine bytes at {:#x} (entry {entry:#x})",
+            snapshot.id,
+            snapshot.label,
+            snapshot.ranges.len(),
+            snapshot.bytes.len(),
+            snapshot.base.as_usize(),
+        );
+    }
     // The chunk header: the owner slot's address.
     if let Some(word) = snapshot.bytes.get(0..8) {
         let slot = u64::from_le_bytes(word.try_into().expect("eight bytes"));
@@ -119,6 +139,16 @@ fn render(snapshot: &CompiledSnapshot, bytecode: &[u8], pool: &[u32]) -> String 
         );
     }
     let capstone = native_disassembler();
+    if optimized {
+        render_span(
+            &mut out,
+            &capstone,
+            snapshot,
+            snapshot.code_start,
+            snapshot.code_end,
+        );
+        return out;
+    }
     for range in &snapshot.ranges {
         if let Some((ins, width, _)) = Instruction::decode_slice(bytecode, range.pc) {
             let _ = writeln!(out, "  {}", disassemble_insn(&ins, width, range.pc, pool));
@@ -196,6 +226,7 @@ fn render_code(
     end: usize,
 ) {
     let mut decoded = start;
+    let mut comment = None;
     if let Ok(instructions) = capstone.disasm_all(
         &snapshot.bytes[start..end],
         (snapshot.base.as_usize() + start) as u64,
@@ -206,6 +237,13 @@ fn render_code(
                 render_bytes(out, snapshot, decoded, at);
             }
             decoded = decoded.max(at + instruction.len());
+            let annotation = annotation_at(snapshot, at);
+            if annotation != comment {
+                if let Some(text) = annotation {
+                    let _ = writeln!(out, "    ; {text}");
+                }
+                comment = annotation;
+            }
             let _ = match instruction.op_str() {
                 Some(ops) if !ops.is_empty() => writeln!(
                     out,
@@ -256,6 +294,15 @@ fn render_bytes(out: &mut String, snapshot: &CompiledSnapshot, start: usize, end
             bytes.join(", ")
         );
     }
+}
+
+fn annotation_at<'a>(snapshot: &'a CompiledSnapshot, at: usize) -> Option<&'a str> {
+    let end = snapshot
+        .annotations
+        .partition_point(|annotation| annotation.offset <= at);
+    end.checked_sub(1)
+        .map(|index| snapshot.annotations[index].text.as_str())
+        .filter(|text| !text.is_empty())
 }
 
 fn native_disassembler() -> Capstone {

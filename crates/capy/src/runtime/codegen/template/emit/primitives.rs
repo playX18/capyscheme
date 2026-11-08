@@ -11,9 +11,9 @@ use crate::runtime::codegen::masm::{Cmp, Masm};
 use crate::runtime::codegen::template::{
     Operand, PrimSlowId, SlowPath, TemplateContext, ftmp, tmp,
 };
+use crate::runtime::objectmodel::Value;
 use crate::runtime::prims::def::Primitive;
 use crate::runtime::sabi::{self, builtin_class_ids, regs};
-use crate::runtime::value::Value;
 
 macro_rules! prim_op {
     ($name:ident) => {
@@ -533,8 +533,9 @@ fn emit_make_vector<C: TemplateContext>(
     context.load_register(masm, size, t0);
     masm.branch_if_not_fixnum(t0, t1, slow);
     masm.unbox_int32(t0, t0);
+
     onlineasm!(*masm.assembler();
-        bqeq {t0}, {i32::MAX as i64}, {slow};
+        bpaeq {t0}, {i32::MAX as i64}, {slow};
     );
     let pending = gc.emit_alloc(
         masm,

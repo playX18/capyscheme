@@ -5,6 +5,7 @@ use onlineasm::{Extern, VReg, onlineasm};
 use super::super::masm::Masm;
 use super::super::stubs;
 use super::{SlowPath, SlowPaths};
+use crate::runtime::objectmodel::Value;
 use crate::runtime::sabi::{self, regs};
 
 /// Stage the loop parking mask early: the loop helpers park the frame
@@ -15,7 +16,7 @@ fn stage_loop_top_ip(masm: &mut Masm) {
     onlineasm!(*masm.assembler(); storep {top}, {pc};);
 }
 
-/// Leave through a control slow path: stage `Tc::ip` from `PC`, and
+/// Leave through a control slow path: stage `ThreadContext::ip` from `PC`, and
 /// whatever `path` reads, then call it and jump where it says. The JIT
 /// context loads `PC` (and, for a call, `MD`) with immediates first.
 pub(crate) fn emit_control(masm: &mut Masm, paths: &SlowPaths, path: SlowPath) {
@@ -34,6 +35,7 @@ pub(crate) fn emit_control(masm: &mut Masm, paths: &SlowPaths, path: SlowPath) {
             }
             SlowPath::Overflow => paths.overflow,
             SlowPath::Arity => paths.arity,
+            SlowPath::EnterCase => paths.enter_case,
             SlowPath::CallSlow => {
                 // The helper finds the link through the staged metadata area.
                 let md = regs::MD;
@@ -41,7 +43,11 @@ pub(crate) fn emit_control(masm: &mut Masm, paths: &SlowPaths, path: SlowPath) {
                 paths.call_slow
             }
             SlowPath::ReturnMv => {
-                onlineasm!(*masm.assembler(); storeq {rv_slot}, {rv};);
+                let undefined = Value::undefined().bits() as i64;
+                onlineasm!(*masm.assembler();
+                    move {rv}, {undefined};
+                    storeq {rv_slot}, {rv};
+                );
                 paths.return_mv
             }
             SlowPath::Raise => paths.raise,

@@ -107,6 +107,28 @@ impl CodeEntry {
         self.0.store(entry, Ordering::Release);
     }
 
+    /// Reset to [`CodeState::None`], so the next reader takes the slow path.
+    pub fn reset(&self) {
+        self.0.store(Address::ZERO, Ordering::Release);
+    }
+
+    /// Reset only when the word still names `expected`. A recompile publishes
+    /// a newer entry, and an old unit's invalidation must not withdraw it.
+    pub fn reset_if(&self, expected: Address) {
+        let _ =
+            self.0
+                .compare_exchange(expected, Address::ZERO, Ordering::AcqRel, Ordering::Acquire);
+    }
+
+    /// Replace `expected` with `new`. A retire uses this to send the block
+    /// back to its baseline entry; a newer install's entry is left alone.
+    pub fn replace(&self, expected: Address, new: Address) -> bool {
+        debug_assert!(new != Address::ZERO && new != Address::MAX);
+        self.0
+            .compare_exchange(expected, new, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
     /// Mark the procedure never to compile, unless it already has a state.
     pub fn poison(&self) {
         let _ = self.0.compare_exchange(

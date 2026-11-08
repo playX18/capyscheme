@@ -7,7 +7,7 @@ use crate::bytecode::def::{
     OpMove, OpMoveTwo,
 };
 use crate::runtime::codegen::masm::Masm;
-use crate::runtime::codegen::template::{TemplateContext, operand_register, tmp};
+use crate::runtime::codegen::template::{Operand, TemplateContext, operand_register, tmp};
 use crate::runtime::sabi::{self, regs};
 
 pub fn op_move<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
@@ -31,13 +31,18 @@ pub fn op_load_constant<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
 }
 
 pub fn op_load_immediate<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
-    operand_register(
+    match context.operand(
         masm,
-        context,
         OpLoadImmediate::OPERAND_VALUE,
         OpLoadImmediate::SIGNED_VALUE,
-    );
-    masm.box_int32(tmp::T0, tmp::T0);
+    ) {
+        Operand::Immediate(v) => {
+            let boxed = (v as i32 as i64) | sabi::NUMBER_TAG;
+            masm.load_u64_const(tmp::T0, boxed as u64);
+        }
+
+        Operand::Register(r) => masm.box_int32(tmp::T0, r),
+    }
     context.store_register(masm, OpLoadImmediate::OPERAND_DST, tmp::T0, tmp::T1);
     context.next(masm);
 }

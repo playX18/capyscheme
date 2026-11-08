@@ -12,29 +12,86 @@ use crate::runtime::interp::profile::ARRAY_FAST;
 use crate::runtime::sabi::{self, builtin_class_ids};
 
 pub fn op_cell_set<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
+    use crate::runtime::codegen::masm::RuntimeExtern;
+    use crate::runtime::codegen::operation::{
+        OpArg, OpContinue, OpResult, OpTarget, OperationCall,
+    };
     let gc = GcCodegen::new();
     context.constant(masm, OpCellSet::OPERAND_CONSTANT, tmp::T1);
     context.load_register(masm, OpCellSet::OPERAND_SRC, tmp::T2);
+
+    let (watched, join) = (masm.label(), masm.label());
+    let watch = masm
+        .assembler()
+        .mem(tmp::T1, crate::runtime::variable::WATCH_OFFSET);
+
+    onlineasm!(*masm.assembler();
+        loadq {tmp::T0}, {watch};
+        btqnz {tmp::T0}, {watched};
+    );
+
     let barrier = gc.emit_store_barrier(masm, tmp::T1, tmp::T0, tmp::T3, &[tmp::T2]);
     let slot = masm.assembler().mem(tmp::T1, 0);
+
     onlineasm!(*masm.assembler();
         storeq {slot}, {tmp::T2};
     );
+    masm.bind(join);
     context.next(masm);
     gc.emit_store_barrier_slow(masm, context, barrier);
+    context.call_operation(
+        masm,
+        watched,
+        OperationCall {
+            target: OpTarget::Runtime(RuntimeExtern::VariableSet),
+            args: smallvec::smallvec![OpArg::Reg(tmp::T1), OpArg::Reg(tmp::T2)],
+            preserve: smallvec::SmallVec::new(),
+            result: OpResult::None,
+            checks_error: false,
+            cont: OpContinue::Next,
+        },
+    );
+    let _ = join;
 }
 
 pub fn op_variable_set<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
+    use crate::runtime::codegen::masm::RuntimeExtern;
+    use crate::runtime::codegen::operation::{
+        OpArg, OpContinue, OpResult, OpTarget, OperationCall,
+    };
     let gc = GcCodegen::new();
     context.load_register(masm, OpVariableSet::OPERAND_VAR, tmp::T1);
     context.load_register(masm, OpVariableSet::OPERAND_SRC, tmp::T2);
+
+    let (watched, join) = (masm.label(), masm.label());
+    let watch = masm
+        .assembler()
+        .mem(tmp::T1, crate::runtime::variable::WATCH_OFFSET);
+    onlineasm!(*masm.assembler();
+        loadq {tmp::T0}, {watch};
+        btqnz {tmp::T0}, {watched};
+    );
     let barrier = gc.emit_store_barrier(masm, tmp::T1, tmp::T0, tmp::T3, &[tmp::T2]);
     let slot = masm.assembler().mem(tmp::T1, 0);
     onlineasm!(*masm.assembler();
         storeq {slot}, {tmp::T2};
     );
+    masm.bind(join);
     context.next(masm);
     gc.emit_store_barrier_slow(masm, context, barrier);
+    context.call_operation(
+        masm,
+        watched,
+        OperationCall {
+            target: OpTarget::Runtime(RuntimeExtern::VariableSet),
+            args: smallvec::smallvec![OpArg::Reg(tmp::T1), OpArg::Reg(tmp::T2)],
+            preserve: smallvec::SmallVec::new(),
+            result: OpResult::None,
+            checks_error: false,
+            cont: OpContinue::Next,
+        },
+    );
+    let _ = join;
 }
 
 pub fn op_set_car<C: TemplateContext>(masm: &mut Masm, context: &mut C) {

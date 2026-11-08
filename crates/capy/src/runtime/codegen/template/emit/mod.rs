@@ -22,6 +22,7 @@ pub fn emit_template<C: TemplateContext>(masm: &mut Masm, context: &mut C, op: O
         OpcodeId::OpNop => entry::op_nop(masm, context),
         OpcodeId::OpEnter => entry::op_enter(masm, context),
         OpcodeId::OpEnterRest => entry::op_enter_rest(masm, context),
+        OpcodeId::OpEnterCase => entry::op_enter_case(masm, context),
         OpcodeId::OpReturnPoint => call::op_return_point(masm, context),
         OpcodeId::OpReturnPointForward => call::op_return_point_forward(masm, context),
         OpcodeId::OpReturnPointValues => call::op_return_point_values(masm, context),

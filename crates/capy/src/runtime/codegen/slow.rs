@@ -9,9 +9,10 @@ use crate::runtime::interp::frame::CallFrame;
 use crate::runtime::interp::markers;
 use crate::runtime::interp::slow;
 use crate::runtime::interp::stack::{self, Ip, Slot};
-use crate::runtime::value::{Closure, CodeBuffer, ReturnCode, Value};
-use crate::runtime::{MutationContext, Tc};
+use crate::runtime::objectmodel::{Closure, CodeBuffer, ReturnCode, Value};
+use crate::runtime::{MutationContext, ThreadContext};
 use crate::utils::flags;
+use std::cell::Cell;
 
 type MutatorPointer = *const ();
 
@@ -33,21 +34,25 @@ pub(super) unsafe fn stage_control_with(
 ) -> *const u8 {
     unsafe {
         let mutator = MutationContext::from_ptr(th);
-        let tc: &Tc<'static> = mutator.tc();
+        let tc: &ThreadContext<'static> = mutator.tc();
         match control {
             slow::Control::Resume { fp, cp, ac, rv, ip } => {
                 tc.stack.fp.set(fp);
-                tc.cp.set(cp);
+                // `cp` is a GC root, but a resuming frame's closure slot is
+                // not always a closure. Never hand the collector a raw word.
+                tc.cp.set(if is_heap_word(cp) {
+                    cp
+                } else {
+                    Value::undefined()
+                });
                 tc.ac.set(ac);
-                if let Some(rv) = rv.or(default_rv) {
-                    tc.rv.set(rv);
-                }
+                set_root_or_undefined(&tc.rv, rv.or(default_rv));
                 tc.ip.set(ip);
                 resume_addr(cp, ip)
             }
             slow::Control::Exit { code, value } => {
                 tc.ac.set(code as usize as u64);
-                tc.rv.set(value);
+                set_root_or_undefined(&tc.rv, Some(value));
                 tc.cp.set(Value::undefined());
                 tc.ip.set(std::ptr::null());
                 stubs::exit_glue_addr()
@@ -56,15 +61,41 @@ pub(super) unsafe fn stage_control_with(
                 log::debug!(target: crate::heap::logging::JIT_LOG_TARGET, "jump: {addr:?} ac={ac}");
 
                 tc.stack.fp.set(fp);
-                tc.cp.set(*fp.add(1));
+                // `fp[1]` is the closure only when the jump enters a procedure.
+                // A return jumps with the returning callee's frame, whose
+                // closure slot may hold anything by now (a parked `sp`, a
+                // code address), and `ThreadContext::cp` is a GC root.
+                let cp = *fp.add(1);
+                let cp = if crate::runtime::codegen::slow::is_heap_word(cp) {
+                    cp
+                } else {
+                    Value::undefined()
+                };
+                tc.cp.set(cp);
                 tc.ac.set(ac);
-                if let Some(rv) = rv.or(default_rv) {
-                    tc.rv.set(rv);
-                }
+                set_root_or_undefined(&tc.rv, rv.or(default_rv));
                 addr
             }
         }
     }
+}
+
+/// Whether `value` may be traced as a root. See
+/// [`crate::runtime::root::is_traceable_root`].
+pub(crate) fn is_heap_word(value: Value<'_>) -> bool {
+    crate::runtime::root::is_traceable_root(value)
+}
+
+/// Store a root in `slot`, or `undefined` if it is not traceable. `None`
+/// sanitizes the slot's existing contents, which optimized code may have left
+/// as raw scratch.
+fn set_root_or_undefined(slot: &Cell<Value<'static>>, value: Option<Value<'static>>) {
+    let value = value.unwrap_or_else(|| slot.get());
+    slot.set(if is_heap_word(value) {
+        value
+    } else {
+        Value::undefined()
+    });
 }
 
 unsafe fn resume_at(th: MutatorPointer, fp: Slot<'static>, ip: Ip) -> *const u8 {
@@ -73,17 +104,25 @@ unsafe fn resume_at(th: MutatorPointer, fp: Slot<'static>, ip: Ip) -> *const u8 
             super::jit::SLOW_HELPER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         let mutator = MutationContext::from_ptr(th);
-        let tc: &Tc<'static> = mutator.tc();
-        tc.cp.set(*fp.add(1));
+        let tc: &ThreadContext<'static> = mutator.tc();
+        let cp = *fp.add(1);
+        tc.cp.set(if is_heap_word(cp) {
+            cp
+        } else {
+            Value::undefined()
+        });
+        // The resumed instruction does not consume RV; never leave raw
+        // scratch in the traced root.
+        set_root_or_undefined(&tc.rv, None);
         tc.ip.set(ip);
-        resume_addr(*fp.add(1), ip)
+        resume_addr(cp, ip)
     }
 }
 
 /// Where to resume the procedure `cp` at bytecode `ip`: its compiled code
 /// when that has the instruction, else the interpreter.
 pub(crate) fn resume_addr<'gc>(cp: Value<'gc>, ip: Ip) -> *const u8 {
-    if flags::jit() && cp.is::<crate::runtime::value::Closure>() {
+    if flags::jit() && cp.is::<crate::runtime::objectmodel::Closure>() {
         let code_block = Closure::code_block(Closure::from_value(cp));
         if let Some(addr) = super::jit::resume(code_block, ip) {
             return addr;
@@ -95,7 +134,7 @@ pub(crate) fn resume_addr<'gc>(cp: Value<'gc>, ip: Ip) -> *const u8 {
 unsafe fn fault(th: MutatorPointer) -> (MutationContext<'static>, Slot<'static>, Ip, u64) {
     unsafe {
         let mutator = MutationContext::from_ptr(th);
-        let tc: &Tc<'static> = mutator.tc();
+        let tc: &ThreadContext<'static> = mutator.tc();
         (mutator, tc.stack.fp.get(), tc.ip.get(), tc.ac.get())
     }
 }
@@ -144,6 +183,14 @@ pub(crate) unsafe extern "C" fn capy_arity(th: MutatorPointer) -> *const u8 {
     }
 }
 
+/// The `enter_case` no-match path.
+pub(crate) unsafe extern "C" fn capy_enter_case(th: MutatorPointer) -> *const u8 {
+    unsafe {
+        let (mutator, fp, _, ac) = fault(th);
+        stage_control(th, slow::control_enter_case_arity(mutator, fp, ac as usize))
+    }
+}
+
 /// The `call`/`tail-call`/`call-self`/`tail-call-self` slow path: a link miss, a
 /// native callee, or a non-closure callee. The template staged the metadata
 /// area in `AC`, for `call`/`call-self` the callee frame is set up here
@@ -184,6 +231,10 @@ pub(crate) unsafe extern "C" fn capy_call_slow(th: MutatorPointer) -> *const u8 
             }
             _ => unreachable!("capy_call_slow away from a call"),
         };
+
+        // A site hit whose link check did not match enters here.
+        link.note_call(None);
+
         let site = slow::EnterLink {
             link,
             buffer: Value::from_gc(CodeBuffer::md_buffer(md)),
@@ -231,7 +282,12 @@ pub(crate) unsafe extern "C" fn capy_raise(th: MutatorPointer) -> *const u8 {
 pub(crate) unsafe extern "C" fn capy_raise_kind(th: MutatorPointer) -> *const u8 {
     unsafe {
         let (mutator, fp, ip, kind) = fault(th);
-        mutator.state().exit_value.set(mutator.tc().rv.get());
+        let irritant = mutator.tc().rv.get();
+        mutator.state().exit_value.set(if is_heap_word(irritant) {
+            irritant
+        } else {
+            Value::undefined()
+        });
         let clo = Closure::from_value(*fp.add(1));
         stage_control(
             th,
@@ -365,11 +421,27 @@ pub(crate) unsafe extern "C" fn capy_op_values_rest(
 pub(crate) unsafe extern "C" fn capy_log_object(th: MutatorPointer, obj: u64) {
     unsafe {
         let mutator = MutationContext::from_ptr(th);
-        // SAFETY: the stub's unlog-bit test guarantees a live heap object.
-        let _ = Gc::write(
-            mutator,
-            Gc::<GcObject>::from_gc_object(Value::from_raw(obj).as_cell_raw()),
-        );
+        let value = Value::from_raw(obj);
+        if !value.is_cell() {
+            return;
+        }
+        let object = value.as_cell_raw();
+        let Some(reference) = object.to_object_reference() else {
+            return;
+        };
+        if !mmtk::memory_manager::is_in_mmtk_spaces(reference) {
+            return;
+        }
+        // SAFETY: the address is a live heap object in an MMTk space.
+        let _ = Gc::write(mutator, Gc::<GcObject>::from_gc_object(object));
+    }
+}
+
+pub(crate) unsafe extern "C" fn capy_op_variable_set(th: MutatorPointer, var: u64, value: u64) {
+    unsafe {
+        let mutator = MutationContext::from_ptr(th);
+        let var = Value::from_raw(var).downcast::<crate::runtime::variable::Variable>();
+        var.set(mutator, Value::from_raw(value));
     }
 }
 
@@ -458,7 +530,7 @@ unsafe fn stub_state(
 ) -> (MutationContext<'static>, Slot<'static>, u64, Value<'static>) {
     unsafe {
         let mutator = MutationContext::from_ptr(th);
-        let tc: &Tc<'static> = mutator.tc();
+        let tc: &ThreadContext<'static> = mutator.tc();
         (mutator, tc.stack.fp.get(), tc.ac.get(), tc.rv.get())
     }
 }
@@ -496,7 +568,7 @@ pub(crate) unsafe extern "C" fn capy_raise_ret(th: MutatorPointer) -> *const u8 
 }
 
 /// `subr_call` cold path: the machine entry called the native directly and
-/// it came back with something other than `ReturnOne`. The frame in `Tc`'s
+/// it came back with something other than `ReturnOne`. The frame in `ThreadContext`'s
 /// `fp` still holds the call, a single error value sits in place at
 /// `fp[2]`, a `Raise` left its condition in `exit_value`.
 pub(crate) unsafe extern "C" fn capy_subr_call(th: MutatorPointer, code: ReturnCode) -> *const u8 {

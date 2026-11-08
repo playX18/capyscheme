@@ -7,7 +7,7 @@ pub(crate) use control::{SiteOperand, emit_control, emit_site_slow_call, emit_st
 pub(crate) use tables::{
     metadata_entry_size, metadata_field_offset, metadata_id_operand, metadata_kind, op_len,
 };
-pub use tables::{opcode_name, parse_bail_filter, parse_bail_filter_str};
+pub use tables::{opcode_name, parse_bail_filter};
 pub(crate) use target::{Placement, Target, Targets, emit_branch_to, emit_jump_to};
 
 use onlineasm::{Extern, Label, VReg, onlineasm};
@@ -80,6 +80,9 @@ pub enum SlowPath {
     Overflow,
     /// `capy_arity` at an `enter`/`enter_rest` (`AC` holds `argc`).
     Arity,
+    /// `capy_enter_case` at an `enter_case` with no matching clause (`AC`
+    /// holds `argc`).
+    EnterCase,
     /// `capy_call_slow` at a `call`/`tail-call` (`MD` is staged for the link).
     CallSlow,
     /// `capy_return_mv` at a `ret`/`return-values`/`return-point`/`return-point-values`/`return-point-values-rest`
@@ -125,6 +128,7 @@ pub struct SlowPaths {
     pub hot_loop: Extern,
     pub overflow: Extern,
     pub arity: Extern,
+    pub enter_case: Extern,
     pub call_slow: Extern,
     pub return_mv: Extern,
     pub raise: Extern,
@@ -335,6 +339,13 @@ pub trait Flow {
     /// `switch-symbol`: type-test `src` for a symbol, falling through on a
     /// mismatch, else dispatch through aux-pool table `table`. Terminal.
     fn switch_sym(&mut self, masm: &mut Masm, src: usize, table: usize);
+    /// `enter_case`: select the row of aux-pool clause `table` whose arity
+    /// range contains `AC`, replace `r1` with that clause's closure, and
+    /// continue at the clause entry with `AC` (the argument count) intact.
+    /// A variadic row also moves its extras into the rest area and stores
+    /// their count; `overflow` is taken when the clause frame plus the extras
+    /// does not fit. No matching row leaves through `slow`. Terminal.
+    fn enter_case(&mut self, masm: &mut Masm, table: usize, slow: Label, overflow: Label);
 }
 
 /// Where slow blocks go and how they leave.
@@ -450,6 +461,49 @@ pub trait Speculation {
     /// the code is emitted.
     fn link_checks(&self) -> bool {
         true
+    }
+
+    /// Whether call templates hand every call to a lazy call site instead
+    /// of the inline mono/poly condition. Only Baseline JIT
+    fn lazy_calls(&self) -> bool {
+        false
+    }
+
+    /// Declare this instruction's call-site lazy edge, jumped to for every
+    /// call. `base` is the callee frame's slot offset from `SFP` (`call`)
+    /// and ignored for `tail` calls, whose frame is `SFP` itself.
+    fn lazy_call_edge(
+        &mut self,
+        _masm: &mut Masm,
+        _kind: usize,
+        _field: usize,
+        _base: usize,
+        _tail: bool,
+    ) -> Option<Label> {
+        None
+    }
+
+    /// Whether `get_slot`/`put_slot` templates hand their miss to a lazy
+    /// slot site. Baseline JIT only
+    fn lazy_slots(&self) -> bool {
+        false
+    }
+
+    /// Declare this instruction's slot-site lazy edge at `label`, the
+    /// template's guard-failure target. `obj`/`arg` are the operand fields
+    /// of the object and of the loaded or stored value. Returns false when
+    /// no site was declared, in which case the caller keeps its slow path.
+    fn lazy_slot_edge(
+        &mut self,
+        _masm: &mut Masm,
+        _label: Label,
+        _kind: usize,
+        _field: usize,
+        _is_put: bool,
+        _obj: usize,
+        _arg: usize,
+    ) -> bool {
+        false
     }
 
     /// What is statically known about the value in operand `field`.

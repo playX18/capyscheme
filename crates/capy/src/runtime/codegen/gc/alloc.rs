@@ -31,6 +31,14 @@ pub struct PendingAlloc {
     obj: VReg,
 }
 
+impl PendingAlloc {
+    /// The slow and join labels of the fast path, for an emitter that writes
+    /// its own slow block.
+    pub fn labels(&self) -> (Label, Label) {
+        (self.slow, self.join)
+    }
+}
+
 impl GcCodegen {
     /// Allocate an object of `size` with header word `header_word` into
     /// `obj`, bumping the LAB when the plan allows. Binds the join both
@@ -111,6 +119,15 @@ impl GcCodegen {
     ) {
         let tc = regs::TC;
         let eap = masm.assembler().mem(tc, sabi::TC_EAP as i32);
+        // A constant size at or above the large-object threshold never takes
+        // the bump path, as the runtime's allocation sends it to the large
+        // object space.
+        if let AllocSize::Bytes(bytes) = size {
+            if bytes >= self.info.los_threshold {
+                onlineasm!(*masm.assembler(); jmp {slow};);
+                return;
+            }
+        }
         if let AllocSize::Words { count, base } = size {
             onlineasm!(*masm.assembler();
                 move {end}, {count};
@@ -119,39 +136,29 @@ impl GcCodegen {
                 bpaeq {end}, {self.info.los_threshold as i64}, {slow};
             );
         }
+
         #[cfg(target_arch = "x86_64")]
-        {
-            let ap = masm.assembler().mem(tc, sabi::TC_AP as i32);
-            onlineasm!(*masm.assembler(); loadp {obj}, {ap};);
-            match size {
-                AllocSize::Bytes(bytes) => {
-                    let at = masm.assembler().mem(obj, bytes as i32);
-                    onlineasm!(*masm.assembler(); leap {end}, {at};);
-                }
-                AllocSize::Words { .. } => onlineasm!(*masm.assembler(); addp {end}, {obj}, {end};),
-            }
-            onlineasm!(*masm.assembler();
-                loadp {limit}, {eap};
-                bpa {end}, {limit}, {slow};
-                storep {ap}, {end};
-            );
-        }
+        let ap = masm.assembler().mem(tc, sabi::TC_AP as i32);
+        #[cfg(target_arch = "x86_64")]
+        onlineasm!(*masm.assembler(); loadp {obj}, {ap};);
         #[cfg(target_arch = "aarch64")]
-        {
-            let ap = regs::AP;
-            onlineasm!(*masm.assembler(); move {obj}, {ap};);
-            match size {
-                AllocSize::Bytes(bytes) => {
-                    onlineasm!(*masm.assembler(); addp {end}, {obj}, {bytes as i64};)
-                }
-                AllocSize::Words { .. } => onlineasm!(*masm.assembler(); addp {end}, {obj}, {end};),
+        onlineasm!(*masm.assembler(); move {obj}, {regs::AP};);
+        match size {
+            AllocSize::Bytes(bytes) => {
+                onlineasm!(*masm.assembler(); addp {end}, {obj}, {bytes as i64};);
             }
-            onlineasm!(*masm.assembler();
-                loadp {limit}, {eap};
-                bpa {end}, {limit}, {slow};
-                move {ap}, {end};
-            );
+            AllocSize::Words { .. } => {
+                onlineasm!(*masm.assembler(); addp {end}, {obj}, {end};);
+            }
         }
+        onlineasm!(*masm.assembler();
+            loadp {limit}, {eap};
+            bpa {end}, {limit}, {slow};
+        );
+        #[cfg(target_arch = "x86_64")]
+        onlineasm!(*masm.assembler(); storep {ap}, {end};);
+        #[cfg(target_arch = "aarch64")]
+        onlineasm!(*masm.assembler(); move {regs::AP}, {end};);
         let header = masm.assembler().mem(obj, 0);
         onlineasm!(*masm.assembler();
             move {end}, {header_word as i64};

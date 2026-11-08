@@ -91,6 +91,8 @@ pub(crate) struct Layout<'a> {
     /// Where the deferred blocks start, and where the code ends.
     pub(crate) slows_start: Label,
     pub(crate) end: Label,
+    /// The unit's machine entry, when it differs from its first instruction.
+    pub(crate) entry: Option<Label>,
 }
 
 /// A loaded, relocated image.
@@ -103,6 +105,8 @@ pub(crate) struct Linked {
     pub(crate) ranges: Vec<InstructionRange>,
     pub(crate) slows_start_off: usize,
     pub(crate) end_off: usize,
+    /// Image offset of `Layout::entry`, when the layout named one.
+    pub(crate) entry_off: Option<usize>,
     /// Image offset of the owner word, patched at publish.
     pub(crate) owner_at: usize,
 }
@@ -116,6 +120,11 @@ impl Emission {
     /// Record a value to patch after load.
     pub(crate) fn reloc(&mut self, reloc: Reloc) {
         self.relocs.push(reloc);
+    }
+
+    /// Register `bytes` at `start` as data
+    pub(crate) fn data_range(&mut self, start: Label, len: usize) {
+        self.data.push((start, len));
     }
 
     /// Emit the deferred blocks: bind each label and emit its block, in
@@ -228,6 +237,11 @@ impl Emission {
                 Reloc::TableWord { table, index, pc } => {
                     table_words.push((off(table) + index * 8, offsets[&pc]))
                 }
+                Reloc::TableLabel {
+                    table,
+                    index,
+                    target,
+                } => table_words.push((off(table) + index * 8, off(target))),
                 Reloc::Cell { at, pending } => cell_loads.push((off(at), pending)),
                 Reloc::OwnerSlot { at } => owner_at = Some(off(at)),
             }
@@ -253,6 +267,7 @@ impl Emission {
         // to the next instruction's offset, the last to the slows region.
         let slows_start_off = off(layout.slows_start);
         let end_off = off(layout.end);
+        let entry_off = layout.entry.map(off);
         let mut ranges = Vec::with_capacity(layout.pcs.len());
         for (index, &pc) in layout.pcs.iter().enumerate() {
             let offset = offsets[&pc];
@@ -302,6 +317,7 @@ impl Emission {
             ranges,
             slows_start_off,
             end_off,
+            entry_off,
             owner_at,
         })
     }

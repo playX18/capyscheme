@@ -13,7 +13,7 @@ use super::image::LoadedImage;
 use super::lazy::builder::StubBuilder;
 use super::masm::{Masm, RuntimeExtern, SymbolKind};
 use super::template::tmp;
-use super::unit::Native;
+use super::unit::PublishedCode;
 use crate::bytecode::def;
 use crate::heap::Gc;
 use crate::heap::Write;
@@ -22,10 +22,10 @@ use crate::runtime::interp::profile::{CALL_IC_CASES, CallLinkInfo, GcCell, LINK_
 use crate::runtime::interp::rust_interp;
 use crate::runtime::interp::slow;
 use crate::runtime::interp::stack::Slot;
+use crate::runtime::objectmodel::{Closure, CodeBuffer, NativeReturn, ReturnCode, Value};
+use crate::runtime::objectmodel::{CodeBlock, CodeImage};
 use crate::runtime::sabi::{self, regs};
-use crate::runtime::value::{Closure, CodeBuffer, NativeReturn, ReturnCode, Value};
-use crate::runtime::value::{CodeBlock, CodeImage};
-use crate::runtime::{MutationContext, Tc};
+use crate::runtime::{MutationContext, ThreadContext};
 use crate::utils::flags;
 
 /// Dynamic bail counts per opcode byte
@@ -177,7 +177,7 @@ pub unsafe extern "C" fn capy_bail(th: *const (), op: u64, _width: u64) -> *cons
         BAIL_COUNTS[(op as u8) as usize].fetch_add(1, Relaxed);
 
         let mutator = MutationContext::from_ptr(th);
-        let tc: &Tc<'static> = mutator.tc();
+        let tc: &ThreadContext<'static> = mutator.tc();
         let fp = tc.stack.fp.get();
         let ip = tc.ip.get();
         let w = tc.ac.get();
@@ -206,57 +206,21 @@ pub unsafe extern "C" fn capy_bail(th: *const (), op: u64, _width: u64) -> *cons
 
 /// C argument registers for `(th, fp, argc)`.
 pub fn arg_regs() -> (VReg, VReg, VReg) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        use onlineasm::regs::{t1 as a1, t2 as a2, t6 as a0};
-        (a0, a1, a2)
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        use onlineasm::regs::{t0 as a0, t1 as a1, t2 as a2};
-        (a0, a1, a2)
-    }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    {
-        unsupported_target!()
-    }
+    let a = regs::ARG_REGS;
+    (a[0], a[1], a[2])
 }
 
 /// The first five C argument registers
 pub(crate) fn arg_regs5() -> (VReg, VReg, VReg, VReg, VReg) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        use onlineasm::regs::{t1 as a1, t2 as a2, t3 as a3, t4 as a4, t6 as a0};
-        (a0, a1, a2, a3, a4)
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        use onlineasm::regs::{t0 as a0, t1 as a1, t2 as a2, t3 as a3, t4 as a4};
-        (a0, a1, a2, a3, a4)
-    }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    {
-        unsupported_target!()
-    }
+    let a = regs::ARG_REGS;
+    (a[0], a[1], a[2], a[3], a[4])
 }
 
 /// C return registers for a two-word `#[repr(C)]` return:
 /// `NativeReturn(code, value)` and the direct prim result (value, error).
 pub(crate) fn ret_regs() -> (VReg, VReg) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        use onlineasm::regs::{t0 as r0, t2 as r1};
-        (r0, r1)
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        use onlineasm::regs::{t0 as r0, t1 as r1};
-        (r0, r1)
-    }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    {
-        unsupported_target!()
-    }
+    let r = regs::RET_REGS;
+    (r[0], r[1])
 }
 
 /// Narrow dispatch through the opcode map at `map`: `jump map[byte at PC]`.
@@ -403,7 +367,7 @@ pub fn emit_scheme_entry(masm: &mut Masm, enter: Label, map: Label) {
 }
 
 /// `scheme_exit`: load the `NativeReturn` that `capy_bail` staged in
-/// `Tc::{ac, rv}` into the C return registers, then the epilogue.
+/// `ThreadContext::{ac, rv}` into the C return registers, then the epilogue.
 pub fn emit_exit_glue(masm: &mut Masm) {
     let tc = regs::TC;
     let ac = masm.assembler().mem(tc, sabi::TC_AC as i32);
@@ -443,8 +407,8 @@ pub fn emit_interpreter_return(masm: &mut Masm, map: Label) {
     emit_dispatch(masm, map);
 }
 
-/// `interpreter_resume`: a control path staged the resume state in `Tc`, reload
-/// `PC` from `Tc::ip` and `CONSTANT_POINTER`/`MD` from the closure in `Tc::cp` then dispatch.
+/// `interpreter_resume`: a control path staged the resume state in `ThreadContext`, reload
+/// `PC` from `ThreadContext::ip` and `CONSTANT_POINTER`/`MD` from the closure in `ThreadContext::cp` then dispatch.
 pub fn emit_interpreter_resume(masm: &mut Masm, map: Label) {
     let (tc, pc) = (regs::TC, regs::PC);
     let (constant_pointer, md) = (regs::CONSTANT_POINTER, regs::MD);
@@ -467,7 +431,7 @@ pub fn emit_interpreter_resume(masm: &mut Masm, map: Label) {
 }
 
 /// One bail handler for opcode `op`: flush the resume count, save state,
-/// store `PC` to `Tc::ip`, and call `bail`.
+/// store `PC` to `ThreadContext::ip`, and call `bail`.
 pub fn emit_bail_handler(masm: &mut Masm, bail: Extern, op: u8, _width: u8) {
     // The resume count `w`: the argument count at an entry, the value count
     // at a return point, ignored everywhere else. Templates keep `AC` holding
@@ -506,7 +470,7 @@ pub fn emit_bail_handler(masm: &mut Masm, bail: Extern, op: u8, _width: u8) {
 
 /// One runtime stub: save state, call its control path, and jump to the
 /// address it returns.
-pub fn emit_stub(masm: &mut Masm, path: Extern) {
+pub fn emit_stub(masm: &mut Masm, path: Extern, publish_rv: bool) {
     // A stub is entered by a jump that carries `AC` (the argument or value
     // count), `RV` (a single value) and `CP` (the callee).
     let tc = regs::TC;
@@ -514,11 +478,27 @@ pub fn emit_stub(masm: &mut Masm, path: Extern) {
     let rv = masm.assembler().mem(tc, sabi::TC_RV as i32);
     let cp = masm.assembler().mem(tc, sabi::TC_CP as i32);
     let (ac_register, rv_register, cp_register) = (regs::AC, regs::RV, regs::CP);
-    onlineasm!(*masm.assembler();
-        storeq {ac}, {ac_register};
-        storeq {rv}, {rv_register};
-        storeq {cp}, {cp_register};
-    );
+    let undefined = Value::undefined().bits() as i64;
+    if publish_rv {
+        let done = masm.label();
+        onlineasm!(*masm.assembler();
+            storeq {ac}, {ac_register};
+            storeq {cp}, {cp_register};
+            move {tmp::T1}, {undefined};
+            storeq {rv}, {tmp::T1};
+            // Multi-value returns and error entries define no value in `RV`.
+            bqneq {ac_register}, 1, {done};
+            storeq {rv}, {rv_register};
+        );
+        masm.bind(done);
+    } else {
+        onlineasm!(*masm.assembler();
+            storeq {ac}, {ac_register};
+            storeq {cp}, {cp_register};
+            move {tmp::T1}, {undefined};
+            storeq {rv}, {tmp::T1};
+        );
+    }
     masm.save_scheme_state();
     let (a0, _, _) = arg_regs();
     let tc = regs::TC;
@@ -551,8 +531,12 @@ pub(crate) fn emit_subr_call(masm: &mut Masm, path: Extern) {
     let cold = masm.label();
     let body = masm.label();
     let sp_slot = masm.assembler().mem_indexed(sfp, ac_register, 8, 16);
+    let undefined = Value::undefined().bits() as i64;
     onlineasm!(*masm.assembler();
         storeq {ac_at}, {ac_register};
+        // The native entry contract is SFP/CP/AC only; `RV` is scratch here
+        // and `ThreadContext.rv` is a GC root.
+        move {rv_register}, {undefined};
         storeq {rv_at}, {rv_register};
         storeq {cp_at}, {cp_register};
         leap {a2}, {sp_slot};
@@ -574,9 +558,6 @@ pub(crate) fn emit_subr_call(masm: &mut Masm, path: Extern) {
         jmp {ra_at};
     );
     masm.bind(body);
-    let jit_entry = masm
-        .assembler()
-        .mem(tmp::T3, sabi::CODE_BLOCK_JIT_ENTRY as i32);
     let block_at = masm
         .assembler()
         .mem(cp_register, sabi::CLOSURE_CODE_BLOCK as i32);
@@ -590,11 +571,8 @@ pub(crate) fn emit_subr_call(masm: &mut Masm, path: Extern) {
         loadq {cp_register}, [{sfp} + 8];
         loadq {ac_register}, {ac_at};
         loadp {tmp::T3}, {block_at};
-        loadp {tmp::T2}, {jit_entry};
-        btpz {tmp::T2}, {generic_entry};
-        bpeq {tmp::T2}, -1, {generic_entry};
-        jmp {tmp::T2};
     );
+    super::jit::emit_jump_compiled_entry(masm, tmp::T3, tmp::T2, generic_entry);
     masm.bind(generic_entry);
     onlineasm!(*masm.assembler();
         jmp {code_at};
@@ -613,7 +591,7 @@ pub(crate) fn emit_subr_call(masm: &mut Masm, path: Extern) {
 /// `subr_call` (`SFP` = the call's frame, `CP` = the closure, `AC` = the
 /// argument count).
 pub(crate) fn emit_generic_call(masm: &mut Masm, subr_call: Label) {
-    use crate::runtime::class::generic::slot_cache_layout as layout;
+    use crate::runtime::objectmodel::class::generic::slot_cache_layout as layout;
     let (sfp, cp, ac, rv, tc) = (regs::SFP, regs::CP, regs::AC, regs::RV, regs::TC);
     let (t0, t1, t2, t3) = (tmp::T0, tmp::T1, tmp::T2, tmp::T3);
     let class_mask = sabi::CLASS_ID_MASK as i64;
@@ -722,7 +700,7 @@ pub(crate) fn emit_generic_call(masm: &mut Masm, subr_call: Label) {
     // No slot entry served the call: try the method cache
     masm.bind(reset);
     {
-        use crate::runtime::class::generic::method_cache_layout as ml;
+        use crate::runtime::objectmodel::class::generic::method_cache_layout as ml;
         let (mloop, mnext, mhit, one, generic_entry, fail, giveup, entered) = (
             masm.label(),
             masm.label(),
@@ -746,7 +724,6 @@ pub(crate) fn emit_generic_call(masm: &mut Masm, subr_call: Label) {
         let body_at = masm.assembler().mem(t0, ml::BODY as i32);
         let block_at = masm.assembler().mem(cp, sabi::CLOSURE_CODE_BLOCK as i32);
         let code_at = masm.assembler().mem(cp, sabi::CLOSURE_CODE as i32);
-        let jit_entry = masm.assembler().mem(t3, sabi::CODE_BLOCK_JIT_ENTRY as i32);
         let false_bits = Value::new(false).bits() as i64;
         onlineasm!(*masm.assembler();
             bqeq {ac}, 1, {mhit};
@@ -808,14 +785,9 @@ pub(crate) fn emit_generic_call(masm: &mut Masm, subr_call: Label) {
             storeq {closure_slot}, {cp};
             addq {ac}, {ac}, 1;
             loadp {t3}, {block_at};
-            loadp {t2}, {jit_entry};
         );
         let enter_code = masm.label();
-        onlineasm!(*masm.assembler();
-            btpz {t2}, {enter_code};
-            bpeq {t2}, -1, {enter_code};
-            jmp {t2};
-        );
+        super::jit::emit_jump_compiled_entry(masm, t3, t2, enter_code);
         masm.bind(enter_code);
         onlineasm!(*masm.assembler();
             jmp {code_at};
@@ -831,7 +803,9 @@ pub(crate) fn emit_generic_call(masm: &mut Masm, subr_call: Label) {
         // the probe does not compare, and stay on the Rust path.
         masm.bind(fail);
         {
-            use crate::runtime::class::generic::{DISPATCH_MUL, dispatch_table_layout as dl};
+            use crate::runtime::objectmodel::class::generic::{
+                DISPATCH_MUL, dispatch_table_layout as dl,
+            };
             let (tstart, capped, nokey1, probe, advance, thit, tentry) = (
                 masm.label(),
                 masm.label(),
@@ -957,24 +931,12 @@ pub(crate) fn emit_generic_call(masm: &mut Masm, subr_call: Label) {
     }
 }
 
-//
-// A compiled `call`/`tail-call` keeps its monomorphic fast path at the site: the
-// callee's code block against `CallLinkInfo::callee`. The second distinct
-// callee lazily generates a polymorphic stub for the site, referenced from
-// `CallLinkInfo::stub`: a small image comparing the callee's code block
-// against the site's case slots and entering the match. One more distinct
-// callee than the stub holds turns the site megamorphic: the template tests
-// `polymorphic == LINK_MEGA` before the stub jump, so the site stays on the
-// generic inline path and never reaches the stub again.
-//
-// A hit enters the block's compiled code directly when it has some, else
-// goes through `closure.code` (the interpreter entry, which heals, or
-// `subr_call` for a native).
-
 /// One generated call IC stub: the image its site's `stub` word points
 /// into. Owned by the stub's [`CodeImage`]
 pub(crate) struct CallIcStub {
     pub(crate) image: LoadedImage,
+    /// Machine-code bytes, charged to the `Stub` partition.
+    pub(crate) bytes: usize,
 }
 
 /// Serializes the writers of call sites: stub generation and case fills.
@@ -986,10 +948,11 @@ static SITE_WRITES: Mutex<()> = Mutex::new(());
 static LIVE_STUBS: std::sync::LazyLock<Mutex<std::collections::HashSet<Address>>> =
     std::sync::LazyLock::new(Default::default);
 
-#[cfg(test)]
 impl Drop for CallIcStub {
     fn drop(&mut self) {
+        #[cfg(test)]
         LIVE_STUBS.lock().remove(&self.image.base());
+        super::cache::release(super::cache::Partition::Stub, self.bytes);
     }
 }
 
@@ -1005,7 +968,7 @@ pub fn stub_alive(base: Address) -> bool {
 static IC_MISSES: AtomicU64 = AtomicU64::new(0);
 
 /// The `call` miss path: a link miss in compiled code. The template staged
-/// `argc` in `Tc::ac`, `frame` is the callee frame and `link` the site.
+/// `argc` in `ThreadContext::ac`, `frame` is the callee frame and `link` the site.
 /// Enters through the shared control core like `capy_call_slow`, and grows
 /// the site mono -> poly -> megamorphic.
 pub(crate) unsafe extern "C" fn capy_ic_miss_call(
@@ -1036,16 +999,19 @@ unsafe fn ic_miss(
     IC_MISSES.fetch_add(1, Relaxed);
     unsafe {
         let mutator = MutationContext::from_ptr(th);
-        let tc: &Tc<'static> = mutator.tc();
+        let tc: &ThreadContext<'static> = mutator.tc();
         let argc = tc.ac.get() as usize;
         let link = &*link;
+
+        // The call reached the site even though no compiled case matched.
+        link.note_call(None);
+
         let callee = *frame.add(1);
         let buffer = link.buffer().map(Value::from_gc);
-        // A second (or later) distinct closure callee grows the stub. The
-        // mono record itself stays with `record_link` inside `control_enter`,
-        // which the site below carries the buffer for, non-closures keep the
-        // generic-dispatch cache behavior of `capy_call_slow` untouched.
-        if let (Some(buffer), true) = (buffer, callee.is::<Closure>()) {
+
+        // Lazy is better rn, if we find bugs turn off
+        const LAZY: bool = true;
+        if !LAZY && let (Some(buffer), true) = (buffer, callee.is::<Closure>()) {
             let block = Value::from_gc(Closure::code_block(Closure::from_value(callee)));
             let current = link.callee.bits();
             if current != 0 && current != block.bits() && !link.is_megamorphic() {
@@ -1069,7 +1035,7 @@ fn ensure_poly<'gc>(
     block: Value<'gc>,
     is_call: bool,
 ) {
-    super::reclaim::drain();
+    super::reclaim::drain_if_needed();
     if link.stub.load(Acquire).is_zero() {
         match generate_stub(mutator, link, is_call) {
             Ok(built) => publish_or_free(link, buffer, built, mutator),
@@ -1141,6 +1107,23 @@ fn insert_one(
     }
 }
 
+/// Record `block` in a lazy call site's case array, marking the site
+/// megamorphic when no slot is left.
+pub(crate) fn note_call_case<'gc>(
+    mutator: MutationContext<'gc>,
+    link: &CallLinkInfo,
+    block: Value<'gc>,
+) {
+    let Some(buffer) = link.buffer().map(Value::from_gc) else {
+        return;
+    };
+    let _writes = SITE_WRITES.lock();
+    let barrier = Gc::write(mutator, buffer.downcast::<CodeBuffer>());
+    if insert_one(&barrier, &link.cases, block) == CaseInsert::Full {
+        link.polymorphic.store(LINK_MEGA, Relaxed);
+    }
+}
+
 /// A generated but unpublished stub: the owner that holds it.
 struct BuiltStub<'gc> {
     base: Address,
@@ -1172,11 +1155,19 @@ fn generate_stub<'gc>(
         .finish()?
         .load()?;
     let base = loaded.base();
+    let bytes = loaded.code_size();
     #[cfg(test)]
     LIVE_STUBS.lock().insert(base);
     // The owner: a non-moving object that holds the stub, finalized to
     // release it.
-    let owner = CodeImage::alloc(mutator, Native::Stub(CallIcStub { image: loaded }));
+    super::cache::charge(super::cache::Partition::Stub, bytes);
+    let owner = CodeImage::alloc(
+        mutator,
+        PublishedCode::Stub(CallIcStub {
+            image: loaded,
+            bytes,
+        }),
+    );
     Ok(BuiltStub { base, owner })
 }
 
@@ -1200,6 +1191,25 @@ fn publish_or_free<'gc>(
     link.stub.store(base, Release);
 }
 
+/// Emit a saturating bump of the 32-bit counter `offset` bytes into `base`.
+pub(crate) fn emit_bump_counter(
+    masm: &mut Masm,
+    base: onlineasm::VReg,
+    offset: usize,
+    scratch: onlineasm::VReg,
+) {
+    let saturation = crate::runtime::interp::profile::HIT_SATURATION as i64;
+    let done = masm.label();
+    let counter = masm.assembler().mem(base, offset as i32);
+    onlineasm!(*masm.assembler();
+        loadi {scratch}, {counter};
+        bqgteq {scratch}, {saturation}, {done};
+        addq {scratch}, {scratch}, 1;
+        storei {counter}, {scratch};
+    );
+    masm.bind(done);
+}
+
 /// Emit one call IC stub for the site at `link`. Entered by a jump carrying
 /// the callee's code block in `T3`, the closure in `CP` and `argc` in `AC`,
 /// plus the callee frame in `T1` for `call` (`SFP` already points at it for
@@ -1212,17 +1222,20 @@ pub fn emit_call_ic_stub(masm: &mut Masm, link: &CallLinkInfo, miss: Extern, is_
     let (t0, t1, t2, t3) = (tmp::T0, tmp::T1, tmp::T2, tmp::T3);
     let hit = masm.label();
     let cases = core::mem::offset_of!(CallLinkInfo, cases);
+    let case_hits = core::mem::offset_of!(CallLinkInfo, case_hits);
+    let hits = core::mem::offset_of!(CallLinkInfo, hits);
+    let entered: Vec<_> = (0..CALL_IC_CASES).map(|_| masm.label()).collect();
     onlineasm!(*masm.assembler();
         move {t0}, {link};
     );
-    for index in 0..CALL_IC_CASES {
+    for (index, &entered) in entered.iter().enumerate() {
         let slot = masm.assembler().mem(t0, (cases + index * 8) as i32);
         onlineasm!(*masm.assembler();
             loadq {t2}, {slot};
-            bqeq {t2}, {t3}, {hit};
+            bqeq {t2}, {t3}, {entered};
         );
     }
-    // A miss: `argc` to its `Tc` slot, then the miss path as
+    // A miss: `argc` to its `ThreadContext` slot, then the miss path as
     // `(th, frame, link)`. The link moves first because it is baked, and
     // the frame before `save_scheme_state`, which repoints `SFP` on x86-64.
     let ac_slot = masm.assembler().mem(regs::TC, sabi::TC_AC as i32);
@@ -1240,10 +1253,21 @@ pub fn emit_call_ic_stub(masm: &mut Masm, link: &CallLinkInfo, miss: Extern, is_
     );
     masm.restore_scheme_state();
     emit_control_tail(masm);
+
+    for (index, entered) in entered.into_iter().enumerate() {
+        masm.bind(entered);
+
+        emit_bump_counter(masm, t0, case_hits + index * 4, t2);
+        emit_bump_counter(masm, t0, hits, t2);
+
+        onlineasm!(*masm.assembler();
+            jmp {hit};
+        );
+    }
     // A hit: point `SFP` at the callee frame (a `tail-call` already does), then
-    // enter the block's compiled code when it has some (`jit_entry` is 0
-    // before compiling and all ones when it never will), otherwise the
-    // closure's machine entry, like `enter_callee`.
+    // enter the block's best compiled code (optimized, else baseline; the
+    // entries are 0 before compiling and all ones when they never will be),
+    // otherwise the closure's machine entry, like `enter_callee`.
     masm.bind(hit);
     if is_call {
         onlineasm!(*masm.assembler();
@@ -1251,14 +1275,8 @@ pub fn emit_call_ic_stub(masm: &mut Masm, link: &CallLinkInfo, miss: Extern, is_
         );
     }
     let generic = masm.label();
-    let jit_entry = masm.assembler().mem(t3, sabi::CODE_BLOCK_JIT_ENTRY as i32);
     let code_at = masm.assembler().mem(cp, sabi::CLOSURE_CODE as i32);
-    onlineasm!(*masm.assembler();
-        loadp {t2}, {jit_entry};
-        btpz {t2}, {generic};
-        bpeq {t2}, -1, {generic};
-        jmp {t2};
-    );
+    super::jit::emit_jump_compiled_entry(masm, t3, t2, generic);
     masm.bind(generic);
     onlineasm!(*masm.assembler();
         jmp {code_at};

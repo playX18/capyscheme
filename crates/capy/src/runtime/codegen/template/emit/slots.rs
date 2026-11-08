@@ -6,14 +6,14 @@ use onlineasm::{Label, onlineasm};
 
 use crate::bytecode::def::{OpGetSlot, OpGetSlotMetadata, OpPutSlot};
 use crate::heap::cell::Lock;
-use crate::runtime::class::SchemeInstance;
-use crate::runtime::class::storage::{STORAGE_DATA_OFFSET, STORAGE_STAMP_OFFSET};
 use crate::runtime::codegen::gc::GcCodegen;
 use crate::runtime::codegen::masm::Masm;
 use crate::runtime::codegen::template::{SlowPath, TemplateContext, tmp};
 use crate::runtime::interp::profile::{SlotIcEntry, SlotSite};
+use crate::runtime::objectmodel::Value;
+use crate::runtime::objectmodel::class::SchemeInstance;
+use crate::runtime::objectmodel::class::storage::{STORAGE_DATA_OFFSET, STORAGE_STAMP_OFFSET};
 use crate::runtime::sabi::{self, regs};
-use crate::runtime::value::Value;
 
 /// Offset of `SchemeInstance::storage`, the `SlotStorage` reference.
 const INSTANCE_STORAGE_OFF: i32 = 8;
@@ -122,7 +122,18 @@ pub fn op_get_slot<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     masm.maybe_observe_value_profile(context.profiling(), tmp::T0, tmp::T2, tmp::T3, tmp::T1);
     context.store_register(masm, OpGetSlot::OPERAND_DST, tmp::T2, tmp::T3);
     context.next(masm);
-    context.slow_control(masm, miss, SlowPath::GetSlot);
+
+    if !context.lazy_slot_edge(
+        masm,
+        miss,
+        OpGetSlot::METADATA_KIND,
+        OpGetSlot::METADATA_CACHE,
+        false,
+        OpGetSlot::OPERAND_OBJ,
+        OpGetSlot::OPERAND_DST,
+    ) {
+        context.slow_control(masm, miss, SlowPath::GetSlot);
+    }
 }
 
 pub fn op_put_slot<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
@@ -149,5 +160,15 @@ pub fn op_put_slot<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     );
     context.next(masm);
     gc.emit_store_barrier_slow(masm, context, barrier);
-    context.slow_control(masm, miss, SlowPath::PutSlot);
+    if !context.lazy_slot_edge(
+        masm,
+        miss,
+        OpPutSlot::METADATA_KIND,
+        OpPutSlot::METADATA_CACHE,
+        true,
+        OpPutSlot::OPERAND_OBJ,
+        OpPutSlot::OPERAND_SRC,
+    ) {
+        context.slow_control(masm, miss, SlowPath::PutSlot);
+    }
 }

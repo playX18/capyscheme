@@ -1,37 +1,53 @@
-use std::sync::atomic::Ordering::{AcqRel, Relaxed};
+use std::panic::AssertUnwindSafe;
+use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
+use super::super::addr::CodeState;
+use super::super::cache::Partition;
+use super::super::install::Phase;
+use super::super::masm::Masm;
 use super::super::template_image::runs_template;
 use super::super::unit::Tier;
 use super::compile::{
-    claim_compile, compile_allowed, compile_claimed, compiler_for, install, log_tier_up_request,
-    poison,
+    claim_compile, compile_allowed, compile_claimed, compiler_for, finish_optimized, install,
+    log_tier_up_request, poison,
 };
-use super::config::{TierSet, tiers};
+use super::config::{TierSet, opt, tiers};
 use super::registry::NEXT_ID;
-use super::worker::submit;
+use super::worker::{compile_job, submit};
 use crate::heap::Gc;
 use crate::runtime::MutationContext;
-use crate::runtime::value::{CodeBlock, CodeBlockKind, Promotion};
+use crate::runtime::objectmodel::{Closure, CodeBlock, CodeBlockKind};
 use crate::utils::flags;
 
 /// Promotion policy: when is a block hot enough to tier up.
 pub(crate) trait HotnessPolicy {
-    /// Heat threshold, or `None` when tier-up is off
+    /// Heat threshold for baseline, or `None` when tier-up is off
     fn hot_threshold(&self) -> Option<u32>;
 
     /// The tiers this policy lets compile.
     fn tiers(&self) -> TierSet;
 
-    /// The tier to compile a hot block at: the cheapest allowed tier that
-    /// has a compiler in this build, or `None` when the set names none
-    /// (tier-up is then skipped).
-    fn next_tier(&self) -> Option<Tier> {
-        Some(Tier::Baseline)
+    /// The tier to compile `code_block` at next, given its state. A block
+    /// with no code gets baseline. A block with baseline code gets Tier 2
+    /// when the set names it and Tier 2 has not been tried. A block marked
+    /// never to compile gets `None`.
+    fn next_tier(&self, code_block: &CodeBlock<'_>) -> Option<Tier> {
+        match code_block.entry.load(Acquire) {
+            CodeState::None => Some(Tier::Baseline),
+            // An invalidated block warms up again for its recompile.
+            CodeState::Entry(_) => (self.tiers().contains(Tier::Optimizing)
+                && matches!(
+                    code_block.install.phase(),
+                    Phase::Baseline | Phase::NotEntrant
+                ))
+            .then_some(Tier::Optimizing),
+            CodeState::Poisoned => None,
+        }
     }
 }
 
-/// Fixed-threshold policy from `CAPY_JIT`/`CAPY_JIT_THRESHOLD`, tiers from
-/// `CAPY_JIT_TIERS`.
+/// Fixed-threshold policy from `CAPY_JIT`/`CAPY_JIT_THRESHOLD`, with the
+/// optimizing tier enabled unless `CAPY_OPT_JIT=0`.
 #[derive(Clone, Copy)]
 pub(crate) struct ThresholdPolicy {
     threshold: Option<u32>,
@@ -93,8 +109,9 @@ pub(crate) fn request_tier_up<'gc, P: HotnessPolicy>(
     ctx: MutationContext<'gc>,
     code_block: Gc<'gc, CodeBlock<'gc>>,
     policy: &P,
+    closure: Option<Gc<'gc, Closure<'gc>>>,
 ) -> PromotionOutcome {
-    request_inner(ctx, code_block, policy, flags::jit_workers() == 0)
+    request_inner(ctx, code_block, policy, flags::jit_workers() == 0, closure)
 }
 
 fn request_inner<'gc, P: HotnessPolicy>(
@@ -102,12 +119,12 @@ fn request_inner<'gc, P: HotnessPolicy>(
     code_block: Gc<'gc, CodeBlock<'gc>>,
     policy: &P,
     sync: bool,
+    closure: Option<Gc<'gc, Closure<'gc>>>,
 ) -> PromotionOutcome {
     use PromotionOutcome::*;
     // Set already, or marked never-to-compile (`usize::MAX`).
-    if code_block.jit_entry.is_decided(Relaxed) {
-        code_block.hot_count.store(0, Relaxed);
-        return Installed;
+    if code_block.entry.is_decided(Relaxed) {
+        return request_optimized(ctx, code_block, policy, sync, closure);
     }
 
     if install(ctx, code_block) {
@@ -122,10 +139,10 @@ fn request_inner<'gc, P: HotnessPolicy>(
     if code_block.kind != CodeBlockKind::Bytecode || heat < threshold || !runs_template(ctx) {
         return Skipped;
     }
-    if !compile_allowed(code_block) {
+    if !compile_allowed(code_block, Partition::Baseline) {
         return Skipped;
     }
-    let Some(tier) = policy.next_tier() else {
+    let Some(tier) = policy.next_tier(&code_block) else {
         return Skipped;
     };
     if !claim_compile(code_block) {
@@ -140,21 +157,104 @@ fn request_inner<'gc, P: HotnessPolicy>(
         return compile_sync(ctx, code_block, tier, id);
     }
 
-    submit(ctx, code_block, id, tier);
+    submit(ctx, code_block, id, tier, 0, closure);
     log_tier_up_request(code_block, heat, threshold, id);
     code_block.hot_count.store(0, Relaxed);
     Queued
 }
 
-/// Release a submit claim so a later window retries. Best-effort: anything but `Submitted` is left
-/// alone.
+fn request_optimized<'gc, P: HotnessPolicy>(
+    ctx: MutationContext<'gc>,
+    code_block: Gc<'gc, CodeBlock<'gc>>,
+    policy: &P,
+    sync: bool,
+    closure: Option<Gc<'gc, Closure<'gc>>>,
+) -> PromotionOutcome {
+    use PromotionOutcome::*;
+    if policy.next_tier(&code_block) != Some(Tier::Optimizing) {
+        code_block.hot_count.store(0, Relaxed);
+        return Installed;
+    }
+    let heat = code_block.hot_count.load(Relaxed);
+    let threshold = u32::try_from(opt().threshold).unwrap_or(u32::MAX);
+    if heat < threshold || code_block.kind != CodeBlockKind::Bytecode || !runs_template(ctx) {
+        return Installed;
+    }
+    if !compile_allowed(code_block, Partition::Optimizing) {
+        code_block.hot_count.store(0, Relaxed);
+        return Skipped;
+    }
+    let Some(generation) = code_block.claim_opt_compile() else {
+        code_block.hot_count.store(0, Relaxed);
+        return AlreadyPending;
+    };
+    let id = NEXT_ID.fetch_add(1, Relaxed);
+    code_block.hot_count.store(0, Relaxed);
+    if sync {
+        log_tier_up_request(code_block, heat, threshold, id);
+        return compile_optimized_sync(ctx, code_block, id, generation, closure);
+    }
+    submit(ctx, code_block, id, Tier::Optimizing, generation, closure);
+    log_tier_up_request(code_block, heat, threshold, id);
+    Queued
+}
+
+/// Tier 2 compile on the calling thread, for `CAPY_JIT_WORKERS=0`. The
+/// caller holds the Tier 2 claim.
+fn compile_optimized_sync<'gc>(
+    ctx: MutationContext<'gc>,
+    code_block: Gc<'gc, CodeBlock<'gc>>,
+    id: usize,
+    generation: crate::runtime::codegen::install::Generation,
+    closure: Option<Gc<'gc, Closure<'gc>>>,
+) -> PromotionOutcome {
+    let label = Some(crate::runtime::objectmodel::proc::procedure_label(
+        code_block,
+    ));
+    // No worker to borrow from on this path: a throwaway assembler is as
+    // fast as a cached one for a single compile.
+    let mut masm = Masm::new();
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        compile_job(
+            ctx,
+            id,
+            Tier::Optimizing,
+            code_block,
+            label.as_deref(),
+            closure,
+            &mut masm,
+        )
+    }))
+    .unwrap_or(Err(()));
+    finish_optimized(ctx, code_block, id, generation, result);
+    PromotionOutcome::Installed
+}
+
+/// Heal `closure.code` to `code_block`'s optimized entry, once there is one,
+/// so the closure's next call goes straight to optimized code. Until then
+/// the closure keeps the entry it has.
+pub(crate) fn heal_to_entry<'gc>(
+    closure: Gc<'gc, Closure<'gc>>,
+    code_block: Gc<'gc, CodeBlock<'gc>>,
+) {
+    let entry = if flags::jit_stable_entry() {
+        code_block.baseline_entry.entry(Acquire)
+    } else {
+        code_block.entry.entry(Acquire)
+    };
+    let Some(entry) = entry else {
+        return;
+    };
+    // SAFETY: the closure is live, and this mutator is the only writer of its
+    // `code`, a plain machine address that the collector does not trace.
+    unsafe { (*(closure.as_ptr() as *mut Closure<'gc>)).code = entry };
+}
+
+/// Release a submit claim so a later window retries. Best-effort: a stale
+/// generation is a no-op.
 pub(crate) fn release_claim<'gc>(code_block: Gc<'gc, CodeBlock<'gc>>) {
-    let _ = code_block.promotion.compare_exchange(
-        Promotion::Submitted as u8,
-        Promotion::Interpreted as u8,
-        AcqRel,
-        Relaxed,
-    );
+    let generation = code_block.install.generation();
+    let _ = code_block.abort_opt(generation);
 }
 
 /// Synchronous tier-up for `CAPY_JIT_WORKERS=0`: compile on the caller,
