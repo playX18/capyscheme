@@ -152,7 +152,7 @@ impl HeuristicState {
             return false;
         }
 
-        if self.adaptive_should_start(snapshot, now, planned_sleep_interval) {
+        if self.predictive_should_start(snapshot, now, planned_sleep_interval) {
             self.generational.pending_cycle_kind = Some(GenerationalCycleKind::Young);
             return true;
         }

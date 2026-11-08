@@ -1,6 +1,6 @@
-//! Adaptive GC trigger heuristics.
+//! `predictive` GC trigger (port of Shenandoah adaptive heuristics).
 //!
-//! This mode follows the same broad shape as Shenandoah's adaptive trigger:
+//! This policy follows the same broad shape as Shenandoah's adaptive trigger:
 //! start with a learning phase, wait until enough allocation has happened to
 //! make the next collection useful, then predict whether allocation will
 //! consume the remaining headroom before a GC can complete.  It uses three
@@ -183,7 +183,7 @@ impl RateSampleHistory {
 }
 
 impl HeuristicState {
-    pub(super) fn adaptive_should_start(
+    pub(super) fn predictive_should_start(
         &mut self,
         snapshot: HeapSnapshot,
         now: std::time::Instant,
@@ -228,15 +228,15 @@ impl HeuristicState {
         let planned_sleep = planned_sleep_interval;
         let average_cycle_time = self
             .gc_cycle_time_history
-            .upper_bound(self.adaptive_confidence);
+            .upper_bound(self.predictive_confidence);
         let predicted_cycle_time = self.gc_cycle_time_predictor.predict(
             elapsed_seconds(self.time_origin, now) + planned_sleep.as_secs_f64(),
-            self.adaptive_confidence,
+            self.predictive_confidence,
         );
         let cycle_time = average_cycle_time.max(predicted_cycle_time) + planned_sleep.as_secs_f64();
         let allocation_rate = self
             .allocation_rate_history
-            .upper_bound(self.adaptive_confidence);
+            .upper_bound(self.predictive_confidence);
         let headroom = self.headroom_adjustment(snapshot.total_bytes);
         // Headroom is reserved for allocation spikes and previous GC-time
         // penalties.  Adaptive triggers compare predicted consumption against
@@ -252,7 +252,7 @@ impl HeuristicState {
             .accelerated_consumption(Duration::from_secs_f64(acceleration_horizon))
             && accelerated_consumption > allocatable_free
         {
-            self.accept_adaptive_trigger(
+            self.accept_predictive_trigger(
                 TriggerType::Rate,
                 format_args!(
                     "accelerated allocation pressure exceeded threshold (consumption={}, headroom={}, current_rate={}/s, acceleration={}/s/s, planned_gc_time={:.2}ms)",
@@ -272,7 +272,7 @@ impl HeuristicState {
         // Steady-state trigger: if the upper-bound average allocation rate can
         // deplete usable headroom before GC finishes, start now.
         if expected_consumption > allocatable_free {
-            self.accept_adaptive_trigger(
+            self.accept_predictive_trigger(
                 TriggerType::Rate,
                 format_allocation_pressure_reason(
                     allocatable_free,
@@ -292,13 +292,13 @@ impl HeuristicState {
         let average_rate = self.allocation_rate_history.average();
         let rate_sd = self.allocation_rate_history.standard_deviation();
         let is_spiking =
-            rate_sd > 0.0 && current_rate > average_rate + self.adaptive_spike_threshold * rate_sd;
+            rate_sd > 0.0 && current_rate > average_rate + self.predictive_spike_threshold * rate_sd;
         let spike_consumption = (cycle_time * current_rate) as usize;
         // Momentary-spike trigger: distinguish bursty allocation from a sustained
         // rate increase so post-GC feedback can tune the spike threshold separately.
         if is_spiking && spike_consumption > allocatable_free {
-            let spike_threshold = self.adaptive_spike_threshold;
-            self.accept_adaptive_trigger(
+            let spike_threshold = self.predictive_spike_threshold;
+            self.accept_predictive_trigger(
                 TriggerType::Spike,
                 format_args!(
                     "instantaneous allocation spike exceeded threshold (consumption={}, headroom={}, current_rate={}/s, average_rate={}/s, spike_threshold={:.2}, planned_gc_time={:.2}ms)",
@@ -317,7 +317,7 @@ impl HeuristicState {
         self.base_should_start(snapshot, now)
     }
 
-    pub(super) fn accept_adaptive_trigger(
+    pub(super) fn accept_predictive_trigger(
         &mut self,
         trigger_type: TriggerType,
         reason: impl std::fmt::Display,
@@ -332,7 +332,7 @@ impl HeuristicState {
         self.log_decision(super::TriggerDecision::Accepted, reason, snapshot);
     }
 
-    pub(super) fn adjust_adaptive_trigger_parameters(&mut self, free_at_end: f64) {
+    pub(super) fn adjust_predictive_trigger_parameters(&mut self, free_at_end: f64) {
         // Compare post-GC free memory to recent outcomes.  Very low free memory
         // means the trigger was too late, very high free memory means it was too early.
         let sd = self.free_at_end_history.standard_deviation();
@@ -352,33 +352,33 @@ impl HeuristicState {
         // A negative z-score produces a positive amount, making future triggers
         // more conservative.  A positive z-score relaxes the last trigger type.
         match self.last_trigger_type {
-            TriggerType::Rate => self.adjust_adaptive_confidence(amount),
+            TriggerType::Rate => self.adjust_predictive_confidence(amount),
             TriggerType::Spike => self.adjust_spike_threshold(amount),
             TriggerType::Other => {}
         }
     }
 
-    fn adjust_adaptive_confidence(&mut self, amount: f64) {
-        self.adaptive_confidence =
-            (self.adaptive_confidence + amount).clamp(MINIMUM_CONFIDENCE, MAXIMUM_CONFIDENCE);
+    fn adjust_predictive_confidence(&mut self, amount: f64) {
+        self.predictive_confidence =
+            (self.predictive_confidence + amount).clamp(MINIMUM_CONFIDENCE, MAXIMUM_CONFIDENCE);
     }
 
     fn adjust_spike_threshold(&mut self, amount: f64) {
-        self.adaptive_spike_threshold =
-            (self.adaptive_spike_threshold - amount).clamp(MINIMUM_CONFIDENCE, MAXIMUM_CONFIDENCE);
+        self.predictive_spike_threshold =
+            (self.predictive_spike_threshold - amount).clamp(MINIMUM_CONFIDENCE, MAXIMUM_CONFIDENCE);
     }
 
     #[allow(dead_code)]
     fn record_degenerated(&mut self) {
         self.adjust_penalty(DEGENERATE_PENALTY_PERCENT);
-        self.adjust_adaptive_confidence(DEGENERATE_PENALTY_SD);
+        self.adjust_predictive_confidence(DEGENERATE_PENALTY_SD);
         self.adjust_spike_threshold(DEGENERATE_PENALTY_SD);
     }
 
     #[allow(dead_code)]
     fn record_success_full(&mut self) {
         self.adjust_penalty(FULL_PENALTY_PERCENT);
-        self.adjust_adaptive_confidence(FULL_PENALTY_SD);
+        self.adjust_predictive_confidence(FULL_PENALTY_SD);
         self.adjust_spike_threshold(FULL_PENALTY_SD);
     }
 }
