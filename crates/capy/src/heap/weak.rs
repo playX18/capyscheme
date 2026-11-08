@@ -147,6 +147,24 @@ pub struct WeakProcessor<'a> {
     pub(crate) has_any: bool,
 }
 
+/// Whether `object` is live for weak processing.
+///
+/// A nursery collection of a generational plan only traces the nursery (and
+/// large objects allocated since the last collection): every other object is
+/// left unvisited and unmarked, so `is_reachable` calls a live mature or
+/// non-moving object dead. Such an object is live by definition of a nursery
+/// collection, and it is not moved by it.
+fn is_reachable_in_this_gc(object: ObjectReference) -> bool {
+    if object.is_reachable() {
+        return true;
+    }
+    crate::heap::GarbageCollector::get()
+        .mmtk
+        .get_plan()
+        .generational()
+        .is_some_and(|plan| plan.is_current_gc_nursery() && !plan.is_object_in_nursery(object))
+}
+
 impl<'a> WeakProcessor<'a> {
     /// Process weak pointer by either breaking it or keeping it alive.
     ///
@@ -162,7 +180,7 @@ impl<'a> WeakProcessor<'a> {
             return;
         };
 
-        if object_reference.is_reachable() {
+        if is_reachable_in_this_gc(object_reference) {
             let new_object_reference = object_reference
                 .get_forwarded_object()
                 .unwrap_or(object_reference);
@@ -191,7 +209,7 @@ impl<'a> WeakProcessor<'a> {
             return GcObject::NULL;
         };
 
-        if object_reference.is_reachable() {
+        if is_reachable_in_this_gc(object_reference) {
             let new = object_reference
                 .get_forwarded_object()
                 .unwrap_or(object_reference);
