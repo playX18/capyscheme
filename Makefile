@@ -112,17 +112,17 @@ R7RS_BENCH_TIMEOUT ?= 300
 R7RS_BENCH_REPORT ?= benchmarks/r7rs-report.html
 R7RS_BENCH_ARGS = $(foreach benchmark,$(R7RS_BENCHMARKS),--benchmark $(benchmark)) $(foreach implementation,$(R7RS_IMPLEMENTATIONS),--implementation $(implementation))
 CAPY_BIN ?= $(shell command -v capy 2>/dev/null || echo stage-0/capy)
+CAPY_STAGE_DIR ?=
 BENCHMARK_CAPY_DEP = $(if $(filter stage-0/capy,$(CAPY_BIN)),stage-0)
 
 .PHONY: benchmark-r7rs
 benchmark-r7rs: $(BENCHMARK_CAPY_DEP)
 	python3 benchmarks/r7rs.py \
-		--capy $(CAPY_BIN) \
+		--capy "$(CAPY_BIN)" \
 		--runs $(R7RS_BENCH_RUNS) \
 		--timeout $(R7RS_BENCH_TIMEOUT) \
 		--report $(R7RS_BENCH_REPORT) $(R7RS_BENCH_ARGS)
-
-
+		
 
 # The boot files that the loader lib/boot/main.scm expands with the Rust expander
 # (everything up to and including lib/boot/time.scm, which is what psyntax needs). They
@@ -459,6 +459,12 @@ install-scm:
 	rsync --checksum -r lib $(PREFIX)/capy/$(VERSION)
 
 CAPY ?= stage-0/capy
+CAPYC ?= $(dir $(CAPY))capyc
+
+# Tests that expand code at run time against the program's own top-level bindings and
+# imports (`(expand '(greet ...))`). A static executable keeps those in the linklet, not in
+# an expansion environment, so this cannot work there by design.
+STATIC_SKIP ?= tests/lib/core/kw.scm
 
 
 TEST_TIMEOUT ?= 300
@@ -490,7 +496,7 @@ test:
 			status=1; \
 		fi; \
 		cat "$$log"; \
-		if grep -Eq "unexpected failures|unexpected successes" "$$log"; then \
+		if tr -d '\033' < "$$log" | sed 's/\[[0-9;]*[mK]//g' | grep -Eq "unexpected (failures|successes) +[1-9]"; then \
 			status=1; \
 		fi; \
 		rm -f "$$log"; \
@@ -769,12 +775,12 @@ install: build
 	mkdir -p "$(PREFIX)/lib/capy/compiled"; \
 	mkdir -p "$(PREFIX)/share/capy"; \
 	cp -r lib "$(PREFIX)/share/capy/"; \
-	cp "$(TARGET_PATH)/capy" "$(PREFIX)/bin/capy"; \
-	cp "$(TARGET_PATH)/capyc" "$(PREFIX)/bin/capyc"; \
+	rm -f "$(PREFIX)/bin/capy"; cp "$(TARGET_PATH)/capy" "$(PREFIX)/bin/capy"; \
+	rm -f "$(PREFIX)/bin/capyc"; cp "$(TARGET_PATH)/capyc" "$(PREFIX)/bin/capyc"; \
 	chmod +x "$(PREFIX)/bin/capy" "$(PREFIX)/bin/capyc"; \
-	cp "$(TARGET_PATH)/$(LIBCAPY)" "$(PREFIX)/lib/$(LIBCAPY)" 2>/dev/null || true; \
+	rm -f "$(PREFIX)/lib/$(LIBCAPY)"; cp "$(TARGET_PATH)/$(LIBCAPY)" "$(PREFIX)/lib/$(LIBCAPY)" 2>/dev/null || true; \
 	# Thin CLI RUNPATH includes $$ORIGIN/; keep a copy next to the binaries for FHS.
-	cp "$(TARGET_PATH)/$(LIBCAPY)" "$(PREFIX)/bin/$(LIBCAPY)" 2>/dev/null || true; \
+	rm -f "$(PREFIX)/bin/$(LIBCAPY)"; cp "$(TARGET_PATH)/$(LIBCAPY)" "$(PREFIX)/bin/$(LIBCAPY)" 2>/dev/null || true; \
 	cp c/capy.h "$(PREFIX)/include/capy.h"; \
 	cp "$(TARGET_PATH)/$(CPARSE_LIB)" "$(PREFIX)/lib/capy/$(CPARSE_LIB)"; \
 	cp -r stage-2/compiled "$(PREFIX)/lib/capy/"; \
