@@ -1,4 +1,4 @@
-(import (core threading) (core arithmetic) (scheme process-context))
+(import (capy) (core thread) (core arithmetic) (scheme process-context))
 
 (define (item-check tree)
   (define left (car tree))
@@ -36,7 +36,7 @@
         (let ([depth d])
           (loop (+ d 2)
             (cons
-              (call-with-new-thread
+              (go
                 (lambda ()
                   (define iterations
                     (bitwise-arithmetic-shift 1 (+ (- max-depth depth) min-depth)))
@@ -51,7 +51,7 @@
                         (loop (+ check (item-check (bottom-up-tree depth))) (+ i 1))]))))
               threads))))))
 
-  (for-each join-thread threads)
+  (for-each thread-join threads)
 
   (for-each (lambda (result) (printf "~a~%" result)) (vector->list results))
   (printf "long lived tree of depth ~a\t check: ~a~%" max-depth (item-check long-lived-tree)))
