@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 
 use crate::heap::{Global, Trace};
 use crate::runtime::hooks::Hook;
-use crate::runtime::{MutationContext, value::Value};
+use crate::runtime::{MutationContext, objectmodel::Value};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]

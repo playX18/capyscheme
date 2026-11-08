@@ -21,9 +21,12 @@
 //! A new engine adds its loop here and drives [`slow`] and [`stack`]
 //! like the existing ones do.
 
-pub mod frame;
-pub mod ic;
-pub mod markers;
+pub mod frame {
+    pub use crate::runtime::frame::call_frame::*;
+}
+pub mod markers {
+    pub use crate::runtime::frame::markers::*;
+}
 pub mod profile;
 pub mod runtime_procs;
 pub mod rust_interp;

@@ -6,13 +6,242 @@
 
 use crate::heap::{Gc, barrier};
 use crate::prelude::*;
+use crate::runtime::hooks::Hook;
+use crate::runtime::objectmodel::{Closure, Tuple, Vector};
 use crate::runtime::record::{Rcd, Rtd};
-use crate::runtime::value::{Closure, Tuple, Vector};
+
+pub(crate) const RECORD_META_KIND: i32 = -0x5245;
+pub(crate) const RECORD_META_RTD: i32 = -0x5246;
+pub(crate) const RECORD_META_OFFSET: i32 = -0x5247;
+pub(crate) const RECORD_META_DEPTH: i32 = -0x5248;
+
+pub(crate) const RECORD_KIND_ACCESSOR: i32 = 1;
+pub(crate) const RECORD_KIND_MUTATOR: i32 = 2;
+pub(crate) const RECORD_KIND_PREDICATE: i32 = 3;
+pub(crate) const RECORD_KIND_CONSTRUCTOR: i32 = 4;
+
+/// The descriptor a record procedure's code block metadata carries.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RecordOp<'gc> {
+    pub kind: i32,
+    pub rtd: Value<'gc>,
+    pub offset: i32,
+    /// Depth of `rtd` in its ancestry tuple. `u32::MAX` means "exact
+    /// identity only"
+    pub depth: i32,
+}
+
+pub(crate) fn record_op_from_meta<'gc>(meta: Value<'gc>) -> Option<RecordOp<'gc>> {
+    let field = |key: i32| meta.assq(Value::from_i32(key)).map(|pair| pair.cdr());
+    let kind = field(RECORD_META_KIND)?.int32()?;
+    let rtd = field(RECORD_META_RTD)?;
+    let offset = field(RECORD_META_OFFSET)?.int32()?;
+    let depth = field(RECORD_META_DEPTH)?.int32()?;
+    Some(RecordOp {
+        kind,
+        rtd,
+        offset,
+        depth,
+    })
+}
+
+fn record_rtd_of<'gc>(obj: Value<'gc>) -> Option<Gc<'gc, Rtd<'gc>>> {
+    if !obj.is::<Tuple>() {
+        return None;
+    }
+    let tuple = obj.downcast::<Tuple>();
+    if tuple.len() == 0 {
+        return None;
+    }
+    let first = tuple[0].get();
+    first.is::<Rtd>().then(|| first.downcast::<Rtd>())
+}
+
+fn captured<'gc>(call: &NativeCall<'_, 'gc>) -> Option<(Gc<'gc, Rtd<'gc>>, Option<usize>)> {
+    // SAFETY: a native procedure is only entered through a closure, whose
+    // rator slot holds it.
+    let closure = unsafe { call.rator.downcast_unchecked::<Closure>() };
+    if closure.nfree < 2 {
+        return None;
+    }
+    let rtd = closure[1].get();
+    if !rtd.is::<Rtd>() {
+        return None;
+    }
+    let rtd = rtd.downcast::<Rtd>();
+    let offset = if closure.nfree > 2 {
+        Some(closure[2].get().int32()? as usize)
+    } else {
+        None
+    };
+    Some((rtd, offset))
+}
+
+fn raise_assertion<'gc>(
+    call: &NativeCall<'_, 'gc>,
+    who: Value<'gc>,
+    message: &str,
+    irritants: &[Value<'gc>],
+) -> ReturnCode {
+    let hook = call.ctx.hook(Hook::AssertionViolation);
+    let message = Str::new(call.ctx, message, true).into();
+    let mut args = Vec::with_capacity(2 + irritants.len());
+    args.push(who);
+    args.push(message);
+    args.extend_from_slice(irritants);
+    call.ctx.stage_tail_call(hook, &args)
+}
+
+fn wrong_arity<'gc>(call: &NativeCall<'_, 'gc>, who: &str, expected: usize) -> ReturnCode {
+    let who = Value::new(Symbol::from_str(call.ctx, who));
+    let message = format!("expected {expected} argument(s), got {}", call.args.len());
+    let irritant = Value::new(call.args.len() as i32);
+    raise_assertion(call, who, &message, &[irritant])
+}
+
+extern "C" fn record_accessor_proc<'gc>(ctx: MutationContext<'gc>, sfp: Slot<'gc>) -> ReturnCode {
+    NativeCall::invoke(ctx, sfp, |call| {
+        let Some((rtd, Some(offset))) = captured(call) else {
+            return raise_assertion(
+                call,
+                Value::new(Symbol::from_str(ctx, "record-accessor")),
+                "malformed record accessor",
+                &[],
+            );
+        };
+        if call.args.len() != 1 {
+            return wrong_arity(call, "record-accessor", 1);
+        }
+        let obj = call.args[0];
+        let Some(obj_rtd) = record_rtd_of(obj) else {
+            return raise_assertion(
+                call,
+                Value::new(Symbol::from_str(ctx, "record-accessor")),
+                "expected a record",
+                &[obj],
+            );
+        };
+        if Gc::ptr_eq(obj_rtd, rtd) || obj_rtd.is_subtype_of(rtd) {
+            let tuple = obj.downcast::<Tuple>();
+            if offset < tuple.len() {
+                return call.return_one(tuple[offset].get());
+            }
+        }
+        let who = Str::new(ctx, "record accessor", true).into();
+        raise_assertion(call, who, "invalid record type", &[obj, rtd.into()])
+    })
+}
+
+extern "C" fn record_mutator_proc<'gc>(ctx: MutationContext<'gc>, sfp: Slot<'gc>) -> ReturnCode {
+    NativeCall::invoke(ctx, sfp, |call| {
+        let Some((rtd, Some(offset))) = captured(call) else {
+            return raise_assertion(
+                call,
+                Value::new(Symbol::from_str(ctx, "record-mutator")),
+                "malformed record mutator",
+                &[],
+            );
+        };
+        if call.args.len() != 2 {
+            return wrong_arity(call, "record-mutator", 2);
+        }
+        let (obj, value) = (call.args[0], call.args[1]);
+        let Some(obj_rtd) = record_rtd_of(obj) else {
+            return raise_assertion(
+                call,
+                Str::new(ctx, "record mutator", true).into(),
+                "expected a record",
+                &[obj],
+            );
+        };
+        if Gc::ptr_eq(obj_rtd, rtd) || obj_rtd.is_subtype_of(rtd) {
+            let tuple = obj.downcast::<Tuple>();
+            if offset < tuple.len() {
+                Gc::write(ctx, tuple)[offset].unlock().set(value);
+                return call.return_one(Value::undefined());
+            }
+        }
+        let who = Str::new(ctx, "record mutator", true).into();
+        raise_assertion(
+            call,
+            who,
+            "expected a record of the accessor's type",
+            &[obj, value],
+        )
+    })
+}
+
+extern "C" fn record_constructor_proc<'gc>(
+    ctx: MutationContext<'gc>,
+    sfp: Slot<'gc>,
+) -> ReturnCode {
+    NativeCall::invoke(ctx, sfp, |call| {
+        let Some((rtd, Some(argc))) = captured(call) else {
+            return raise_assertion(
+                call,
+                Value::new(Symbol::from_str(ctx, "record-constructor")),
+                "malformed record constructor",
+                &[],
+            );
+        };
+        if call.args.len() != argc {
+            return wrong_arity(call, "record-constructor", argc);
+        }
+        let tuple = Tuple::new(ctx, argc + 1, Value::from(rtd));
+        for (index, arg) in call.args.iter().enumerate() {
+            Gc::write(ctx, tuple)[index + 1].unlock().set(*arg);
+        }
+        call.return_one(tuple.into())
+    })
+}
+
+extern "C" fn record_predicate_proc<'gc>(ctx: MutationContext<'gc>, sfp: Slot<'gc>) -> ReturnCode {
+    NativeCall::invoke(ctx, sfp, |call| {
+        let Some((rtd, _)) = captured(call) else {
+            return raise_assertion(
+                call,
+                Value::new(Symbol::from_str(ctx, "record-predicate")),
+                "malformed record predicate",
+                &[],
+            );
+        };
+        if call.args.len() != 1 {
+            return wrong_arity(call, "record-predicate", 1);
+        }
+        let obj = call.args[0];
+        let matches = record_rtd_of(obj)
+            .is_some_and(|obj_rtd| Gc::ptr_eq(obj_rtd, rtd) || obj_rtd.is_subtype_of(rtd));
+        call.return_one(Value::new(matches))
+    })
+}
+
+/// The descriptor alist a record procedure's closure and code block carry.
+fn record_meta<'gc>(
+    ctx: MutationContext<'gc>,
+    kind: i32,
+    rtd: Value<'gc>,
+    offset: i32,
+    depth: i32,
+    name: Value<'gc>,
+) -> Value<'gc> {
+    let entry = |key: i32, value: Value<'gc>| Value::cons(ctx, Value::from_i32(key), value);
+    let mut meta = Value::null();
+    meta = Value::cons(ctx, entry(RECORD_META_DEPTH, Value::from_i32(depth)), meta);
+    meta = Value::cons(
+        ctx,
+        entry(RECORD_META_OFFSET, Value::from_i32(offset)),
+        meta,
+    );
+    meta = Value::cons(ctx, entry(RECORD_META_RTD, rtd), meta);
+    meta = Value::cons(ctx, entry(RECORD_META_KIND, Value::from_i32(kind)), meta);
+    meta = Value::cons(ctx, Value::cons(ctx, ctx.intern("name"), name), meta);
+    meta
+}
 
 /// Raises an assertion violation attributed to `who`, the way the Scheme
 /// `assertion-violation` helper does.
 fn violation<'gc>(
-    call: &Call<'_, 'gc>,
+    call: &NativeCall<'_, 'gc>,
     who: &str,
     message: &str,
     irritant: Value<'gc>,
@@ -308,5 +537,63 @@ pub mod record_ops {
         } else {
             violation(call, "record-rtd", "expected a record, but got", obj)
         }
+    }
+
+    /// A record accessor closure for `(rtd, flat-offset)`.
+    #[scheme(name = "%make-record-accessor")]
+    pub fn make_record_accessor(rtd: Gc<'gc, Rtd<'gc>>, offset: i32) -> Value<'gc> {
+        let depth = rtd.depth() as i32;
+        let name = ctx.intern("record-accessor");
+        let meta = record_meta(ctx, RECORD_KIND_ACCESSOR, rtd.into(), offset, depth, name);
+        let closure = PROCEDURES.fetch(ctx).make_closure(
+            ctx,
+            record_accessor_proc,
+            [rtd.into(), Value::from_i32(offset)],
+            meta,
+        );
+        closure.into()
+    }
+
+    /// A record mutator closure
+    #[scheme(name = "%make-record-mutator")]
+    pub fn make_record_mutator(rtd: Gc<'gc, Rtd<'gc>>, offset: i32) -> Value<'gc> {
+        let depth = rtd.depth() as i32;
+        let name = ctx.intern("record-mutator");
+        let meta = record_meta(ctx, RECORD_KIND_MUTATOR, rtd.into(), offset, depth, name);
+        let closure = PROCEDURES.fetch(ctx).make_closure(
+            ctx,
+            record_mutator_proc,
+            [rtd.into(), Value::from_i32(offset)],
+            meta,
+        );
+        closure.into()
+    }
+
+    /// A record constructor closure taking exactly `argc` fields
+    #[scheme(name = "%make-record-constructor")]
+    pub fn make_record_constructor(rtd: Gc<'gc, Rtd<'gc>>, argc: i32) -> Value<'gc> {
+        let depth = rtd.depth() as i32;
+        let name = ctx.intern("record-constructor");
+        let meta = record_meta(ctx, RECORD_KIND_CONSTRUCTOR, rtd.into(), argc, depth, name);
+        let closure = PROCEDURES.fetch(ctx).make_closure(
+            ctx,
+            record_constructor_proc,
+            [rtd.into(), Value::from_i32(argc)],
+            meta,
+        );
+        closure.into()
+    }
+
+    /// A record predicate closure for `rtd`
+    #[scheme(name = "%make-record-predicate")]
+    pub fn make_record_predicate(rtd: Gc<'gc, Rtd<'gc>>) -> Value<'gc> {
+        let depth = rtd.depth() as i32;
+        let name = ctx.intern("record-predicate");
+        let meta = record_meta(ctx, RECORD_KIND_PREDICATE, rtd.into(), 0, depth, name);
+        let closure =
+            PROCEDURES
+                .fetch(ctx)
+                .make_closure(ctx, record_predicate_proc, [rtd.into()], meta);
+        closure.into()
     }
 }

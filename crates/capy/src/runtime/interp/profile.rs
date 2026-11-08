@@ -12,9 +12,9 @@ use crate::heap::barrier::Write;
 use crate::heap::mmtk::util::Address;
 use crate::heap::object::{ClassId, GcObject, builtin_class_ids};
 use crate::heap::{Gc, Trace, Visitor};
-use crate::runtime::class::{ClassDescriptor, GenericDescriptor, MethodDescriptor};
-use crate::runtime::value::Value;
-use crate::runtime::value::{CodeBlock, CodeBuffer, CodeImage};
+use crate::runtime::objectmodel::Value;
+use crate::runtime::objectmodel::class::{ClassDescriptor, GenericDescriptor, MethodDescriptor};
+use crate::runtime::objectmodel::{CodeBlock, CodeBuffer, CodeImage};
 
 /// A typed GC reference stored in code buffer metadata. Zero bits mean
 /// "none". The layout is one bare word so compiled code can load it by offset.
@@ -288,6 +288,7 @@ pub const ARITH_RESULT_SHIFT: u32 = 12;
 pub const ARITH_OVERFLOW: u32 = 1 << 18;
 /// A slow path recorded here.
 pub const ARITH_SLOW: u32 = 1 << 19;
+pub const ARITH_WIDE_RATIONAL: u32 = 1 << 20;
 /// What a fixnum-fixnum fast path ORs in.
 pub const ARITH_FIXNUMS: u32 = NUMBER_FIXNUM | (NUMBER_FIXNUM << ARITH_RHS_SHIFT);
 /// What a fixnum-flonum fast path ORs in.
@@ -317,14 +318,29 @@ pub fn number_kind(value: Value<'_>) -> u32 {
     NUMBER_NON_NUMBER
 }
 
+/// Whether `value` is a `RATIONAL` with at least one component stored as a
+/// `BIGINT`.
+#[inline(always)]
+fn rational_has_bignum_component(value: Value<'_>) -> bool {
+    use crate::runtime::objectmodel::{Number, Rational};
+    if !value.is_cell() || value.as_cell_raw().class_id().bits() != builtin_class_ids::RATIONAL {
+        return false;
+    }
+    let rational = value.downcast::<Rational>();
+    !matches!(rational.numerator, Number::Fixnum(_))
+        || !matches!(rational.denominator, Number::Fixnum(_))
+}
+
 impl ArithProfile {
-    /// Record the operand types of a binary operation.
+    /// Record the operand types of a binary operation
     #[inline(always)]
     pub fn observe_operands(&self, lhs: Value<'_>, rhs: Value<'_>) {
-        observe(
-            &self.0,
-            number_kind(lhs) | number_kind(rhs) << ARITH_RHS_SHIFT,
-        )
+        let mut bits = number_kind(lhs) | number_kind(rhs) << ARITH_RHS_SHIFT;
+
+        if rational_has_bignum_component(lhs) || rational_has_bignum_component(rhs) {
+            bits |= ARITH_WIDE_RATIONAL;
+        }
+        observe(&self.0, bits);
     }
     /// Fast-path shortcut: both operands were fixnums.
     #[inline(always)]
@@ -420,9 +436,22 @@ pub enum ValueShape {
 }
 
 impl ValueShape {
+    /// Decodes a `ValueProfile` word (layout above).
     pub fn from_profile(word: u32) -> Self {
-        let _ = word;
-        ValueShape::Mixed
+        let imm = word & VALUE_IMM_MASK;
+        let class = word >> VALUE_CLASS_SHIFT;
+        let multi = word & VALUE_CELL_MULTI != 0;
+        match (imm, class) {
+            (0, 0) => ValueShape::Never,
+            (0, class) if !multi => {
+                ClassId::new(class).map_or(ValueShape::Mixed, ValueShape::Class)
+            }
+            (VALUE_FIXNUM, 0) => ValueShape::Fixnum,
+            (VALUE_FLONUM, 0) => ValueShape::Flonum,
+            (VALUE_BOOL, 0) => ValueShape::Bool,
+            (imm, 0) if imm == VALUE_FIXNUM | VALUE_FLONUM => ValueShape::Number,
+            _ => ValueShape::Mixed,
+        }
     }
 }
 
@@ -639,10 +668,17 @@ pub struct CallLinkInfo {
     /// [`LINK_MEGA`] once more distinct callees arrived than the stub
     /// holds.
     pub polymorphic: AtomicU32,
+    /// How often a closure was called through this site, saturating at
+    /// [`HIT_SATURATION`].
+    pub hits: AtomicU32,
     /// Base address of the site's lazily generated call IC stub (0 = none).
     pub stub: AtomicAddress,
     /// The stub's cases: the `CodeBlock`s it enters directly.
     pub cases: [GcCell<CodeBlock<'static>>; CALL_IC_CASES],
+    /// Calls that entered each case, parallel to [`Self::cases`] and
+    /// saturating like [`Self::hits`]. The inliner orders the targets of a
+    /// polymorphic site by this count.
+    pub case_hits: [AtomicU32; CALL_IC_CASES],
     /// Byte distance from the start of the owning `CodeBuffer` to this
     /// link (0 = not bound).
     pub buffer_offset: AtomicU32,
@@ -677,6 +713,10 @@ pub const LINK_MEGA: u32 = 2;
 /// Callee cases per call IC stub, one more distinct callee turns the site
 /// megamorphic.
 pub const CALL_IC_CASES: usize = 4;
+
+/// Where [`CallLinkInfo::hits`] and [`CallLinkInfo::case_hits`] stop
+/// counting.
+pub const HIT_SATURATION: u32 = i32::MAX as u32;
 
 /// A consistent copy of a filled generic dispatch cache.
 #[derive(Clone, Copy)]
@@ -768,6 +808,24 @@ impl CallLinkInfo {
     pub fn is_megamorphic(&self) -> bool {
         self.polymorphic.load(Relaxed) == LINK_MEGA
     }
+
+    /// Records one call through this site. `case` names the stub case the
+    /// call matched, when the caller knows it
+    #[inline(always)]
+    pub fn note_call(&self, case: Option<usize>) {
+        Self::bump(&self.hits);
+        if let Some(index) = case.filter(|&index| index < CALL_IC_CASES) {
+            Self::bump(&self.case_hits[index]);
+        }
+    }
+
+    #[inline(always)]
+    fn bump(counter: &AtomicU32) {
+        let count = counter.load(Relaxed);
+        if count < HIT_SATURATION {
+            counter.store(count + 1, Relaxed);
+        }
+    }
 }
 
 impl Clone for CallLinkInfo {
@@ -775,8 +833,12 @@ impl Clone for CallLinkInfo {
         Self {
             callee: self.callee.clone(),
             polymorphic: AtomicU32::new(self.polymorphic.load(Relaxed)),
+            hits: AtomicU32::new(self.hits.load(Relaxed)),
             stub: AtomicAddress::new(self.stub.load(Relaxed)),
             cases: self.cases.clone(),
+            case_hits: std::array::from_fn(|index| {
+                AtomicU32::new(self.case_hits[index].load(Relaxed))
+            }),
             buffer_offset: AtomicU32::new(0),
             stub_owner: self.stub_owner.clone(),
             generic_version: self.generic_version.clone(),
@@ -793,11 +855,15 @@ impl Clone for CallLinkInfo {
 }
 impl std::fmt::Debug for CallLinkInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let case_hits: [u32; CALL_IC_CASES] =
+            std::array::from_fn(|index| self.case_hits[index].load(Relaxed));
         f.debug_struct("CallLinkInfo")
             .field("callee", &self.callee)
             .field("polymorphic", &self.polymorphic.load(Relaxed))
+            .field("hits", &self.hits.load(Relaxed))
             .field("stub", &self.stub.load(Relaxed))
             .field("cases", &self.cases)
+            .field("case_hits", &case_hits)
             .field("stub_owner", &self.stub_owner)
             .field("generic_version", &self.generic_version)
             .field("generic", &self.generic)
@@ -818,8 +884,12 @@ impl PartialEq for CallLinkInfo {
     fn eq(&self, other: &Self) -> bool {
         self.callee == other.callee
             && self.polymorphic.load(Relaxed) == other.polymorphic.load(Relaxed)
+            && self.hits.load(Relaxed) == other.hits.load(Relaxed)
             && self.stub.load(Relaxed) == other.stub.load(Relaxed)
             && self.cases == other.cases
+            && (0..CALL_IC_CASES).all(|index| {
+                self.case_hits[index].load(Relaxed) == other.case_hits[index].load(Relaxed)
+            })
             && self.stub_owner == other.stub_owner
             && self.generic_version == other.generic_version
             && self.generic == other.generic
@@ -835,8 +905,12 @@ impl std::hash::Hash for CallLinkInfo {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.callee.hash(state);
         self.polymorphic.load(Relaxed).hash(state);
+        self.hits.load(Relaxed).hash(state);
         self.stub.load(Relaxed).hash(state);
         self.cases.hash(state);
+        for case in &self.case_hits {
+            case.load(Relaxed).hash(state);
+        }
         self.stub_owner.hash(state);
         self.generic_version.hash(state);
         self.generic.hash(state);

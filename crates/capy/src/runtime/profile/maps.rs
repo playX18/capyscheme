@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
 
 use crate::runtime::interp::markers;
-use crate::runtime::value::proc::{SRC_FLAG_SYNTHETIC, span_short};
-use crate::runtime::value::{Str, Symbol, Value, Vector};
+use crate::runtime::objectmodel::proc::{SRC_FLAG_SYNTHETIC, span_short};
+use crate::runtime::objectmodel::{Str, Symbol, Value, Vector};
 use crate::runtime::{MutationContext, codegen};
 
 /// One srcmap run: `[start, start + len)` carries span id `span` with
@@ -205,7 +205,7 @@ fn block_name<'gc>(ctx: MutationContext<'gc>, info: Value<'gc>) -> String {
 }
 
 /// Publish an interpreted procedure's debug info. Called from
-/// [`CodeBlock::new_bytecode`](crate::runtime::value::proc::CodeBlock)
+/// [`CodeBlock::new_bytecode`](crate::runtime::objectmodel::proc::CodeBlock)
 pub(crate) fn publish_interp<'gc>(
     ctx: MutationContext<'gc>,
     entry: u64,

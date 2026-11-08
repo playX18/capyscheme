@@ -250,6 +250,11 @@ pub enum Primitive {
     PtrF32Set,
     PtrF64Ref,
     PtrF64Set,
+
+    VectorLength,
+    MakeSyntaxTransformer,
+    StringSet,
+    CaseLambda,
 }
 
 impl Primitive {
@@ -466,6 +471,9 @@ impl Primitive {
         Self::PtrF32Set,
         Self::PtrF64Ref,
         Self::PtrF64Set,
+        Self::VectorLength,
+        Self::MakeSyntaxTransformer,
+        Self::StringSet,
     ];
 
     pub fn from_name(name: &str) -> Option<Self> {
@@ -506,6 +514,7 @@ impl Primitive {
             "tuple" => Some(Self::Tuple),
             "vector-ref" => Some(Self::VectorRef),
             "vector-set!" => Some(Self::VectorSet),
+            "vector-length" => Some(Self::VectorLength),
             "bytevector-length" => Some(Self::BytevectorLength),
             "bytevector-u8-ref" => Some(Self::BytevectorU8Ref),
             "tuple-size" => Some(Self::TupleSize),
@@ -685,6 +694,9 @@ impl Primitive {
             "pointer-set!/f32" => Some(Self::PtrF32Set),
             "pointer-ref/f64" => Some(Self::PtrF64Ref),
             "pointer-set!/f64" => Some(Self::PtrF64Set),
+            "make-syntax-transformer" => Some(Self::MakeSyntaxTransformer),
+            "%case-lambda" => Some(Self::CaseLambda),
+            "string-set!" => Some(Self::StringSet),
             _ => None,
         }
     }
@@ -727,6 +739,10 @@ impl Primitive {
             Self::Tuple => "tuple",
             Self::VectorRef => "vector-ref",
             Self::VectorSet => "vector-set!",
+            Self::VectorLength => "vector-length",
+            Self::MakeSyntaxTransformer => "make-syntax-transformer",
+            Self::CaseLambda => "%case-lambda",
+            Self::StringSet => "string-set!",
             Self::BytevectorLength => "bytevector-length",
             Self::BytevectorU8Ref => "bytevector-u8-ref",
             Self::TupleSize => "tuple-size",

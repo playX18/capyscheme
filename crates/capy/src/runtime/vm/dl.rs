@@ -4,7 +4,6 @@ use std::sync::LazyLock;
 use crate::heap::mmtk::util::Address;
 use parking_lot::Mutex;
 
-use super::ffi::*;
 use crate::prelude::*;
 use crate::runtime::prelude::*;
 use crate::runtime::vm::ExecutionResult;
@@ -96,7 +95,7 @@ mod dl_ops {
         ptr.into()
     }
     #[scheme(name = "dlclose")]
-    pub fn dlclose(handle: Gc<'gc, Pointer>) -> Value<'gc> {
+    pub fn dlclose(handle: Gc<'gc, Pointer<'gc>>) -> Value<'gc> {
         let handle_ptr = handle.value();
 
         // SAFETY: FFI: handle was obtained from a previous dlopen
@@ -127,7 +126,7 @@ mod dl_ops {
     }
 
     #[scheme(name = "dlsym")]
-    pub fn dlsym(handle: Gc<'gc, Pointer>, symbol: Value<'gc>) -> Value<'gc> {
+    pub fn dlsym(handle: Gc<'gc, Pointer<'gc>>, symbol: Value<'gc>) -> Value<'gc> {
         let handle_ptr = handle.value();
 
         let symbol_cstr = if symbol.is::<Str>() {

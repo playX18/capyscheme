@@ -66,7 +66,7 @@ extern "C" fn call_without_interrupts_after<'gc>(
     ctx: MutationContext<'gc>,
     sfp: Slot<'gc>,
 ) -> ReturnCode {
-    Call::invoke(ctx, sfp, |call| {
+    NativeCall::invoke(ctx, sfp, |call| {
         let rator = call.rator.downcast::<Closure>();
         let thread = rator[1].get().downcast::<ThreadObject>();
         let retk = rator[2].get();

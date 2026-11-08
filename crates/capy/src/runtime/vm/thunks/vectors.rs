@@ -1,10 +1,10 @@
 use super::make_assertion_violation;
 use crate::heap::Gc;
-use crate::runtime::value::{ByteVector, IntoValue, Number};
+use crate::runtime::objectmodel::{ByteVector, IntoValue, Number};
 use crate::runtime::vm::thunk_raise;
 use crate::runtime::{
     MutationContext,
-    value::{Str, Symbol, Tuple, Value, Vector},
+    objectmodel::{Str, Symbol, Tuple, Value, Vector},
 };
 
 pub fn make_vector<'gc>(
@@ -285,6 +285,152 @@ pub fn tuple_size<'gc>(ctx: MutationContext<'gc>, tup: Value<'gc>) -> Value<'gc>
     };
 
     Number::from_usize(ctx, t.len()).into_value(ctx)
+}
+
+pub fn tuple_ref<'gc>(ctx: MutationContext<'gc>, tup: Value<'gc>, index: Value<'gc>) -> Value<'gc> {
+    let Some(t) = tup.try_as::<Tuple>() else {
+        thunk_raise(
+            ctx,
+            make_assertion_violation(
+                ctx,
+                Symbol::from_str(ctx, "tuple-ref").into(),
+                Str::new(ctx, "not a tuple", true).into(),
+                &[tup],
+            ),
+        );
+    };
+
+    let Some(index) = index.number() else {
+        thunk_raise(
+            ctx,
+            make_assertion_violation(
+                ctx,
+                Symbol::from_str(ctx, "tuple-ref").into(),
+                Str::new(ctx, "not a number", true).into(),
+                &[index],
+            ),
+        );
+    };
+
+    if !index.is_exact_integer() {
+        thunk_raise(
+            ctx,
+            make_assertion_violation(
+                ctx,
+                Symbol::from_str(ctx, "tuple-ref").into(),
+                Str::new(ctx, "not an exact integer", true).into(),
+                &[index.into_value(ctx)],
+            ),
+        );
+    }
+
+    let Some(index) = index
+        .exact_integer_to_usize()
+        .filter(|_| !index.is_negative())
+    else {
+        thunk_raise(
+            ctx,
+            make_assertion_violation(
+                ctx,
+                Symbol::from_str(ctx, "tuple-ref").into(),
+                Str::new(ctx, "not in usize range", true).into(),
+                &[index.into_value(ctx)],
+            ),
+        );
+    };
+
+    if index >= t.len() {
+        thunk_raise(
+            ctx,
+            make_assertion_violation(
+                ctx,
+                Symbol::from_str(ctx, "tuple-ref").into(),
+                Str::new(ctx, "index out of range", true).into(),
+                &[
+                    Number::from_usize(ctx, index).into_value(ctx),
+                    Number::from_usize(ctx, t.len()).into_value(ctx),
+                ],
+            ),
+        );
+    }
+
+    t[index].get()
+}
+
+pub fn tuple_set<'gc>(
+    ctx: MutationContext<'gc>,
+    tup: Value<'gc>,
+    index: Value<'gc>,
+    new_value: Value<'gc>,
+) -> Value<'gc> {
+    let Some(t) = tup.try_as::<Tuple>() else {
+        thunk_raise(
+            ctx,
+            make_assertion_violation(
+                ctx,
+                Symbol::from_str(ctx, "tuple-set!").into(),
+                Str::new(ctx, "not a tuple", true).into(),
+                &[tup],
+            ),
+        );
+    };
+
+    let Some(index) = index.number() else {
+        thunk_raise(
+            ctx,
+            make_assertion_violation(
+                ctx,
+                Symbol::from_str(ctx, "tuple-set!").into(),
+                Str::new(ctx, "not a number", true).into(),
+                &[index],
+            ),
+        );
+    };
+
+    if !index.is_exact_integer() {
+        thunk_raise(
+            ctx,
+            make_assertion_violation(
+                ctx,
+                Symbol::from_str(ctx, "tuple-set!").into(),
+                Str::new(ctx, "not an exact integer", true).into(),
+                &[index.into_value(ctx)],
+            ),
+        );
+    }
+
+    let Some(index) = index
+        .exact_integer_to_usize()
+        .filter(|_| !index.is_negative())
+    else {
+        thunk_raise(
+            ctx,
+            make_assertion_violation(
+                ctx,
+                Symbol::from_str(ctx, "tuple-set!").into(),
+                Str::new(ctx, "not in usize range", true).into(),
+                &[index.into_value(ctx)],
+            ),
+        );
+    };
+
+    if index >= t.len() {
+        thunk_raise(
+            ctx,
+            make_assertion_violation(
+                ctx,
+                Symbol::from_str(ctx, "tuple-set!").into(),
+                Str::new(ctx, "index out of range", true).into(),
+                &[
+                    Number::from_usize(ctx, index).into_value(ctx),
+                    Number::from_usize(ctx, t.len()).into_value(ctx),
+                ],
+            ),
+        );
+    }
+
+    Gc::write(ctx, t)[index].unlock().set(new_value);
+    Value::undefined()
 }
 
 pub fn bytevector_length<'gc>(ctx: MutationContext<'gc>, bv: Value<'gc>) -> Value<'gc> {

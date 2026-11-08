@@ -15,7 +15,7 @@ use crate::compiler::{
 };
 use crate::runtime::MutationContext;
 use crate::runtime::compile_service::{self, Failure, JobInput};
-use crate::runtime::value::{Closure, Str, Value};
+use crate::runtime::objectmodel::{Closure, Str, Value};
 use crate::runtime::vm::libraries::LIBRARY_COLLECTION;
 use crate::runtime::vm::thunks::make_io_error;
 

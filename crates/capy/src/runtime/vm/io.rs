@@ -1,6 +1,4 @@
 use crate::heap::Space;
-use crate::heap::object::{ClassId, builtin_class_ids, class_header_word};
-use crate::heap::{Visitor, WeakProcessor};
 use crate::prelude::*;
 use crate::runtime::fasl::{Reader, Writer};
 use crate::runtime::sched::blocking;
@@ -8,6 +6,8 @@ use crate::runtime::sched::preempt::retry_eintr;
 use crate::runtime::sched::reactor::{self, Dir};
 use crate::runtime::sched::scheduler::{Woken, current};
 use crate::static_symbols;
+pub use crate::runtime::objectmodel::io::Poller;
+pub(crate) use crate::runtime::objectmodel::io::poller_header_word;
 use rustix::fd::AsRawFd;
 use std::ffi::CString;
 use std::sync::{
@@ -118,7 +118,7 @@ fn open_signal_pipe() -> std::io::Result<i32> {
 }
 
 fn term_io_error<'gc>(
-    call: &Call<'_, 'gc>,
+    call: &NativeCall<'_, 'gc>,
     operation: IoOperation,
     who: &'static str,
     irritant: Value<'gc>,
@@ -435,7 +435,7 @@ pub mod io_ops {
     #[scheme(name = "fasl-stats")]
     pub fn fasl_stats(path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
         use crate::runtime::fasl::stats::{Section, analyze};
-        use crate::runtime::value::Symbol;
+        use crate::runtime::objectmodel::Symbol;
 
         let stats = std::fs::read(path.to_string()).and_then(|bytes| analyze(&bytes));
         let stats = match stats {
@@ -2503,34 +2503,6 @@ pub fn init_io<'gc>(ctx: MutationContext<'gc>) {
     cconst!(MSG_MORE);
 }
 
-#[repr(C)]
-pub struct Poller {
-    inner: Arc<polling::Poller>,
-}
-
-fn poller_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::POLLER).expect("builtin class id is nonzero"))
-}
-
-// SAFETY: Class IDs in `CLASS_IDS` match the allocation header for `Poller`
-unsafe impl ClassTagged for Poller {
-    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::POLLER];
-    const TYPE_NAME: &'static str = "poller";
-}
-
-// SAFETY: GC trace for `Poller`, all reachable heap fields are visited
-unsafe impl Trace for Poller {
-    // SAFETY: All GC-reachable fields are traced via `visitor`
-    unsafe fn trace(&mut self, visitor: &mut Visitor) {
-        let _ = visitor;
-    }
-
-    // SAFETY: Weak refs are processed through the given weak_processor
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
-        let _ = weak_processor;
-    }
-}
-
 pub const EREADABLE: i32 = 0x01;
 pub const EWRITABLE: i32 = 0x02;
 pub const EHUP: i32 = 0x04;
@@ -2701,7 +2673,7 @@ fn fd_is_closed(fd: i32) -> bool {
 /// One I/O attempt from a thread.
 fn virtual_thread_io<'gc>(
     ctx: MutationContext<'gc>,
-    cx: &crate::runtime::sched::scheduler::SchedCtx,
+    cx: &crate::runtime::sched::scheduler::SchedContext,
     fd: i32,
     dir: Dir,
     mut attempt: impl FnMut() -> Result<isize, i32>,

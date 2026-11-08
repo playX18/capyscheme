@@ -4,11 +4,12 @@ use std::{
 };
 
 use crate::heap::{
-    Trace,
     finalizer::FinalizerQueue,
     mmtk::util::{Address, ObjectReference},
-    object::{ClassId, builtin_class_ids, class_header_word},
 };
+pub use crate::runtime::objectmodel::ffi::{Cif, Pointer, pointer_header_word};
+pub(crate) use crate::runtime::objectmodel::ffi::cif_header_word;
+
 use crate::{
     global,
     prelude::*,
@@ -176,16 +177,16 @@ fn check_aggregate_size<'gc>(
     Ok(())
 }
 
-fn null_pointer_error<'gc>(call: &Call<'_, 'gc>, who: &str) -> Value<'gc> {
+fn null_pointer_error<'gc>(call: &NativeCall<'_, 'gc>, who: &str) -> Value<'gc> {
     call.raise_undefined_violation(who, "null-pointer dereference", &[])
 }
 
 /// `pointer + offset`, or `None` when the sum would wrap around the address space.
-fn address_plus(pointer: Gc<'_, Pointer>, offset: usize) -> Option<usize> {
+fn address_plus(pointer: Gc<'_, Pointer<'_>>, offset: usize) -> Option<usize> {
     (pointer.value() as usize).checked_add(offset)
 }
 
-fn offset_overflow<'gc>(call: &Call<'_, 'gc>, who: &str) -> Value<'gc> {
+fn offset_overflow<'gc>(call: &NativeCall<'_, 'gc>, who: &str) -> Value<'gc> {
     call.wrong_argument_violation(
         who,
         "offset runs past the end of the address space",
@@ -193,20 +194,6 @@ fn offset_overflow<'gc>(call: &Call<'_, 'gc>, who: &str) -> Value<'gc> {
         None,
         2,
         &[],
-    )
-}
-
-/// A wrapped C pointer. This allows us to protect
-/// from accidental UBs, but we won't take away
-/// the ability to do unsafe things.
-#[repr(C)]
-pub struct Pointer {
-    pub(crate) value: Address,
-}
-
-pub(crate) fn pointer_header_word() -> u64 {
-    class_header_word(
-        ClassId::new(builtin_class_ids::POINTER).expect("builtin class id is nonzero"),
     )
 }
 
@@ -292,36 +279,6 @@ global!(
     PTRS<'gc>: Gc<'gc, WeakTable<'gc>> = (ctx) WeakTable::new(ctx, 8, 0.75);
 );
 
-// SAFETY: GC trace for `Pointer`, all reachable heap fields are visited
-unsafe impl Trace for Pointer {
-    // SAFETY: All GC-reachable fields are traced via `visitor`
-    unsafe fn trace(&mut self, visitor: &mut crate::heap::Visitor) {
-        let _ = visitor;
-    }
-
-    // SAFETY: Weak refs are processed through the given weak_processor
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::heap::WeakProcessor) {
-        let _ = weak_processor;
-    }
-}
-
-impl Pointer {
-    pub fn new(value: *mut std::ffi::c_void) -> Self {
-        Self {
-            value: Address::from_ptr(value as *mut u8),
-        }
-    }
-
-    pub fn value(&self) -> *mut std::ffi::c_void {
-        self.value.to_mut_ptr()
-    }
-}
-
-// SAFETY: Class IDs in `CLASS_IDS` match the allocation header for `Pointer`
-unsafe impl ClassTagged for Pointer {
-    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::POINTER];
-    const TYPE_NAME: &'static str = "pointer";
-}
 
 #[scheme(path=capy)]
 pub mod ffi_ops {
@@ -338,18 +295,18 @@ pub mod ffi_ops {
     }
 
     #[scheme(name = "pointer-address")]
-    pub fn pointer_address(p: Gc<'gc, Pointer>) -> usize {
+    pub fn pointer_address(p: Gc<'gc, Pointer<'gc>>) -> usize {
         p.value() as usize
     }
 
     /// unsafely convert a pointer to a Scheme value.
     #[scheme(name = "pointer->scm")]
-    pub fn pointer_to_value(p: Gc<'gc, Pointer>) -> Value<'gc> {
+    pub fn pointer_to_value(p: Gc<'gc, Pointer<'gc>>) -> Value<'gc> {
         Value::from_raw(p.value() as u64)
     }
 
     #[scheme(name = "scm->pointer")]
-    pub fn value_to_pointer(v: Value<'gc>) -> Gc<'gc, Pointer> {
+    pub fn value_to_pointer(v: Value<'gc>) -> Gc<'gc, Pointer<'gc>> {
         let p = Pointer::new(v.bits() as *mut std::ffi::c_void);
         let p = ctx.allocate_with(p, pointer_header_word());
         p
@@ -357,7 +314,7 @@ pub mod ffi_ops {
 
     #[scheme(name = "pointer->bytevector")]
     pub fn pointer_to_bytevector(
-        pointer: Gc<'gc, Pointer>,
+        pointer: Gc<'gc, Pointer<'gc>>,
         length: usize,
         offset: Option<usize>,
     ) -> Value<'gc> {
@@ -407,18 +364,16 @@ pub mod ffi_ops {
         };
 
         let ptr = bv.contents() + offset;
-        let p = Pointer::new(ptr.to_mut_ptr());
+        // The pointer owns the (NonMoving) bytevector, keeping it alive with `p`.
+        let p = Pointer::with_owner(ptr.to_mut_ptr(), bv.into());
         let p = ctx.allocate_with(p, pointer_header_word());
-
-        // Ephemeron: keep the (NonMoving) bytevector alive while `p` is live.
-        ptrs(ctx).put(ctx, p, bv);
 
         (p).into()
     }
 
     /// If `len` is -1 or None then string is null-terminated
     #[scheme(name = "pointer->string")]
-    pub fn pointer_to_string(pointer: Gc<'gc, Pointer>, length: Option<isize>) -> Value<'gc> {
+    pub fn pointer_to_string(pointer: Gc<'gc, Pointer<'gc>>, length: Option<isize>) -> Value<'gc> {
         let value = pointer.value();
         if value.is_null() {
             return null_pointer_error(call, "pointer->string");
@@ -478,7 +433,7 @@ pub mod ffi_ops {
     }
 
     #[scheme(name = "set-pointer-finalizer!")]
-    pub fn set_pointer_finalizer(p: Gc<'gc, Pointer>, finalizer: Gc<'gc, Pointer>) -> Value<'gc> {
+    pub fn set_pointer_finalizer(p: Gc<'gc, Pointer<'gc>>, finalizer: Gc<'gc, Pointer<'gc>>) -> Value<'gc> {
         if p.value().is_null() {
             return null_pointer_error(call, "set-pointer-finalizer!");
         }
@@ -504,7 +459,7 @@ pub mod ffi_ops {
     }
 
     #[scheme(name = "dereference-pointer")]
-    pub fn dereference_pointer(p: Gc<'gc, Pointer>) -> Value<'gc> {
+    pub fn dereference_pointer(p: Gc<'gc, Pointer<'gc>>) -> Value<'gc> {
         if p.value().is_null() {
             return null_pointer_error(call, "dereference-pointer");
         }
@@ -534,7 +489,7 @@ pub mod ffi_ops {
     #[scheme(name = "pointer->procedure")]
     pub fn pointer_to_procedure(
         return_type: Value<'gc>,
-        func_ptr: Gc<'gc, Pointer>,
+        func_ptr: Gc<'gc, Pointer<'gc>>,
         arg_types: Value<'gc>,
         variadic: Option<bool>,
         blocking: Option<bool>,
@@ -645,7 +600,7 @@ pub mod ffi_ops {
     }
 
     #[scheme(name = "free-callback-pointer")]
-    pub fn free_callback_pointer(callback: Gc<'gc, Pointer>) -> bool {
+    pub fn free_callback_pointer(callback: Gc<'gc, Pointer<'gc>>) -> bool {
         let owner = ptrs(ctx).get(ctx, callback);
         if let Some(owner) = owner {
             ptrs(ctx).remove(ctx, callback.into());
@@ -659,7 +614,7 @@ pub mod ffi_ops {
     }
 
     #[scheme(name = "ioctl/pointer")]
-    pub fn ioctl(fd: i32, request: u64, argp: Gc<'gc, Pointer>) -> Value<'gc> {
+    pub fn ioctl(fd: i32, request: u64, argp: Gc<'gc, Pointer<'gc>>) -> Value<'gc> {
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let res = libc::ioctl(fd, request as _, argp.value());
@@ -683,7 +638,7 @@ pub mod ffi_ops {
     #[scheme(name = "pointer-ref")]
     pub fn pointer_ref(
         ftype: ForeignType,
-        pointer: Gc<'gc, Pointer>,
+        pointer: Gc<'gc, Pointer<'gc>>,
         offset: Option<usize>,
     ) -> Value<'gc> {
         if pointer.value().is_null() {
@@ -723,7 +678,7 @@ pub mod ffi_ops {
     #[scheme(name = "pointer-set!")]
     pub fn pointer_set(
         ftype: ForeignType,
-        pointer: Gc<'gc, Pointer>,
+        pointer: Gc<'gc, Pointer<'gc>>,
         offset: usize,
         value: Value<'gc>,
     ) -> Value<'gc> {
@@ -788,7 +743,7 @@ pub mod ffi_ops {
 
     /// Reads a pointer-sized value at `pointer + offset` as a new pointer.
     #[scheme(name = "pointer-ref/pointer")]
-    pub fn pointer_ref_pointer(pointer: Gc<'gc, Pointer>, offset: Option<usize>) -> Value<'gc> {
+    pub fn pointer_ref_pointer(pointer: Gc<'gc, Pointer<'gc>>, offset: Option<usize>) -> Value<'gc> {
         if pointer.value().is_null() {
             return null_pointer_error(call, "pointer-ref/pointer");
         }
@@ -804,9 +759,9 @@ pub mod ffi_ops {
     /// Writes `value` (a pointer) at `pointer + offset`.
     #[scheme(name = "pointer-set/pointer!")]
     pub fn pointer_set_pointer(
-        pointer: Gc<'gc, Pointer>,
+        pointer: Gc<'gc, Pointer<'gc>>,
         offset: usize,
-        value: Gc<'gc, Pointer>,
+        value: Gc<'gc, Pointer<'gc>>,
     ) -> Value<'gc> {
         if pointer.value().is_null() {
             return null_pointer_error(call, "pointer-set/pointer!");
@@ -833,7 +788,7 @@ pub mod ffi_ops {
 
     /// Frees memory from `foreign-alloc` (or any C `malloc`-family allocation).
     #[scheme(name = "foreign-free")]
-    pub fn foreign_free(pointer: Gc<'gc, Pointer>) -> Value<'gc> {
+    pub fn foreign_free(pointer: Gc<'gc, Pointer<'gc>>) -> Value<'gc> {
         // SAFETY: the caller owns `pointer` and does not use it afterwards.
         unsafe { libc::free(pointer.value()) };
         Value::undefined()
@@ -1350,45 +1305,6 @@ fn make_ffi_arg_types<'gc>(
     Ok(args)
 }
 
-#[repr(C)]
-pub struct Cif<'gc> {
-    pub(crate) cif: libffi::middle::Cif,
-    pub(crate) nargs: u32,
-    pub(crate) variadic: bool,
-    /// Whether the foreign call can block. Blocking calls first yield to native
-    /// before using the slower calling convention.
-    ///
-    /// Anything that can block the mutator thread should be marked as blocking. Example:
-    /// - `epoll`, `poll`, `read` etc can block
-    pub(crate) blocking: bool,
-    pub(crate) args: Value<'gc>,
-    pub(crate) return_type: Value<'gc>,
-}
-
-fn cif_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::CIF).expect("builtin class id is nonzero"))
-}
-
-// SAFETY: `gc` for `Cif` upholds all trait invariants
-unsafe impl<'gc> ClassTagged for Cif<'gc> {
-    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::CIF];
-    const TYPE_NAME: &'static str = "cif";
-}
-
-// SAFETY: `gc` for `Cif` upholds all trait invariants
-unsafe impl<'gc> Trace for Cif<'gc> {
-    // SAFETY: All GC-reachable fields are traced via `visitor`
-    unsafe fn trace(&mut self, visitor: &mut crate::heap::Visitor) {
-        visitor.trace(&mut self.args);
-        visitor.trace(&mut self.return_type);
-    }
-
-    // SAFETY: Weak refs are processed through the given weak_processor
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::heap::WeakProcessor) {
-        let _ = weak_processor;
-    }
-}
-
 fn make_cif<'gc>(
     ctx: MutationContext<'gc>,
     return_type: Value<'gc>,
@@ -1446,7 +1362,7 @@ fn make_cif<'gc>(
 
 /// Raise `condition` as a Scheme exception so `guard` and handlers see it.
 fn raise_condition<'gc>(
-    call: &Call<'_, 'gc>,
+    call: &NativeCall<'_, 'gc>,
     ctx: MutationContext<'gc>,
     condition: Value<'gc>,
 ) -> Value<'gc> {
@@ -1457,7 +1373,7 @@ fn raise_condition<'gc>(
 }
 
 fn foreign_call<'gc>(
-    call: &Call<'_, 'gc>,
+    call: &NativeCall<'_, 'gc>,
     ctx: MutationContext<'gc>,
     cif: Value<'gc>,
     pointer: Value<'gc>,
@@ -2202,10 +2118,9 @@ unsafe fn pack<'gc>(
                 arr.contents().to_mut_ptr(),
                 (*typ).size,
             );
-            let ptr = Pointer::new(arr.contents().to_mut_ptr());
+            // The pointer owns the bytevector, keeping it alive with the pointer.
+            let ptr = Pointer::with_owner(arr.contents().to_mut_ptr(), arr.into());
             let ptr = ctx.allocate_with(ptr, pointer_header_word());
-            // keep bytevector alive as long as pointer is alive.
-            ptrs(ctx).put(ctx, ptr, arr);
             return Ok(ptr.into());
         }
 
@@ -2231,7 +2146,11 @@ unsafe extern "C" fn scheme_callback(
     // from the one that created the callback (workers migrate, qsort may run on a
     // blocking thread). A thread Capy never registered has no mutator at all.
     if !crate::heap::sync::thread::is_current_thread_registed() {
-        eprintln!("capy: FFI callback invoked from a thread unknown to the runtime");
+        crate::heap::logging::ensure_max_level(log::LevelFilter::Error);
+        log::error!(
+            target: "capy::ffi",
+            "FFI callback invoked from a thread unknown to the runtime"
+        );
         // SAFETY: libffi gives us the return slot for this CIF.
         unsafe { *result = 0 };
         return;
@@ -2278,7 +2197,11 @@ unsafe extern "C" fn scheme_callback(
             Err(err) => {
                 // An exception cannot unwind through C frames, and the callback has no
                 // way to return one. Report it and return zeroes to the caller.
-                eprintln!("capy: FFI callback argument could not be converted: {err}");
+                crate::heap::logging::ensure_max_level(log::LevelFilter::Error);
+                log::error!(
+                    target: "capy::ffi",
+                    "FFI callback argument could not be converted: {err}"
+                );
                 // SAFETY: libffi gives us the return slot for this CIF.
                 unsafe { *result = 0 };
                 return;
@@ -2299,7 +2222,11 @@ unsafe extern "C" fn scheme_callback(
             ExecutionResult::Err(err) => {
                 // An exception cannot unwind through C frames. Report it rather than
                 // silently returning 0 to the foreign caller.
-                eprintln!("capy: uncaught exception in FFI callback: {err}");
+                crate::heap::logging::ensure_max_level(log::LevelFilter::Error);
+                log::error!(
+                    target: "capy::ffi",
+                    "uncaught exception in FFI callback: {err}"
+                );
                 *result = 0;
                 return;
             }
@@ -2319,7 +2246,11 @@ unsafe extern "C" fn scheme_callback(
         )
     };
     if let Err(err) = converted {
-        eprintln!("capy: FFI callback returned a value of the wrong type: {err}");
+        crate::heap::logging::ensure_max_level(log::LevelFilter::Error);
+        log::error!(
+            target: "capy::ffi",
+            "FFI callback returned a value of the wrong type: {err}"
+        );
         // Return zeroes rather than whatever libffi left in the slot. libffi sizes the slot
         // to at least `ffi_arg`, and to the aggregate's size for struct returns.
         // SAFETY: see above; the slot covers `len` bytes.
@@ -2334,7 +2265,7 @@ pub(crate) extern "C" fn c_foreign_call<'gc>(
     ctx: MutationContext<'gc>,
     sfp: Slot<'gc>,
 ) -> ReturnCode {
-    Call::invoke(ctx, sfp, |call| {
+    NativeCall::invoke(ctx, sfp, |call| {
         let closure = call.rator.downcast::<Closure>();
 
         let cif = closure[1].get().downcast::<Cif>();

@@ -19,7 +19,7 @@ use crate::heap::{ObjectSlot, mmtk::util::ObjectReference};
 use crate::runtime::vm::exceptions::make_undefined_violation as undefined_violation;
 use crate::runtime::{
     MutationContext,
-    value::{Str, Symbol, Value},
+    objectmodel::{Str, Symbol, Value},
     vm::{ExecutionResult, thunk_raise},
 };
 
@@ -332,6 +332,22 @@ thunks! {
 
     pub fn tuple_size(ctx: MutationContext<'gc>, tup: Value<'gc>) -> Value<'gc> {
         vectors::tuple_size(ctx, tup)
+    }
+
+    pub fn tuple_ref(ctx: MutationContext<'gc>, tup: Value<'gc>, index: Value<'gc>) -> Value<'gc> {
+        vectors::tuple_ref(ctx, tup, index)
+    }
+
+    pub fn tuple_set(ctx: MutationContext<'gc>, tup: Value<'gc>, index: Value<'gc>, new_value: Value<'gc>) -> Value<'gc> {
+        vectors::tuple_set(ctx, tup, index, new_value)
+    }
+
+    pub fn string_set(ctx: MutationContext<'gc>, s: Value<'gc>, index: Value<'gc>, ch: Value<'gc>) -> Value<'gc> {
+        misc::string_set_value(ctx, s, index, ch)
+    }
+
+    pub fn string_length(ctx: MutationContext<'gc>, s: Value<'gc>) -> Value<'gc> {
+        misc::string_length_value(ctx, s)
     }
 
     pub fn current_continuation_marks(ctx: MutationContext<'gc>) -> Value<'gc> {

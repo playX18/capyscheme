@@ -8,58 +8,58 @@ use core::mem::{align_of, offset_of, size_of};
 use crate::heap::object::{MAX_CLASS_ID, OBJECT_HEADER_OFFSET};
 use crate::heap::sync::thread::VirtualThread;
 use crate::runtime::interp::stack::StackState;
-use crate::runtime::thread::Tc;
-use crate::runtime::value::{
+use crate::runtime::thread::ThreadContext;
+use crate::runtime::objectmodel::{
     ByteVector, Closure, CodeBlock, EnvRecord, NativeProc, Pair, Str, Tuple, Value, Vector,
 };
 
 pub use crate::heap::object::builtin_class_ids;
 
-/// VirtualThread-header base of the `Tc` context.
+/// VirtualThread-header base of the `ThreadContext` context.
 pub const TC_OFFSET: usize = offset_of!(VirtualThread, tc);
 /// `AP`/`EAP` are the local allocation buffer cursor and limit.
 pub const TC_AP: usize = offset_of!(VirtualThread, ap);
 pub const TC_EAP: usize = offset_of!(VirtualThread, eap);
 
-/// Native data base to `Tc.stack` fields.
+/// Native data base to `ThreadContext.stack` fields.
 pub const TC_STACK_FP: usize =
-    TC_OFFSET + offset_of!(Tc<'static>, stack) + offset_of!(StackState<'static>, fp);
+    TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, fp);
 pub const TC_STACK_SP: usize =
-    TC_OFFSET + offset_of!(Tc<'static>, stack) + offset_of!(StackState<'static>, sp);
+    TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, sp);
 pub const TC_SCHEME_STACK: usize =
-    TC_OFFSET + offset_of!(Tc<'static>, stack) + offset_of!(StackState<'static>, scheme_stack);
+    TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, scheme_stack);
 pub const TC_SCHEME_STACK_SIZE: usize =
-    TC_OFFSET + offset_of!(Tc<'static>, stack) + offset_of!(StackState<'static>, scheme_stack_size);
+    TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, scheme_stack_size);
 pub const TC_STACK_SEGMENT: usize =
-    TC_OFFSET + offset_of!(Tc<'static>, stack) + offset_of!(StackState<'static>, segment);
+    TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, segment);
 pub const TC_STACK_LINK: usize =
-    TC_OFFSET + offset_of!(Tc<'static>, stack) + offset_of!(StackState<'static>, stack_link);
+    TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, stack_link);
 pub const TC_STACK_TOP_IP: usize =
-    TC_OFFSET + offset_of!(Tc<'static>, stack) + offset_of!(StackState<'static>, top_ip);
+    TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, top_ip);
 pub const TC_STACK_ACTIVATION: usize =
-    TC_OFFSET + offset_of!(Tc<'static>, stack) + offset_of!(StackState<'static>, activation);
+    TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, activation);
 pub const TC_STACK_CALL_RATOR: usize =
-    TC_OFFSET + offset_of!(Tc<'static>, stack) + offset_of!(StackState<'static>, call_rator);
+    TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, call_rator);
 pub const TC_STACK_CALL_K: usize =
-    TC_OFFSET + offset_of!(Tc<'static>, stack) + offset_of!(StackState<'static>, call_k);
+    TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, call_k);
 pub const TC_STACK_CALL_ARGC: usize =
-    TC_OFFSET + offset_of!(Tc<'static>, stack) + offset_of!(StackState<'static>, call_argc);
+    TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, call_argc);
 pub const TC_STACK_CALL_ARGS: usize =
-    TC_OFFSET + offset_of!(Tc<'static>, stack) + offset_of!(StackState<'static>, call_args);
+    TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, call_args);
 
 /// Native data base to the yieldpoint flag: `0` idle, `> 0` taken at
 /// prologues and loop back-edges, `< 0` at prologues only.
 pub const TC_YIELDPOINT: usize = offset_of!(VirtualThread, take_yieldpoint);
 
-/// Native data base to the remaining `Tc` fields.
-pub const TC_ESP: usize = TC_OFFSET + offset_of!(Tc<'static>, esp);
-pub const TC_REAL_ESP: usize = TC_OFFSET + offset_of!(Tc<'static>, real_esp);
-pub const TC_AC: usize = TC_OFFSET + offset_of!(Tc<'static>, ac);
-pub const TC_RV: usize = TC_OFFSET + offset_of!(Tc<'static>, rv);
-pub const TC_CP: usize = TC_OFFSET + offset_of!(Tc<'static>, cp);
-pub const TC_IP: usize = TC_OFFSET + offset_of!(Tc<'static>, ip);
-pub const TC_EXIT_VALUE: usize = TC_OFFSET + offset_of!(Tc<'static>, exit_value);
-pub const TC_STUBS: usize = TC_OFFSET + offset_of!(Tc<'static>, stubs);
+/// Native data base to the remaining `ThreadContext` fields.
+pub const TC_ESP: usize = TC_OFFSET + offset_of!(ThreadContext<'static>, esp);
+pub const TC_REAL_ESP: usize = TC_OFFSET + offset_of!(ThreadContext<'static>, real_esp);
+pub const TC_AC: usize = TC_OFFSET + offset_of!(ThreadContext<'static>, ac);
+pub const TC_RV: usize = TC_OFFSET + offset_of!(ThreadContext<'static>, rv);
+pub const TC_CP: usize = TC_OFFSET + offset_of!(ThreadContext<'static>, cp);
+pub const TC_IP: usize = TC_OFFSET + offset_of!(ThreadContext<'static>, ip);
+pub const TC_EXIT_VALUE: usize = TC_OFFSET + offset_of!(ThreadContext<'static>, exit_value);
+pub const TC_STUBS: usize = TC_OFFSET + offset_of!(ThreadContext<'static>, stubs);
 
 /// Object layout offsets for templates.
 pub const CLOSURE_CODE: usize = offset_of!(Closure<'static>, code);
@@ -72,9 +72,12 @@ pub const VECTOR_DATA: usize = Vector::OFFSET_OF_DATA;
 pub const TUPLE_LENGTH: usize = offset_of!(Tuple<'static>, length);
 pub const TUPLE_DATA: usize = offset_of!(Tuple<'static>, data);
 pub const STRING_LENGTH: usize = offset_of!(Str<'static>, length);
+/// Payload offset of a `Stringbuf`'s character data (`length`, then the
+/// mutable/padding word).
+pub const STRINGBUF_DATA: usize = 16;
 pub const BYTEVECTOR_LENGTH: usize = offset_of!(ByteVector, len);
 pub const BYTEVECTOR_CONTENTS: usize = offset_of!(ByteVector, contents);
-pub const POINTER_VALUE: usize = offset_of!(crate::runtime::vm::ffi::Pointer, value);
+pub const POINTER_VALUE: usize = offset_of!(crate::runtime::objectmodel::ffi::Pointer, value);
 pub const VECTOR_SIZE: usize = size_of::<Vector<'static>>();
 pub const ENV_DATA: usize = EnvRecord::DATA_OFFSET as usize;
 pub const ENV_LENGTH: usize = offset_of!(EnvRecord<'static>, length);
@@ -86,7 +89,8 @@ pub const CLOSURE_NFREE: usize = offset_of!(Closure<'static>, nfree);
 pub const CLOSURE_SIZE: usize = size_of::<Closure<'static>>();
 pub const CODE_BLOCK_ENTRYPOINT: usize = offset_of!(CodeBlock<'static>, entrypoint);
 pub const CODE_BLOCK_METADATA: usize = offset_of!(CodeBlock<'static>, metadata);
-pub const CODE_BLOCK_JIT_ENTRY: usize = offset_of!(CodeBlock<'static>, jit_entry);
+pub const CODE_BLOCK_ENTRY: usize = offset_of!(CodeBlock<'static>, entry);
+pub const CODE_BLOCK_BASELINE_ENTRY: usize = offset_of!(CodeBlock<'static>, baseline_entry);
 pub const CODE_BLOCK_HOT_COUNT: usize = offset_of!(CodeBlock<'static>, hot_count);
 /// Bytes of the object header before an object reference.
 pub const OBJECT_HEADER_BYTES: usize = 8;
@@ -367,7 +371,7 @@ const _: () = {
     assert!(CLOSURE_FREE == CLOSURE_SIZE && ENV_DATA == ENV_SIZE);
     assert!(CLASS_ID_MASK == 0x00ff_ffff);
     assert!(size_of::<Value<'static>>() == 8);
-    assert!(TC_OFFSET + size_of::<Tc<'static>>() < i32::MAX as usize);
+    assert!(TC_OFFSET + size_of::<ThreadContext<'static>>() < i32::MAX as usize);
     assert!(TC_EAP + 8 < i32::MAX as usize);
 };
 
@@ -387,7 +391,7 @@ const _: () = {
 
 /// Role to portable register map, per target.
 ///
-/// On x86-64 `AP` is a `Tc` slot ([`TC_AP`]) rather than a register, so
+/// On x86-64 `AP` is a `ThreadContext` slot ([`TC_AP`]) rather than a register, so
 /// only AArch64 defines that role here. `DISPATCH` is likewise AArch64-only:
 /// on x86-64 `csr3` is `TC`, so there is no spare callee-saved register for
 /// the opcode-map base and dispatch keeps its `lea`.
@@ -408,6 +412,10 @@ pub mod regs {
         pub const MD: VReg = r::csr2;
         pub const NUMBER_TAG: VReg = r::csr0;
         pub const NOT_CELL_MASK: VReg = r::csr4;
+        /// C argument registers: `rdi`, `rsi`, `rdx`, `rcx`, `r8`.
+        pub const ARG_REGS: [VReg; 5] = [r::t6, r::t1, r::t2, r::t3, r::t4];
+        /// C return registers: `rax`, `rdx`.
+        pub const RET_REGS: [VReg; 2] = [r::t0, r::t2];
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -427,6 +435,10 @@ pub mod regs {
         pub const NUMBER_TAG: VReg = r::csr7;
         pub const NOT_CELL_MASK: VReg = r::csr8;
         pub const DISPATCH: VReg = r::csr3;
+        /// C argument registers: `x0`..`x4`.
+        pub const ARG_REGS: [VReg; 5] = [r::t0, r::t1, r::t2, r::t3, r::t4];
+        /// C return registers: `x0`, `x1`.
+        pub const RET_REGS: [VReg; 2] = [r::t0, r::t1];
     }
 
     pub use target::*;

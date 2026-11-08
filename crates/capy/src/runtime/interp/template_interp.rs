@@ -18,7 +18,7 @@ use crate::runtime::codegen::template::{
     emit_branch_register_register, emit_control, emit_reload_code, metadata_entry_size,
     metadata_field_offset, metadata_id_operand, metadata_kind, op_len, tmp,
 };
-use crate::runtime::sabi::regs;
+use crate::runtime::sabi::{CLOSURE_FREE, regs};
 use crate::utils::flags;
 
 /// The interpreter context
@@ -50,24 +50,19 @@ impl InterpreterTemplateContext {
     }
 
     /// Decode operand `field` into `dst`, sign- or zero-extended.
+    ///
+    /// The signed forms use the single-instruction extending loads
+    /// (`ldrsb`/`ldrsh`/`ldrsw` or `movsx`/`movsxd`); the unsigned forms rely
+    /// on the narrow load zero-extending into the 64-bit register.
     fn decode_into(&mut self, masm: &mut Masm, field: usize, signed: bool, dst: VReg) {
         let at = masm.assembler().mem(regs::PC, self.operand_offset(field));
         match (self.width, signed) {
             (OperandWidth::Narrow, false) => onlineasm!(*masm.assembler(); loadb {dst}, {at};),
-            (OperandWidth::Narrow, true) => onlineasm!(*masm.assembler();
-                loadb {dst}, {at};
-                sxb2q {dst}, {dst};
-            ),
+            (OperandWidth::Narrow, true) => onlineasm!(*masm.assembler(); loadbsq {dst}, {at};),
             (OperandWidth::Wide16, false) => onlineasm!(*masm.assembler(); loadh {dst}, {at};),
-            (OperandWidth::Wide16, true) => onlineasm!(*masm.assembler();
-                loadh {dst}, {at};
-                sxh2q {dst}, {dst};
-            ),
+            (OperandWidth::Wide16, true) => onlineasm!(*masm.assembler(); loadhsq {dst}, {at};),
             (OperandWidth::Wide32, false) => onlineasm!(*masm.assembler(); loadi {dst}, {at};),
-            (OperandWidth::Wide32, true) => onlineasm!(*masm.assembler();
-                loadi {dst}, {at};
-                sxi2q {dst}, {dst};
-            ),
+            (OperandWidth::Wide32, true) => onlineasm!(*masm.assembler(); loadis {dst}, {at};),
         }
     }
 
@@ -318,6 +313,139 @@ impl Flow for InterpreterTemplateContext {
         stubs::emit_switch_search(masm, stubs::SwitchSearchKind::Int);
         masm.bind(fallthrough);
         self.next(masm);
+    }
+
+    fn enter_case(&mut self, masm: &mut Masm, table: usize, slow: Label, overflow: Label) {
+        let (ac, sfp, rv) = (regs::AC, regs::SFP, regs::RV);
+        self.decode_into(masm, table, false, tmp::T0);
+        let pool_at = masm.assembler().mem(regs::CONSTANT_POINTER, -16);
+        let count_at = masm.assembler().mem(tmp::T0, 0);
+        onlineasm!(*masm.assembler();
+            loadq {tmp::T1}, {pool_at};
+            lshiftq {tmp::T0}, 2;
+            addp {tmp::T0}, {tmp::T0}, {tmp::T1};
+            loadi {tmp::T2}, {count_at};
+            addp {tmp::T0}, {tmp::T0}, 4;
+            move {tmp::T1}, 0;
+        );
+        let rows = masm.label();
+        let next = masm.label();
+        let done_rest = masm.label();
+        let (fwd, bwd, done_move) = (masm.label(), masm.label(), masm.label());
+        let min_at = masm.assembler().mem(tmp::T0, 0);
+        masm.bind(rows);
+        onlineasm!(*masm.assembler();
+            bqaeq {tmp::T1}, {tmp::T2}, {slow};
+            loadi {tmp::T3}, {min_at};
+            bqb {ac}, {tmp::T3}, {next};
+        );
+        let max_at = masm.assembler().mem(tmp::T0, 4);
+        onlineasm!(*masm.assembler();
+            loadi {tmp::T3}, {max_at};
+            bqa {ac}, {tmp::T3}, {next};
+        );
+
+        let clo_at = masm.assembler().mem(sfp, 8);
+        onlineasm!(*masm.assembler();
+            move {rv}, {tmp::T0};
+            loadq {tmp::T0}, {clo_at};
+        );
+        let slot = masm
+            .assembler()
+            .mem_indexed(tmp::T0, tmp::T1, 8, CLOSURE_FREE as i32);
+        onlineasm!(*masm.assembler();
+            loadq {tmp::T0}, {slot};
+        );
+        let row_min_at = masm.assembler().mem(rv, 0);
+        let row_frame_at = masm.assembler().mem(rv, 12);
+        onlineasm!(*masm.assembler();
+            loadi {tmp::T2}, {row_min_at};
+            subp {tmp::T1}, {ac}, {tmp::T2};
+            loadi {tmp::T3}, {row_frame_at};
+            addp {tmp::T3}, {tmp::T3}, {tmp::T1};
+        );
+        masm.check_frame_limit(tmp::T3, tmp::T1, tmp::T2, overflow);
+
+        onlineasm!(*masm.assembler();
+            storeq {clo_at}, {tmp::T0};
+        );
+
+        let row_rest_base_at = masm.assembler().mem(rv, 16);
+        onlineasm!(*masm.assembler();
+            loadi {tmp::T1}, {row_rest_base_at};
+            move {tmp::T3}, {def::CASE_NO_REST as i64};
+            bqeq {tmp::T1}, {tmp::T3}, {done_rest};
+            loadi {tmp::T0}, {row_min_at};
+            subp {tmp::T0}, {ac}, {tmp::T0};
+        );
+        // src = SFP + 8 * (2 + min), dst = SFP + 8 * rest_base.
+        onlineasm!(*masm.assembler();
+            loadi {tmp::T2}, {row_min_at};
+        );
+        let src = masm.assembler().mem_indexed(sfp, tmp::T2, 8, 16);
+        let dst = masm.assembler().mem_indexed(sfp, tmp::T1, 8, 0);
+        onlineasm!(*masm.assembler();
+            leap {tmp::T2}, {src};
+            leap {tmp::T1}, {dst};
+            bqbeq {tmp::T1}, {tmp::T2}, {fwd};
+        );
+
+        let src_end = masm.assembler().mem_indexed(tmp::T2, tmp::T0, 8, 0);
+        let dst_end = masm.assembler().mem_indexed(tmp::T1, tmp::T0, 8, 0);
+        onlineasm!(*masm.assembler();
+            leap {tmp::T2}, {src_end};
+            leap {tmp::T1}, {dst_end};
+        );
+        let src_at = masm.assembler().mem(tmp::T2, 0);
+        let dst_at = masm.assembler().mem(tmp::T1, 0);
+        masm.bind(bwd);
+        onlineasm!(*masm.assembler();
+            btqz {tmp::T0}, {done_move};
+            subp {tmp::T2}, {tmp::T2}, 8;
+            subp {tmp::T1}, {tmp::T1}, 8;
+            loadq {tmp::T3}, {src_at};
+            storeq {dst_at}, {tmp::T3};
+            subq {tmp::T0}, {tmp::T0}, 1;
+            jmp {bwd};
+        );
+        masm.bind(fwd);
+        onlineasm!(*masm.assembler();
+            btqz {tmp::T0}, {done_move};
+            loadq {tmp::T3}, {src_at};
+            storeq {dst_at}, {tmp::T3};
+            addp {tmp::T2}, {tmp::T2}, 8;
+            addp {tmp::T1}, {tmp::T1}, 8;
+            subq {tmp::T0}, {tmp::T0}, 1;
+            jmp {fwd};
+        );
+        // Store the boxed extras count in r[rest_cnt].
+        masm.bind(done_move);
+        let row_cnt_at = masm.assembler().mem(rv, 20);
+        onlineasm!(*masm.assembler();
+            loadi {tmp::T0}, {row_min_at};
+            subp {tmp::T1}, {ac}, {tmp::T0};
+            loadi {tmp::T2}, {row_cnt_at};
+            lshiftq {tmp::T2}, 3;
+            addp {tmp::T2}, {sfp}, {tmp::T2};
+        );
+        masm.box_int32(tmp::T3, tmp::T1);
+        let cnt_at = masm.assembler().mem(tmp::T2, 0);
+        onlineasm!(*masm.assembler();
+            storeq {cnt_at}, {tmp::T3};
+        );
+        masm.bind(done_rest);
+        let target_at = masm.assembler().mem(rv, 8);
+        onlineasm!(*masm.assembler();
+            loadis {tmp::T1}, {target_at};
+            addp {regs::PC}, {regs::PC}, {tmp::T1};
+        );
+        self.dispatch(masm);
+        masm.bind(next);
+        onlineasm!(*masm.assembler();
+            addp {tmp::T0}, {tmp::T0}, 24;
+            addp {tmp::T1}, {tmp::T1}, 1;
+            jmp {rows};
+        );
     }
 
     fn switch_sym(&mut self, masm: &mut Masm, src: usize, table: usize) {

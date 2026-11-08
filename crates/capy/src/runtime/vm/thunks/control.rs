@@ -3,12 +3,12 @@ use crate::prelude::PROCEDURES;
 use crate::runtime::vm::default_exception_handler;
 use crate::runtime::{
     MutationContext,
-    value::{Str, Value},
+    objectmodel::{Str, Value},
 };
 
 pub fn non_applicable<'gc>(ctx: MutationContext<'gc>, subr: Value<'gc>) -> Value<'gc> {
     log::trace!("call {subr}");
-    crate::runtime::vm::debug::print_stacktraces_impl(ctx);
+    crate::runtime::builtins::debug::print_stacktraces_impl(ctx);
     make_assertion_violation(
         ctx,
         Value::new(false),

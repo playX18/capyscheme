@@ -9,7 +9,7 @@ use super::service::{self, ServiceCtl, ServiceThread};
 use crate::heap::{GarbageCollector, Mutation, Mutator, mmtk};
 
 /// How long the thread waits for work before polling for a collection.
-const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 pub enum Command {
     /// Vacuum weak sets. This task walks all live weak sets and removes broken
@@ -76,10 +76,10 @@ impl ServiceThread for TaskThread {
                     // TODO(Adel): implement port closing on thread shutdown
                 }
                 Some(Command::VacuumWeakSets) => {
-                    mutator.mutate(|mc, _| super::value::weak_set::vacuum_weak_sets(mc));
+                    mutator.mutate(|mc, _| super::objectmodel::weak_set::vacuum_weak_sets(mc));
                 }
                 Some(Command::VacuumWeakTables) => {
-                    mutator.mutate(|mc, _| super::value::weak_table::vacuum_weak_tables(mc));
+                    mutator.mutate(|mc, _| super::objectmodel::weak_table::vacuum_weak_tables(mc));
                 }
                 Some(Command::MutatorTask(task)) => {
                     mutator.mutate(|mc, _| task(&mc));
@@ -100,6 +100,8 @@ impl ServiceThread for TaskThread {
                             },
                         );
                     });
+                    // A collection may have queued dead code images
+                    crate::runtime::codegen::reclaim::drain_if_needed();
                 }
             }
         }

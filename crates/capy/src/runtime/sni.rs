@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use crate::heap::oop_storage::{HandleScope, OopHandle, OopStorage, OopStorageSet};
 use crate::runtime::{
     MutationContext,
-    value::Value,
+    objectmodel::Value,
     vm::{ExecutionResult, call_scheme},
 };
 

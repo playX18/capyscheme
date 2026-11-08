@@ -7,7 +7,7 @@ use crate::heap::{Gc, Trace, cell::Lock};
 
 use crate::runtime::{
     MutationContext,
-    value::{ClassTagged, Tuple, Value},
+    objectmodel::{ClassTagged, Tuple, Value},
 };
 
 /// The record type is generative: every `make-record-type-descriptor` call
@@ -191,7 +191,7 @@ impl<'gc> Rtd<'gc> {
         same_parent
             && self.is_sealed() == sealed
             && self.is_opaque() == effective_opaque
-            && self.fields.equal(fields_list, &mut Default::default())
+            && self.fields.equal_default(fields_list)
     }
 }
 

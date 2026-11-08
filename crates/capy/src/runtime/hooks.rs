@@ -3,7 +3,7 @@
 //! Scheme code installs procedures and record types here with
 //! `install-runtime-hook!` at boot, and Rust code reads them back by [`Hook`]
 //! instead of looking them up by name. The slots are GC roots held by
-//! [`Globals`](crate::runtime::global::Globals).
+//! [`VmState`](crate::runtime::global::VmState).
 
 use std::cell::Cell;
 
@@ -217,7 +217,7 @@ impl<'gc> Hooks<'gc> {
 
     /// Stores `value` in the slot for `hook`.
     pub(crate) fn install(&self, hook: Hook, value: Value<'gc>) {
-        // SAFETY: `Hooks` lives inside `Globals`, which is a GC root traced in
+        // SAFETY: `Hooks` lives inside `VmState`, which is a GC root traced in
         // full on every collection, so the write needs no barrier.
         unsafe { self.slots[hook as usize].as_cell().set(value) };
     }
@@ -270,7 +270,7 @@ impl<'gc> MutationContext<'gc> {
 
 /// Raises an assertion violation attributed to `who`
 fn violation<'gc>(
-    call: &Call<'_, 'gc>,
+    call: &NativeCall<'_, 'gc>,
     who: &str,
     message: &str,
     irritant: Value<'gc>,
@@ -286,7 +286,7 @@ const REF_HOOK: &str = "runtime-hook-ref";
 
 /// Stores `value` in the hook `name`.
 fn install_hook<'gc>(
-    call: &Call<'_, 'gc>,
+    call: &NativeCall<'_, 'gc>,
     ctx: MutationContext<'gc>,
     who: &str,
     name: Value<'gc>,

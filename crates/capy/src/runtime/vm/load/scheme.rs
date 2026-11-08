@@ -7,9 +7,9 @@ use crate::compiler::{
 };
 use crate::list;
 use crate::prelude::*;
-use crate::runtime::value::{Closure, Str, Symbol, Value};
+use crate::runtime::objectmodel::{Closure, Str, Symbol, Value};
 use crate::runtime::vm::base::scm_log_level;
-use crate::runtime::vm::expand::TermConverter;
+use crate::runtime::builtins::expand::TermConverter;
 use crate::runtime::vm::libraries::LIBRARY_COLLECTION;
 use crate::runtime::vm::thunks::make_io_error;
 #[cfg(feature = "bootstrap")]
@@ -527,13 +527,11 @@ fn lower_expanded_scheme<'gc>(
 ) -> Result<LoweredProgram<'gc>, Value<'gc>> {
     let mut converter = TermConverter::new(ctx);
     let ir = converter.convert(expanded)?;
-    lower_expanded_to_cps(
-        ctx,
-        ir,
-        cfg!(feature = "bootstrap"),
-        dump_graph,
-        preprocessed,
-    )
+    // Raw expander output (not `preprocessed` by the Scheme pipeline of `(boot compiler)`) still
+    // holds unexpanded primitive calls, e.g. `$sc-dispatch` from `syntax-case`. That is the case
+    // for bootstrap and for static executables, which run the fallback file compiler.
+    // `lower_expanded_to_cps` ignores the flag for preprocessed input.
+    lower_expanded_to_cps(ctx, ir, true, dump_graph, preprocessed)
 }
 
 fn load_compiled_library<'gc>(

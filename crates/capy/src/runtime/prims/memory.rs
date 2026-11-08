@@ -2,7 +2,7 @@
 
 use super::calls::PrimResult;
 use crate::runtime::MutationContext;
-use crate::runtime::value::{ByteVector, IntoValue, Str, Symbol, Value};
+use crate::runtime::objectmodel::{ByteVector, IntoValue, Str, Symbol, Value};
 use crate::runtime::vm::ffi::{Pointer, exact_integer_to_i128, real_argument};
 use crate::runtime::vm::thunk_raise;
 use crate::runtime::vm::thunks::make_assertion_violation;

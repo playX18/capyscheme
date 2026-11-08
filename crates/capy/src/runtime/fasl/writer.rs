@@ -11,7 +11,7 @@ use crate::heap::mmtk::util::Address;
 use crate::runtime::{
     MutationContext,
     record::{RTD_OPAQUE, RTD_SEALED, Rcd, Rtd},
-    value::{
+    objectmodel::{
         BigInt, ByteVector, Complex, HashTable, HashTableType, IntoValue, Keyword, Rational, Str,
         Symbol, Tuple, Value, Vector,
     },

@@ -5,7 +5,7 @@ use crate::{
     runtime::{
         MutationContext,
         record::{Rcd, Rtd},
-        value::{Tuple, Value},
+        objectmodel::{Tuple, Value},
     },
 };
 

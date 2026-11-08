@@ -1,0 +1,892 @@
+use std::{cell::Cell, collections::HashMap};
+
+use crate::heap::{alloc::Array, barrier, cell::Lock};
+use crate::runtime::hooks::Hook;
+
+use crate::{
+    expander::core::{self, GlobalSlot, LVar, LVarRef, ProcRef, Term, TermKind, TermRef, seq_from_slice},
+    runtime::{prelude::*, variable::Variable},
+    static_symbols,
+};
+
+static_symbols!(
+    SYM_TERM = "&term"
+    SYM_LREF = "&lref"
+    SYM_LSET = "&lset"
+    SYM_IF = "&if"
+    SYM_LET_TYPE = "&let"
+    SYM_FIX = "&fix"
+    SYM_RECEIVE = "&receive"
+    SYM_APPLICATION = "&application"
+    SYM_PRIMCALL = "&primcall"
+    SYM_PRIMREF = "&primref"
+    SYM_CONSTANT = "&constant"
+    SYM_VOID = "&void"
+    SYM_VALUES = "&values"
+    SYM_SEQUENCE = "&sequence"
+    SYM_PROC = "&proc"
+    SYM_WCM = "&wcm"
+    SYM_CASE_LAMBDA = "%case-lambda"
+
+    SYM_NAME = "name"
+    SYM_LET_ = "let"
+    SYM_LET_STAR = "let*"
+    SYM_LETREC = "letrec"
+    SYM_LETREC_STAR = "letrec*"
+);
+
+pub fn is_term<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
+    v.is_record_of(ctx.hook_rtd(Hook::TermTerm))
+}
+
+pub fn term_sourcev<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_term(ctx, v));
+    term_slot_sourcev(ctx, v.downcast::<Tuple>()[1].get())
+}
+
+/// Normalize a `&term` record's source slot to a 9-vector sourcev or `#f`.
+/// Pair alists convert field-by-field like every other span converter,
+/// anything that is neither alist nor vector carries no span.
+fn term_slot_sourcev<'gc>(ctx: MutationContext<'gc>, src: Value<'gc>) -> Value<'gc> {
+    if src.is_pair() {
+        crate::runtime::vm::syntax::props_to_sourcev(ctx, src)
+    } else if src.is::<Vector>() {
+        src
+    } else {
+        Value::new(false)
+    }
+}
+
+const TERM_SOURCEV: usize = 1;
+const LREF_VARIABLE: usize = TERM_SOURCEV + 1;
+const LREF_SYM: usize = TERM_SOURCEV + 2;
+
+pub fn is_lref<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
+    v.is_record_of(ctx.hook_rtd(Hook::TermLref))
+}
+
+pub fn lref_name<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_lref(ctx, v));
+    v.downcast::<Tuple>()[LREF_VARIABLE].get()
+}
+
+pub fn lref_sym<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_lref(ctx, v));
+    v.downcast::<Tuple>()[LREF_SYM].get()
+}
+
+const LSET_VARIABLE_: usize = TERM_SOURCEV + 1;
+const LSET_SYM: usize = TERM_SOURCEV + 2;
+const LSET_VALUE: usize = TERM_SOURCEV + 3;
+
+pub fn is_lset<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
+    v.is_record_of(ctx.hook_rtd(Hook::TermLset))
+}
+
+pub fn lset_name<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_lset(ctx, v));
+    v.downcast::<Tuple>()[LSET_VARIABLE_].get()
+}
+
+pub fn lset_sym<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_lset(ctx, v));
+    v.downcast::<Tuple>()[LSET_SYM].get()
+}
+
+pub fn lset_value<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_lset(ctx, v));
+    v.downcast::<Tuple>()[LSET_VALUE].get()
+}
+
+const IF_COND: usize = TERM_SOURCEV + 1;
+const IF_THEN: usize = TERM_SOURCEV + 2;
+const IF_ELSE: usize = TERM_SOURCEV + 3;
+
+pub fn is_if<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
+    v.is_record_of(ctx.hook_rtd(Hook::TermIf))
+}
+
+pub fn if_cond<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_if(ctx, v));
+    v.downcast::<Tuple>()[IF_COND].get()
+}
+
+pub fn if_then<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_if(ctx, v));
+    v.downcast::<Tuple>()[IF_THEN].get()
+}
+
+pub fn if_else<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_if(ctx, v));
+    v.downcast::<Tuple>()[IF_ELSE].get()
+}
+
+const LET_STYLE: usize = TERM_SOURCEV + 1;
+const LET_IDS: usize = TERM_SOURCEV + 2;
+const LET_LHS: usize = TERM_SOURCEV + 3;
+const LET_RHS: usize = TERM_SOURCEV + 4;
+const LET_BODY: usize = TERM_SOURCEV + 5;
+
+pub fn is_let<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
+    v.is_record_of(ctx.hook_rtd(Hook::TermLet))
+}
+
+pub fn let_style<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_let(ctx, v));
+    v.downcast::<Tuple>()[LET_STYLE].get()
+}
+
+pub fn let_ids<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_let(ctx, v));
+    v.downcast::<Tuple>()[LET_IDS].get()
+}
+
+pub fn let_lhs<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_let(ctx, v));
+    v.downcast::<Tuple>()[LET_LHS].get()
+}
+
+pub fn let_rhs<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_let(ctx, v));
+    v.downcast::<Tuple>()[LET_RHS].get()
+}
+
+pub fn let_body<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_let(ctx, v));
+    v.downcast::<Tuple>()[LET_BODY].get()
+}
+
+const FIX_IDS: usize = TERM_SOURCEV + 1;
+const FIX_LHS: usize = TERM_SOURCEV + 2;
+const FIX_RHS: usize = TERM_SOURCEV + 3;
+const FIX_BODY: usize = TERM_SOURCEV + 4;
+
+pub fn is_fix<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
+    v.is_record_of(ctx.hook_rtd(Hook::TermFix))
+}
+
+pub fn fix_ids<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_fix(ctx, v));
+    v.downcast::<Tuple>()[FIX_IDS].get()
+}
+
+pub fn fix_lhs<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_fix(ctx, v));
+    v.downcast::<Tuple>()[FIX_LHS].get()
+}
+
+pub fn fix_rhs<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_fix(ctx, v));
+    v.downcast::<Tuple>()[FIX_RHS].get()
+}
+
+pub fn fix_body<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_fix(ctx, v));
+    v.downcast::<Tuple>()[FIX_BODY].get()
+}
+
+pub fn is_receive<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
+    v.is_record_of(ctx.hook_rtd(Hook::TermReceive))
+}
+
+const RECEIVE_IDS: usize = TERM_SOURCEV + 1;
+const RECEIVE_VARS: usize = TERM_SOURCEV + 2;
+const RECEIVE_PRODUCER: usize = TERM_SOURCEV + 3;
+const RECEIVE_CONSUMER: usize = TERM_SOURCEV + 4;
+
+pub fn receive_ids<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_receive(ctx, v));
+    v.downcast::<Tuple>()[RECEIVE_IDS].get()
+}
+
+pub fn receive_vars<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_receive(ctx, v));
+    v.downcast::<Tuple>()[RECEIVE_VARS].get()
+}
+
+pub fn receive_producer<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_receive(ctx, v));
+    v.downcast::<Tuple>()[RECEIVE_PRODUCER].get()
+}
+
+pub fn receive_consumer<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_receive(ctx, v));
+    v.downcast::<Tuple>()[RECEIVE_CONSUMER].get()
+}
+
+pub fn is_application<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
+    v.is_record_of(ctx.hook_rtd(Hook::TermApplication))
+}
+
+const APP_OPERATOR: usize = TERM_SOURCEV + 1;
+const APP_OPERANDS: usize = TERM_SOURCEV + 2;
+
+pub fn application_operator<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_application(ctx, v));
+    v.downcast::<Tuple>()[APP_OPERATOR].get()
+}
+
+pub fn application_operands<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_application(ctx, v));
+    v.downcast::<Tuple>()[APP_OPERANDS].get()
+}
+
+pub fn is_primcall<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
+    v.is_record_of(ctx.hook_rtd(Hook::TermPrimcall))
+}
+
+const PRIMCALL_PRIM: usize = TERM_SOURCEV + 1;
+const PRIMCALL_ARGS: usize = TERM_SOURCEV + 2;
+
+pub fn primcall_prim<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_primcall(ctx, v));
+    v.downcast::<Tuple>()[PRIMCALL_PRIM].get()
+}
+
+pub fn primcall_args<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_primcall(ctx, v));
+    v.downcast::<Tuple>()[PRIMCALL_ARGS].get()
+}
+
+pub fn is_primref<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
+    v.is_record_of(ctx.hook_rtd(Hook::TermPrimref))
+}
+
+const PRIMREF_NAME: usize = TERM_SOURCEV + 1;
+
+pub fn primref_name<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_primref(ctx, v));
+    v.downcast::<Tuple>()[PRIMREF_NAME].get()
+}
+
+pub fn is_constant<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
+    v.is_record_of(ctx.hook_rtd(Hook::TermConstant))
+}
+
+const CONSTANT_VALUE: usize = TERM_SOURCEV + 1;
+
+pub fn constant_value<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_constant(ctx, v));
+    v.downcast::<Tuple>()[CONSTANT_VALUE].get()
+}
+
+pub fn is_void<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
+    v.is_record_of(ctx.hook_rtd(Hook::TermVoid))
+}
+
+pub fn is_values<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
+    v.is_record_of(ctx.hook_rtd(Hook::TermValues))
+}
+
+const VALUES_VALUES: usize = TERM_SOURCEV + 1;
+pub fn values_values<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_values(ctx, v));
+    v.downcast::<Tuple>()[VALUES_VALUES].get()
+}
+
+const PROC_ARGS: usize = TERM_SOURCEV + 1;
+const PROC_BODY: usize = TERM_SOURCEV + 2;
+const PROC_META: usize = TERM_SOURCEV + 3;
+const PROC_IDS: usize = TERM_SOURCEV + 4;
+
+pub fn is_proc<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
+    v.is_record_of(ctx.hook_rtd(Hook::TermProc))
+}
+
+pub fn proc_args<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_proc(ctx, v));
+    v.downcast::<Tuple>()[PROC_ARGS].get()
+}
+
+pub fn proc_body<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_proc(ctx, v));
+    v.downcast::<Tuple>()[PROC_BODY].get()
+}
+
+pub fn proc_meta<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_proc(ctx, v));
+    v.downcast::<Tuple>()[PROC_META].get()
+}
+
+pub fn proc_ids<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_proc(ctx, v));
+
+    v.downcast::<Tuple>()[PROC_IDS].get()
+}
+
+const SEQUENCE_HEAD: usize = TERM_SOURCEV + 1;
+const SEQUENCE_TAIL: usize = TERM_SOURCEV + 2;
+
+pub fn is_sequence<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
+    v.is_record_of(ctx.hook_rtd(Hook::TermSequence))
+}
+
+pub fn sequence_head<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_sequence(ctx, v));
+    v.downcast::<Tuple>()[SEQUENCE_HEAD].get()
+}
+
+pub fn sequence_tail<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_sequence(ctx, v));
+    v.downcast::<Tuple>()[SEQUENCE_TAIL].get()
+}
+
+pub const WCM_KEY: usize = TERM_SOURCEV + 1;
+pub const WCM_VALUE: usize = TERM_SOURCEV + 2;
+pub const WCM_BODY: usize = TERM_SOURCEV + 3;
+
+pub fn is_wcm<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
+    v.is_record_of(ctx.hook_rtd(Hook::TermWcm))
+}
+
+pub fn wcm_key<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_wcm(ctx, v));
+    v.downcast::<Tuple>()[WCM_KEY].get()
+}
+
+pub fn wcm_value<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_wcm(ctx, v));
+    v.downcast::<Tuple>()[WCM_VALUE].get()
+}
+
+pub fn wcm_body<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_wcm(ctx, v));
+    v.downcast::<Tuple>()[WCM_BODY].get()
+}
+
+const GLOBAL_REF_KEY: usize = TERM_SOURCEV + 1;
+const GLOBAL_REF_NAME: usize = TERM_SOURCEV + 2;
+const GLOBAL_REF_SLOT: usize = TERM_SOURCEV + 3;
+
+pub fn is_global_ref<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
+    v.is_record_of(ctx.hook_rtd(Hook::TermGlobalRef))
+}
+
+pub fn global_ref_key<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_global_ref(ctx, v));
+    v.downcast::<Tuple>()[GLOBAL_REF_KEY].get()
+}
+
+pub fn global_ref_name<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_global_ref(ctx, v));
+    v.downcast::<Tuple>()[GLOBAL_REF_NAME].get()
+}
+
+pub fn global_ref_slot<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_global_ref(ctx, v));
+    v.downcast::<Tuple>()[GLOBAL_REF_SLOT].get()
+}
+
+const GLOBAL_SET_KEY: usize = TERM_SOURCEV + 1;
+const GLOBAL_SET_NAME: usize = TERM_SOURCEV + 2;
+const GLOBAL_SET_SLOT: usize = TERM_SOURCEV + 3;
+const GLOBAL_SET_VALUE: usize = TERM_SOURCEV + 4;
+
+pub fn is_global_set<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
+    v.is_record_of(ctx.hook_rtd(Hook::TermGlobalSet))
+}
+
+pub fn global_set_key<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_global_set(ctx, v));
+    v.downcast::<Tuple>()[GLOBAL_SET_KEY].get()
+}
+
+pub fn global_set_name<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_global_set(ctx, v));
+    v.downcast::<Tuple>()[GLOBAL_SET_NAME].get()
+}
+
+pub fn global_set_slot<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_global_set(ctx, v));
+    v.downcast::<Tuple>()[GLOBAL_SET_SLOT].get()
+}
+
+pub fn global_set_value<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_global_set(ctx, v));
+    v.downcast::<Tuple>()[GLOBAL_SET_VALUE].get()
+}
+
+const LINKLET_NAME: usize = TERM_SOURCEV + 1;
+const LINKLET_IMPORTS: usize = TERM_SOURCEV + 2;
+const LINKLET_EXPORTS: usize = TERM_SOURCEV + 3;
+const LINKLET_SLOTS: usize = TERM_SOURCEV + 4;
+const LINKLET_BODY: usize = TERM_SOURCEV + 5;
+const LINKLET_META: usize = TERM_SOURCEV + 6;
+
+pub fn is_linklet_term<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> bool {
+    v.is_record_of(ctx.hook_rtd(Hook::TermLinklet))
+}
+
+pub fn linklet_term_name<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_linklet_term(ctx, v));
+    v.downcast::<Tuple>()[LINKLET_NAME].get()
+}
+
+pub fn linklet_term_imports<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_linklet_term(ctx, v));
+    v.downcast::<Tuple>()[LINKLET_IMPORTS].get()
+}
+
+pub fn linklet_term_exports<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_linklet_term(ctx, v));
+    v.downcast::<Tuple>()[LINKLET_EXPORTS].get()
+}
+
+pub fn linklet_term_slots<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_linklet_term(ctx, v));
+    v.downcast::<Tuple>()[LINKLET_SLOTS].get()
+}
+
+pub fn linklet_term_body<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_linklet_term(ctx, v));
+    v.downcast::<Tuple>()[LINKLET_BODY].get()
+}
+
+pub fn linklet_term_meta<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_linklet_term(ctx, v));
+    v.downcast::<Tuple>()[LINKLET_META].get()
+}
+
+pub fn init_expand<'gc>(ctx: MutationContext<'gc>) {
+    let _ = ctx;
+}
+
+pub(crate) struct TermConverter<'gc> {
+    pub ctx: MutationContext<'gc>,
+    pub lvars: HashMap<Value<'gc>, LVarRef<'gc>>,
+}
+
+impl<'gc> TermConverter<'gc> {
+    pub fn new(ctx: MutationContext<'gc>) -> Self {
+        Self {
+            ctx,
+            lvars: HashMap::new(),
+        }
+    }
+
+    /// Resolves the slot of a `&global-ref` or `&global-set`. A `Variable` is
+    /// embedded as is, anything else names a lexical bound by an enclosing
+    /// `&linklet` (or proc) and becomes a `Box` slot.
+    fn global_slot(&self, slot: Value<'gc>) -> Option<GlobalSlot<'gc>> {
+        if slot.is::<Variable>() {
+            Some(GlobalSlot::Variable(slot))
+        } else {
+            self.lvars.get(&slot).map(|var| GlobalSlot::Box(*var))
+        }
+    }
+
+    /// Convert a `&proc` record, binding its formals in `lvars`. Shared by a
+    /// plain lambda and by every clause of a `case-lambda`.
+    fn convert_proc(&mut self, t: Value<'gc>) -> Result<ProcRef<'gc>, Value<'gc>> {
+        let source = term_sourcev(self.ctx, t);
+        let args = proc_args(self.ctx, t);
+        let body = proc_body(self.ctx, t);
+        let meta = proc_meta(self.ctx, t);
+        let ids = proc_ids(self.ctx, t);
+
+        let name = meta
+            .assq(sym_name(self.ctx).into())
+            .map(|x| x.cdr())
+            .unwrap_or(Value::new(false));
+
+        let mut ls_args = args;
+        let mut ls_ids = ids;
+        let mut lvars = Vec::new();
+
+        while ls_args.is_pair() {
+            let arg = ls_args.car();
+            let id = ls_ids.car();
+
+            let lvar = self.ctx.allocate(LVar {
+                name: arg,
+                id,
+                set_count: Cell::new(0),
+                ref_count: Cell::new(0),
+            });
+            self.lvars.insert(arg, lvar);
+            lvars.push(lvar);
+            ls_args = ls_args.cdr();
+            ls_ids = ls_ids.cdr();
+        }
+
+        let variadic = if !ls_args.is_null() {
+            let arg = ls_args;
+            let id = ls_ids.car();
+            let lvar = self.ctx.allocate(LVar {
+                name: arg,
+                id,
+                set_count: Cell::new(0),
+                ref_count: Cell::new(0),
+            });
+            self.lvars.insert(arg, lvar);
+            Some(lvar)
+        } else {
+            None
+        };
+
+        let body = self.convert(body)?;
+        Ok(self.ctx.allocate(core::Proc {
+            source,
+            args: Array::from_slice(self.ctx, &lvars),
+            variadic,
+            body,
+            name,
+            meta,
+        }))
+    }
+
+    pub fn convert(&mut self, t: Value<'gc>) -> Result<TermRef<'gc>, Value<'gc>> {
+        if !is_term(self.ctx, t) {
+            return Err(t);
+        }
+        let source = term_sourcev(self.ctx, t);
+
+        if is_lref(self.ctx, t) {
+            let sym = lref_sym(self.ctx, t);
+            let Some(var) = self.lvars.get(&sym) else {
+                panic!("unbound lvar: {sym}")
+            };
+            var.reference();
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::LRef(*var),
+            }))
+        } else if is_lset(self.ctx, t) {
+            let sym = lset_sym(self.ctx, t);
+
+            let Some(var) = self.lvars.get(&sym).cloned() else {
+                panic!("unbound lvar: {sym}")
+            };
+            var.mutate();
+
+            let value = lset_value(self.ctx, t);
+            let value = self.convert(value)?;
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::LSet(var, value),
+            }))
+        } else if is_constant(self.ctx, t) {
+            let value = constant_value(self.ctx, t);
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::Const(value),
+            }))
+        } else if is_void(self.ctx, t) {
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::Const(Value::undefined()),
+            }))
+        } else if is_application(self.ctx, t) {
+            let op = self.convert(application_operator(self.ctx, t))?;
+            let mut ls = application_operands(self.ctx, t);
+            let len = ls.list_length();
+            let mut args = Vec::with_capacity(len);
+
+            while ls.is_pair() {
+                let arg = self.convert(ls.car())?;
+                args.push(arg);
+                ls = ls.cdr();
+            }
+
+            let args = Array::from_slice(self.ctx, &args);
+
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::Call(op, args),
+            }))
+        } else if is_primcall(self.ctx, t) {
+            let prim = primcall_prim(self.ctx, t);
+            if prim == sym_case_lambda(self.ctx).into() {
+                // `(|#%case-lambda| (lambda ...) ...)` from psyntax: one
+                // multi-entry procedure over fixed-arity clause procs.
+                let mut ls = primcall_args(self.ctx, t);
+                let mut procs = Vec::new();
+                while ls.is_pair() {
+                    let arg = ls.car();
+                    if !is_proc(self.ctx, arg) {
+                        return Err(t);
+                    }
+                    procs.push(self.convert_proc(arg)?);
+                    ls = ls.cdr();
+                }
+                if !ls.is_null() {
+                    return Err(t);
+                }
+                return Ok(self.ctx.allocate(Term {
+                    source: Lock::new(source),
+                    kind: TermKind::CaseLambda(Array::from_slice(self.ctx, &procs)),
+                }));
+            }
+            let mut ls = primcall_args(self.ctx, t);
+            let len = ls.list_length();
+            let mut args = Vec::with_capacity(len);
+            while ls.is_pair() {
+                let arg = self.convert(ls.car())?;
+                args.push(arg);
+                ls = ls.cdr();
+            }
+            let args = Array::from_slice(self.ctx, &args);
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::PrimCall(prim, args),
+            }))
+        } else if is_primref(self.ctx, t) {
+            let name = primref_name(self.ctx, t);
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::PrimRef(name),
+            }))
+        } else if is_if(self.ctx, t) {
+            let cond = self.convert(if_cond(self.ctx, t))?;
+            let then = self.convert(if_then(self.ctx, t))?;
+            let els = self.convert(if_else(self.ctx, t))?;
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::If(cond, then, els),
+            }))
+        } else if is_let(self.ctx, t) {
+            let style = match let_style(self.ctx, t) {
+                v if v == sym_let_(self.ctx).into() => core::LetStyle::Let,
+                v if v == sym_let_star(self.ctx).into() => core::LetStyle::LetStar,
+                v if v == sym_letrec(self.ctx).into() => core::LetStyle::LetRec,
+                v if v == sym_letrec_star(self.ctx).into() => core::LetStyle::LetRecStar,
+                _ => return Err(t),
+            };
+            let ids = let_ids(self.ctx, t);
+            let lhs = let_lhs(self.ctx, t);
+            let rhs = let_rhs(self.ctx, t);
+            let body = let_body(self.ctx, t);
+
+            let mut ls_ids = ids;
+            let mut ls_lhs = lhs;
+            let mut ls_rhs = rhs;
+
+            let mut lvars = Vec::new();
+            let mut exprs = Vec::new();
+            while ls_ids.is_pair() {
+                let id = ls_ids.car();
+                let lhs = ls_lhs.car();
+                let rhs = ls_rhs.car();
+
+                let lvar = self.ctx.allocate(LVar {
+                    name: lhs,
+                    id,
+                    set_count: Cell::new(0),
+                    ref_count: Cell::new(0),
+                });
+                self.lvars.insert(lhs, lvar);
+                lvars.push(lvar);
+                exprs.push(rhs);
+                ls_ids = ls_ids.cdr();
+                ls_lhs = ls_lhs.cdr();
+                ls_rhs = ls_rhs.cdr();
+            }
+
+            let mut rhs = Vec::new();
+            for expr in exprs {
+                let expr = self.convert(expr)?;
+                rhs.push(expr);
+            }
+            let lhs = Array::from_slice(self.ctx, &lvars);
+            let rhs = Array::from_slice(self.ctx, &rhs);
+            let body = self.convert(body)?;
+
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::Let(core::Let {
+                    style,
+                    lhs,
+                    rhs,
+                    body,
+                }),
+            }))
+        } else if is_fix(self.ctx, t) {
+            let ids = fix_ids(self.ctx, t);
+            let lhs = fix_lhs(self.ctx, t);
+            let rhs = fix_rhs(self.ctx, t);
+            let body = fix_body(self.ctx, t);
+
+            let mut ls_ids = ids;
+            let mut ls_lhs = lhs;
+            let mut ls_rhs = rhs;
+
+            let mut lvars = Vec::new();
+            let mut exprs = Vec::new();
+            while ls_ids.is_pair() {
+                let id = ls_ids.car();
+                let lhs = ls_lhs.car();
+                let rhs = ls_rhs.car();
+
+                let lvar = self.ctx.allocate(LVar {
+                    name: lhs,
+                    id,
+                    set_count: Cell::new(0),
+                    ref_count: Cell::new(0),
+                });
+                self.lvars.insert(lhs, lvar);
+                lvars.push(lvar);
+                exprs.push(rhs);
+                ls_ids = ls_ids.cdr();
+                ls_lhs = ls_lhs.cdr();
+                ls_rhs = ls_rhs.cdr();
+            }
+
+            let mut rhs = Vec::new();
+            for expr in exprs {
+                let TermKind::Proc(proc) = self.convert(expr)?.kind else {
+                    return Err(expr);
+                };
+
+                rhs.push(proc);
+            }
+            let lhs = Array::from_slice(self.ctx, &lvars);
+            let rhs = Array::from_slice(self.ctx, &rhs);
+            let body = self.convert(body)?;
+
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::Fix(core::Fix { lhs, rhs, body }),
+            }))
+        } else if is_proc(self.ctx, t) {
+            let proc = self.convert_proc(t)?;
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::Proc(proc),
+            }))
+        } else if is_receive(self.ctx, t) {
+            let ids = receive_ids(self.ctx, t);
+            let vars = receive_vars(self.ctx, t);
+            let producer = receive_producer(self.ctx, t);
+            let consumer = receive_consumer(self.ctx, t);
+            let mut lvars = Vec::new();
+
+            let mut ls_vars = vars;
+            let mut ls_ids = ids;
+
+            while ls_vars.is_pair() {
+                let var = ls_vars.car();
+                let id = ls_ids.car();
+                let lvar = self.ctx.allocate(LVar {
+                    name: var,
+                    id,
+                    set_count: Cell::new(0),
+                    ref_count: Cell::new(0),
+                });
+                self.lvars.insert(var, lvar);
+                lvars.push(lvar);
+                ls_vars = ls_vars.cdr();
+                ls_ids = ls_ids.cdr();
+            }
+
+            let variadic = if !ls_vars.is_null() {
+                let var = ls_vars;
+                let id = ls_ids.cdr();
+
+                let lvar = self.ctx.allocate(LVar {
+                    name: var,
+                    id,
+                    set_count: Cell::new(0),
+                    ref_count: Cell::new(0),
+                });
+                self.lvars.insert(var, lvar);
+                Some(lvar)
+            } else {
+                None
+            };
+
+            let producer = self.convert(producer)?;
+            let consumer = self.convert(consumer)?;
+
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::Receive(
+                    Array::from_slice(self.ctx, &lvars),
+                    variadic,
+                    producer,
+                    consumer,
+                ),
+            }))
+        } else if is_values(self.ctx, t) {
+            let mut ls = values_values(self.ctx, t);
+            let len = ls.list_length();
+            let mut vals = Vec::with_capacity(len);
+            while ls.is_pair() {
+                let v = self.convert(ls.car())?;
+                vals.push(v);
+                ls = ls.cdr();
+            }
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::Values(Array::from_slice(self.ctx, &vals)),
+            }))
+        } else if is_sequence(self.ctx, t) {
+            let mut seq = Vec::new();
+            seq.push(self.convert(sequence_head(self.ctx, t))?);
+
+            let mut tail = sequence_tail(self.ctx, t);
+            while is_sequence(self.ctx, tail) {
+                seq.push(self.convert(sequence_head(self.ctx, tail))?);
+                tail = sequence_tail(self.ctx, tail);
+            }
+            seq.push(self.convert(tail)?);
+            let seq = seq_from_slice(self.ctx, &seq);
+            barrier::field!(Gc::write(self.ctx, seq), Term, source)
+                .unlock()
+                .set(source);
+            Ok(seq)
+        } else if is_wcm(self.ctx, t) {
+            let key = self.convert(wcm_key(self.ctx, t))?;
+            let value = self.convert(wcm_value(self.ctx, t))?;
+            let body = self.convert(wcm_body(self.ctx, t))?;
+            Ok(self.ctx.allocate(Term {
+                source: Lock::new(source),
+                kind: TermKind::WithContinuationMark(key, value, body),
+            }))
+        } else if is_global_ref(self.ctx, t) {
+            let key = global_ref_key(self.ctx, t);
+            let name = global_ref_name(self.ctx, t);
+            let Some(slot) = self.global_slot(global_ref_slot(self.ctx, t)) else {
+                return Err(t);
+            };
+            Ok(core::global_ref(self.ctx, key, name, slot, source))
+        } else if is_global_set(self.ctx, t) {
+            let key = global_set_key(self.ctx, t);
+            let name = global_set_name(self.ctx, t);
+            let Some(slot) = self.global_slot(global_set_slot(self.ctx, t)) else {
+                return Err(t);
+            };
+            let value = self.convert(global_set_value(self.ctx, t))?;
+            Ok(core::global_set(self.ctx, key, name, slot, value, source))
+        } else if is_linklet_term(self.ctx, t) {
+            let name = linklet_term_name(self.ctx, t);
+            let imports = linklet_term_imports(self.ctx, t);
+            let exports = linklet_term_exports(self.ctx, t);
+            let slots = linklet_term_slots(self.ctx, t);
+            let body = linklet_term_body(self.ctx, t);
+            let meta = linklet_term_meta(self.ctx, t);
+
+            let mut ls_slots = slots;
+            let mut lvars = Vec::new();
+            while ls_slots.is_pair() {
+                let slot = ls_slots.car();
+                let lvar = self.ctx.allocate(LVar {
+                    name: slot,
+                    id: Value::new(false),
+                    set_count: Cell::new(0),
+                    ref_count: Cell::new(0),
+                });
+                self.lvars.insert(slot, lvar);
+                lvars.push(lvar);
+                ls_slots = ls_slots.cdr();
+            }
+
+            let body = self.convert(body)?;
+            let slots = Array::from_slice(self.ctx, &lvars);
+            Ok(core::linklet_term(
+                self.ctx, name, imports, exports, slots, body, meta, source,
+            ))
+        } else {
+            Err(t)
+        }
+    }
+}

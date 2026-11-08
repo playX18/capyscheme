@@ -581,6 +581,9 @@ impl Shared {
             if self.stop.load(Ordering::SeqCst) {
                 return None;
             }
+
+            crate::heap::sync::thread::Thread::block_if_gc_requested();
+
             if let Some(task) = self.find(w, rng) {
                 return Some(task);
             }

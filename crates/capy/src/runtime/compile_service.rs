@@ -17,8 +17,8 @@ use crate::runtime::MutationContext;
 use crate::runtime::root::RootScope;
 use crate::runtime::sched::scheduler::{Killed, Waker, current};
 use crate::runtime::service::{self, ServiceCtl, ServiceThread};
-use crate::runtime::thread::State;
-use crate::runtime::value::{Str, Value};
+use crate::runtime::thread::SchemeState;
+use crate::runtime::objectmodel::{Str, Value};
 use crate::runtime::vm::load::{ExpandedJob, SourceJob, run_expanded_job, run_source_job};
 use crate::runtime::vm::threading::ThreadObject;
 use crate::runtime::vm::thunks::make_io_error;
@@ -349,7 +349,7 @@ fn worker_loop(ctl: &ServiceCtl) {
     let mutator = Mutator::<crate::Rootable!(ThreadRoot<'_>)>::new(|mc| {
         let thread_object = ThreadObject::new(mc, None);
         thread_object.bind_current_runtime_thread();
-        mc.init_state(State::new(mc, thread_object));
+        mc.init_state(SchemeState::new(mc, thread_object));
         ThreadRoot {
             current: Cell::new(None),
         }

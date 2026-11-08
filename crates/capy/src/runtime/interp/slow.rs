@@ -4,12 +4,12 @@
 //!
 //! - value bodies compute a result (and park the frame, observe profiles,
 //!   store it) and return the address of the next instruction. The Rust
-//!   engine dispatches there, the template interpreter stores `Tc::ip`/`Tc::cp` and resumes at
+//!   engine dispatches there, the template interpreter stores `ThreadContext::ip`/`ThreadContext::cp` and resumes at
 //!   `interpreter_resume`.
 //! - the control part ([`control_enter`], [`control_return`], ...) runs the
 //!   enter/return/raise/native/continue logic in one iterative loop and
 //!   returns a [`Control<'gc>`] decision. The Rust engine maps it back to `become`
-//!   or `return` (`dispatch_control!`), while the template interpreter stores the `Tc` resume slots and
+//!   or `return` (`dispatch_control!`), while the template interpreter stores the `ThreadContext` resume slots and
 //!   jumps to the returned machine address.
 //!
 //! Native procedures run inside [`control_run_native`], wrapped in
@@ -20,7 +20,6 @@
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
 use super::frame::CallFrame;
-use super::ic;
 use super::markers;
 use super::profile::{
     ARRAY_FAST, ARRAY_FIXNUM_INDEX, ARRAY_NON_FIXNUM_INDEX, ARRAY_NON_VECTOR, ARRAY_OUT_OF_BOUNDS,
@@ -31,17 +30,20 @@ use crate::heap::Gc;
 use crate::heap::alloc::{Array, ArrayRef};
 use crate::heap::object::builtin_class_ids;
 use crate::runtime::MutationContext;
-use crate::runtime::class::{
+#[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
+use crate::runtime::codegen::jit::{
+    ThresholdPolicy, heal_to_entry, install, osr_entry, request_tier_up,
+};
+use crate::runtime::interp::stack::{self, Ip, Slot};
+use crate::runtime::objectmodel::class::ic;
+use crate::runtime::objectmodel::class::{
     GenericDescriptor, GenericDispatchError, MethodDescriptor, NextMethodDescriptor, SchemeInstance,
 };
-#[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
-use crate::runtime::codegen::jit::{ThresholdPolicy, install, request_tier_up};
-use crate::runtime::interp::stack::{self, Ip, Slot};
-use crate::runtime::prims::calls::{self as prims, PrimError};
-use crate::runtime::prims::def::Primitive;
-use crate::runtime::value::{
+use crate::runtime::objectmodel::{
     Closure, CodeBlock, CodeBuffer, EnvRecord, NativeFn, NativeProc, ReturnCode, Str, Symbol, Value,
 };
+use crate::runtime::prims::calls::{self as prims, PrimError};
+use crate::runtime::prims::def::Primitive;
 use crate::runtime::vm::exceptions::make_raise_condition_with_source;
 use crate::runtime::vm::thunks;
 use crate::runtime::watchpoint::{Dependent, SiteOp, WatchpointSet};
@@ -813,6 +815,51 @@ pub(crate) unsafe fn switch_int_disp(
 /// A `switch-fixnum`/`switch_char`/`switch-symbol`: the displacement to continue at
 /// (a table hit, the default, or the fall-through). Reads the aux pool
 /// through the running closure.
+/// Looks symbol `v` up in the symbol switch table at `table` (the
+/// `OpSwitchSymbol` layout: default displacement, entry count, a 64-bit mask,
+/// then sorted `(key, displacement)` triples). `None` when `v` is not a
+/// symbol, which falls through. `Some(None)` is the default, and
+/// `Some(Some(entry))` names the triple at index `entry`.
+///
+/// # Safety
+///
+/// `table` must point at a well-formed switch table in a live code buffer.
+pub(crate) unsafe fn switch_symbol_probe(v: Value<'_>, table: *const u32) -> Option<Option<usize>> {
+    unsafe {
+        if !prims::has_heap_class(v, builtin_class_ids::SYMBOL) {
+            return None;
+        }
+        let count = table.add(1).read() as usize;
+        let mask = table.add(2).read() as u64 | (table.add(3).read() as u64) << 32;
+        let key = v.downcast_unchecked::<Symbol>().hash.get() & mask;
+        let table = table.add(4);
+        let (mut lo, mut hi) = (0usize, count);
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            let probe =
+                table.add(mid * 3).read() as u64 | (table.add(mid * 3 + 1).read() as u64) << 32;
+            if probe == key {
+                return Some(Some(mid));
+            }
+            if probe < key {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        Some(None)
+    }
+}
+
+/// The displacement of triple `entry` of a symbol switch table at `table`.
+///
+/// # Safety
+///
+/// As [`switch_symbol_probe`], with `entry` below the table's count.
+pub(crate) unsafe fn switch_symbol_disp(table: *const u32, entry: usize) -> isize {
+    unsafe { table.add(4 + entry * 3 + 2).read() as i32 as isize }
+}
+
 pub(crate) unsafe fn switch_body<'gc>(ctx: MutationContext<'gc>, fp: Slot<'gc>, ip: Ip) -> Ip {
     let frame = CallFrame::create(fp);
     unsafe {
@@ -849,32 +896,12 @@ pub(crate) unsafe fn switch_body<'gc>(ctx: MutationContext<'gc>, fp: Slot<'gc>, 
             OpcodeId::OpSwitchSymbol => {
                 let (op, _) = def::OpSwitchSymbol::decode_from_ptr(operands, width);
                 let v = *frame.register(op.src);
-                if !prims::has_heap_class(v, builtin_class_ids::SYMBOL) {
-                    return next_ip;
-                }
                 let table = pool.as_ptr().add(op.table.0 as usize);
-                let default = table.read() as i32 as isize;
-                let count = table.add(1).read() as usize;
-                let mask = table.add(2).read() as u64 | (table.add(3).read() as u64) << 32;
-                let key = v.downcast_unchecked::<Symbol>().hash.get() & mask;
-                let table = table.add(4);
-                let (mut lo, mut hi) = (0usize, count);
-                let mut disp = default;
-                while lo < hi {
-                    let mid = (lo + hi) / 2;
-                    let probe = table.add(mid * 3).read() as u64
-                        | (table.add(mid * 3 + 1).read() as u64) << 32;
-                    if probe == key {
-                        disp = table.add(mid * 3 + 2).read() as i32 as isize;
-                        break;
-                    }
-                    if probe < key {
-                        lo = mid + 1;
-                    } else {
-                        hi = mid;
-                    }
+                match switch_symbol_probe(v, table) {
+                    None => next_ip,
+                    Some(Some(entry)) => ip.offset(switch_symbol_disp(table, entry)),
+                    Some(None) => ip.offset(table.read() as i32 as isize),
                 }
-                ip.offset(disp)
             }
             _ => unreachable!("switch away from a switch instruction"),
         }
@@ -1230,7 +1257,7 @@ pub(crate) unsafe fn put_slot_miss_body<'gc>(
 
 /// What the shared control core decided. Both engines map it to their own
 /// transfer: the Rust engine dispatches (`become`) or returns, the template interpreter stages
-/// the `Tc` resume slots and jumps to a machine address.
+/// the `ThreadContext` resume slots and jumps to a machine address.
 pub(crate) enum Control<'gc> {
     /// Resume bytecode at `ip` with `fp`, running closure `cp`, count `ac`,
     /// and, for a single value, `rv`.
@@ -1367,7 +1394,7 @@ fn enter_step<'gc>(
 /// caller (`ReturnOne`).
 ///
 /// There is no `catch_unwind` here: natives are `extern "C"` and report
-/// their own panics through `Call::invoke`.
+/// their own panics through `NativeCall::invoke`.
 fn run_native<'gc>(
     ctx: MutationContext<'gc>,
     fp: Slot<'gc>,
@@ -1378,7 +1405,7 @@ fn run_native<'gc>(
         let stack = &ctx.tc().stack;
         stack.fp.set(fp);
         stack.sp.set(fp.add(2 + argc));
-        // Published for `Call::from_sfp`, which counts the frame's arguments
+        // Published for `NativeCall::from_sfp`, which counts the frame's arguments
         // from it, the machine stub spills the same slot, and publishes
         // `sp` above like here (staging writes at `sp`).
         ctx.tc().ac.set(argc as u64);
@@ -1391,7 +1418,7 @@ fn run_native<'gc>(
                 count: 1,
             }),
             ReturnCode::Continue => Ok(Work::NativeContinue),
-            // The condition is already in `exit_value` (see `Call::invoke`).
+            // The condition is already in `exit_value` (see `NativeCall::invoke`).
             ReturnCode::Raise => Ok(Work::RaiseOutOfFrame),
             ReturnCode::ReturnErr => Err(Control::Exit {
                 code: ReturnCode::ReturnErr,
@@ -1405,7 +1432,7 @@ fn run_native<'gc>(
 }
 
 /// The native rewrote its frame into a call (`ReturnCode::EnterBody`): enter
-/// the closure it left at `fp[1]` with `Tc::ac` arguments.
+/// the closure it left at `fp[1]` with `ThreadContext::ac` arguments.
 unsafe fn enter_body_work<'gc>(ctx: MutationContext<'gc>) -> Work<'gc> {
     unsafe {
         let fp = ctx.tc().stack.fp.get();
@@ -2010,12 +2037,18 @@ pub(crate) unsafe fn control_wrong_count<'gc>(
 
 /// The `enter` yield path: a cross-thread `esp = 0` poke landed here via
 /// the overflow check. Restore the real limit, park the entry frame,
-/// yield, and enter the callee again from its frame slot (it may have
-/// moved).
+/// yield, and resume the entry instruction from its frame slot (it may
+/// have moved).
+///
+/// The instruction must be resumed, not the callee re-entered through its
+/// code-block entry: a `case-lambda` clause is entered mid-block with the
+/// *clause* closure in `r1`, and the group entry would treat it as the
+/// group closure and dispatch on its free slots.
 pub(crate) unsafe fn control_enter_yield<'gc>(
     ctx: MutationContext<'gc>,
     fp: Slot<'gc>,
     argc: usize,
+    ip: Ip,
 ) -> Control<'gc> {
     unsafe {
         let tc = ctx.tc();
@@ -2024,12 +2057,23 @@ pub(crate) unsafe fn control_enter_yield<'gc>(
         stack.fp.set(fp);
         stack.sp.set(fp.add(2 + argc));
         yield_body(ctx, false);
-        // A compile finished while parked: install so the re-entry heals.
+        let callee = *fp.add(1);
+        // A compile finished while parked: install so the resume reaches it.
         #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
         {
-            install(ctx, Closure::code_block(Closure::from_value(*fp.add(1))));
+            if callee.is::<Closure>() {
+                install(ctx, Closure::code_block(Closure::from_value(callee)));
+            }
         }
-        let callee = *fp.add(1);
+        if callee.is::<Closure>() {
+            return Control::Resume {
+                fp,
+                cp: callee,
+                ac: argc as u64,
+                rv: None,
+                ip,
+            };
+        }
         drive(
             ctx,
             Work::Enter {
@@ -2060,7 +2104,16 @@ pub(crate) unsafe fn control_enter_hot<'gc>(
         stack.sp.set(fp.add(2 + argc));
         // The block is read from its frame slot: it may have moved.
         let code_block = Closure::code_block(Closure::from_value(*fp.add(1)));
-        request_tier_up(ctx, code_block, &ThresholdPolicy::current());
+        request_tier_up(
+            ctx,
+            code_block,
+            &ThresholdPolicy::current(),
+            Some(Closure::from_value(*fp.add(1))),
+        );
+        // The request may have installed optimized code. The frame slot is
+        // reloaded, since a synchronous compile can move the closure.
+        let closure = Closure::from_value(*fp.add(1));
+        heal_to_entry(closure, Closure::code_block(closure));
         let next_ip = ip.add(def::Instruction::size_at_ptr(ip));
         Control::Resume {
             fp,
@@ -2095,6 +2148,16 @@ pub(crate) unsafe fn control_loop_yield<'gc>(
             install(ctx, Closure::code_block(Closure::from_value(*fp.add(1))));
         }
         stack.top_ip.set(std::ptr::null());
+        // Optimized code with an OSR entry here takes the frame over instead.
+        let code_block = Closure::code_block(Closure::from_value(*fp.add(1)));
+        if let Some(addr) = osr_entry(ctx, code_block, fp, ip) {
+            return Control::Jump {
+                fp,
+                addr,
+                ac,
+                rv: None,
+            };
+        }
         let next_ip = ip.add(def::Instruction::size_at_ptr(ip));
         Control::Resume {
             fp,
@@ -2123,9 +2186,36 @@ pub(crate) unsafe fn control_loop_hot<'gc>(
         // The live registers of this frame are the ones in the mask of the
         // instruction the frame is parked at.
         stack.top_ip.set(ip);
-        // The block is read from its frame slot: it may have moved.
+        // Optimized code with an OSR entry here takes the frame over. The
+        // block is read from its frame slot: it may have moved.
         let code_block = Closure::code_block(Closure::from_value(*fp.add(1)));
-        request_tier_up(ctx, code_block, &ThresholdPolicy::current());
+        if let Some(addr) = osr_entry(ctx, code_block, fp, ip) {
+            stack.top_ip.set(std::ptr::null());
+            return Control::Jump {
+                fp,
+                addr,
+                ac,
+                rv: None,
+            };
+        }
+        request_tier_up(
+            ctx,
+            code_block,
+            &ThresholdPolicy::current(),
+            Some(Closure::from_value(*fp.add(1))),
+        );
+        // The request may have installed optimized code, which can be
+        // entered at this loop now.
+        let code_block = Closure::code_block(Closure::from_value(*fp.add(1)));
+        if let Some(addr) = osr_entry(ctx, code_block, fp, ip) {
+            stack.top_ip.set(std::ptr::null());
+            return Control::Jump {
+                fp,
+                addr,
+                ac,
+                rv: None,
+            };
+        }
         stack.top_ip.set(std::ptr::null());
         let next_ip = ip.add(def::Instruction::size_at_ptr(ip));
         Control::Resume {
@@ -2162,9 +2252,34 @@ pub(crate) unsafe fn control_enter_arity<'gc>(
     }
 }
 
-/// The frame size an `enter`/`enter_rest` needs above `fp`, for the
-/// overflow path.
-unsafe fn enter_overflow_size(ip: Ip, argc: usize) -> usize {
+/// The `enter_case` no-match path: raise the same condition the old
+/// `case-lambda` macro produced, `(assertion-violation 'case-lambda
+/// "unexpected number of arguments, got N" args)`.
+pub(crate) unsafe fn control_enter_case_arity<'gc>(
+    ctx: MutationContext<'gc>,
+    fp: Slot<'gc>,
+    argc: usize,
+) -> Control<'gc> {
+    unsafe {
+        park_frame(ctx, fp);
+        let rands = std::slice::from_raw_parts(fp.add(2), argc);
+        let mut args = Value::null();
+        for value in rands.iter().rev() {
+            args = Value::cons(ctx, *value, args);
+        }
+        let message = format!("unexpected number of arguments, got {argc}");
+        let condition = crate::runtime::vm::exceptions::make_assertion_violation(
+            ctx,
+            Some("case-lambda"),
+            &message,
+            &[args],
+        );
+        ctx.state().exit_value.set(condition);
+        drive(ctx, Work::RaiseInFrame { fp })
+    }
+}
+
+unsafe fn enter_overflow_size(ip: Ip, argc: usize, pool: &[u32]) -> usize {
     unsafe {
         let (width, opcode, operands) = def::decode_header(ip);
         match opcode {
@@ -2176,6 +2291,28 @@ unsafe fn enter_overflow_size(ip: Ip, argc: usize) -> usize {
                 let (op, _) = def::OpEnterRest::decode_from_ptr(operands, width);
                 op.frame.0 as usize + argc
             }
+            OpcodeId::OpEnterCase => {
+                let (op, _) = def::OpEnterCase::decode_from_ptr(operands, width);
+                let table = op.table.0 as usize;
+                let count = pool.get(table).copied().unwrap_or(0) as usize;
+                for row in 0..count {
+                    let at = table + 1 + row * 6;
+                    let (Some(&min), Some(&max)) = (pool.get(at), pool.get(at + 1)) else {
+                        break;
+                    };
+                    if argc < min as usize || argc > max as usize {
+                        continue;
+                    }
+                    let frame = pool.get(at + 3).copied().unwrap_or(op.frame.0) as usize;
+                    let rest_base = pool.get(at + 4).copied().unwrap_or(def::CASE_NO_REST);
+                    return if rest_base != def::CASE_NO_REST {
+                        frame + argc - min as usize
+                    } else {
+                        frame
+                    };
+                }
+                op.frame.0 as usize
+            }
             _ => unreachable!("enter_overflow away from an entry"),
         }
     }
@@ -2183,7 +2320,7 @@ unsafe fn enter_overflow_size(ip: Ip, argc: usize) -> usize {
 
 /// The `enter` overflow path: on an `esp = 0` poke from another thread take
 /// the event path instead of growing the stack, else continue on a fresh
-/// segment and enter again.
+/// segment and resume the entry instruction.
 pub(crate) unsafe fn control_enter_overflow<'gc>(
     ctx: MutationContext<'gc>,
     fp: Slot<'gc>,
@@ -2195,13 +2332,33 @@ pub(crate) unsafe fn control_enter_overflow<'gc>(
         if tc.esp.load(Acquire).is_null() {
             // An `esp = 0` poke from another thread: yield instead
             // of growing the stack.
-            return control_enter_yield(ctx, fp, argc);
+            return control_enter_yield(ctx, fp, argc, ip);
         }
-        let size = enter_overflow_size(ip, argc);
+
+        let (_, opcode, _) = def::decode_header(ip);
+        let size = if opcode == OpcodeId::OpEnterCase
+            && (*fp.add(1)).is::<crate::runtime::objectmodel::Closure>()
+        {
+            let code_block =
+                crate::runtime::objectmodel::Closure::from_value(*fp.add(1)).code_block;
+            enter_overflow_size(ip, argc, code_block.buffer.pool())
+        } else {
+            enter_overflow_size(ip, argc, &[])
+        };
         tc.stack.fp.set(fp);
         tc.stack.sp.set(fp.add(2 + argc));
         let fp = stack::overflow(ctx, size + 8);
         let callee = *fp.add(1);
+
+        if callee.is::<Closure>() {
+            return Control::Resume {
+                fp,
+                cp: callee,
+                ac: argc as u64,
+                rv: None,
+                ip,
+            };
+        }
         drive(
             ctx,
             Work::Enter {

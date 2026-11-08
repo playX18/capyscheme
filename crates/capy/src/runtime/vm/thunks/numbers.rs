@@ -1,10 +1,10 @@
 use super::make_assertion_violation;
-use crate::runtime::value::{IntoValue, Number};
+use crate::runtime::objectmodel::{IntoValue, Number};
 use crate::runtime::vm::thunk_raise;
 use crate::runtime::{
     MutationContext,
-    value::{Str, Symbol, Value},
-    vm::debug::print_stacktraces_impl,
+    objectmodel::{Str, Symbol, Value},
+    builtins::debug::print_stacktraces_impl,
 };
 use std::cmp::Ordering;
 
@@ -351,30 +351,51 @@ pub fn number_div<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) 
     Number::div(ctx, a, b).into_value(ctx)
 }
 
-pub fn quotient<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
-    let Some(a) = a.number() else {
+/// Checks one operand of `quotient`, `remainder` or `modulo`:
+///
+/// - a non-number raises "not a number";
+/// - a number that is not integer-valued (a rational, a non-integral or
+///   non-finite flonum, or a complex with a nonzero imaginary part) raises
+///   "argument must be an integer-valued number".
+///
+/// `Number::quotient` and its siblings have no reduction for those domains;
+/// before this check they reached `unreachable!` and aborted the process
+/// rather than raising a Scheme condition.
+fn integer_operand<'gc>(
+    ctx: MutationContext<'gc>,
+    name: &str,
+    value: Value<'gc>,
+) -> Number<'gc> {
+    let Some(number) = value.number() else {
         thunk_raise(
             ctx,
             make_assertion_violation(
                 ctx,
-                Symbol::from_str(ctx, "quotient").into(),
+                Symbol::from_str(ctx, name).into(),
                 Str::new(ctx, "not a number", true).into(),
-                &[a],
+                &[value],
             ),
         );
     };
 
-    let Some(b) = b.number() else {
+    if !number.is_integer_valued() {
         thunk_raise(
             ctx,
             make_assertion_violation(
                 ctx,
-                Symbol::from_str(ctx, "quotient").into(),
-                Str::new(ctx, "not a number", true).into(),
-                &[b],
+                Symbol::from_str(ctx, name).into(),
+                Str::new(ctx, "argument must be an integer-valued number", true).into(),
+                &[value],
             ),
         );
-    };
+    }
+
+    number
+}
+
+pub fn quotient<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
+    let a = integer_operand(ctx, "quotient", a);
+    let b = integer_operand(ctx, "quotient", b);
 
     if b.is_zero() && b.is_exact() {
         thunk_raise(
@@ -392,29 +413,8 @@ pub fn quotient<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) ->
 }
 
 pub fn remainder<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
-    let Some(a) = a.number() else {
-        thunk_raise(
-            ctx,
-            make_assertion_violation(
-                ctx,
-                Symbol::from_str(ctx, "remainder").into(),
-                Str::new(ctx, "not a number", true).into(),
-                &[a],
-            ),
-        );
-    };
-
-    let Some(b) = b.number() else {
-        thunk_raise(
-            ctx,
-            make_assertion_violation(
-                ctx,
-                Symbol::from_str(ctx, "remainder").into(),
-                Str::new(ctx, "not a number", true).into(),
-                &[b],
-            ),
-        );
-    };
+    let a = integer_operand(ctx, "remainder", a);
+    let b = integer_operand(ctx, "remainder", b);
 
     if b.is_zero() && b.is_exact() {
         thunk_raise(
@@ -432,29 +432,8 @@ pub fn remainder<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -
 }
 
 pub fn modulo<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
-    let Some(a) = a.number() else {
-        thunk_raise(
-            ctx,
-            make_assertion_violation(
-                ctx,
-                Symbol::from_str(ctx, "modulo").into(),
-                Str::new(ctx, "not a number", true).into(),
-                &[a],
-            ),
-        );
-    };
-
-    let Some(b) = b.number() else {
-        thunk_raise(
-            ctx,
-            make_assertion_violation(
-                ctx,
-                Symbol::from_str(ctx, "modulo").into(),
-                Str::new(ctx, "not a number", true).into(),
-                &[b],
-            ),
-        );
-    };
+    let a = integer_operand(ctx, "modulo", a);
+    let b = integer_operand(ctx, "modulo", b);
 
     if b.is_zero() && b.is_exact() {
         thunk_raise(

@@ -6,10 +6,10 @@ use crate::runtime::vm::syntax::props_to_sourcev;
 use crate::runtime::vm::thunk_raise;
 use crate::runtime::{
     MutationContext,
-    value::{Str, Symbol, Value},
+    objectmodel::{Str, Symbol, Value},
 };
 use crate::runtime::{
-    value::{IntoValue, Number},
+    objectmodel::{IntoValue, Number},
     vm::{control::ContinuationMarks, syntax::Syntax},
 };
 
@@ -43,6 +43,22 @@ pub fn symbol2string<'gc>(ctx: MutationContext<'gc>, s: Value<'gc>) -> Value<'gc
     };
 
     s.to_str(ctx).into()
+}
+
+pub fn string_length_value<'gc>(ctx: MutationContext<'gc>, s: Value<'gc>) -> Value<'gc> {
+    let Some(s) = s.try_as::<Str>() else {
+        thunk_raise(
+            ctx,
+            make_assertion_violation(
+                ctx,
+                Symbol::from_str(ctx, "string-length").into(),
+                Str::new(ctx, "not a string", true).into(),
+                &[s],
+            ),
+        );
+    };
+
+    Number::from_usize(ctx, s.len()).into_value(ctx)
 }
 
 pub fn string_ref_value<'gc>(
@@ -151,7 +167,7 @@ pub fn char_to_integer<'gc>(ctx: MutationContext<'gc>, c: Value<'gc>) -> Value<'
             log::trace!("CHAR->INTEGER error {c}");
             log::trace!("{symbol:?}");
         });
-        crate::runtime::vm::debug::print_stacktraces_impl(ctx);
+        crate::runtime::builtins::debug::print_stacktraces_impl(ctx);
         thunk_raise(
             ctx,
             make_assertion_violation(
@@ -168,6 +184,14 @@ pub fn char_to_integer<'gc>(ctx: MutationContext<'gc>, c: Value<'gc>) -> Value<'
 }
 
 pub fn integer_to_char<'gc>(ctx: MutationContext<'gc>, n: Value<'gc>) -> Value<'gc> {
+    // Fast path: an inline fixnum that is a Unicode scalar value, which is
+    // every call from a port reader. Everything else takes the checked path.
+    if n.is_int32() {
+        if let Some(c) = u32::try_from(n.as_int32()).ok().and_then(char::from_u32) {
+            return Value::from_char(c);
+        }
+    }
+
     let Some(n) = n.number() else {
         thunk_raise(
             ctx,
@@ -370,4 +394,73 @@ pub fn make_syntax<'gc>(
         source
     };
     Syntax::new(ctx, exp, wrap, module, source, properties).into()
+}
+
+pub fn string_set_value<'gc>(
+    ctx: MutationContext<'gc>,
+    s: Value<'gc>,
+    index: Value<'gc>,
+    ch: Value<'gc>,
+) -> Value<'gc> {
+    let Some(s) = s.try_as::<Str>() else {
+        thunk_raise(
+            ctx,
+            make_assertion_violation(
+                ctx,
+                Symbol::from_str(ctx, "string-set!").into(),
+                Str::new(ctx, "not a string", true).into(),
+                &[s],
+            ),
+        );
+    };
+
+    let Some(index) = index.int32() else {
+        thunk_raise(
+            ctx,
+            make_assertion_violation(
+                ctx,
+                Symbol::from_str(ctx, "string-set!").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[index],
+            ),
+        );
+    };
+
+    if index < 0 || index as usize >= s.len() {
+        thunk_raise(
+            ctx,
+            make_assertion_violation(
+                ctx,
+                Symbol::from_str(ctx, "string-set!").into(),
+                Str::new(ctx, "index out of bounds", true).into(),
+                &[index.into_value(ctx)],
+            ),
+        );
+    }
+
+    if !ch.is_char() {
+        thunk_raise(
+            ctx,
+            make_assertion_violation(
+                ctx,
+                Symbol::from_str(ctx, "string-set!").into(),
+                Str::new(ctx, "not a character", true).into(),
+                &[ch],
+            ),
+        );
+    }
+
+    if !Str::set(s, ctx, index as usize, ch.char()) {
+        thunk_raise(
+            ctx,
+            make_assertion_violation(
+                ctx,
+                Symbol::from_str(ctx, "string-set!").into(),
+                Str::new(ctx, "string is immutable", true).into(),
+                &[s.into()],
+            ),
+        );
+    }
+
+    Value::undefined()
 }

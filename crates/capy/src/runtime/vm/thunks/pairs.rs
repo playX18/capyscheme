@@ -1,13 +1,24 @@
 use super::make_assertion_violation;
-use crate::runtime::value::{IntoValue, Number};
+use crate::runtime::objectmodel::{IntoValue, Number};
 use crate::runtime::vm::thunk_raise;
 use crate::runtime::{
     MutationContext,
-    value::{Str, Symbol, Value},
+    objectmodel::{Str, Symbol, Value},
 };
 
 pub fn reverse<'gc>(ctx: MutationContext<'gc>, list: Value<'gc>) -> Value<'gc> {
-    list.list_reverse(ctx)
+    match list.list_reverse_checked(ctx) {
+        Some(reversed) => reversed,
+        None => thunk_raise(
+            ctx,
+            make_assertion_violation(
+                ctx,
+                Symbol::from_str(ctx, "reverse").into(),
+                Str::new(ctx, "not a list", true).into(),
+                &[list],
+            ),
+        ),
+    }
 }
 
 pub fn append<'gc>(ctx: MutationContext<'gc>, m1: Value<'gc>, m2: Value<'gc>) -> Value<'gc> {

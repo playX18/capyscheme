@@ -7,7 +7,7 @@ use crate::heap::barrier;
 use crate::heap::object::builtin_class_ids;
 use crate::runtime::MutationContext;
 use crate::runtime::interp::slow;
-use crate::runtime::value::{ByteVector, Pair, Str, Tuple, Value, Vector};
+use crate::runtime::objectmodel::{ByteVector, Pair, Str, Tuple, Value, Vector};
 use crate::runtime::variable::Variable;
 use crate::runtime::vm::exceptions::RaiseKind;
 use crate::runtime::vm::thunks;
@@ -191,6 +191,16 @@ const _: () = {
 #[inline(always)]
 pub unsafe fn vector_len(vector: Value<'_>) -> usize {
     unsafe { (vector.bits() as usize as *const usize).read() }
+}
+
+/// Returns the length of `tuple`.
+///
+/// # Safety
+///
+/// `tuple` is a tuple.
+#[inline(always)]
+pub unsafe fn tuple_len(tuple: Value<'_>) -> usize {
+    unsafe { (tuple.bits() as usize as *const usize).read() }
 }
 
 #[inline(always)]
@@ -438,9 +448,7 @@ pub(crate) unsafe fn prim_variable_set<'gc>(
     a: Value<'gc>,
     b: Value<'gc>,
 ) -> PrimResult<'gc> {
-    barrier::field!(Gc::write(ctx, a.downcast::<Variable>()), Variable, value)
-        .unlock()
-        .set(b);
+    a.downcast::<Variable>().set(ctx, b);
     Ok(undefined())
 }
 
@@ -720,6 +728,14 @@ pub(crate) unsafe fn prim_bytevector_length<'gc>(
 }
 
 #[inline(always)]
+pub(crate) unsafe fn prim_vector_length<'gc>(
+    ctx: MutationContext<'gc>,
+    a: Value<'gc>,
+) -> PrimResult<'gc> {
+    Ok(thunks::length(ctx, a))
+}
+
+#[inline(always)]
 pub(crate) unsafe fn prim_bytevector_u8_ref<'gc>(
     ctx: MutationContext<'gc>,
     a: Value<'gc>,
@@ -749,11 +765,20 @@ pub(crate) unsafe fn prim_tuple_size<'gc>(
 
 #[inline(always)]
 pub(crate) unsafe fn prim_tuple_ref<'gc>(
-    _ctx: MutationContext<'gc>,
+    ctx: MutationContext<'gc>,
     a: Value<'gc>,
     b: Value<'gc>,
 ) -> PrimResult<'gc> {
-    unsafe { Ok(tuple_slot(a, fxv(b) as u32 as usize).read()) }
+    if has_heap_class(a, builtin_class_ids::TUPLE) && b.is_int32() {
+        let index = fxv(b);
+        // SAFETY: `a` is a tuple and the index is bounds-checked.
+        unsafe {
+            if index >= 0 && (index as usize) < tuple_len(a) {
+                return Ok(tuple_slot(a, index as usize).read());
+            }
+        }
+    }
+    Ok(thunks::tuple_ref(ctx, a, b))
 }
 
 #[inline(always)]
@@ -763,10 +788,19 @@ pub(crate) unsafe fn prim_tuple_set<'gc>(
     b: Value<'gc>,
     c: Value<'gc>,
 ) -> PrimResult<'gc> {
-    Gc::write(ctx, a.downcast::<Tuple>())[fxv(b) as u32 as usize]
-        .unlock()
-        .set(c);
-    Ok(undefined())
+    if has_heap_class(a, builtin_class_ids::TUPLE) && b.is_int32() {
+        let index = fxv(b);
+        // SAFETY: `a` is a tuple and the index is bounds-checked.
+        unsafe {
+            if index >= 0 && (index as usize) < tuple_len(a) {
+                Gc::write(ctx, a.downcast::<Tuple>())[index as usize]
+                    .unlock()
+                    .set(c);
+                return Ok(undefined());
+            }
+        }
+    }
+    Ok(thunks::tuple_set(ctx, a, b, c))
 }
 
 #[inline(always)]
@@ -1229,10 +1263,14 @@ pub(crate) unsafe fn prim_not<'gc>(_ctx: MutationContext<'gc>, a: Value<'gc>) ->
 
 #[inline(always)]
 pub(crate) unsafe fn prim_string_length<'gc>(
-    _ctx: MutationContext<'gc>,
+    ctx: MutationContext<'gc>,
     a: Value<'gc>,
 ) -> PrimResult<'gc> {
-    unsafe { Ok(fx(a.downcast_unchecked::<Str>().length as i32)) }
+    if has_heap_class(a, builtin_class_ids::STRING) {
+        // SAFETY: `a` is a string.
+        return Ok(fx(unsafe { a.downcast_unchecked::<Str>().length as i32 }));
+    }
+    Ok(thunks::string_length(ctx, a))
 }
 
 #[inline(always)]
@@ -1242,6 +1280,16 @@ pub(crate) unsafe fn prim_string_ref<'gc>(
     b: Value<'gc>,
 ) -> PrimResult<'gc> {
     Ok(thunks::string_ref(ctx, a, b))
+}
+
+#[inline(always)]
+pub(crate) unsafe fn prim_string_set<'gc>(
+    ctx: MutationContext<'gc>,
+    a: Value<'gc>,
+    b: Value<'gc>,
+    c: Value<'gc>,
+) -> PrimResult<'gc> {
+    Ok(thunks::string_set(ctx, a, b, c))
 }
 
 #[inline(always)]
@@ -1362,6 +1410,16 @@ pub(crate) unsafe fn prim_winders<'gc>(
             *winders
         }
     })
+}
+
+#[inline(always)]
+pub(crate) unsafe fn prim_make_syntax_transformer<'gc>(
+    ctx: MutationContext<'gc>,
+    name: Value<'gc>,
+    typ: Value<'gc>,
+    binding: Value<'gc>,
+) -> PrimResult<'gc> {
+    Ok(crate::runtime::vm::syntax::SyntaxTransformer::new(ctx, name, typ, binding).into())
 }
 
 #[inline(always)]
@@ -2226,6 +2284,17 @@ macro_rules! prim_entry {
     };
 }
 
+/// The argument count of a prim's direct wrapper, or `-1` for a variadic
+/// (`..`) one, whose wrapper takes any count up to three.
+macro_rules! prim_entry_arity {
+    ($variant:ident => $snake:ident($index:literal): ..) => {
+        -1
+    };
+    ($variant:ident => $snake:ident($index:literal): $arity:literal) => {
+        $arity as i8
+    };
+}
+
 macro_rules! prim_tables {
     ( $( ( $($entry:tt)* ) );* ) => {
         $( prim_entry!($($entry)*); )*
@@ -2236,9 +2305,14 @@ macro_rules! prim_tables {
         /// or resolves (JIT) this.
         pub(crate) const PRIM_WRAPPERS: &[PrimWrapper] =
             &[ $( prim_entry_wrapper!($($entry)*) ),* ];
+        /// The direct wrapper's argument count of every prim by id, or `-1`
+        /// when it is variadic.
+        pub(crate) const PRIM_ARITY: &[i8] =
+            &[ $( prim_entry_arity!($($entry)*) ),* ];
         const _: () = {
             assert!(PRIM_ARMS.len() == Primitive::ALL.len());
             assert!(PRIM_WRAPPERS.len() == Primitive::ALL.len());
+            assert!(PRIM_ARITY.len() == Primitive::ALL.len());
         };
     };
 }
@@ -2455,5 +2529,8 @@ prim_tables! {
     (PtrF32Ref => ptr_f32_ref(208): 2);
     (PtrF32Set => ptr_f32_set(209): 3);
     (PtrF64Ref => ptr_f64_ref(210): 2);
-    (PtrF64Set => ptr_f64_set(211): 3)
+    (PtrF64Set => ptr_f64_set(211): 3);
+    (VectorLength => vector_length(212): 1);
+    (MakeSyntaxTransformer => make_syntax_transformer(213): 3);
+    (StringSet => string_set(214): 3)
 }

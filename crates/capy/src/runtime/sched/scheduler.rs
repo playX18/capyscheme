@@ -30,11 +30,11 @@ use crate::prelude::Value;
 use crate::runtime::MutationContext;
 use crate::runtime::fluids::DynamicState;
 use crate::runtime::interp::stack::{StackPool, retire_stacks};
-use crate::runtime::thread::{State, Tc};
+use crate::runtime::thread::{SchemeState, ThreadContext};
 use crate::runtime::vm::threading::ThreadObject;
 use crate::utils::flags;
 
-type Entry = Box<dyn FnOnce(SchedCtx) + Send>;
+type Entry = Box<dyn FnOnce(SchedContext) + Send>;
 
 #[derive(Clone, Copy)]
 pub(crate) struct SchemeStart {
@@ -138,7 +138,7 @@ pub enum JoinError {
     Killed,
 }
 
-/// Configuration for a [`Runtime`].
+/// Configuration for a [`Scheduler`].
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
     /// Number of worker OS threads.
@@ -226,9 +226,9 @@ static SCANNING: AtomicBool = AtomicBool::new(false);
 /// A pool of worker threads that run threads.
 ///
 /// Workers are OS threads bound to the collector. They run until
-/// [`Runtime::shutdown`] is called. Dropping a runtime without shutting it down
+/// [`Scheduler::shutdown`] is called. Dropping a runtime without shutting it down
 /// leaves its workers running.
-pub struct Runtime {
+pub struct Scheduler {
     shared: Arc<Shared>,
 }
 
@@ -278,7 +278,7 @@ fn start_workers(cfg: Config) -> Arc<Shared> {
     shared
 }
 
-impl Runtime {
+impl Scheduler {
     /// Start a runtime with the workers, reactor and sysmon from `cfg`.
     pub fn start(cfg: Config) -> Self {
         let shared = start_workers(cfg);
@@ -292,7 +292,7 @@ impl Runtime {
     /// Must not be called from a thread, because it blocks a worker.
     pub fn block_on_main<F>(&self, f: F) -> Result<(), JoinError>
     where
-        F: FnOnce(SchedCtx) + Send + 'static,
+        F: FnOnce(SchedContext) + Send + 'static,
     {
         self.spawn(f).join_blocking()
     }
@@ -308,7 +308,7 @@ impl Runtime {
 
     pub(crate) fn spawn<F>(&self, f: F) -> JoinHandle
     where
-        F: FnOnce(SchedCtx) + Send + 'static,
+        F: FnOnce(SchedContext) + Send + 'static,
     {
         Builder::new().spawn_on(&self.shared, f, None)
     }
@@ -336,7 +336,7 @@ impl Runtime {
 }
 
 /// The process-wide runtime, started with [`Config::from_env`] on first use
-/// unless [`Runtime::start`] or [`run_main`] came first.
+/// unless [`Scheduler::start`] or [`run_main`] came first.
 static GLOBAL: OnceLock<Arc<Shared>> = OnceLock::new();
 
 fn global() -> &'static Arc<Shared> {
@@ -385,7 +385,7 @@ pub(crate) fn is_spawned_virtual_thread() -> bool {
 /// Spawn a thread on the process wide runtime
 pub fn spawn<F>(f: F) -> JoinHandle
 where
-    F: FnOnce(SchedCtx) + Send + 'static,
+    F: FnOnce(SchedContext) + Send + 'static,
 {
     Builder::new().spawn(f)
 }
@@ -393,7 +393,7 @@ where
 /// Spawn a thread that runs Scheme code
 pub(crate) fn spawn_scheme(
     start: SchemeStart,
-    entry: impl FnOnce(SchedCtx) + Send + 'static,
+    entry: impl FnOnce(SchedContext) + Send + 'static,
 ) -> VirtualThreadId {
     Builder::new().spawn_on(global(), entry, Some(start)).id()
 }
@@ -401,7 +401,7 @@ pub(crate) fn spawn_scheme(
 /// Run `entry` as the main thread, with the calling thread as worker 0.
 pub(crate) fn run_main<F>(mutator: &Mutator<crate::Rootable!(())>, stack_bytes: usize, entry: F)
 where
-    F: FnOnce(SchedCtx),
+    F: FnOnce(SchedContext),
 {
     struct AssertSend<T>(T);
     unsafe impl<T> Send for AssertSend<T> {}
@@ -430,14 +430,14 @@ where
 
     let entry = AssertSend(entry);
     let stop = StopOnDrop(shared.clone());
-    let main: Box<dyn FnOnce(SchedCtx) + '_> = Box::new(move |cx: SchedCtx| {
+    let main: Box<dyn FnOnce(SchedContext) + '_> = Box::new(move |cx: SchedContext| {
         let _stop = stop;
         let entry = entry;
         cx.with_mutation(|_| (entry.0)(cx));
     });
     // SAFETY: the box is consumed by the main thread before this function
     // returns
-    let main: Entry = unsafe { std::mem::transmute::<Box<dyn FnOnce(SchedCtx) + '_>, Entry>(main) };
+    let main: Entry = unsafe { std::mem::transmute::<Box<dyn FnOnce(SchedContext) + '_>, Entry>(main) };
 
     // Build the main thread's start state and queue it while the other
     // workers are not running yet
@@ -478,7 +478,7 @@ where
     }
 }
 
-/// Why [`SchedCtx::pin_to_worker`] failed.
+/// Why [`SchedContext::pin_to_worker`] failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PinError {
     /// No running worker has that index.
@@ -509,7 +509,7 @@ impl Builder {
         self
     }
 
-    /// A name for thread. See [`SchedCtx::name`].
+    /// A name for thread. See [`SchedContext::name`].
     pub fn name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
         self
@@ -534,7 +534,7 @@ impl Builder {
     /// Spawn the thread on the process-wide runtime.
     pub fn spawn<F>(self, f: F) -> JoinHandle
     where
-        F: FnOnce(SchedCtx) + Send + 'static,
+        F: FnOnce(SchedContext) + Send + 'static,
     {
         self.spawn_on(global(), f, None)
     }
@@ -546,7 +546,7 @@ impl Builder {
         start: Option<SchemeStart>,
     ) -> JoinHandle
     where
-        F: FnOnce(SchedCtx) + Send + 'static,
+        F: FnOnce(SchedContext) + Send + 'static,
     {
         let stack_bytes = self.stack_size.unwrap_or(shared.stack_bytes);
         let id = VirtualThreadId(NEXT_VIRTUAL_THREAD_ID.fetch_add(1, Ordering::Relaxed));
@@ -563,7 +563,7 @@ impl Builder {
                     eap: Address::ZERO,
                     mutation_ptr: std::ptr::null(),
                     take_yieldpoint: AtomicI32::new(0),
-                    tc: UnsafeCell::new(Tc::new()),
+                    tc: UnsafeCell::new(ThreadContext::new()),
                     state: UnsafeCell::new(MaybeUninit::uninit()),
                     sched: VirtualThreadSched::new(weak.as_ptr(), Some(entry), start),
                 })),
@@ -649,7 +649,7 @@ pub(crate) struct Task {
     /// The worker the thread last ran on. A pinned thread resumes here.
     pub(crate) home: AtomicUsize,
     /// The only worker allowed to run this thread, or [`NO_AFFINITY`]. Unlike
-    /// `pins` this is chosen by the program (see [`SchedCtx::pin_to_worker`]):
+    /// `pins` this is chosen by the program (see [`SchedContext::pin_to_worker`]):
     /// it is honoured when the thread is woken, yielded, spawned or stolen from.
     pub(crate) affinity: AtomicUsize,
     /// The priority the program asked for, `0` (most urgent) to `NLEVELS - 1`.
@@ -770,6 +770,7 @@ pub(crate) fn kill_virtual_thread(id: VirtualThreadId) -> bool {
     }
     if MAIN_VIRTUAL_THREAD.load(Ordering::SeqCst) == id.0 {
         // Killing the main thread ends the program, as `(exit)` does.
+        crate::heap::sync::thread::Thread::begin_process_exit();
         std::process::exit(1);
     }
     unpark(&task);
@@ -831,7 +832,7 @@ pub(crate) unsafe fn kill_at_yieldpoint(ctx: MutationContext<'_>) {
     unsafe {
         crate::runtime::vm::scheme_longjmp(
             ctx,
-            crate::runtime::value::ReturnCode::ReturnErr,
+            crate::runtime::objectmodel::ReturnCode::ReturnErr,
             crate::prelude::Value::undefined(),
         )
     }
@@ -914,7 +915,7 @@ pub(crate) struct VirtualThreadSched {
     pub(crate) epoch: Cell<u64>,
     /// Set by sysmon: yield at the next yieldpoint.
     pub(crate) preempt: AtomicBool,
-    /// Whether `State` has been built for this thread.
+    /// Whether `SchemeState` has been built for this thread.
     pub(crate) state_ready: Cell<bool>,
     /// `with_mutation` scopes currently open on this thread.
     mutating: Cell<u32>,
@@ -934,7 +935,7 @@ impl VirtualThread {
         self.eap = Address::ZERO;
         self.mutation_ptr = std::ptr::null();
         self.take_yieldpoint.store(0, Ordering::Relaxed);
-        *self.tc.get_mut() = Tc::new();
+        *self.tc.get_mut() = ThreadContext::new();
         self.sched = VirtualThreadSched::new(task, Some(entry), start);
     }
 }
@@ -1001,7 +1002,7 @@ pub(crate) fn current_guard_range() -> Option<(Address, Address)> {
     try_current_native_data().map(|nd| nd.virtual_thread().sched.guard.get())
 }
 
-/// Direction of readiness that [`SchedCtx::await_fd`] waits for.
+/// Direction of readiness that [`SchedContext::await_fd`] waits for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Interest {
     /// Readable.
@@ -1010,7 +1011,7 @@ pub enum Interest {
     Write,
 }
 
-/// How a [`SchedCtx::await_fd`] wait ended.
+/// How a [`SchedContext::await_fd`] wait ended.
 #[derive(Debug)]
 pub enum FdWait {
     /// The fd is ready in the requested direction.
@@ -1026,12 +1027,12 @@ pub enum FdWait {
 
 /// A thread's handle to the scheduler.
 #[derive(Clone, Copy)]
-pub struct SchedCtx {
+pub struct SchedContext {
     g: NonNull<VirtualThread>,
     _not_send: PhantomData<*const ()>,
 }
 
-impl SchedCtx {
+impl SchedContext {
     fn g(&self) -> &VirtualThread {
         // SAFETY: the thread header lives until its task is dropped, which
         // cannot happen while the thread is running or parked with a waker.
@@ -1575,7 +1576,7 @@ pub(crate) unsafe fn flush_queued_labs() {
     }
 }
 
-/// Wakes a thread parked in [`SchedCtx::park`].
+/// Wakes a thread parked in [`SchedContext::park`].
 #[derive(Clone)]
 pub struct Waker {
     task: Arc<Task>,
@@ -1583,7 +1584,7 @@ pub struct Waker {
 
 impl Waker {
     /// Wake the thread. A wake that arrives while it is running makes its
-    /// next [`SchedCtx::park`] return at once.
+    /// next [`SchedContext::park`] return at once.
     pub fn wake(&self) {
         unpark(&self.task);
     }
@@ -1614,7 +1615,7 @@ impl JoinHandle {
     ///
     /// The result is taken on the first successful join. Later joins of the
     /// same thread panic.
-    pub fn join(self, cx: &SchedCtx) -> Result<(), JoinError> {
+    pub fn join(self, cx: &SchedContext) -> Result<(), JoinError> {
         match self.wait(cx) {
             Ok(()) => self.take_result(),
             Err(killed) => killed.unwind(),
@@ -1624,7 +1625,7 @@ impl JoinHandle {
     /// Wait like [`JoinHandle::join`], but report a kill of the caller as
     /// `Err(Killed)` rather than unwinding. For the C-ABI, which cannot
     /// unwind.
-    pub(crate) fn wait(&self, cx: &SchedCtx) -> Result<(), Killed> {
+    pub(crate) fn wait(&self, cx: &SchedContext) -> Result<(), Killed> {
         loop {
             {
                 let mut inner = self.task.inner.lock();
@@ -1938,7 +1939,7 @@ pub(crate) fn interrupt_virtual_thread(id: VirtualThreadId) -> bool {
     true
 }
 
-fn pool_dynamic_state(state: &State<'static>) {
+fn pool_dynamic_state(state: &SchemeState<'static>) {
     let Some(pool) = dynamic_pool() else { return };
     if !state.dynamic_state.is_reusable() {
         return;
@@ -1981,7 +1982,7 @@ fn run_entry(gp: *mut VirtualThread) -> Result<(), JoinError> {
     let g = unsafe { &*gp };
     let entry = g.sched.entry.take().expect("thread entry is set once");
     // SAFETY: `gp` is non-null.
-    let cx = SchedCtx {
+    let cx = SchedContext {
         g: unsafe { NonNull::new_unchecked(gp) },
         _not_send: PhantomData,
     };
@@ -2008,11 +2009,11 @@ fn run_entry(gp: *mut VirtualThread) -> Result<(), JoinError> {
     }
 }
 
-/// Build the thread's `State` the first time it runs. A thread started
+/// Build the thread's `SchemeState` the first time it runs. A thread started
 /// from a Scheme spawn runs as its `ThreadObject` with its spawner's dynamic
 /// state, and both are read back from the header after each allocation, since
 /// a collection may have moved the dynamic state.
-fn ensure_state(cx: SchedCtx) {
+fn ensure_state(cx: SchedContext) {
     if cx.g().sched.state_ready.get() {
         return;
     }
@@ -2020,7 +2021,7 @@ fn ensure_state(cx: SchedCtx) {
         let Some(start) = cx.g().sched.start.get() else {
             let thread_object = ThreadObject::new(mc, None);
             thread_object.bind_current_runtime_thread();
-            mc.init_state(State::new(mc, thread_object));
+            mc.init_state(SchemeState::new(mc, thread_object));
             return;
         };
         // SAFETY: the start values are Scheme values of this runtime, live
@@ -2032,10 +2033,10 @@ fn ensure_state(cx: SchedCtx) {
 
         let pooled = dynamic_pool().and_then(|pool| pool.lock().pop());
         let state = match pooled {
-            Some(pooled) => State::with_dynamic_state(thread_object, unsafe {
+            Some(pooled) => SchemeState::with_dynamic_state(thread_object, unsafe {
                 std::mem::transmute::<DynamicState<'static>, DynamicState<'_>>(pooled.0)
             }),
-            None => State::new(mc, thread_object),
+            None => SchemeState::new(mc, thread_object),
         };
         mc.init_state(state);
         let start = cx
@@ -2057,7 +2058,12 @@ fn report_panic(id: VirtualThreadId, payload: &(dyn Any + Send)) {
         .copied()
         .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
         .unwrap_or("non-string panic payload");
-    eprintln!("capy: thread {} panicked: {msg}", id.as_u64());
+    crate::heap::logging::ensure_max_level(log::LevelFilter::Error);
+    log::error!(
+        target: "capy::sched",
+        "thread {} panicked: {msg}",
+        id.as_u64()
+    );
 }
 
 fn finish(gp: *mut VirtualThread, result: Result<(), JoinError>) {
@@ -2084,14 +2090,14 @@ fn finish(gp: *mut VirtualThread, result: Result<(), JoinError>) {
 /// yield, and an inlined read of the `#[thread_local]` slot lets the compiler
 /// reuse the previous worker's slot address in the caller.
 #[inline(never)]
-pub(crate) fn current() -> Option<SchedCtx> {
+pub(crate) fn current() -> Option<SchedContext> {
     let nd = try_current_native_data()?;
     let g = NonNull::new(nd.current_virtual_thread)?;
     // SAFETY: the bound thread's thread header is always initialised.
     if unsafe { g.as_ref() }.sched.task_is_null() {
         return None;
     }
-    Some(SchedCtx {
+    Some(SchedContext {
         g,
         _not_send: PhantomData,
     })

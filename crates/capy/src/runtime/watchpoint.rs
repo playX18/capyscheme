@@ -29,7 +29,7 @@
 //! 4. have writers mutate first, then [`WatchpointSet::fire`] (renewing the
 //!    set if the assumption can hold again), then call [`grace`].
 //!
-//! See [`ClassTable::fire_all_slot_protocol`](crate::runtime::class::table::ClassTable::fire_all_slot_protocol) for an example.
+//! See [`ClassTable::fire_all_slot_protocol`](crate::runtime::objectmodel::class::table::ClassTable::fire_all_slot_protocol) for an example.
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -39,9 +39,10 @@ use crate::heap::cell::{FILL_RETRIES, Lock};
 use crate::heap::weak::Weak;
 use crate::heap::{Gc, Trace};
 use crate::runtime::MutationContext;
-use crate::runtime::class::GenericDescriptor;
+use crate::runtime::codegen::jit::compile::invalidate_optimized;
 use crate::runtime::interp::slow::clear_slot_site;
-use crate::runtime::value::{CodeBuffer, Value};
+use crate::runtime::objectmodel::class::GenericDescriptor;
+use crate::runtime::objectmodel::{CodeBlock, CodeBuffer, CodeImage, Value};
 
 /// Total dependents cleared by fires so far, for tests and `CAPY_IC_LOG`.
 pub static DEPENDENTS_CLEARED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -61,8 +62,7 @@ pub enum SiteOp {
     PutSlot,
 }
 
-/// A site or cache that depends on a set. A dead owner (collected buffer or
-/// generic) is skipped.
+/// A site or cache that depends on a set
 #[derive(Clone, Copy, Trace)]
 #[collect(no_drop)]
 pub enum Dependent<'gc> {
@@ -74,6 +74,13 @@ pub enum Dependent<'gc> {
     },
     /// The slot-access cache of a generic (`GenericDescriptor::slot_cache`).
     GenericSlotCache(Weak<'gc, GenericDescriptor<'gc>>),
+    /// Machine code assigned to CodeBlock, currently only for Tier 2 JIT.
+    ///
+    /// On fire, invalidates the machine code image.
+    Code {
+        block: Weak<'gc, CodeBlock<'gc>>,
+        image: Weak<'gc, CodeImage<'gc>>,
+    },
 }
 
 impl<'gc> Dependent<'gc> {
@@ -89,6 +96,14 @@ impl<'gc> Dependent<'gc> {
     /// The slot-access cache of `generic`.
     pub fn generic_slot_cache(generic: Gc<'gc, GenericDescriptor<'gc>>) -> Self {
         Self::GenericSlotCache(Gc::downgrade(generic))
+    }
+
+    /// The optimized code `image` of `block`.
+    pub fn code(block: Gc<'gc, CodeBlock<'gc>>, image: Gc<'gc, CodeImage<'gc>>) -> Self {
+        Self::Code {
+            block: Gc::downgrade(block),
+            image: Gc::downgrade(image),
+        }
     }
 
     /// Whether both name the same site or cache.
@@ -107,6 +122,16 @@ impl<'gc> Dependent<'gc> {
                 },
             ) => a.ptr == b.ptr && ia == ib && oa == ob,
             (Self::GenericSlotCache(a), Self::GenericSlotCache(b)) => a.ptr == b.ptr,
+            (
+                Self::Code {
+                    block: ba,
+                    image: ia,
+                },
+                Self::Code {
+                    block: bb,
+                    image: ib,
+                },
+            ) => ba.ptr == bb.ptr && ia.ptr == ib.ptr,
             _ => false,
         }
     }
@@ -115,6 +140,7 @@ impl<'gc> Dependent<'gc> {
         match self {
             Self::BytecodeSite { buffer, .. } => buffer.is_broken(),
             Self::GenericSlotCache(generic) => generic.is_broken(),
+            Self::Code { block, image } => block.is_broken() || image.is_broken(),
         }
     }
 
@@ -135,6 +161,11 @@ impl<'gc> Dependent<'gc> {
                     GenericDescriptor::clear_slot_cache(ctx, generic);
                 }
             }
+            Self::Code { block, image } => {
+                if let (Some(block), Some(image)) = (block.upgrade(ctx), image.upgrade(ctx)) {
+                    let _ = invalidate_optimized(block, image);
+                }
+            }
         }
     }
 }
@@ -146,9 +177,7 @@ thread_local! {
 
 /// Wait until every thread has left any cache hit that started before the
 /// fires so far (a no-op when this thread fired nothing). Call last in an
-/// invalidating operation. A collection may run while this waits, so
-/// `result` is rooted across the wait and returned reloaded; hold no other
-/// unrooted `Gc`.
+/// invalidating operation.
 pub fn grace<'gc>(ctx: MutationContext<'gc>, result: Value<'gc>) -> Value<'gc> {
     if !GRACE_OWED.with(|owed| owed.replace(false)) {
         return result;
@@ -265,7 +294,14 @@ impl<'gc> WatchpointSet<'gc> {
                 cleared += 1;
             }
         }
-        DEPENDENTS_CLEARED.fetch_add(cleared as u64, Ordering::Relaxed);
+
+        let ic_cleared = dependents
+            .iter()
+            .filter(|dependent| {
+                !dependent.is_dead() && !matches!(dependent, Dependent::Code { .. })
+            })
+            .count();
+        DEPENDENTS_CLEARED.fetch_add(ic_cleared as u64, Ordering::Relaxed);
         cleared
     }
 }

@@ -6,17 +6,16 @@ use crate::heap::{Gc, Root, Trace, Visitor, sync::monitor::Monitor};
 use crate::{
     expander::primitives::for_each_prim_name,
     prelude::{FromValue, HashTable, HashTableRef, HashTableType, IntoValue, Value, VariableRef},
-    runtime::{MutationContext, linklet::Instance},
+    runtime::{MutationContext, linklet::LibraryInstance},
 };
 
-pub trait GlobalValue<'gc>: Trace + IntoValue<'gc> {}
 
 type GlobalMap<'gc> = Vec<Value<'gc>>;
 type RootedGlobalTable = crate::Rootable!(GlobalTable<'_>);
 
 /// A table listing all global variables in the runtime.
 ///
-/// Implemented as a vector of [`Value`]s, indexed by [`Global`]s which allows
+/// Implemented as a vector of [`Value`]s, indexed by [`GlobalSlot`]s which allows
 /// us to serialize and deserialize it in a straightforward manner.
 pub struct GlobalTable<'gc> {
     // TODO(GC): Allow removing globals? Use a slab or similar data structure?
@@ -51,9 +50,9 @@ pub struct GlobalIndex(pub(crate) usize);
 
 /// The main difference between [`heap::Global`] and this type
 /// is that this type does not store pointer, but just an index into
-/// the side global table. Global table itself stores [`Value`]s directly
-/// and `Global` provides typed access to them.
-pub struct Global<R>
+/// the side global table. GlobalSlot table itself stores [`Value`]s directly
+/// and `GlobalSlot` provides typed access to them.
+pub struct GlobalSlot<R>
 where
     R: for<'a> Rootable<'a>,
     for<'a> Root<'a, R>: Sized + Trace,
@@ -97,7 +96,7 @@ where
     }
 }
 
-impl<R> Global<R>
+impl<R> GlobalSlot<R>
 where
     R: for<'a> Rootable<'a>,
     for<'a> Root<'a, R>: Sized + Trace,
@@ -153,16 +152,16 @@ where
     }
 }
 
-// SAFETY: `R` for `Global` upholds all trait invariants
-unsafe impl<R> Send for Global<R>
+// SAFETY: `R` for `GlobalSlot` upholds all trait invariants
+unsafe impl<R> Send for GlobalSlot<R>
 where
     R: for<'a> Rootable<'a>,
     for<'a> Root<'a, R>: Sized + Trace,
 {
 }
 
-// SAFETY: `R` for `Global` upholds all trait invariants
-unsafe impl<R> Sync for Global<R>
+// SAFETY: `R` for `GlobalSlot` upholds all trait invariants
+unsafe impl<R> Sync for GlobalSlot<R>
 where
     R: for<'a> Rootable<'a>,
     for<'a> Root<'a, R>: Sized + Trace,
@@ -175,24 +174,24 @@ macro_rules! global {
         $(
             paste::paste!{
                 #[unsafe(export_name = concat!("CAPY_GLOBAL_", stringify!($name)))]
-                $v static [<$name: upper>]: std::sync::OnceLock<$crate::prelude::Global<$crate::Rootable!($l => $t)>> = std::sync::OnceLock::new();
+                $v static [<$name: upper>]: std::sync::OnceLock<$crate::prelude::GlobalSlot<$crate::Rootable!($l => $t)>> = std::sync::OnceLock::new();
 
                 #[unsafe(export_name = concat!("capy_global_", stringify!($name)))]
                 $v fn [<$name: lower>]<$l>($ctx: $crate::runtime::MutationContext<$l>) -> $t {
                    [<$name: upper>]
                         .get_or_init(|| {
                             let init: $t = $init;
-                            $crate::prelude::Global::new($ctx, init)
+                            $crate::prelude::GlobalSlot::new($ctx, init)
                         }).fetch($ctx)
                 }
 
 
                 #[doc(hidden)]
 // SAFETY: Caller must ensure preconditions are met (see fn docs)
-                pub unsafe fn [<$name: lower _from_index>](index: usize) -> $crate::prelude::Global<$crate::Rootable!($l => $t)> {
+                pub unsafe fn [<$name: lower _from_index>](index: usize) -> $crate::prelude::GlobalSlot<$crate::Rootable!($l => $t)> {
 // SAFETY: Preconditions verified by the surrounding code
                     unsafe {
-                        $crate::prelude::Global::from_index(index)
+                        $crate::prelude::GlobalSlot::from_index(index)
                     }
                 }
 
@@ -203,7 +202,7 @@ macro_rules! global {
 }
 
 #[derive(Trace)]
-pub struct Globals<'gc> {
+pub struct VmState<'gc> {
     pub capy_module_name: Cell<Value<'gc>>,
     /// The `(#%capy)` instance every native primitive is defined in.
     pub capy_instance: Cell<Value<'gc>>,
@@ -240,7 +239,7 @@ pub struct Globals<'gc> {
     pub compile_jobs: crate::runtime::compile_service::CompileQueue<'gc>,
 }
 
-impl<'gc> Globals<'gc> {
+impl<'gc> VmState<'gc> {
     pub fn loc_load_path(&self) -> VariableRef<'gc> {
         self.loc_load_path.get().downcast()
     }
@@ -273,7 +272,7 @@ impl<'gc> Globals<'gc> {
         self.loc_fresh_auto_compile.get().downcast()
     }
 
-    pub fn capy_instance(&self) -> Gc<'gc, Instance<'gc>> {
+    pub fn capy_instance(&self) -> Gc<'gc, LibraryInstance<'gc>> {
         self.capy_instance.get().downcast()
     }
 
@@ -289,7 +288,7 @@ impl<'gc> Globals<'gc> {
         self.empty_wrap.get()
     }
 
-    /// The native condition record types. Panics before [`Globals::new`] has run.
+    /// The native condition record types. Panics before [`VmState::new`] has run.
     pub fn condition_types(&self) -> &crate::runtime::conditions::ConditionTypes<'gc> {
         self.condition_types
             .as_ref()
@@ -297,7 +296,7 @@ impl<'gc> Globals<'gc> {
     }
 
     pub fn for_each_value(&self, mut f: impl FnMut(&Cell<Value<'gc>>)) {
-        let Globals {
+        let VmState {
             keyword_map,
             nongenerative_rtds,
             // Traced by the derived `Trace` impl, not a value cell.
@@ -342,12 +341,12 @@ impl<'gc> Globals<'gc> {
     }
 }
 
-impl<'gc> Globals<'gc> {
+impl<'gc> VmState<'gc> {
     pub fn new(ctx: MutationContext<'gc>) -> Self {
         let capy_module_name = crate::list!(ctx, ctx.intern("capy"));
         let empty_wrap = crate::list!(ctx, Value::null());
 
-        let capy_instance = Instance::new(ctx, crate::list!(ctx, ctx.intern("#%capy")), true);
+        let capy_instance = LibraryInstance::new(ctx, crate::list!(ctx, ctx.intern("#%capy")), true);
         let define = |ctx: MutationContext<'gc>, name: &str, value: Value<'gc>| {
             capy_instance.define(ctx, ctx.intern(name), value)
         };
@@ -442,6 +441,6 @@ impl<'gc> Globals<'gc> {
     }
 }
 
-type RootedGlobals = crate::Rootable!(Globals<'_>);
+type RootedGlobals = crate::Rootable!(VmState<'_>);
 
-pub(crate) static VM_GLOBALS: OnceLock<crate::heap::Global<RootedGlobals>> = OnceLock::new();
+pub(crate) static VM_STATE: OnceLock<crate::heap::Global<RootedGlobals>> = OnceLock::new();

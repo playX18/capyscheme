@@ -343,7 +343,7 @@ fn write_output() {
 pub mod profile_ops {
     use crate::{
         prelude::*,
-        runtime::value::{Str, Value},
+        runtime::objectmodel::{Str, Value},
     };
 
     use super::{arm, disarm, make_profile_error};
@@ -369,11 +369,11 @@ pub mod profile_ops {
 fn make_profile_error<'gc>(
     ctx: crate::runtime::MutationContext<'gc>,
     message: String,
-) -> crate::runtime::value::Value<'gc> {
+) -> crate::runtime::objectmodel::Value<'gc> {
     crate::runtime::vm::thunks::make_io_error(
         ctx,
         "%profile-start",
-        crate::runtime::value::Str::new(ctx, message, true).into(),
+        crate::runtime::objectmodel::Str::new(ctx, message, true).into(),
         &[],
     )
 }

@@ -2,7 +2,7 @@ use super::make_assertion_violation;
 use crate::runtime::vm::thunk_raise;
 use crate::runtime::{
     MutationContext,
-    value::{Complex, Str, Symbol, Value},
+    objectmodel::{Complex, Str, Symbol, Value},
 };
 
 pub fn eqv<'gc>(a: Value<'gc>, b: Value<'gc>) -> bool {
@@ -10,7 +10,7 @@ pub fn eqv<'gc>(a: Value<'gc>, b: Value<'gc>) -> bool {
 }
 
 pub fn equal<'gc>(a: Value<'gc>, b: Value<'gc>) -> bool {
-    a.equal(b, &mut Default::default())
+    a.equal_default(b)
 }
 
 pub fn is_rational<'gc>(value: Value<'gc>) -> bool {

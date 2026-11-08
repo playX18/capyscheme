@@ -1,12 +1,12 @@
 //! The blocking pool.
-//!
+
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::{Condvar, Mutex};
 
-use super::scheduler::{Killed, SchedCtx};
+use super::scheduler::{Killed, SchedContext};
 use crate::runtime::MutationContext;
 
 /// Upper bound on pool threads
@@ -89,7 +89,7 @@ struct Slot<R> {
 /// `f` must not touch the GC heap.
 pub(crate) fn run<'gc, R: Send + 'static>(
     ctx: MutationContext<'gc>,
-    cx: &SchedCtx,
+    cx: &SchedContext,
     f: impl FnOnce() -> R + Send + 'static,
 ) -> (MutationContext<'gc>, Result<R, Killed>) {
     let slot = Arc::new(Mutex::new(Slot {

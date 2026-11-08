@@ -1,7 +1,7 @@
 use crate::{
     heap::Trace,
     prelude::{Tuple, Value},
-    runtime::{MutationContext, value::Vector},
+    runtime::{MutationContext, objectmodel::Vector},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Trace)]
@@ -311,8 +311,8 @@ pub fn make_wrong_number_of_arguments_violation<'gc>(
     } else {
         format!("procedure expected {} arguments, got {}", expected, got)
     };
-    let meta = if subr.is::<crate::runtime::value::Closure>() {
-        subr.downcast::<crate::runtime::value::Closure>().meta.get()
+    let meta = if subr.is::<crate::runtime::objectmodel::Closure>() {
+        subr.downcast::<crate::runtime::objectmodel::Closure>().meta.get()
     } else {
         Value::new(false)
     };
@@ -438,13 +438,13 @@ fn make_raise_condition_impl<'gc>(
             } else {
                 format!("procedure expected {} arguments, got {}", expected, got)
             };
-            let meta = if subr.is::<crate::runtime::value::Closure>() {
-                subr.downcast::<crate::runtime::value::Closure>().meta.get()
+            let meta = if subr.is::<crate::runtime::objectmodel::Closure>() {
+                subr.downcast::<crate::runtime::objectmodel::Closure>().meta.get()
             } else {
                 Value::new(false)
             };
-            let name = if subr.is::<crate::runtime::value::Closure>() {
-                subr.downcast::<crate::runtime::value::Closure>().name(ctx)
+            let name = if subr.is::<crate::runtime::objectmodel::Closure>() {
+                subr.downcast::<crate::runtime::objectmodel::Closure>().name(ctx)
             } else {
                 None
             };

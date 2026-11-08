@@ -5,7 +5,7 @@ use std::{
 
 use crate::heap::Gc;
 use crate::list;
-use crate::runtime::value::{Str, Value};
+use crate::runtime::objectmodel::{Str, Value};
 use crate::runtime::variable::{Variable, define};
 use crate::runtime::vm::thunks::make_io_error;
 use crate::{global, runtime::MutationContext};

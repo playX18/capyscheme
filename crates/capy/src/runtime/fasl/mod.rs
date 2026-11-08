@@ -64,7 +64,7 @@ pub fn is_fasl_image(bytes: &[u8]) -> bool {
 
 #[derive(Clone, Copy)]
 pub enum ConstSpec<'gc> {
-    Value(crate::runtime::value::Value<'gc>),
+    Value(crate::runtime::objectmodel::Value<'gc>),
     Code(u32),
     Cell(u32),
 }
@@ -76,9 +76,9 @@ pub struct CodeSpec<'a, 'gc> {
     pub constants: &'a [ConstSpec<'gc>],
     pub arity: i32,
     pub frame_size: u32,
-    pub metadata: crate::runtime::value::Value<'gc>,
+    pub metadata: crate::runtime::objectmodel::Value<'gc>,
     /// Deduplicated span values referenced by [`CodeSpec::srcmap`].
-    pub spans: &'a [crate::runtime::value::Value<'gc>],
+    pub spans: &'a [crate::runtime::objectmodel::Value<'gc>],
     /// Source runs in increasing byte-offset order.
     pub srcmap: &'a [crate::compiler::bytecode::lower::SrcRun],
 }

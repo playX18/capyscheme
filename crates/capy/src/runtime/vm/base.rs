@@ -8,7 +8,7 @@ use crate::{
     runtime::{
         MutationContext,
         prelude::*,
-        value::{Boxed, Closure, Str, Symbol, Tuple, Value},
+        objectmodel::{Boxed, Closure, Str, Symbol, Tuple, Value},
         variable::Variable,
     },
 };
@@ -158,6 +158,10 @@ pub mod base_ops {
     pub fn exit(code: Value<'gc>) -> () {
         let code = if code.is_int32() { code.as_int32() } else { -1 };
 
+        // Teardown runs on this worker. Withdraw it from the collector first:
+        // it cannot reach a safepoint while `process::exit` runs, and a
+        // collection that starts now must not wait for it.
+        crate::heap::sync::thread::Thread::begin_process_exit();
         std::process::exit(code);
     }
 

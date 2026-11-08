@@ -11,7 +11,7 @@
 //! a thread or [`JoinHandle::join_blocking`] from a plain OS thread. A thread
 //! can be cancelled with [`JoinHandle::kill`]. A killed thread unwinds: its
 //! `Drop` impls and Scheme `dynamic-wind` after-thunks run, and its joiners see
-//! [`JoinError::Killed`]. Every blocking [`SchedCtx`] call returns
+//! [`JoinError::Killed`]. Every blocking [`SchedContext`] call returns
 //! `Err(`[`Killed`]`)` on kill.
 
 #![warn(missing_docs)]
@@ -33,6 +33,6 @@ mod cabi;
 
 pub use preempt::preemptible;
 pub use scheduler::{
-    Builder, Config, FdWait, Interest, JoinError, JoinHandle, Killed, Runtime, SchedCtx,
+    Builder, Config, FdWait, Interest, JoinError, JoinHandle, Killed, Scheduler, SchedContext,
     VirtualThreadId, Waker, spawn,
 };

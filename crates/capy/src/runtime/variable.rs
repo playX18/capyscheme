@@ -8,7 +8,8 @@ use crate::heap::{Gc, Trace, barrier, cell::Lock};
 
 use crate::runtime::{
     MutationContext,
-    value::{ClassTagged, IntoValue, Symbol, Value},
+    objectmodel::{ClassTagged, IntoValue, Symbol, Value},
+    watchpoint::WatchpointSet,
 };
 
 /// A single mutable binding cell
@@ -17,7 +18,12 @@ use crate::runtime::{
 #[repr(C)]
 pub struct Variable<'gc> {
     pub value: Lock<Value<'gc>>,
+    /// Tier 2 JIT folds global variables, and installs watchpoint on any folded variable.
+    /// If the variable is modified, watchpoint fires and invalidates code.
+    pub watch: Lock<Option<Gc<'gc, WatchpointSet<'gc>>>>,
 }
+
+pub const WATCH_OFFSET: i32 = 8;
 
 fn variable_header_word() -> u64 {
     class_header_word(
@@ -31,6 +37,7 @@ impl<'gc> Variable<'gc> {
         ctx.allocate_with(
             Self {
                 value: Lock::new(value),
+                watch: Lock::new(None),
             },
             variable_header_word(),
         )
@@ -41,11 +48,46 @@ impl<'gc> Variable<'gc> {
         self.value.get() != Value::undefined()
     }
 
-    /// Stores `value` in the cell
+    /// Stores `value` in the cell. A watched variable then fires its set, so
+    /// the optimized code that folded the old value is invalidated.
     pub fn set(self: Gc<'gc, Self>, ctx: MutationContext<'gc>, value: Value<'gc>) {
+        let old = self.value.get();
         barrier::field!(Gc::write(ctx, self), Variable, value)
             .unlock()
             .set(value);
+        if old != value {
+            self.fire_watch(ctx);
+        }
+    }
+
+    /// Fires the watchpoint set of a watched variable. The caller stored the
+    /// new value first (mutate, then fire).
+    pub fn fire_watch(self: Gc<'gc, Self>, ctx: MutationContext<'gc>) {
+        if let Some(set) = self.watch.get() {
+            WatchpointSet::fire(set, ctx);
+        }
+    }
+
+    /// The watchpoint set of this variable, created on first use.
+    pub fn watch_set(
+        self: Gc<'gc, Self>,
+        ctx: MutationContext<'gc>,
+    ) -> Gc<'gc, WatchpointSet<'gc>> {
+        if let Some(set) = self.watch.get() {
+            return set;
+        }
+        let fresh = WatchpointSet::new(ctx);
+        let owner = Gc::write(ctx, self);
+        let _ = owner;
+        match self.watch.compare_exchange(
+            None,
+            Some(fresh),
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        ) {
+            Ok(_) => fresh,
+            Err(current) => current.expect("a failed exchange from None names a set"),
+        }
     }
 
     /// Reads the cell's current value.
@@ -83,9 +125,7 @@ pub mod variable_ops {
 
     #[scheme(name = "variable-set!")]
     pub fn variable_set(var: Gc<'gc, Variable<'gc>>, value: Value<'gc>) -> Value<'gc> {
-        barrier::field!(Gc::write(ctx, var), Variable, value)
-            .unlock()
-            .set(value);
+        var.set(ctx, value);
         Value::undefined()
     }
 

@@ -19,43 +19,24 @@ use crate::heap::{
     Mutation,
     barrier::{self},
     cell::Lock,
-    object::{ClassId, builtin_class_ids, class_header_word},
     sync::thread::{Thread as RuntimeThread, current_thread as current_runtime_thread},
 };
 use crate::prelude::*;
 use crate::runtime::MutationContext;
 use crate::runtime::root::RootScope;
 use crate::runtime::sched::{
-    scheduler::{self, Killed, SchedCtx, SchemeStart},
+    scheduler::{self, Killed, SchedContext, SchemeStart},
     sync::{self, Waiter, current_token},
 };
 
+pub use crate::runtime::objectmodel::threading::{Condition, Mutex, ThreadObject};
+pub(crate) use crate::runtime::objectmodel::threading::{
+    NEXT_JOIN_KEY, condition_header_word, mutex_header_word, thread_object_header_word,
+};
+use crate::runtime::objectmodel::threading::{MutexState, PendingInterruptQueue};
+
 /// Condition variable. Its waiters are queued in the scheduler, keyed by the
 /// address of this (non-moving) object.
-#[repr(C)]
-pub struct Condition {
-    _unused: u64,
-}
-
-fn condition_header_word() -> u64 {
-    class_header_word(
-        ClassId::new(builtin_class_ids::CONDITION).expect("builtin class id is nonzero"),
-    )
-}
-
-// SAFETY: GC trace for `Condition`, all reachable heap fields are visited
-unsafe impl Trace for Condition {
-    // SAFETY: All GC-reachable fields are traced via `visitor`
-    unsafe fn trace(&mut self, visitor: &mut crate::heap::Visitor) {
-        let _ = visitor;
-    }
-
-    // SAFETY: Weak refs are processed through the given weak_processor
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::heap::WeakProcessor) {
-        let _ = weak_processor;
-    }
-}
-
 impl Condition {
     fn key(&self) -> usize {
         self as *const Condition as usize
@@ -65,26 +46,6 @@ impl Condition {
 /// Mutex. The owner is a thread id (or a thread token), and the count is
 /// the owner's reentrancy depth. Only the owner changes `count`, and only
 /// under `state`.
-#[repr(C)]
-pub struct Mutex {
-    reentrant: bool,
-    state: parking_lot::Mutex<MutexState>,
-}
-
-#[derive(Default)]
-struct MutexState {
-    /// Owner token, `0` when unowned.
-    owner: u64,
-    count: usize,
-    /// Set when the owner died holding the lock. The next acquirer takes it
-    /// and reports it once (SRFI-18 abandoned-mutex).
-    abandoned: bool,
-}
-
-fn mutex_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::MUTEX).expect("builtin class id is nonzero"))
-}
-
 impl Mutex {
     fn new(reentrant: bool) -> Self {
         Self {
@@ -216,75 +177,6 @@ impl Mutex {
 }
 
 // SAFETY: GC trace for `Mutex`, all reachable heap fields are visited
-unsafe impl Trace for Mutex {
-    // SAFETY: All GC-reachable fields are traced via `visitor`
-    unsafe fn trace(&mut self, visitor: &mut crate::heap::Visitor) {
-        let _ = visitor;
-    }
-
-    // SAFETY: Weak refs are processed through the given weak_processor
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::heap::WeakProcessor) {
-        let _ = weak_processor;
-    }
-}
-
-// SAFETY: Class IDs in `CLASS_IDS` match the allocation header for `Mutex`
-unsafe impl ClassTagged for Mutex {
-    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::MUTEX];
-
-    const TYPE_NAME: &'static str = "mutex";
-}
-
-// SAFETY: Class IDs in `CLASS_IDS` match the allocation header for `Condition`
-unsafe impl ClassTagged for Condition {
-    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::CONDITION];
-
-    const TYPE_NAME: &'static str = "condition";
-}
-
-#[repr(C)]
-pub struct ThreadObject<'gc> {
-    entrypoint: Lock<Option<Value<'gc>>>,
-    /// Allocated by the first `enqueue_interrupt`: most threads never get one,
-    /// and the box is a malloc on every spawn otherwise.
-    pending_interrupts: AtomicPtr<PendingInterruptQueue>,
-    /// The native thread this object interrupts, for threads that are not
-    /// threads. Zero when unused.
-    runtime_thread: AtomicUsize,
-    /// The thread this object interrupts. Zero when unbound. VirtualThread ids
-    /// start at 1, so zero is never a live thread.
-    virtual_thread: AtomicU64,
-    interrupt_level: AtomicUsize,
-    /// Set when the thread's thread has finished. Joiners wait on it.
-    done: parking_lot::Mutex<bool>,
-    /// The escape continuation of the thread's body, which a kill invokes to
-    /// unwind the Scheme stack through `dynamic-wind` after-thunks.
-    unwind_k: Lock<Option<Value<'gc>>>,
-    /// Set when the thread was killed (`thread-terminate!`).
-    killed: AtomicBool,
-    /// VirtualThread a kill is sent to before the thread has bound itself. Set at
-    /// spawn, so a kill can reach a thread that has not run yet.
-    kill_target: AtomicU64,
-    /// Mutexes this thread holds, by address, rooted here. A thread that
-    /// finishes while holding one has it force-released and abandoned.
-    held: parking_lot::Mutex<Vec<(usize, Value<'static>)>>,
-    /// Key of this thread's join queue in the wait-queue table. A counter
-    /// value with the top bit set, so it is stable when the collector moves
-    /// the object and cannot equal the address of a mutex or condition.
-    join_key: usize,
-}
-
-/// Source of [`ThreadObject::join_key`] values.
-static NEXT_JOIN_KEY: AtomicUsize = AtomicUsize::new(0);
-
-struct PendingInterruptQueue {
-    queue: parking_lot::Mutex<VecDeque<Value<'static>>>,
-}
-
-fn thread_object_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::THREAD).expect("builtin class id is nonzero"))
-}
-
 impl<'gc> ThreadObject<'gc> {
     pub(crate) fn new(
         mc: impl Into<Mutation<'gc>>,
@@ -531,46 +423,6 @@ impl<'gc> ThreadObject<'gc> {
 }
 
 // SAFETY: `gc` for `ThreadObject` upholds all trait invariants
-unsafe impl<'gc> Trace for ThreadObject<'gc> {
-    // SAFETY: All GC-reachable fields are traced via `visitor`
-    unsafe fn trace(&mut self, visitor: &mut crate::heap::Visitor) {
-        // SAFETY: Preconditions verified by the surrounding code
-        unsafe {
-            self.entrypoint.trace(visitor);
-            self.unwind_k.trace(visitor);
-            for (_, value) in self.held.get_mut().iter_mut() {
-                visitor.trace(value);
-            }
-            if let Some(queue) = self.pending_interrupts.get_mut().as_mut() {
-                for value in queue.queue.get_mut().iter_mut() {
-                    visitor.trace(value);
-                }
-            }
-        }
-    }
-
-    // SAFETY: Weak refs are processed through the given weak_processor
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::heap::WeakProcessor) {
-        // SAFETY: Preconditions verified by the surrounding code
-        unsafe {
-            self.entrypoint.process_weak_refs(weak_processor);
-            self.unwind_k.process_weak_refs(weak_processor);
-            if let Some(queue) = self.pending_interrupts.get_mut().as_mut() {
-                for value in queue.queue.get_mut().iter_mut() {
-                    value.process_weak_refs(weak_processor);
-                }
-            }
-        }
-    }
-}
-
-// SAFETY: `gc` for `ThreadObject` upholds all trait invariants
-unsafe impl<'gc> ClassTagged for ThreadObject<'gc> {
-    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::THREAD];
-
-    const TYPE_NAME: &'static str = "thread";
-}
-
 impl Drop for ThreadObject<'_> {
     fn drop(&mut self) {
         let queue = std::mem::replace(self.pending_interrupts.get_mut(), std::ptr::null_mut());
@@ -1106,7 +958,7 @@ fn abandon_held<'gc>(thread: Gc<'gc, ThreadObject<'gc>>) {
     thread.clear_held();
 }
 
-fn run_scheme_thread(cx: SchedCtx) {
+fn run_scheme_thread(cx: SchedContext) {
     let body = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         cx.with_mutation(|ctx| {
             let thread = ctx.state().thread_object;

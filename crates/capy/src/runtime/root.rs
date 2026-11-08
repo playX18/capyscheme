@@ -5,7 +5,87 @@ use std::cell::Cell;
 use smallvec::SmallVec;
 
 use crate::heap::Trace;
-use crate::runtime::{MutationContext, State, value::Value};
+use crate::heap::collection::Visitor;
+use crate::runtime::{MutationContext, SchemeState, objectmodel::Value};
+
+/// Whether `value` is safe to hand to the collector as a root: an immediate,
+/// or an aligned pointer that lies in an MMTk space.
+///
+/// `Value::is_cell` only rejects the tagged immediates. A raw word such as a
+/// small integer, a class id, or an interior stack pointer passes it, and MMTk
+/// then aborts while tracing a non-object. Roots are therefore checked before
+/// they are traced; heap fields stay strict so real corruption is not hidden.
+#[inline]
+pub(crate) fn is_traceable_root(value: Value<'_>) -> bool {
+    if !value.is_cell() {
+        return true;
+    }
+    let bits = value.bits() as usize;
+    // `ObjectReference::from_raw_address` debug-asserts alignment, and a
+    // misaligned word is never an object reference anyway.
+    if bits & (std::mem::align_of::<usize>() - 1) != 0 {
+        return false;
+    }
+    // SAFETY: `bits` is non-zero and aligned; `from_raw_address` validates the
+    // rest before the space lookup.
+    mmtk::util::ObjectReference::from_raw_address(unsafe {
+        mmtk::util::Address::from_usize(bits)
+    })
+    .is_some_and(|object| mmtk::memory_manager::is_in_mmtk_spaces(object))
+}
+
+/// Reports a root slot that does not hold a traceable value. The collector
+/// must not see it; the caller skips (and, for scratch roots, clears) it.
+#[cold]
+#[inline(never)]
+pub(crate) fn report_bad_root(label: &str, slot: usize, raw: u64) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static REPORTED: AtomicBool = AtomicBool::new(false);
+    if !REPORTED.swap(true, Ordering::Relaxed) {
+        crate::heap::logging::ensure_max_level(log::LevelFilter::Error);
+        log::error!(
+            target: "capy::gc",
+            "not tracing non-heap root {label} at {slot:#x}: {raw:#x}"
+        );
+    }
+    debug_assert!(false, "non-heap root {label} at {slot:#x}: {raw:#x}");
+}
+
+/// Trace a root that the collector must see, skipping it and clearing it to
+/// `undefined` if it is not a traceable value. Used for the scratch roots in
+/// `ThreadContext` and `SchemeState`, whose stale contents have no meaning to Scheme code.
+#[inline]
+pub(crate) fn trace_root_guarded<'gc>(
+    label: &str,
+    value: &mut Value<'gc>,
+    visitor: &mut Visitor<'_>,
+) {
+    if is_traceable_root(*value) {
+        visitor.trace(value);
+    } else {
+        report_bad_root(label, std::ptr::from_mut(value) as usize, value.bits());
+        *value = Value::undefined();
+    }
+}
+
+/// Trace a root slot that belongs to a live frame or a precise root array.
+/// Such a slot is not rewritten: a raw word there means the mask or array is
+/// wrong, and overwriting it would corrupt the mutator's state.
+#[inline]
+pub(crate) fn trace_slot_guarded<'gc>(
+    label: &str,
+    slot: *mut Value<'gc>,
+    visitor: &mut Visitor<'_>,
+) {
+    // SAFETY: `slot` names a root slot the GC is allowed to trace and update;
+    // the collector is stopped and this mutator owns the slot.
+    let value = unsafe { &mut *slot };
+    if is_traceable_root(*value) {
+        visitor.trace(value);
+    } else {
+        report_bad_root(label, slot as usize, value.bits());
+    }
+}
 
 /// Growable precise root array of relocatable [`Value`] slots.
 pub struct RootStack<'gc> {
@@ -84,7 +164,7 @@ unsafe impl Trace for RootStack<'_> {
         let len = self.len.get();
         let slots = unsafe { &mut *self.slots.inner.get() };
         for i in 0..len {
-            visitor.trace(slots[i].get_mut());
+            trace_slot_guarded("RootStack slot", slots[i].as_ptr(), visitor);
         }
     }
 }
@@ -104,7 +184,7 @@ impl<'a, 'gc> RootScope<'a, 'gc> {
         }
     }
 
-    pub fn from_state(state: &'a State<'gc>) -> Self {
+    pub fn from_state(state: &'a SchemeState<'gc>) -> Self {
         Self {
             base: state.root_stack.len(),
             stack: &state.root_stack,

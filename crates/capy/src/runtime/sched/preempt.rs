@@ -2,7 +2,7 @@
 //!
 //! Sysmon sends `SIGURG` to a worker whose thread has run past its quantum.
 //! The handler then does the following: it arms the thread's
-//! yieldpoint and preempt flags and pokes `Tc::esp`, so the thread parks at its next `enter`/`loop_hint`
+//! yieldpoint and preempt flags and pokes `ThreadContext::esp`, so the thread parks at its next `enter`/`loop_hint`
 //! with precise stack state.
 
 use std::ffi::c_void;

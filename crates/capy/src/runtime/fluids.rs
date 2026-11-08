@@ -6,7 +6,7 @@ use crate::heap::{
 };
 use crate::runtime::{
     MutationContext,
-    value::{ClassTagged, HashTable, Value, WeakTable},
+    objectmodel::{ClassTagged, HashTable, Value, WeakTable},
 };
 use std::{cell::Cell, hash::Hash, ops::Index};
 
@@ -279,7 +279,7 @@ pub struct DynamicState<'gc> {
 impl<'gc> DynamicState<'gc> {
     pub fn new(mc: MutationContext<'gc>) -> Self {
         Self {
-            thread_local_values: HashTable::new(mc, super::value::HashTableType::Eq, 8, 0.75),
+            thread_local_values: HashTable::new(mc, super::objectmodel::HashTableType::Eq, 8, 0.75),
             values: Lock::new(WeakTable::new(mc, 9, 0.75)),
             cache: Cache::new(mc),
             has_aliased_values: Cell::new(false),
@@ -502,12 +502,12 @@ macro_rules! fluid {
 
             #[allow(dead_code)]
             #[unsafe(export_name = concat!("capy_get_", stringify!($name)))]
-            $v extern "C" fn [<get_ $name: snake>]<'gc>(ctx: $crate::runtime::MutationContext<'gc>) -> $crate::runtime::value::Value<'gc> {
+            $v extern "C" fn [<get_ $name: snake>]<'gc>(ctx: $crate::runtime::MutationContext<'gc>) -> $crate::runtime::objectmodel::Value<'gc> {
                 [<$name: snake>](ctx).get(ctx)
             }
             #[allow(dead_code)]
             #[unsafe(export_name = concat!("capy_set_", stringify!($name)))]
-            $v extern "C" fn [<set_ $name: snake>]<'gc>(ctx: $crate::runtime::MutationContext<'gc>, value: $crate::runtime::value::Value<'gc>) -> $crate::runtime::value::Value<'gc> {
+            $v extern "C" fn [<set_ $name: snake>]<'gc>(ctx: $crate::runtime::MutationContext<'gc>, value: $crate::runtime::objectmodel::Value<'gc>) -> $crate::runtime::objectmodel::Value<'gc> {
                 let old = [<get_ $name: snake>](ctx);
                 [<$name: snake>](ctx).set(ctx, value);
                 old
@@ -533,12 +533,12 @@ macro_rules! fluid {
             }
 
             #[unsafe(export_name = concat!("capy_get_tls_", stringify!($name)))]
-            $v fn [<get_ $name: snake>]<'gc>(ctx: $crate::runtime::MutationContext<'gc>) -> $crate::runtime::value::Value<'gc> {
+            $v fn [<get_ $name: snake>]<'gc>(ctx: $crate::runtime::MutationContext<'gc>) -> $crate::runtime::objectmodel::Value<'gc> {
                 [<$name: snake>](ctx).get(ctx)
             }
 
             #[unsafe(export_name = concat!("capy_set_tls_", stringify!($name)))]
-            $v fn [<set_ $name: snake>]<'gc>(ctx: $crate::runtime::MutationContext<'gc>, value: $crate::runtime::value::Value<'gc>) {
+            $v fn [<set_ $name: snake>]<'gc>(ctx: $crate::runtime::MutationContext<'gc>, value: $crate::runtime::objectmodel::Value<'gc>) {
                 [<$name: snake>](ctx).set(ctx, value);
             }
         }

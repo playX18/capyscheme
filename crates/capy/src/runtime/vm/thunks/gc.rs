@@ -3,7 +3,7 @@ use crate::heap::{
     ObjectSlot,
     mmtk::{MutatorContext, util::ObjectReference},
 };
-use crate::runtime::{MutationContext, value::Value};
+use crate::runtime::{MutationContext, objectmodel::Value};
 
 /// Block for a pending GC / interrupt at a compiled Scheme entry yieldpoint.
 

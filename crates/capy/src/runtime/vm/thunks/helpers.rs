@@ -4,7 +4,7 @@ use super::make_assertion_violation;
 use crate::runtime::vm::thunk_raise;
 use crate::runtime::{
     MutationContext,
-    value::{Closure, Number, Str, Value},
+    objectmodel::{Closure, Number, Str, Value},
 };
 
 unsafe extern "C" {
@@ -39,7 +39,7 @@ pub fn wrong_number_of_args_impl<'gc>(
         }
     } else {
         log::trace!("WRONG ARGUMENTS TO {subr}: {rands:?}");
-        crate::runtime::vm::debug::print_stacktraces_impl(ctx);
+        crate::runtime::builtins::debug::print_stacktraces_impl(ctx);
         if expected < 0 {
             format!(
                 "procedure expected at least {} arguments, got {}",

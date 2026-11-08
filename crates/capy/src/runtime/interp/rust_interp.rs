@@ -35,10 +35,10 @@ use crate::runtime::interp::profile::ARRAY_FAST;
 use crate::runtime::interp::runtime_procs;
 use crate::runtime::interp::slow;
 use crate::runtime::interp::stack::{self, Ip, Slot};
-use crate::runtime::prims::calls as prims;
-use crate::runtime::value::{
+use crate::runtime::objectmodel::{
     Closure, EnvRecord, IntoValue, NativeReturn, Pair, ReturnCode, Value, Vector,
 };
+use crate::runtime::prims::calls as prims;
 use crate::runtime::variable::Variable;
 use crate::runtime::vm::exceptions::RaiseKind;
 
@@ -452,8 +452,9 @@ op! { fn op_enter<W>(ip, fp, th, clo, md, dt, argc) {
             && let Some(clo) = clo
         {
             let block = Closure::code_block(clo);
-            if block.hot_count.fetch_add(1, Relaxed) + 1 >= threshold {
-                request_tier_up(th, block, &policy);
+            let step = crate::utils::flags::jit_entry_heat() as u32;
+            if block.hot_count.fetch_add(step, Relaxed) + step >= threshold {
+                request_tier_up(th, block, &policy, Some(clo));
             }
         }
     }
@@ -497,8 +498,9 @@ op! { fn op_enter_rest<W>(ip, fp, th, clo, md, dt, argc) {
             && let Some(clo) = clo
         {
             let block = Closure::code_block(clo);
-            if block.hot_count.fetch_add(1, Relaxed) + 1 >= threshold {
-                request_tier_up(th, block, &policy);
+            let step = crate::utils::flags::jit_entry_heat() as u32;
+            if block.hot_count.fetch_add(step, Relaxed) + step >= threshold {
+                request_tier_up(th, block, &policy, Some(clo));
             }
         }
     }
@@ -509,8 +511,64 @@ op! { fn op_enter_rest<W>(ip, fp, th, clo, md, dt, argc) {
     advance!(OpEnterRest, W, ip, fp, th, clo, md, dt)
 }}
 
-// Enter a native closure. Every native takes `(ctx, sfp)` and reports a
-// `ReturnCode`, a single result or error value sits in place at `sfp[2]`.
+op! { fn op_enter_case<W>(ip, fp, th, clo, md, dt, argc) {
+    let mut frame = CallFrame::create(fp);
+    let op = decode!(OpEnterCase, W, ip);
+    let pool = frame.code_block().buffer.pool().as_ptr();
+    let table = unsafe { pool.add(op.table.0 as usize) };
+    let count = unsafe { table.read() } as usize;
+    for row in 0..count {
+        let base = unsafe { table.add(1 + row * 6) };
+        let min = unsafe { base.read() } as u64;
+        let max = unsafe { base.add(1).read() } as u64;
+        if argc < min || argc > max {
+            continue;
+        }
+        let target = unsafe { base.add(2).read() } as i32;
+        let row_frame = unsafe { base.add(3).read() } as usize;
+        let rest_base = unsafe { base.add(4).read() };
+        let rest_cnt = unsafe { base.add(5).read() };
+        if rest_base != CASE_NO_REST {
+            let extras = (argc - min) as usize;
+            let tc = th.tc();
+            if fp.add(row_frame + extras) > tc.esp.load(Relaxed) {
+                become enter_overflow(ip, fp, th, clo, md, dt, argc)
+            }
+
+            unsafe {
+                std::ptr::copy(
+                    fp.add(2 + min as usize),
+                    fp.add(rest_base as usize),
+                    extras,
+                );
+            }
+            frame[Register(rest_cnt)] = Value::from_i32(extras as i32);
+        }
+        let group = Closure::from_value(frame[Register(1)]);
+        let clause = Closure::from_value(Closure::free_get(group, row));
+        frame[Register(1)] = clause.into();
+
+        #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            let policy = ThresholdPolicy::current();
+            if let Some(threshold) = policy.hot_threshold() {
+                let block = Closure::code_block(clause);
+                let step = crate::utils::flags::jit_entry_heat() as u32;
+            if block.hot_count.fetch_add(step, Relaxed) + step >= threshold {
+                    request_tier_up(th, block, &policy, Some(clause));
+                }
+            }
+        }
+        let target_ip = ip.offset(target as isize);
+        become (dt.get(*target_ip))(target_ip, fp, th, Some(clause), md, dt, argc)
+    }
+    become enter_case_arity(ip, fp, th, clo, md, dt, argc)
+}}
+
+op! { #[cold] #[inline(never)] fn enter_case_arity(ip, fp, th, clo, md, dt, argc) {
+    dispatch_control!(slow::control_enter_case_arity(th, fp, argc as usize), th, dt)
+}}
+
 op! { fn call_native(ip, fp, th, clo, md, dt, argc) {
     let frame = CallFrame::create(fp);
     th.tc().ip.set(ip);
@@ -543,7 +601,7 @@ op! { #[cold] #[inline(never)] fn call_non_closure(ip, fp, th, clo, md, dt, argc
     } else {
         Some(slow::EnterLink {
             link: slow::generic_link(ip, md.as_ptr()),
-            buffer: Value::from_gc(crate::runtime::value::CodeBuffer::md_buffer(md.as_ptr())),
+            buffer: Value::from_gc(crate::runtime::objectmodel::CodeBuffer::md_buffer(md.as_ptr())),
         })
     };
     dispatch_control!(
@@ -739,9 +797,9 @@ op! { fn op_cell_set<W>(ip, fp, th, clo, md, dt, w) {
     let frame = CallFrame::create(fp);
     let op = decode!(OpCellSet, W, ip);
     let cell = frame.code_block().buffer.constant(op.constant.0 as usize);
-    barrier::field!(Gc::write(th, cell.downcast::<Variable>()), Variable, value)
-        .unlock()
-        .set(frame[op.src]);
+    // A cache cell is a `Variable`: a write fires its watchpoint set, so
+    // optimized code that folded the cell is invalidated.
+    cell.downcast::<Variable>().set(th, frame[op.src]);
     advance!(OpCellSet, W, ip, fp, th, clo, md, dt)
 }}
 
@@ -983,8 +1041,9 @@ op! { fn op_loop_hint<W>(ip, fp, th, clo, md, dt, w) {
             && let Some(clo) = clo
         {
             let block = Closure::code_block(clo);
-            if block.hot_count.fetch_add(1, Relaxed) + 1 >= threshold {
-                request_tier_up(th, block, &policy);
+            let step = crate::utils::flags::jit_loop_heat() as u32;
+            if block.hot_count.fetch_add(step, Relaxed) + step >= threshold {
+                request_tier_up(th, block, &policy, Some(clo));
             }
         }
     }
@@ -1005,9 +1064,12 @@ op! { fn op_call<W>(ip, fp, th, clo, md, dt, w) {
     let callee = *callee_frame.add(1);
     if callee.is::<Closure>() {
         let link = &(*md.entry::<def::OpCall>(op.metadata_id)).link;
-        if link.callee.bits() != Value::from_gc(Closure::code_block(Closure::from_value(callee))).bits()
-            && link.polymorphic.load(Relaxed) == 0
-        {
+        let block = Value::from_gc(Closure::code_block(Closure::from_value(callee)));
+        let first = link.callee.bits() == block.bits();
+
+        link.note_call(first.then_some(0));
+
+        if !first && link.polymorphic.load(Relaxed) == 0 {
             become record_callee(ip, callee_frame, th, clo, md, dt, op.argc.0 as u64)
         }
         call_closure!(callee_frame, th, callee, op.argc.0, dt)
@@ -1021,9 +1083,12 @@ op! { fn op_tail_call<W>(ip, fp, th, clo, md, dt, w) {
     let callee = frame.callee();
     if callee.is::<Closure>() {
         let link = &(*md.entry::<def::OpTailCall>(op.metadata_id)).link;
-        if link.callee.bits() != Value::from_gc(Closure::code_block(Closure::from_value(callee))).bits()
-            && link.polymorphic.load(Relaxed) == 0
-        {
+        let block = Value::from_gc(Closure::code_block(Closure::from_value(callee)));
+        let first = link.callee.bits() == block.bits();
+
+            link.note_call(first.then_some(0));
+
+        if !first && link.polymorphic.load(Relaxed) == 0 {
             become record_callee(ip, fp, th, clo, md, dt, op.argc.0 as u64)
         }
         call_closure!(fp, th, callee, op.argc.0, dt)
@@ -1040,9 +1105,12 @@ op! { fn op_call_self<W>(ip, fp, th, clo, md, dt, w) {
     *callee_frame.add(1) = callee;
     if callee.is::<Closure>() {
         let link = &(*md.entry::<def::OpCallSelf>(op.metadata_id)).link;
-        if link.callee.bits() != Value::from_gc(Closure::code_block(Closure::from_value(callee))).bits()
-            && link.polymorphic.load(Relaxed) == 0
-        {
+        let block = Value::from_gc(Closure::code_block(Closure::from_value(callee)));
+        let first = link.callee.bits() == block.bits();
+
+        link.note_call(first.then_some(0));
+
+        if !first && link.polymorphic.load(Relaxed) == 0 {
             become record_callee(ip, callee_frame, th, clo, md, dt, op.argc.0 as u64)
         }
         call_closure!(callee_frame, th, callee, op.argc.0, dt)
@@ -1055,9 +1123,12 @@ op! { fn op_tail_call_self<W>(ip, fp, th, clo, md, dt, w) {
     let callee = *fp.add(1);
     if callee.is::<Closure>() {
         let link = &(*md.entry::<def::OpTailCallSelf>(op.metadata_id)).link;
-        if link.callee.bits() != Value::from_gc(Closure::code_block(Closure::from_value(callee))).bits()
-            && link.polymorphic.load(Relaxed) == 0
-        {
+        let block = Value::from_gc(Closure::code_block(Closure::from_value(callee)));
+        let first = link.callee.bits() == block.bits();
+
+        link.note_call(first.then_some(0));
+
+        if !first && link.polymorphic.load(Relaxed) == 0 {
             become record_callee(ip, fp, th, clo, md, dt, op.argc.0 as u64)
         }
         call_closure!(fp, th, callee, op.argc.0, dt)
@@ -1070,7 +1141,7 @@ op! { fn op_tail_call_self<W>(ip, fp, th, clo, md, dt, w) {
 op! { #[cold] #[inline(never)] fn record_callee(ip, fp, th, clo, md, dt, argc) {
     let site = slow::EnterLink {
         link: slow::generic_link(ip, md.as_ptr()),
-        buffer: Value::from_gc(crate::runtime::value::CodeBuffer::md_buffer(md.as_ptr())),
+        buffer: Value::from_gc(crate::runtime::objectmodel::CodeBuffer::md_buffer(md.as_ptr())),
     };
     dispatch_control!(
         slow::control_enter(th, fp, *fp.add(1), argc as usize, Some(site)),
@@ -1506,13 +1577,7 @@ op! { fn op_variable_set<W>(ip, fp, th, clo, md, dt, w) {
     let frame = CallFrame::create(fp);
     let op = decode!(OpVariableSet, W, ip);
     let variable = frame[op.var];
-    barrier::field!(
-        Gc::write(th, variable.downcast::<Variable>()),
-        Variable,
-        value
-    )
-    .unlock()
-    .set(frame[op.src]);
+    variable.downcast::<Variable>().set(th, frame[op.src]);
     advance!(OpVariableSet, W, ip, fp, th, clo, md, dt)
 }}
 
@@ -1622,6 +1687,7 @@ const fn build_dispatch_table<const W: u8>() -> [Handler; 256] {
     set! {
         OpEnter => op_enter,
         OpEnterRest => op_enter_rest,
+        OpEnterCase => op_enter_case,
         OpReturnPoint => op_return_point,
         OpReturnPointForward => op_return_point_forward,
         OpReturnPointValues => op_return_point_values,

@@ -6,7 +6,7 @@ use crate::heap::{Global, Trace, sync::monitor::Monitor};
 use crate::runtime::{
     MutationContext,
     fasl::{Reader, fasl_payload},
-    value::Value,
+    objectmodel::Value,
     vm::load::{
         artifact::{LoadArtifact, LoadArtifactKind},
         policy::get_fasl_load_options,

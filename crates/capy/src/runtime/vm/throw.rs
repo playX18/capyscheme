@@ -4,7 +4,7 @@ use crate::{
     global,
     runtime::{
         MutationContext,
-        value::{PROCEDURES, ReturnCode, Str, Value},
+        objectmodel::{PROCEDURES, ReturnCode, Str, Value},
         variable::{Variable, define},
     },
 };

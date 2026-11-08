@@ -4,7 +4,7 @@ use crate::heap::{Gc, Global, Trace, Visitor, mmtk::util::Address, sync::monitor
 use crate::runtime::{
     MutationContext,
     record::{RTD_OPAQUE, RTD_SEALED, Rcd, Rtd},
-    value::*,
+    objectmodel::*,
     vm::syntax::Syntax,
 };
 use flate2::read::GzDecoder;
@@ -409,7 +409,7 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
                     return Ok(kw);
                 }
 
-                let kw = crate::runtime::value::Keyword::from_symbol(self.ctx, sym);
+                let kw = crate::runtime::objectmodel::Keyword::from_symbol(self.ctx, sym);
                 self.ctx
                     .globals()
                     .keyword_map

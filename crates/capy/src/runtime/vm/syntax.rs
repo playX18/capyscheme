@@ -12,7 +12,7 @@ use crate::{
     runtime::{
         MutationContext,
         fluids::Fluid,
-        value::{ClassTagged, Closure, Pair, Str, Tuple, Value, Vector},
+        objectmodel::{ClassTagged, Closure, Pair, Str, Tuple, Value, Vector},
         vm::ffi::Pointer,
     },
 };

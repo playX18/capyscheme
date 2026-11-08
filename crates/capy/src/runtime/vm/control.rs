@@ -6,27 +6,18 @@
 //! mark frame is a bare association list of key to value.
 
 use crate::heap::{
-    Gc, Trace,
-    object::{ClassId, builtin_class_ids, class_header_word},
+    Gc,
 };
 use crate::prelude::*;
 use crate::prelude::{ClosureRef, Value};
 use crate::runtime::interp::stack;
+pub use crate::runtime::objectmodel::control::ContinuationMarks;
+pub(crate) use crate::runtime::objectmodel::control::continuation_marks_header_word;
 use crate::runtime::sni::{self, LocalFrame};
 use crate::runtime::vm::ExecutionResult;
 use mmtk::util::Address;
 
-#[repr(C)]
-#[derive(Trace)]
-pub struct ContinuationMarks<'gc> {
-    pub cmarks: Value<'gc>,
-}
 
-pub(crate) fn continuation_marks_header_word() -> u64 {
-    class_header_word(
-        ClassId::new(builtin_class_ids::CONTINUATION_MARKS).expect("builtin class id is nonzero"),
-    )
-}
 
 /// Free-var layout for `.reified-cc` / `.reified-1cc` / `.null-reified-cc`:
 /// `[0]=NativeProc`, `[1]=captured stack (a `Continuation`)`, `[2]=winders`,
@@ -184,20 +175,13 @@ fn do_wind<'gc>(ctx: MutationContext<'gc>, new_winders: Value<'gc>) -> Result<()
     wind_in(ctx, new_slot, tail_slot, &mut frame)
 }
 
-// SAFETY: `gc` for `ContinuationMarks` upholds all trait invariants
-unsafe impl<'gc> ClassTagged for ContinuationMarks<'gc> {
-    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::CONTINUATION_MARKS];
-
-    const TYPE_NAME: &'static str = "continuation-marks";
-}
-
 /// Shared invocation path for reified continuations.
 ///
 /// Winds to the captured winders first, each in/out thunk runs with its
 /// own winder's marks, then installs the captured marks and continues to
 /// the captured stack with `ans`.
 fn invoke_reified<'gc>(
-    call: &Call<'_, 'gc>,
+    call: &NativeCall<'_, 'gc>,
     retk: Value<'gc>,
     winders: Value<'gc>,
     marks: Value<'gc>,
