@@ -74,9 +74,9 @@ is the same as with baseline.
    registers. Each value has a `VRepr` that fixes its class (GPR or FPR) and
    whether a stack map reports it. `lir/schedule.rs` places each pure value in
    the block with the lowest loop depth that its uses allow.
-5. **Register allocation** (`regalloc/`). Wimmer–Franz linear scan with
-   lifetime holes and interval splitting. It reuses spill slots, resolves
-   parallel moves and writes the stack maps.
+5. **Register allocation** (`regalloc/`). One of two allocators, chosen by
+   `CAPY_OPT_REGALLOC`: Wimmer–Franz linear scan with lifetime holes and
+   interval splitting, or a greedy allocator based on JSC/LLVM.
 6. **Layout** (`passes/layout.rs`). Runs only with `CAPY_OPT_LAYOUT`. Without
    it, blocks stay in reverse postorder.
 7. **Install guard** (`opt/mod.rs`). A unit above `CAPY_OPT_MAX_UNIT_INSTRS`
@@ -150,6 +150,17 @@ traits directly. The JIT uses `CompiledContext<'e, T: Targets, S: SpecSource>`
 image being built), `Absolute` (a known machine address), or `Edge` (a
 label of a lazy edge). `Targets::placement` returns `Deferred` (slow blocks
 at the end, so fast paths fall through) or `Inline`. 
+
+## Multiple-values returns
+
+A return of any count but one decodes the header of the return address
+(`Masm::emit_mv_jump` / `emit_mv_target`) and jumps. 
+
+| Header | Target |
+|---|---|
+| full | the mv return address at `ra - 32` |
+| compact | `ra` itself, or the `values_error` stub when the values-error bit is set |
+
 
 ## Lazy edges
 
@@ -372,6 +383,7 @@ Defaults are in `utils/flags.rs`.
   `CAPY_OPT_LAZY_GENERICS`: on by default. They apply only with `CAPY_OPT_LAZY`.
 - `CAPY_OPT_UNROLL_ALL`: parsed, but never read. See Known gaps.
 - `CAPY_OPT_VERIFY=1`: verify the IR after every pass. Always on in debug builds.
+- `CAPY_OPT_REGALLOC=kind[,kind...]`: register allocator. LSRA or Greedy.
 - `CAPY_OPT_DUMP=stage,...`: write the IR of each named stage to
   `CAPY_JIT_DUMP_DIR`.
 - `CAPY_OPT_ANNOTATE=1`: keep the per-instruction text for annotated listings.

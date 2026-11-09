@@ -473,6 +473,9 @@ pub(super) fn clone_term(
         Terminator::Deopt { frame } => Terminator::Deopt {
             frame: cloner.clone_frame(func, &clone.values, *frame),
         },
+        Terminator::ReturnMany { values } => Terminator::ReturnMany {
+            values: values.iter().map(|&v| resolve(&clone.values, v)).collect(),
+        },
         Terminator::Unreachable => Terminator::Unreachable,
     }
 }

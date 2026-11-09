@@ -5,7 +5,7 @@ use crate::runtime::{MutationContext, objectmodel::Value};
 
 #[cfg(feature = "bootstrap")]
 use crate::{
-    compiler::lower_to_cps,
+    compiler::pipeline::lower_to_cps,
     expander::core::denotations,
     runtime::objectmodel::Str,
     runtime::vm::thunks::{make_io_error, make_lexical_violation},

@@ -5,6 +5,32 @@ use super::super::template_image::loaded;
 use super::super::unit::Tier;
 use crate::utils::flags;
 
+/// The register allocator Tier 2 runs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RegAllocKind {
+    /// Wimmer–Franz linear scan with lifetime holes and splitting.
+    LinearScan,
+    /// Greedy register allocator based on JSC/LLVM Greedy regalloc.
+    Greedy,
+}
+
+impl RegAllocKind {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            RegAllocKind::LinearScan => "linear",
+            RegAllocKind::Greedy => "greedy",
+        }
+    }
+
+    fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "lsra" => RegAllocKind::LinearScan,
+            "greedy" => RegAllocKind::Greedy,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct TierSet(u8);
 
@@ -87,6 +113,12 @@ pub(crate) struct OptConfig {
     /// From `CAPY_OPT_LAYOUT`: reorder blocks after allocation for
     /// fallthrough, using static loop weights
     pub(crate) layout: bool,
+    /// From `CAPY_OPT_REGALLOC`: the allocator to run, followed by any others
+    /// to run in compare mode on the same function (validated and measured,
+    /// not emitted). Never empty.
+    pub(crate) regallocs: Vec<RegAllocKind>,
+    /// From `CAPY_OPT_EVICT`: linear scan may evict a cheaper active piece.
+    pub(crate) evict: bool,
     /// Always true in debug builds.
     pub(crate) verify: bool,
     /// Stage names whose IR/LIR is written to `CAPY_JIT_DUMP_DIR`.
@@ -98,7 +130,38 @@ pub(crate) struct OptConfig {
     pub(crate) stress_deopt: usize,
 }
 
+/// Parses `CAPY_OPT_REGALLOC` into the allocator list. Unknown or duplicate
+/// names are dropped; the first known name wins, and an empty list means the
+/// default linear scan.
+fn parse_regalloc(spec: &str) -> Vec<RegAllocKind> {
+    let mut out: Vec<RegAllocKind> = Vec::new();
+    for name in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        match RegAllocKind::parse(name) {
+            Some(kind) if !out.contains(&kind) => out.push(kind),
+            Some(_) => {}
+            None => {
+                crate::heap::logging::ensure_max_level(log::LevelFilter::Warn);
+                log::warn!("unknown register allocator `{name}` in CAPY_OPT_REGALLOC");
+            }
+        }
+    }
+    if out.is_empty() {
+        out.push(RegAllocKind::LinearScan);
+    }
+    out
+}
+
 impl OptConfig {
+    /// The allocator whose result is emitted.
+    pub(crate) fn regalloc(&self) -> RegAllocKind {
+        self.regallocs[0]
+    }
+
+    /// The allocators to run in compare mode after the active one.
+    pub(crate) fn regalloc_compare(&self) -> &[RegAllocKind] {
+        &self.regallocs[1..]
+    }
+
     pub(crate) fn from_flags() -> Self {
         let dump = flags::opt_dump()
             .unwrap_or("")
@@ -115,6 +178,8 @@ impl OptConfig {
             spec_hoist: flags::opt_spec_hoist(),
             predicate: flags::opt_predicate(),
             layout: flags::opt_layout(),
+            regallocs: parse_regalloc(flags::opt_regalloc().unwrap_or("linear")),
+            evict: flags::opt_evict(),
             verify: flags::opt_verify() || cfg!(debug_assertions),
             dump,
             annotate: flags::opt_annotate(),
@@ -177,6 +242,13 @@ pub(crate) static OPT_OSR_REFUSED_INVALID: std::sync::atomic::AtomicU64 =
 /// Tier 2 builds that failed (a pass, the verifier, lowering or emission).
 pub(crate) static OPT_BUILD_FAILURES: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+/// Wall time inside `OptimizingCompiler::build`, in microseconds.
+pub(crate) static OPT_BUILD_MICROS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+/// Wall time inside `regalloc::allocate` (legalization, intervals, the
+/// allocator, move resolution and the stack maps), in microseconds.
+pub(crate) static OPT_REGALLOC_MICROS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 extern "C" fn print_jit_stats() {
     let compiles = COMPILES.load(Relaxed);
@@ -203,6 +275,21 @@ extern "C" fn print_jit_stats() {
         OPT_REMAT_OBJECTS.load(Relaxed),
         OPT_BUILD_FAILURES.load(Relaxed),
     );
+    log::info!(
+        target: crate::heap::logging::STATS_LOG_TARGET,
+        "tier 2 time: {} us compiling, {} us in regalloc::allocate",
+        OPT_BUILD_MICROS.load(Relaxed),
+        OPT_REGALLOC_MICROS.load(Relaxed),
+    );
+    log::info!(
+        target: crate::heap::logging::STATS_LOG_TARGET,
+        "{}",
+        crate::runtime::codegen::opt::passes::pass_time_report()
+    );
+    let regalloc = crate::runtime::codegen::opt::regalloc::stats::report();
+    if !regalloc.is_empty() {
+        log::info!(target: crate::heap::logging::STATS_LOG_TARGET, "{regalloc}");
+    }
     log::info!(
         target: crate::heap::logging::STATS_LOG_TARGET,
         "{}",

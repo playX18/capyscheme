@@ -192,6 +192,7 @@ pub(super) fn edges_mut(term: &mut Terminator) -> Vec<&mut Edge> {
             .chain(std::iter::once(default))
             .collect(),
         Terminator::Return(_)
+        | Terminator::ReturnMany { .. }
         | Terminator::TailCall { .. }
         | Terminator::Deopt { .. }
         | Terminator::Unreachable => vec![],

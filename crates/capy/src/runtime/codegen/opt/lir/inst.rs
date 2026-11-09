@@ -1,6 +1,17 @@
 use super::*;
 use std::fmt::{self, Display, Formatter};
 
+/// What a [`LirInst::LoadReturned`] reads from the call just made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReturnedKind {
+    /// The value itself (a tagged word).
+    Value,
+    /// The address of the value, as a raw 64-bit integer.
+    Addr,
+    /// The call's value count (`AC`) less `index`, as a raw int32.
+    Count,
+}
+
 /// Low-level IR instruction
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LirInst {
@@ -13,6 +24,14 @@ pub enum LirInst {
     Const {
         dst: VReg,
         value: Constant,
+    },
+    /// `dst <- ` the `index`th value in the frame of the call just made,
+    /// which is `fp[2 + index]` of the callee frame. Only valid right after
+    /// a `ReturnValues::Take` call, before anything else uses that frame.
+    LoadReturned {
+        dst: VReg,
+        index: u32,
+        kind: ReturnedKind,
     },
     /// Tags an int32 as a fixnum.
     TagInt {
@@ -440,6 +459,12 @@ pub enum LirTerm {
     Return {
         value: VReg,
     },
+    /// Returns `values.len()` values other than one through the caller's
+    /// multiple-values target. Every return address has one, so it never
+    /// leaves the function.
+    ReturnMany {
+        values: Vec<VReg>,
+    },
     /// Replaces the current frame.
     TailCall {
         target: CallTarget,
@@ -483,7 +508,9 @@ impl LirInst {
                 ops.push(use_any(*src));
                 ops.push(def_any(*dst));
             }
-            LirInst::Const { dst, .. } => ops.push(def_any(*dst)),
+            LirInst::Const { dst, .. } | LirInst::LoadReturned { dst, .. } => {
+                ops.push(def_any(*dst))
+            }
             LirInst::TagInt { dst, src }
             | LirInst::UntagInt { dst, src }
             | LirInst::UntagChar { dst, src }
@@ -885,6 +912,7 @@ impl LirTerm {
                 .chain(std::iter::once(default))
                 .collect(),
             LirTerm::Return { .. }
+            | LirTerm::ReturnMany { .. }
             | LirTerm::TailCall { .. }
             | LirTerm::Deopt { .. }
             | LirTerm::Unreachable => vec![],
@@ -904,6 +932,9 @@ impl LirTerm {
                 role: Role::Use,
                 constraint: Constraint::Fixed(PhysRole::Rv),
             }),
+            LirTerm::ReturnMany { values } => {
+                ops.extend(values.iter().map(|&value| use_any(value)));
+            }
             LirTerm::TailCall { target, args, .. } => {
                 for (i, &arg) in args.iter().enumerate() {
                     let constraint = match target {

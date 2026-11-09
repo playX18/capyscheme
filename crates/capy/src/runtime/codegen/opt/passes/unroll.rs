@@ -668,6 +668,11 @@ fn remap_term(
         Terminator::Deopt { frame } => {
             *frame = cloner.clone_frame(func, map, *frame);
         }
+        Terminator::ReturnMany { values } => {
+            for value in values.iter_mut() {
+                *value = resolve(map, *value);
+            }
+        }
         Terminator::Unreachable => {}
     }
 }

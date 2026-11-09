@@ -153,7 +153,7 @@ fn imm_of(bits: u64) -> Option<(Ty, Constant)> {
 }
 
 struct Ctx {
-    dom: DomTree,
+    dom: std::rc::Rc<DomTree>,
     live: SecondaryMap<Block, bool>,
     inst_block: SecondaryMap<Inst, Option<Block>>,
     /// The type of each candidate parameter.
@@ -557,6 +557,7 @@ fn tagged_uses(func: &Func, cx: &Ctx) -> HashMap<Value, Vec<Block>> {
             Terminator::Branch { cond, .. } => plain.push(*cond),
             Terminator::Switch { value, .. } => plain.push(*value),
             Terminator::Return(v) => plain.push(*v),
+            Terminator::ReturnMany { values, .. } => plain.extend_from_slice(values),
             Terminator::TailCall { callee, args, .. } => {
                 plain.push(*callee);
                 plain.extend_from_slice(args.as_slice(&func.pool));
@@ -820,6 +821,11 @@ fn apply(func: &mut Func, cx: &mut Ctx, selected: &[(Block, usize, Value, Ty)], 
                 Terminator::Branch { cond, .. } => *cond = map(func, *cond),
                 Terminator::Switch { value, .. } => *value = map(func, *value),
                 Terminator::Return(v) => *v = map(func, *v),
+                Terminator::ReturnMany { values, .. } => {
+                    for v in values.iter_mut() {
+                        *v = map(func, *v);
+                    }
+                }
                 Terminator::TailCall { callee, args, .. } => {
                     *callee = map(func, *callee);
                     let old: Vec<Value> = args.as_slice(&func.pool).to_vec();

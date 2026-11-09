@@ -12,7 +12,7 @@ pub(crate) use target::{Placement, Target, Targets, emit_branch_to, emit_jump_to
 
 use onlineasm::{Extern, Label, VReg, onlineasm};
 
-use super::masm::Masm;
+use super::masm::{Masm, ValuesError};
 pub use super::operation::{OpArg, OpContinue, OpResult, OpTarget, OperationCall};
 
 pub mod tmp {
@@ -311,17 +311,21 @@ pub trait Flow {
     /// Terminal. Clobbers `tmp::T0`/`tmp::T1`. The `slow` arm arrives with
     /// the return address in `tmp::T0`.
     fn resume_caller(&mut self, masm: &mut Masm, slow: Label);
-    /// Return multiple values (`AC != 1`, values in `fp[2..]`) to an
-    /// interpreted caller: resume at the bytecode return point in `fp[-1]`,
-    /// whose template validates the count. A compiled return address jumps
-    /// to its `%mv-jump` target instead, anything else (a runtime-owned
-    /// marker, or a compact header with the values-error bit) goes to
-    /// `slow`. Terminal. Clobbers `tmp::T0`/`tmp::T1`/`tmp::T2`.
-    fn resume_caller_mv(&mut self, masm: &mut Masm, slow: Label) {
-        let compiled = masm.label();
-        self.resume_caller(masm, compiled);
-        masm.bind(compiled);
-        masm.emit_mv_jump(tmp::T0, tmp::T1, tmp::T2, slow);
+    /// Where the `values_error` stub is, for headers whose mv entry is a
+    /// values error.
+    fn values_error(&self) -> ValuesError;
+    /// Return multiple values (`AC != 1`, values in `fp[2..]`) to the caller:
+    /// an interpreted caller resumes at the bytecode return point in
+    /// `fp[-1]`, whose template validates the count, and any other return
+    /// address jumps to its `%mv-jump` target, which every header has.
+    /// Terminal. Clobbers `tmp::T0`/`tmp::T1`/`tmp::T2`.
+    fn resume_caller_mv(&mut self, masm: &mut Masm) {
+        let other = masm.label();
+        // The `other` arm arrives with the return address in `tmp::T0`.
+        self.resume_caller(masm, other);
+        masm.bind(other);
+        let values_error = self.values_error();
+        masm.emit_mv_jump(tmp::T0, tmp::T1, tmp::T2, values_error);
     }
     /// Reload the code registers for the frame in `SFP` after a pop.
     /// Clobbers `tmp::T0`.

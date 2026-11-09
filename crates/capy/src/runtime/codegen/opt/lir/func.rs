@@ -318,6 +318,14 @@ impl LirFunc {
                 self.require_repr(*obj, Tagged)?;
                 self.require_repr(*src, Tagged)?;
             }
+            LirInst::LoadReturned { dst, kind, .. } => self.require_repr(
+                *dst,
+                match kind {
+                    ReturnedKind::Value => Tagged,
+                    ReturnedKind::Addr => VRepr::RawInt64,
+                    ReturnedKind::Count => VRepr::RawInt,
+                },
+            )?,
             LirInst::LoadFree {
                 dst, closure: obj, ..
             }
@@ -504,6 +512,11 @@ impl LirFunc {
                 self.verify_edge(default)?;
             }
             LirTerm::Return { value } => self.require_repr(*value, VRepr::Tagged)?,
+            LirTerm::ReturnMany { values, .. } => {
+                for value in values {
+                    self.require_repr(*value, VRepr::Tagged)?;
+                }
+            }
             LirTerm::TailCall { target, args, .. } => self.verify_args(target, args)?,
             LirTerm::Deopt { .. } | LirTerm::Unreachable => {}
         }

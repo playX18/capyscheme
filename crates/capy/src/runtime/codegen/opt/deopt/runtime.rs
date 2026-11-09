@@ -49,14 +49,6 @@
 //!    still running an invalidated unit exit too and must not count the same
 //!    invalidation twice.
 //! 6. Return the baseline ResumeTable address for the pc, else the interpreter.
-//!
-//! Anything inconsistent here is a compiler bug, not a program error: the
-//! exit is logged and the process aborts ([`fatal`]).
-//!
-//! `CAPY_JIT_STATS=1` counts every exit and every rematerialized object, and
-//! records the failing site and guard kind. `CAPY_OPT_STRESS_DEOPT=n` makes
-//! every n-th emitted guard exit unconditionally (see [`super::exits`]); with
-//! `make test-tier2` it drives `tests/lib/boot/tier2-deopt.scm`.
 
 use std::process;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};

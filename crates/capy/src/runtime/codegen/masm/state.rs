@@ -1,20 +1,26 @@
 use super::*;
 
+/// Where a values-error header sends a multiple-values return: the
+/// `values_error` stub, as a label inside the interpreter image or as the
+/// absolute address compiled code reaches it by.
+#[derive(Clone, Copy)]
+pub enum ValuesError {
+    Label(Label),
+    Address(usize),
+}
+
 impl Masm {
-    /// Jumps to the multiple-values target of the compiled return address
-    /// in `ra`, or to `slow` for a runtime-owned address or a values-error
-    /// header. `ra` is not the interpreter's return glue: that resumes in
-    /// the caller's bytecode, which only the contexts can emit. Terminal:
-    /// every arm jumps.
+    /// Jumps to the multiple-values target of the return address in `ra`.
+    /// Every return address carries a header with a usable target, the
+    /// runtime's own markers included (their full headers name themselves),
+    /// so there is no slow arm: a full header jumps to its mv return address,
+    /// a compact one to `ra` itself, or to `values_error` when its
+    /// values-error bit is set. Terminal: every arm jumps.
     /// Clobbers `tmp0`/`tmp1`.
-    pub fn emit_mv_jump(&mut self, ra: VReg, tmp0: VReg, tmp1: VReg, slow: Label) {
-        // `toplink` sits at `ra - 16` in both headers, 0
-        // means the runtime owns the address (`underflow`, `subr_ret`, the
-        // exits), which only the slow path handles.
-        let toplink_at = self.asm.mem(ra, sabi::RETURN_ADDRESS_TOPLINK_DISP as i32);
-        // The mode word at `ra - 8` in both: bit 0 set means a compact
-        // header, and then bit 1 is the values-error bit (`sabi::mv_target`
-        // reads the same words).
+    pub fn emit_mv_jump(&mut self, ra: VReg, tmp0: VReg, tmp1: VReg, values_error: ValuesError) {
+        // The mode word at `ra - 8` in both headers: bit 0 set means a
+        // compact header, and then bit 1 is the values-error bit
+        // (`sabi::mv_target` reads the same words).
         let mode_at = self
             .asm
             .mem(ra, sabi::COMPACT_RETURN_ADDRESS_MASK_SIZE_MODE_DISP as i32);
@@ -22,20 +28,73 @@ impl Masm {
         let mv_at = self
             .asm
             .mem(ra, sabi::RETURN_ADDRESS_MV_RETURN_ADDRESS_DISP as i32);
+        let compact = self.label();
+        let error = self.label();
 
         onlineasm!(self.asm;
-            loadq {tmp0}, {toplink_at};
-            bqeq {tmp0}, 0, {slow};
             loadq {tmp0}, {mode_at};
             andq {tmp1}, {tmp0}, {sabi::COMPACT_HEADER_MASK as i64};
-            btqnz {tmp1}, .compact;
+            btqnz {tmp1}, {compact};
             loadq {tmp0}, {mv_at};
             jmp {tmp0};
-            .compact:
+        );
+        self.bind(compact);
+        onlineasm!(self.asm;
             andq {tmp1}, {tmp0}, {sabi::COMPACT_HEADER_VALUES_ERROR_MASK as i64};
-            btqnz {tmp1}, {slow};
+            btqnz {tmp1}, {error};
             jmp {ra};
         );
+        self.bind(error);
+        match values_error {
+            ValuesError::Label(label) => onlineasm!(self.asm; jmp {label};),
+            ValuesError::Address(addr) => onlineasm!(self.asm;
+                move {tmp0}, {addr as i64};
+                jmp {tmp0};
+            ),
+        }
+    }
+
+    /// [`Masm::emit_mv_jump`] split in two: leaves the multiple-values target
+    /// of the return address in `ra` in `target` and falls through, so the
+    /// caller can write the values first. A values-error header yields the
+    /// `values_error` stub as the target. Clobbers `tmp`.
+    pub fn emit_mv_target(
+        &mut self,
+        ra: VReg,
+        target: VReg,
+        tmp: VReg,
+        values_error: ValuesError,
+    ) {
+        let mode_at = self
+            .asm
+            .mem(ra, sabi::COMPACT_RETURN_ADDRESS_MASK_SIZE_MODE_DISP as i32);
+        let mv_at = self
+            .asm
+            .mem(ra, sabi::RETURN_ADDRESS_MV_RETURN_ADDRESS_DISP as i32);
+        let compact = self.label();
+        let error = self.label();
+        let done = self.label();
+
+        onlineasm!(self.asm;
+            loadq {target}, {mode_at};
+            andq {tmp}, {target}, {sabi::COMPACT_HEADER_MASK as i64};
+            btqnz {tmp}, {compact};
+            loadq {target}, {mv_at};
+            jmp {done};
+        );
+        self.bind(compact);
+        onlineasm!(self.asm;
+            andq {tmp}, {target}, {sabi::COMPACT_HEADER_VALUES_ERROR_MASK as i64};
+            btqnz {tmp}, {error};
+            move {target}, {ra};
+            jmp {done};
+        );
+        self.bind(error);
+        match values_error {
+            ValuesError::Label(label) => onlineasm!(self.asm; leap {target}, {label};),
+            ValuesError::Address(addr) => onlineasm!(self.asm; move {target}, {addr as i64};),
+        }
+        self.bind(done);
     }
 
     /// Saves the Scheme state (frame pointer and allocation cursor) into the thread context.

@@ -54,7 +54,12 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
     run_peel(func)
 }
 
+/// The `unroll_all` pass: replicate every loop body, not only the ones the
+/// `unroll` pass picks. Off unless `CAPY_OPT_UNROLL_ALL` is set.
 pub(super) fn run_unroll(func: &mut Func) -> PassOutcome {
+    if !crate::runtime::codegen::jit::config::opt().unroll_all {
+        return PassOutcome::default();
+    }
     run_replicate(func)
 }
 

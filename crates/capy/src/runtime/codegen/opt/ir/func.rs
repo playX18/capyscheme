@@ -1,9 +1,11 @@
 //! Functions: blocks with parameters, the instruction and value arenas, and
 //! dominators.
 
-use std::collections::HashSet;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
-use cranelift_entity::{EntityList, ListPool, PrimaryMap, SecondaryMap, entity_impl};
+use cranelift_entity::{EntityList, EntityRef, ListPool, PrimaryMap, SecondaryMap, entity_impl};
 
 use super::frame_state::{FrameState, FrameStateData};
 use super::inst::{Edge, Inst, InstData, Op, Terminator};
@@ -173,6 +175,15 @@ pub struct Func<'gc> {
     /// call and helper, or under the `fold_guards` policy only after
     /// operations that can fire a watchpoint the unit depends on).
     pub checks_invalid: bool,
+    /// The `CheckNotInvalid` guards that carry the OSR entry's frame. They
+    /// stay whatever the dependencies are. Builder bookkeeping, emptied by
+    /// [`prune_checks`](crate::runtime::codegen::opt::build).
+    pub osr_checks: HashSet<Inst>,
+    /// The guards that follow a write to one statically known variable and
+    /// are needed only if the unit depends on that variable. Every other
+    /// guard is needed when the unit has any dependency. Builder bookkeeping,
+    /// emptied by `prune_checks`.
+    pub cell_checks: HashMap<Inst, crate::runtime::objectmodel::Value<'gc>>,
     /// Loop headers the versioning pass already cloned. The slow (original)
     /// loop keeps its guards, so without this mark the pass would clone it
     /// again on every pipeline round.
@@ -189,6 +200,18 @@ pub struct Func<'gc> {
     /// last compile speculated too often. A speculative hoist whose loop
     /// entry frame is at one of them is not made.
     pub spec_blocked: HashSet<u32>,
+    /// The last dominator tree, with the control-flow signature it was built
+    /// from. See [`Func::dom_tree`].
+    dom_cache: RefCell<Option<DomCache>>,
+    /// A spare buffer for the signature of the current graph, so a lookup
+    /// does not allocate.
+    dom_scratch: Cell<Vec<u32>>,
+}
+
+/// A dominator tree and the control-flow signature it was built from
+struct DomCache {
+    sig: Vec<u32>,
+    tree: Rc<DomTree>,
 }
 
 /// A variable whose value the function folded into constants
@@ -269,11 +292,15 @@ impl<'gc> Func<'gc> {
             deps: Vec::new(),
             class_deps: Vec::new(),
             checks_invalid: false,
+            osr_checks: HashSet::new(),
+            cell_checks: HashMap::new(),
             versioned: HashSet::new(),
             unswitched: HashSet::new(),
             peeled: HashSet::new(),
             unrolled: HashSet::new(),
             spec_blocked: HashSet::new(),
+            dom_cache: RefCell::new(None),
+            dom_scratch: Cell::new(Vec::new()),
         }
     }
 
@@ -363,6 +390,7 @@ impl<'gc> Func<'gc> {
             Terminator::Branch { cond, .. } => vec![*cond],
             Terminator::Switch { value, .. } => vec![*value],
             Terminator::Return(value) => vec![*value],
+            Terminator::ReturnMany { values, .. } => values.clone(),
             Terminator::TailCall { callee, args, .. } => {
                 let mut uses = vec![*callee];
                 uses.extend_from_slice(args.as_slice(&self.pool));
@@ -421,8 +449,55 @@ impl<'gc> Func<'gc> {
         post
     }
 
+    /// The control-flow graph as a flat list of ids: the entry, then each
+    /// block with its successor list. Dominators depend on nothing else, so
+    /// two equal signatures mean two equal trees.
+    fn cfg_signature(&self, out: &mut Vec<u32>) {
+        out.clear();
+        out.push(self.entry.index() as u32);
+        for (block, data) in self.blocks.iter() {
+            out.push(block.index() as u32);
+            match &data.term {
+                None => out.push(u32::MAX),
+                Some(term) => {
+                    let edges = term.edges();
+                    out.push(edges.len() as u32);
+                    out.extend(edges.iter().map(|edge| edge.block.index() as u32));
+                }
+            }
+        }
+    }
+
+    /// The dominator tree of the current control-flow graph. It is cached
+    /// and reused while the graph's signature is unchanged, so passes that
+    /// ask several times per round build it once. Passes may edit the graph
+    /// freely: a changed graph is detected by comparing signatures, never
+    /// trusted from a flag, so a stale tree cannot be returned.
+    pub fn dom_tree(&self) -> Rc<DomTree> {
+        let mut sig = self.dom_scratch.take();
+        self.cfg_signature(&mut sig);
+        let cached = self
+            .dom_cache
+            .borrow()
+            .as_ref()
+            .filter(|cache| cache.sig == sig)
+            .map(|cache| cache.tree.clone());
+        if let Some(tree) = cached {
+            self.dom_scratch.set(sig);
+            return tree;
+        }
+        let tree = Rc::new(self.compute_dom_tree());
+        let stale = self
+            .dom_cache
+            .replace(Some(DomCache { sig, tree: tree.clone() }));
+        if let Some(stale) = stale {
+            self.dom_scratch.set(stale.sig);
+        }
+        tree
+    }
+
     /// Computes dominators with the Cooper–Harvey–Kennedy iterative algorithm.
-    pub fn dom_tree(&self) -> DomTree {
+    fn compute_dom_tree(&self) -> DomTree {
         let rpo = self.reverse_postorder();
         let mut rpo_num: SecondaryMap<Block, u32> = SecondaryMap::with_default(UNREACHABLE);
         for (num, &block) in rpo.iter().enumerate() {

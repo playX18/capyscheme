@@ -79,11 +79,13 @@ impl Display for Cmp {
 
 impl Display for ReturnValues {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            ReturnValues::Error => "values-error",
-            ReturnValues::Ignore => "values-ignore",
-            ReturnValues::Forward => "values-forward",
-        })
+        match self {
+            ReturnValues::Error => f.write_str("values-error"),
+            ReturnValues::Ignore => f.write_str("values-ignore"),
+            ReturnValues::Forward => f.write_str("values-forward"),
+            ReturnValues::Take(count) => write!(f, "values-take{count}"),
+            ReturnValues::TakeRest(count) => write!(f, "values-take{count}+"),
+        }
     }
 }
 
@@ -168,6 +170,9 @@ impl Display for Op {
             Op::Load { field, region } => write!(f, "load[{field}] {region:?}"),
             Op::Store { field, region } => write!(f, "store[{field}] {region:?}"),
             Op::LoadFree { index } => write!(f, "load.free[{index}]"),
+            Op::ReturnedValue(index) => write!(f, "returned[{index}]"),
+            Op::ReturnedCount(skip) => write!(f, "returned.count -{skip}"),
+            Op::ReturnedAddr(index) => write!(f, "returned.addr[{index}]"),
             Op::LoadCell => write!(f, "load.cell"),
             Op::StoreCell => write!(f, "store.cell"),
             Op::StoreFree { index } => write!(f, "store.free[{index}]"),
@@ -369,6 +374,11 @@ fn write_terminator(func: &Func<'_>, f: &mut Formatter<'_>, term: &Terminator) -
             write_edge(func, f, default)
         }
         Terminator::Return(value) => write!(f, "return {value}"),
+        Terminator::ReturnMany { values } => {
+            f.write_str("return-values (")?;
+            write_values(f, values)?;
+            f.write_str(")")
+        }
         Terminator::TailCall {
             callee,
             args,

@@ -568,6 +568,11 @@ fn classify(
                     escape!(format!("tail-call operand in {block}"));
                 }
             }
+            Terminator::ReturnMany { values, .. } => {
+                if values.iter().any(|value| members.contains(value)) {
+                    escape!(format!("returned in {block}"));
+                }
+            }
             Terminator::Jump(_) | Terminator::Deopt { .. } | Terminator::Unreachable => {}
         }
         for edge in term.edges() {
@@ -652,7 +657,8 @@ fn record_frame_version(
 
 fn term_frame(term: &Terminator) -> Option<FrameState> {
     match term {
-        Terminator::TailCall { frame, .. } | Terminator::Deopt { frame } => Some(*frame),
+        Terminator::TailCall { frame, .. }
+        | Terminator::Deopt { frame } => Some(*frame),
         _ => None,
     }
 }

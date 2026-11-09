@@ -162,6 +162,17 @@ fn install_markers(image: &LoadedImage) {
     set_interpreter_enter(addr("interp_enter_cp") as *const u8);
     set_subr_call(addr("subr_call") as *const u8);
     GENERIC_CALL.store(addr("generic_call"), Ordering::Relaxed);
+    // Compiled code decodes every return address's header for a multiple-values
+    // return, with no test for the runtime's own markers: each must carry a
+    // full header whose mv target is itself.
+    for name in ["interp_return", "scheme_exit", "underflow", "subr_ret", "raise_ret"] {
+        let ra = addr(name) as sabi::Ra;
+        // SAFETY: `ra` is the return address of a marker header the image just emitted.
+        debug_assert!(
+            unsafe { !sabi::is_entry_compact(ra) && sabi::rp_header(ra).mv_return_address == ra as usize },
+            "template: marker {name} has no self mv target"
+        );
+    }
     markers::set_markers(&MarkerValues {
         interpreter_return: addr("interp_return"),
         scheme_exit: addr("scheme_exit"),
@@ -266,6 +277,7 @@ fn generate() -> io::Result<(LoadedImage, [[HandlerKind; 256]; 3])> {
             let end = masm.label();
             masm.bind(end);
             masm.define_symbol($name, start, end, SymbolKind::Stub);
+            start
         }};
     }
 
@@ -294,7 +306,7 @@ fn generate() -> io::Result<(LoadedImage, [[HandlerKind; 256]; 3])> {
     }
     stub_plain!("overflow", overflow_path);
     stub_plain!("arity", arity_path);
-    stub_plain!("values_error", values_error_path);
+    let values_error = stub_plain!("values_error", values_error_path);
 
     let interpreter_enter = masm.label();
     masm.bind(interpreter_enter);
@@ -398,6 +410,7 @@ fn generate() -> io::Result<(LoadedImage, [[HandlerKind; 256]; 3])> {
                         op: OpcodeId::$Op,
                         map,
                         interpreter_return,
+                        values_error,
                         bail,
                         paths,
                     };

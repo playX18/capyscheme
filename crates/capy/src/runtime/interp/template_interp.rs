@@ -9,7 +9,7 @@ use onlineasm::{Extern, Label, VReg, onlineasm};
 
 use crate::bytecode::def::{self, OpcodeId};
 use crate::runtime::codegen::jit;
-use crate::runtime::codegen::masm::Masm;
+use crate::runtime::codegen::masm::{Masm, ValuesError};
 use crate::runtime::codegen::operation::{ERROR_REG, RESULT_REG, emit_operation_call};
 use crate::runtime::codegen::stubs;
 use crate::runtime::codegen::template::{
@@ -28,6 +28,8 @@ pub struct InterpreterTemplateContext {
     pub map: Label,
     /// The `interpreter_return`.
     pub interpreter_return: Label,
+    /// The `values_error` stub.
+    pub values_error: Label,
     pub bail: Extern,
     pub paths: SlowPaths,
 }
@@ -210,6 +212,10 @@ impl Flow for InterpreterTemplateContext {
             leap {tmp::T0}, {interpreter_return};
             storep {ra}, {tmp::T0};
         );
+    }
+
+    fn values_error(&self) -> ValuesError {
+        ValuesError::Label(self.values_error)
     }
 
     fn enter_callee(&mut self, masm: &mut Masm) {

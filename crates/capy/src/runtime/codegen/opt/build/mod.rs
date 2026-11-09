@@ -24,10 +24,10 @@ use crate::runtime::codegen::opt::ir::frame_state::{
     CallSite, FrameState, FrameStateData, ReturnedValues,
 };
 use crate::runtime::codegen::opt::ir::func::{
-    Block, CaseClause, Func, GlobalDep, OsrEntry, RestInfo, Value, ValueDef,
+    Block, CaseClause, Func, OsrEntry, RestInfo, Value, ValueDef,
 };
 use crate::runtime::codegen::opt::ir::inst::{
-    Cmp, Constant, Edge, Effects, Helper, MemoryRegion, Op, PrimRef, Repr, ReturnValues,
+    Cmp, Constant, Edge, Effects, Helper, Inst, MemoryRegion, Op, PrimRef, Repr, ReturnValues,
     SwitchDensity, Terminator,
 };
 use crate::runtime::codegen::opt::ir::types::{ClassRef, CodeRef, CodeSource, Type};
@@ -64,8 +64,7 @@ pub fn build<'gc>(
     let root_value = SchemeValue::from(code_block);
     // The requesting closure's free variables, when it is an instance of
     // this code block. A global read through one of these cells can fold
-    // (see `fold_free_variable`); every folded read still checks at runtime
-    // that the cell it came through is the cell that was folded.
+    // (see `fold_free_variable`)
     let free_cells: Vec<SchemeValue<'gc>> = match root_closure {
         Some(closure)
             if SchemeValue::from(crate::runtime::objectmodel::proc::Closure::code_block(
@@ -80,46 +79,25 @@ pub fn build<'gc>(
     };
     let label = crate::runtime::objectmodel::proc::procedure_label(code_block);
     let inline = || inline::InlineCx::root(true, true, root_value);
-    let func = Builder::new(
+
+    let mut func = Builder::new(
         mutation,
         code_block.frame_size,
         &buffer,
         &blocked,
         true,
-        false,
         true,
-        false,
-        &[],
+        true,
+        true,
         inline(),
         true,
         &free_cells,
         &label,
     )?
     .run()?;
-
-    let func = if func.deps.is_empty() && func.class_deps.is_empty() {
-        func
-    } else {
-        let deps = func.deps.clone();
-        Builder::new(
-            mutation,
-            code_block.frame_size,
-            &buffer,
-            &blocked,
-            true,
-            true,
-            true,
-            true,
-            &deps,
-            inline(),
-            true,
-            &free_cells,
-            &label,
-        )?
-        .run()?
-    };
-    let mut func = func;
+    prune_checks(&mut func);
     func.spec_blocked = code_block.blocked_pcs().into_iter().collect();
+
     if config.dump.iter().any(|stage| stage == "build") {
         dump(&func, &label);
     }
@@ -127,7 +105,42 @@ pub fn build<'gc>(
         verify(&func)
             .map_err(|errors| format!("builder produced invalid IR: {}", errors.join("; ")))?;
     }
+
     Ok(func)
+}
+
+fn prune_checks(func: &mut Func) {
+    let no_deps = func.deps.is_empty() && func.class_deps.is_empty();
+    let osr_checks = std::mem::take(&mut func.osr_checks);
+    let cell_checks = std::mem::take(&mut func.cell_checks);
+    let mut dead = HashSet::new();
+    for data in func.blocks.values() {
+        for &inst in &data.insts {
+            if func.insts[inst].op != Op::CheckNotInvalid || osr_checks.contains(&inst) {
+                continue;
+            }
+            let needed = !no_deps
+                && cell_checks
+                    .get(&inst)
+                    .is_none_or(|cell| func.deps.iter().any(|dep| dep.variable == *cell));
+            if !needed {
+                dead.insert(inst);
+            }
+        }
+    }
+    if dead.is_empty() {
+        return;
+    }
+    for block in func.blocks.keys().collect::<Vec<_>>() {
+        func.blocks[block].insts.retain(|inst| !dead.contains(inst));
+    }
+    // A frame no instruction names would still count as a use of its
+    // registers, which keeps their values from being scalar replaced.
+    for inst in dead {
+        if let Some(frame) = func.insts[inst].frame {
+            func.frames[frame].registers.clear();
+        }
+    }
 }
 
 fn dump(func: &Func, label: &str) {
@@ -163,6 +176,29 @@ fn root() -> CodeRef {
 /// the length word.
 fn env_slot_word(index: u32) -> u32 {
     (offset_of!(EnvRecord<'static>, slots) / size_of::<usize>()) as u32 + index
+}
+
+/// What an instruction may invalidate, which decides its `CheckNotInvalid`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Fire<'gc> {
+    /// Nothing: no check.
+    No,
+    /// Any dependency of the unit: the check stays if the unit has one.
+    Any,
+    /// The dependency on this variable only: the check stays if the unit
+    /// depends on it.
+    Cell(SchemeValue<'gc>),
+}
+
+impl<'gc> Fire<'gc> {
+    /// What both `self` and `other` may invalidate.
+    fn join(self, other: Fire<'gc>) -> Fire<'gc> {
+        match (self, other) {
+            (Fire::No, other) | (other, Fire::No) => other,
+            (Fire::Cell(a), Fire::Cell(b)) if a == b => Fire::Cell(a),
+            _ => Fire::Any,
+        }
+    }
 }
 
 /// The arithmetic of a speculated add, subtract or multiply.
@@ -325,6 +361,19 @@ struct Builder<'s, 'gc> {
     /// The multiple-value entry of the last call, when it is followed by a
     /// `return_point_forward`.
     pending_mv: Option<PendingMv>,
+    /// The entry and count of a call whose `ReturnValues::Take` return left
+    /// its values in `r[base + 2..]`, for the `return_point_values` there.
+    mv_taken: Option<(usize, u32)>,
+    /// What a `ReturnValues::TakeRest` call read out of the callee frame, for
+    /// the `return_point_values_rest` entry that follows: the extra count,
+    /// and the list of the extras when the entry's `values_rest` wants one.
+    mv_rest: Option<(Value, Option<Value>)>,
+    /// The list of the extras, between the rest entry and its `values_rest`.
+    rest_list: Option<Value>,
+    /// A `CheckNotInvalid` owed to the instructions that last returned
+    /// `Flow::Next` but could not emit it yet, because a frame resuming there
+    /// would miss the extras that only the `values-rest` after it stores.
+    check_owed: Fire<'gc>,
     /// Blocks no IR edge reaches: the entry after a `return_point_forward`
     /// that exits (only a multiple-value return reaches it), and the forward
     /// of a call that deopts because its entry is blocked. They are not part
@@ -349,14 +398,11 @@ struct Builder<'s, 'gc> {
     /// Whether a check is emitted only after an operation that can fire a
     /// watchpoint this unit depends on (the `fold_guards` policy).
     fold_guards: bool,
-    /// The dependencies found by the first build, complete for the root
-    /// unit. Empty (with `deps_known` false) for a callee build, where a
-    /// write could touch a dependency of the caller that this build does not
-    /// name.
-    deps: &'s [GlobalDep<'gc>],
-    /// Whether `deps` is the root unit's complete dependency list, so a
-    /// statically known write target can be checked against it.
-    deps_known: bool,
+    /// Whether a guard after a write to a statically known variable is
+    /// recorded as needed only if the unit depends on that variable. False
+    /// for a callee build, where the write could touch a dependency of the
+    /// caller that this build does not name.
+    track_cells: bool,
     /// The inlining this build is part of.
     inline: inline::InlineCx<'gc>,
     /// Whether the function may be entered in the middle of a loop. A
@@ -419,8 +465,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         fold: bool,
         check_invalid: bool,
         fold_guards: bool,
-        deps_known: bool,
-        deps: &'s [GlobalDep<'gc>],
+        track_cells: bool,
         inline: inline::InlineCx<'gc>,
         osr: bool,
         free_cells: &'s [SchemeValue<'gc>],
@@ -498,13 +543,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 if blocked(entry) {
                     if let Some(index) = live.block_at(block.start) {
                         mv_only.insert(index);
-                    }
-                }
-                if let (Some(target), Some(shape)) =
-                    (live.block_at(entry), forward_entry(code, entry))
-                {
-                    if shape.nvals != 1 {
-                        mv_only.insert(target);
                     }
                 }
             }
@@ -697,6 +735,10 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             rest_reg,
             pending_return: None,
             pending_mv: None,
+            mv_taken: None,
+            mv_rest: None,
+            rest_list: None,
+            check_owed: Fire::No,
             mv_only,
             cur: entry,
             state: Vec::new(),
@@ -706,8 +748,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             fold,
             check_invalid,
             fold_guards,
-            deps,
-            deps_known,
+            track_cells,
             inline,
             osr,
             free_cells,
@@ -835,6 +876,9 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 });
                 self.func
                     .push_inst(osr, Op::CheckNotInvalid, &[], None, Some(frame));
+                if let Some(&check) = self.func.blocks[osr].insts.last() {
+                    self.func.osr_checks.insert(check);
+                }
             }
             let jump = self.func.edge(header_ir, &osr_params);
             self.func.set_terminator(osr, Terminator::Jump(jump));
@@ -933,7 +977,17 @@ impl<'s, 'gc> Builder<'s, 'gc> {
     /// to a dependency (see [`Self::may_fire_watchpoint`]).
     fn lower(&mut self, ins: &Instruction, pc: usize, len: usize) -> Result<Flow, String> {
         let flow = self.lower_one(ins, pc, len)?;
-        if self.check_invalid && flow == Flow::Next && self.may_fire_watchpoint(ins) {
+        let owed = std::mem::replace(&mut self.check_owed, Fire::No);
+        if flow == Flow::Next && self.rest_list.is_some() {
+            // A rest entry's extras are a list that reaches a register only
+            // at the `values-rest` after it. A frame resuming at that
+            // instruction would rebuild without them, so the check waits for
+            // it and resumes after, with the list in place.
+            self.check_owed = owed.join(self.fire(ins));
+            return Ok(flow);
+        }
+        let fire = owed.join(self.fire(ins));
+        if self.check_invalid && flow == Flow::Next && fire != Fire::No {
             // Resume after the instruction, with its result in place. A loop
             // hint resumes at itself, which only repeats a poll.
             let at = if matches!(ins, Instruction::OpLoopHint(_)) {
@@ -942,57 +996,88 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 pc + len
             };
             // With the guard policy on, two checks with nothing between them
-            // are one check: the second cannot observe a new value.
-            if at < self.code.len() && !(self.fold_guards && self.last_inst_is_check()) {
-                let frame = self.frame(at, at)?;
-                self.effect_op(Op::CheckNotInvalid, &[], Some(frame));
+            // are one check: the second cannot observe a new value. The
+            // surviving check must then cover both of them.
+            if at < self.code.len() {
+                match self.last_check() {
+                    Some(last) if self.fold_guards => self.widen_check(last, fire),
+                    _ => {
+                        let frame = self.frame(at, at)?;
+                        self.effect_op(Op::CheckNotInvalid, &[], Some(frame));
+                        if let (Fire::Cell(cell), true, Some(&check)) = (
+                            fire,
+                            self.track_cells,
+                            self.func.blocks[self.cur].insts.last(),
+                        ) {
+                            self.func.cell_checks.insert(check, cell);
+                        }
+                    }
+                }
             }
         }
         Ok(flow)
     }
 
-    /// Whether the last instruction appended to the current block is a
+    /// The last instruction appended to the current block, when it is a
     /// `CheckNotInvalid`.
-    fn last_inst_is_check(&self) -> bool {
+    fn last_check(&self) -> Option<Inst> {
         self.func.blocks[self.cur]
             .insts
             .last()
-            .is_some_and(|&inst| self.func.insts[inst].op == Op::CheckNotInvalid)
+            .copied()
+            .filter(|&inst| self.func.insts[inst].op == Op::CheckNotInvalid)
     }
 
-    /// Whether `ins` may run code that invalidates the unit.
-    fn may_fire_watchpoint(&self, ins: &Instruction) -> bool {
-        if !self.fold_guards {
-            return self.runs_other_code(ins);
+    /// Makes the existing check `check` also cover a `fire` that follows it.
+    fn widen_check(&mut self, check: Inst, fire: Fire<'gc>) {
+        let Some(&cell) = self.func.cell_checks.get(&check) else {
+            // Already needed whenever the unit has any dependency.
+            return;
+        };
+        if fire != Fire::Cell(cell) {
+            self.func.cell_checks.remove(&check);
         }
+    }
+
+    /// What `ins` may invalidate: nothing, the unit through any dependency, or
+    /// only the unit's dependency on one variable.
+    fn fire(&self, ins: &Instruction) -> Fire<'gc> {
+        if !self.fold_guards {
+            return if self.runs_other_code(ins) {
+                Fire::Any
+            } else {
+                Fire::No
+            };
+        }
+        let any = |fires: bool| if fires { Fire::Any } else { Fire::No };
         match ins {
             // A Scheme call ran arbitrary compiled or interpreted code, which
             // may write any watched global.
-            Instruction::OpReturnPoint(_) | Instruction::OpReturnPointValues(_) => true,
+            Instruction::OpReturnPoint(_) | Instruction::OpReturnPointValues(_) => Fire::Any,
             // A yield point lets another thread run; it may write a watched
             // global before this thread resumes.
-            Instruction::OpLoopHint(_) => true,
+            Instruction::OpLoopHint(_) => Fire::Any,
             // A direct write fires only the written variable's set.
-            Instruction::OpVariableSet(op) => self.variable_may_be_dep(op.var.0),
+            Instruction::OpVariableSet(op) => self.written_variable(op.var.0),
             // A cache cell is a `Variable`; `cell-set!` now fires its set too.
-            Instruction::OpCellSet(op) => self.constant_cell_may_be_dep(op.constant.0),
+            Instruction::OpCellSet(op) => self.written_constant_cell(op.constant.0),
             // A call returned into the variadic multiple-value entry; the
             // callee could have invalidated the unit, and the continuation
             // may use folded values.
-            Instruction::OpReturnPointValuesRest(_) => true,
-            Instruction::OpCallPrimitive0(op) => Self::prim_may_fire(op.primitive.0),
-            Instruction::OpCallPrimitive1(op) => Self::prim_may_fire(op.primitive.0),
+            Instruction::OpReturnPointValuesRest(_) => Fire::Any,
+            Instruction::OpCallPrimitive0(op) => any(Self::prim_may_fire(op.primitive.0)),
+            Instruction::OpCallPrimitive1(op) => any(Self::prim_may_fire(op.primitive.0)),
             // `variable-set!` takes the cell and the value; a statically
             // known cell that is not a dependency cannot invalidate the unit.
             Instruction::OpCallPrimitive2(op)
                 if Primitive::from_id(op.primitive.0 as u16) == Some(Primitive::VariableSet) =>
             {
-                self.variable_may_be_dep(op.a.0)
+                self.written_variable(op.a.0)
             }
-            Instruction::OpCallPrimitive2(op) => Self::prim_may_fire(op.primitive.0),
-            Instruction::OpCallPrimitive3(op) => Self::prim_may_fire(op.primitive.0),
-            Instruction::OpCallPrimitiveN(op) => Self::prim_may_fire(op.primitive.0),
-            _ => false,
+            Instruction::OpCallPrimitive2(op) => any(Self::prim_may_fire(op.primitive.0)),
+            Instruction::OpCallPrimitive3(op) => any(Self::prim_may_fire(op.primitive.0)),
+            Instruction::OpCallPrimitiveN(op) => any(Self::prim_may_fire(op.primitive.0)),
+            _ => Fire::No,
         }
     }
 
@@ -1004,38 +1089,36 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         Primitive::from_id(prim as u16) == Some(Primitive::VariableSet)
     }
 
-    /// Whether the pool cell `index` may be one of the unit's folded
-    /// variables. `cell-set!` targets a constant, so the test is exact when
-    /// the dependency list is known.
-    fn constant_cell_may_be_dep(&self, index: u32) -> bool {
-        if !self.deps_known {
-            return true;
+    /// What a write through the pool cell `index` may invalidate.
+    /// `cell-set!` targets a constant, so the variable is exact when the
+    /// build tracks cells.
+    fn written_constant_cell(&self, index: u32) -> Fire<'gc> {
+        if !self.track_cells {
+            return Fire::Any;
         }
         let cell = self.buffer.constant(index as usize);
         if cell.is::<crate::runtime::variable::Variable>() {
-            self.deps.iter().any(|dep| dep.variable == cell)
+            Fire::Cell(cell)
         } else {
-            true
+            Fire::Any
         }
     }
 
-    /// Whether the cell in register `reg` may be one of the unit's folded
-    /// variables. A statically known cell that is not a dependency cannot
-    /// fire a reachable watchpoint; an unknown one might.
-    fn variable_may_be_dep(&self, reg: u32) -> bool {
+    /// What a write through the cell in register `reg` may invalidate. A
+    /// statically known cell can fire only its own watchpoint; an unknown
+    /// one might fire any.
+    fn written_variable(&self, reg: u32) -> Fire<'gc> {
         // A callee build does not carry the caller's dependencies, so it
         // must keep the check.
-        if !self.deps_known {
-            return true;
+        if !self.track_cells {
+            return Fire::Any;
         }
         let Ok(var) = self.reg(reg) else {
-            return true;
+            return Fire::Any;
         };
         match self.pool_constant(var) {
-            Some(var) if var.is::<crate::runtime::variable::Variable>() => {
-                self.deps.iter().any(|dep| dep.variable == var)
-            }
-            _ => true,
+            Some(var) if var.is::<crate::runtime::variable::Variable>() => Fire::Cell(var),
+            _ => Fire::Any,
         }
     }
 
@@ -1359,22 +1442,13 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             Instruction::OpReturnPointValues(op) => {
                 // Reached only when the entry takes the one value that
                 // continued from the forward; the call put it in `r[base+2]`.
+                // A call that took several values left them in `r[base+2..]`.
                 match self.pending_return.take() {
-                    Some(at) if at == pc && op.nvals.0 == 1 => Ok(Flow::Next),
-                    _ => {
-                        Err(self
-                            .unsupported(ins, "is a multiple-value entry no call continues into"))
-                    }
-                }
-            }
-            Instruction::OpReturnPointValuesRest(op) => {
-                // Reached only when one value continued from the forward. The
-                // count of extra values is 0, boxed into the caller's `frame`
-                // register, as baseline's `return-point-values-rest` writes it.
-                match self.pending_return.take() {
-                    Some(at) if at == pc && op.nvals.0 == 1 => {
-                        let zero = self.bits(SchemeValue::from_i32(0).bits());
-                        self.set(op.frame.0, zero)?;
+                    Some(at)
+                        if at == pc
+                            && (op.nvals.0 == 1
+                                || self.mv_taken.take() == Some((pc, op.nvals.0))) =>
+                    {
                         Ok(Flow::Next)
                     }
                     _ => {
@@ -1383,11 +1457,43 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                     }
                 }
             }
-            Instruction::OpReturnValues(_) => {
-                // Baseline returns the values in `r2..` (live here), so the
-                // instruction runs there
-                let frame = self.frame(pc, pc)?;
-                self.terminate(Terminator::Deopt { frame });
+            Instruction::OpReturnPointValuesRest(op) => {
+                // Reached when a call took the callee's values: the fixed
+                // ones are in `r[base + 2..]`, the extra count goes into the
+                // caller's `frame` register, as baseline's
+                // `return-point-values-rest` writes it.
+                match self.pending_return.take() {
+                    Some(at) if at == pc && self.mv_taken.take() == Some((pc, op.nvals.0)) => {
+                        let (count, list) = self
+                            .mv_rest
+                            .take()
+                            .ok_or_else(|| self.unsupported(ins, "has no extra count"))?;
+                        self.set(op.frame.0, count)?;
+                        self.rest_list = list;
+                        Ok(Flow::Next)
+                    }
+                    _ => {
+                        Err(self
+                            .unsupported(ins, "is a multiple-value entry no call continues into"))
+                    }
+                }
+            }
+            Instruction::OpReturnValues(op) => {
+                // The values are `r2..`, live here. One value is a plain
+                // return. Any other count leaves through the caller's
+                // multiple-values target; a return address the runtime owns
+                // exits to baseline, which runs the instruction from `pc`.
+                let count = op.count.0;
+                if count == 1 {
+                    let value = self.reg(2)?;
+                    self.terminate(Terminator::Return(value));
+                    return Ok(Flow::Terminated);
+                }
+                let mut values = Vec::with_capacity(count as usize);
+                for i in 0..count {
+                    values.push(self.reg(2 + i)?);
+                }
+                self.terminate(Terminator::ReturnMany { values });
                 Ok(Flow::Terminated)
             }
             Instruction::OpRuntimeProcedure(op) => {
@@ -1798,12 +1904,18 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 self.set(op.dst.0, list)?;
                 Ok(Flow::Next)
             }
-            // The values of a `return_point_values_rest` entry, which only
-            // baseline runs (the entry exits there).
-            Instruction::OpValuesRest(_) => Err(self.unsupported(
-                ins,
-                "follows a multiple-value entry that Tier 2 does not run",
-            )),
+            // The extras of a `return_point_values_rest` entry, which the
+            // call read out of the callee frame (`lower_forward_call`).
+            Instruction::OpValuesRest(op) => {
+                match self.rest_list.take() {
+                    Some(list) => {
+                        self.set(op.base.0, list)?;
+                        Ok(Flow::Next)
+                    }
+                    None => Err(self
+                        .unsupported(ins, "follows no multiple-value entry that read its extras")),
+                }
+            }
         }
     }
 
@@ -1936,8 +2048,9 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 argc,
                 (values, call_frame),
                 false,
+                false,
             )? {
-                self.set(dst, result)?;
+                self.set(dst, result[0])?;
                 self.pending_return = Some(next);
                 return Ok(Flow::Next);
             }
@@ -2006,6 +2119,33 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         if first_value as usize >= self.live.frame_size() {
             return Err(self.unsupported(ins, "has no frame slot for its first returned value"));
         }
+
+        let mode = if shape.rest {
+            ReturnValues::TakeRest(shape.nvals)
+        } else if shape.nvals != 1 {
+            ReturnValues::Take(shape.nvals)
+        } else {
+            ReturnValues::Forward
+        };
+        let taking = mode != ReturnValues::Forward;
+        if taking && (first_value + shape.nvals) as usize > self.live.frame_size() {
+            return Err(self.unsupported(ins, "has no frame slots for its returned values"));
+        }
+
+        let wants_list = shape.rest && {
+            let entry_len = Instruction::decode_slice(self.code, mv_pc).map_or(0, |(_, _, n)| n);
+            match Instruction::decode_slice(self.code, mv_pc + entry_len) {
+                Some((Instruction::OpValuesRest(op), _, _)) if op.base.0 == base => {
+                    if op.from.0 != shape.nvals {
+                        return Err(
+                            self.unsupported(ins, "has extras that start past its fixed values")
+                        );
+                    }
+                    true
+                }
+                _ => false,
+            }
+        };
         let point_block = self
             .live
             .block_at(next)
@@ -2013,7 +2153,9 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         if self.param_regs[point_block].is_some() {
             return Err(self.unsupported(ins, "return point has several predecessors"));
         }
-        if !self_call {
+        // The specialized paths below return exactly one value, which an
+        // entry taking another count rejects, so they leave it to the call.
+        if !self_call && !taking {
             let site = ResultSite::Forward {
                 first_value,
                 mv_pc,
@@ -2060,9 +2202,11 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 argc,
                 (ReturnValues::Forward, call_frame),
                 false,
+                false,
             )?;
             if let Some(result) = inlined {
                 // One value returns to the forward, and the body returns one.
+                let result = result[0];
                 self.set(first_value, result)?;
                 self.pending_return = Some(next);
                 self.pending_mv = Some(PendingMv {
@@ -2071,6 +2215,43 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                     result,
                     continues: shape.nvals == 1,
                 });
+                return Ok(Flow::Next);
+            }
+        }
+        if !self_call && taking {
+            // The body returns the entry's values to a block of their own.
+            let call_frame = self.frame(mv_pc, next)?;
+            self.func.frames[call_frame].returned = Some(ReturnedValues { base, count: None });
+            let inlined = self.try_inline(
+                pc,
+                next,
+                callee_reg,
+                first_arg,
+                argc,
+                (mode, call_frame),
+                wants_list,
+                false,
+            )?;
+            if let Some(results) = inlined {
+                let count = shape.nvals as usize;
+                for (i, &value) in results.iter().take(count).enumerate() {
+                    self.set(first_value + i as u32, value)?;
+                }
+                if shape.rest {
+                    self.mv_rest = Some((results[count], wants_list.then(|| results[count + 1])));
+                }
+                let result = match results.first() {
+                    Some(&value) if count > 0 => value,
+                    _ => self.undef(),
+                };
+                self.pending_return = Some(next);
+                self.pending_mv = Some(PendingMv {
+                    mv_pc,
+                    base,
+                    result,
+                    continues: true,
+                });
+                self.mv_taken = Some((mv_pc, shape.nvals));
                 return Ok(Flow::Next);
             }
         }
@@ -2093,14 +2274,48 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         };
         calls::call(self_call || direct.is_some());
         let op = if self_call {
-            Op::CallKnown(root(), ReturnValues::Forward)
+            Op::CallKnown(root(), mode)
         } else if let Some((code, checked)) = direct {
             operands[0] = checked;
-            Op::CallKnown(code, ReturnValues::Forward)
+            Op::CallKnown(code, mode)
         } else {
-            Op::CallGeneric(ReturnValues::Forward)
+            Op::CallGeneric(mode)
         };
         let result = self.value_op(op, &operands, Type::Any, Some(frame));
+        if taking {
+            // The values are in the callee frame, read before anything else
+            // can reuse it; the entry finds them in `r[base + 2..]`.
+            let count = shape.nvals;
+            for i in 0..count {
+                let value = self.value_op(Op::ReturnedValue(i), &[result], Type::Any, None);
+                self.set(first_value + i, value)?;
+            }
+            if shape.rest {
+                let extra = self.value_op(Op::ReturnedCount(count), &[result], Type::Int32, None);
+                let list = if wants_list {
+                    let from = self.value_op(Op::ReturnedAddr(count), &[result], Type::Int64, None);
+                    let list = self.value_op(
+                        Op::CallOp(Helper::ValuesRest.helper_ref()),
+                        &[from, extra],
+                        Type::Any,
+                        Some(frame),
+                    );
+                    Some(list)
+                } else {
+                    None
+                };
+                self.mv_rest = Some((extra, list));
+            }
+            self.pending_return = Some(next);
+            self.pending_mv = Some(PendingMv {
+                mv_pc,
+                base,
+                result,
+                continues: true,
+            });
+            self.mv_taken = Some((mv_pc, count));
+            return Ok(Flow::Next);
+        }
         self.set(first_value, result)?;
         self.pending_return = Some(next);
         self.pending_mv = Some(PendingMv {

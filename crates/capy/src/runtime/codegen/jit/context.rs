@@ -32,7 +32,7 @@ use super::super::lazy::Lazies;
 use super::super::lazy::call::CallSite;
 use super::super::lazy::edge::{EdgeKind, emit_hit_block};
 use super::super::lazy::slot::SlotSite;
-use super::super::masm::Masm;
+use super::super::masm::{Masm, ValuesError};
 #[cfg(target_arch = "aarch64")]
 use super::super::reloc::{Reloc, masm_move_patchable};
 use super::super::stubs;
@@ -400,32 +400,6 @@ impl<'e, T: Targets, S: SpecSource> CompiledContext<'e, T, S> {
         self.em.edge_at(masm, edge, EdgeKind::Indirect, site);
     }
 
-    /// Continue in the interpreter at `PC`.
-    fn dispatch_interpreter(masm: &mut Masm) {
-        let (t5, t7, pc) = (onlineasm::regs::t5, onlineasm::regs::t7, regs::PC);
-        let slot = masm.assembler().mem_indexed(t7, t5, 8, 0);
-        onlineasm!(*masm.assembler();
-            loadb {t5}, [{pc}];
-            move {t7}, {template_interpreter().map as i64};
-            jmp {slot};
-        );
-    }
-
-    /// Resume an interpreted caller inline at the bytecode return point in
-    /// `fp[-1]`, any other return address goes to `slow` in `tmp::T0`.
-    fn resume_interpreted(masm: &mut Masm, slow: Label) {
-        let (sfp, pc) = (regs::SFP, regs::PC);
-        let ra = masm.assembler().mem(sfp, 0);
-        let resume = masm.assembler().mem(sfp, -8);
-        onlineasm!(*masm.assembler();
-            loadq {tmp::T0}, {ra};
-            move {tmp::T1}, {template_interpreter().interpreter_return as i64};
-            bqneq {tmp::T0}, {tmp::T1}, {slow};
-            loadp {pc}, {resume};
-        );
-        Self::dispatch_interpreter(masm);
-    }
-
     /// The aux pool of the procedure under compile.
     fn switch_pool(&self) -> *const u32 {
         // SAFETY: as in `compile`: `constant_pointer - 16` is the pool pointer of a live
@@ -762,13 +736,17 @@ impl<T: Targets, S: SpecSource> Flow for CompiledContext<'_, T, S> {
         onlineasm!(*masm.assembler(); jmp {ra};);
     }
 
-    fn resume_caller_mv(&mut self, masm: &mut Masm, slow: Label) {
-        // Multiple values must tell the callers apart: a compiled one
-        // resumes at its `%mv-jump` target, not its return address.
-        let compiled = masm.label();
-        Self::resume_interpreted(masm, compiled);
-        masm.bind(compiled);
-        masm.emit_mv_jump(tmp::T0, tmp::T1, tmp::T2, slow);
+    fn values_error(&self) -> ValuesError {
+        ValuesError::Address(template_interpreter().values_error)
+    }
+
+    fn resume_caller_mv(&mut self, masm: &mut Masm) {
+        // Compiled callers take the header path for every return address:
+        // the interpreter's glue names itself as its mv target, so there is
+        // no interpreter test to make first.
+        let ra = masm.assembler().mem(regs::SFP, 0);
+        onlineasm!(*masm.assembler(); loadq {tmp::T0}, {ra};);
+        masm.emit_mv_jump(tmp::T0, tmp::T1, tmp::T2, self.values_error());
     }
 
     fn reload_code(&mut self, masm: &mut Masm) {

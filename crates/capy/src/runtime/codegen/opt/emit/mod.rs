@@ -50,7 +50,9 @@ use crate::runtime::codegen::gc::alloc::AllocSize;
 use crate::runtime::codegen::gc::{GcCodegen, header_word};
 use crate::runtime::codegen::jit::config::template_interpreter;
 use crate::runtime::codegen::jit::entry::emit_enter_callee;
-use crate::runtime::codegen::masm::{HeaderTarget, Masm, RuntimeExtern, TOPLINK_TO_IMAGE_START};
+use crate::runtime::codegen::masm::{
+    HeaderTarget, Masm, RuntimeExtern, TOPLINK_TO_IMAGE_START, ValuesError,
+};
 use crate::runtime::codegen::operation::{
     ERROR_REG, OpArg, OpContinue, OpResult, OpTarget, OperationCall, emit_operation_call,
 };
@@ -69,7 +71,7 @@ use super::ir::inst::{Cmp, Constant, HelperRef, PrimRef, ReturnValues, SwitchDen
 use super::ir::types::{ClassRef, CodeRef};
 use super::lir::{
     AllocLayout, CallTarget, DeoptExit, FloatOp, IntOp, LBlock, LEdge, LirFunc, LirInst, LirTerm,
-    NumberStoreKind, RegClass, Role, SafePoint, Test, VReg, WideShiftOp,
+    NumberStoreKind, RegClass, ReturnedKind, Role, SafePoint, Test, VReg, WideShiftOp,
 };
 use super::regalloc::{Allocation, Loc, Move, PhysReg, RegFile, Scratch};
 
@@ -91,6 +93,7 @@ const HELPERS: &[RuntimeExtern] = &[
     RuntimeExtern::OptGenericSlotPut,
     RuntimeExtern::OptGenericMethod,
     RuntimeExtern::OptStringSet,
+    RuntimeExtern::OptValuesRest,
 ];
 
 /// The `(loop, switch)` block alignment in bytes from `CAPY_OPT_ALIGN`.
@@ -504,11 +507,11 @@ impl<'a> Emitter<'a> {
     }
 
     fn use_pos(&self) -> u32 {
-        2 * self.g
+        super::regalloc::pos::early(self.g)
     }
 
     fn def_pos(&self) -> u32 {
-        2 * self.g + 1
+        super::regalloc::pos::late(self.g)
     }
 
     /// The machine register of an allocator register, which must be a GPR.
@@ -778,9 +781,26 @@ impl<'a> Emitter<'a> {
     /// wrote. Reordering the list as if it were a parallel move changes the
     /// values read, and it can loop forever when a cycle runs through the
     /// scratch register.
-    fn sequence(&mut self, moves: &[Move]) -> Result<(), String> {
+    fn sequence(&mut self, moves: &[Move], consts: &[Constant]) -> Result<(), String> {
         for m in moves {
-            if m.src != m.dst {
+            if let Some(i) = m.konst {
+                // A reload of a constant: rebuild it from its immediate.
+                let Loc::Reg(p) = m.dst else {
+                    return Err("a constant is rebuilt into a slot".to_string());
+                };
+                let reg = self.gpr_of(p)?;
+                let bits = match consts[i as usize] {
+                    Constant::Int32(v) => v as i64,
+                    Constant::Int64(v) => v,
+                    Constant::Bits(b) => b as i64,
+                    _ => return Err("an unsupported constant is rebuilt".to_string()),
+                };
+                if i32::try_from(bits).is_ok() {
+                    onlineasm!(*self.asm(); move {reg}, {bits};);
+                } else {
+                    self.const_pool_load(reg, bits as u64);
+                }
+            } else if m.src != m.dst {
                 self.move_loc(m.src, m.dst)?;
             }
         }
@@ -973,7 +993,7 @@ impl<'a> Emitter<'a> {
             // Load the union of the clauses' frame registers; the entry
             // passes only this clause's subset on.
             let params = self.func.blocks[self.func.entry].params.clone();
-            let base = 2 * self.alloc.base[self.func.entry];
+            let base = super::regalloc::pos::pre(self.alloc.base[self.func.entry]);
             for (i, &reg) in self.entry_regs[..frame_regs].iter().enumerate() {
                 let from = self.masm.assembler().mem(SFP, 8 * reg as i32);
                 match self.loc(params[i], base)? {
@@ -1073,7 +1093,7 @@ impl<'a> Emitter<'a> {
         if params.len() != expected {
             return Err("entry parameters and their bytecode registers differ".to_string());
         }
-        let base = 2 * self.alloc.base[entry_block];
+        let base = super::regalloc::pos::pre(self.alloc.base[entry_block]);
         // The extras are still in the incoming frame, where the parameter
         // loads below may write spill slots, so collect them first.
         let mut rest_param = None;
@@ -1467,7 +1487,7 @@ impl<'a> Emitter<'a> {
             for (k, inst) in data.insts.iter().enumerate() {
                 self.g = alloc.index(b, k as u32);
                 self.mark();
-                self.sequence(alloc.moves_before(b, k as u32))?;
+                self.sequence(alloc.moves_before(b, k as u32), &alloc.consts)?;
                 if self.fused.is_some() && k + 1 == n {
                     continue;
                 }
@@ -1479,7 +1499,7 @@ impl<'a> Emitter<'a> {
                 .term
                 .as_ref()
                 .ok_or_else(|| format!("{b} has no terminator"))?;
-            self.sequence(alloc.moves_before(b, n as u32))?;
+            self.sequence(alloc.moves_before(b, n as u32), &alloc.consts)?;
             self.term(term)?;
         }
         Ok(())
@@ -2568,6 +2588,27 @@ impl<'a> Emitter<'a> {
                 let mem = self.masm.assembler().mem(c, disp);
                 onlineasm!(*self.asm(); storeq {mem}, {s};);
             }
+            LirInst::LoadReturned { dst, index, kind } => {
+                // The call popped its frame, so the callee's values sit
+                // above this frame's last word, at `fp[2 + index]` of it.
+                let t = self.write(*dst)?;
+                let disp = 8 * self.frame_words as i32 + 16 + 8 * *index as i32;
+                match kind {
+                    ReturnedKind::Value => {
+                        let mem = self.masm.assembler().mem(SFP, disp);
+                        onlineasm!(*self.asm(); loadq {t.reg}, {mem};);
+                    }
+                    ReturnedKind::Addr => {
+                        let mem = self.masm.assembler().mem(SFP, disp);
+                        onlineasm!(*self.asm(); leap {t.reg}, {mem};);
+                    }
+                    ReturnedKind::Count => {
+                        let skip = i64::from(*index);
+                        onlineasm!(*self.asm(); subp {t.reg}, {AC}, {skip};);
+                    }
+                }
+                self.commit(t);
+            }
             LirInst::LoadCell { dst, cell } => {
                 let c = self.read(*cell, T0)?;
                 let t = self.write(*dst)?;
@@ -3108,6 +3149,7 @@ impl<'a> Emitter<'a> {
         // callee that returns other than one value through the values-error
         // stub, as the baseline's does (`MV_ERROR`). Otherwise the callee's
         // several values reach `ra`, which takes the first.
+        let mut take_labels = None;
         let target = match values {
             ReturnValues::Error => HeaderTarget::Absolute(template_interpreter().values_error),
             ReturnValues::Ignore => HeaderTarget::Label(ra),
@@ -3123,8 +3165,42 @@ impl<'a> Emitter<'a> {
                 });
                 HeaderTarget::Label(label)
             }
+            // The callee's values reach `taken` (the single value of a
+            // plain return falls into it from `ra`). It checks the count and
+            // pops the frame, leaving the values for `LoadReturned`.
+            ReturnValues::Take(_) | ReturnValues::TakeRest(_) => {
+                let exit = exit.ok_or("a forwarded return point has no deopt exit")?;
+                let wrong = self.masm.label();
+                self.deferred.push(Deferred::Returned {
+                    exit,
+                    label: wrong,
+                    callee,
+                });
+                let taken = self.masm.label();
+                take_labels = Some((taken, wrong));
+                HeaderTarget::Label(taken)
+            }
         };
         self.rp_header(ra, target, livemask);
+        if let (ReturnValues::Take(count) | ReturnValues::TakeRest(count), Some((taken, wrong))) =
+            (values, take_labels)
+        {
+            // One value came back: it sits in `RV`, and the entry takes
+            // another count. Leave it where a multiple-values return puts
+            // its values, so the exit finds it in the callee frame.
+            let slot2 = self.masm.assembler().mem(SFP, 16);
+            onlineasm!(*self.asm();
+                storeq {slot2}, {RV};
+                move {AC}, 1;
+            );
+            self.masm.bind(taken);
+            let count = count as i64;
+            if matches!(values, ReturnValues::Take(_)) {
+                onlineasm!(*self.asm(); bqneq {AC}, {count}, {wrong};);
+            } else {
+                onlineasm!(*self.asm(); bqb {AC}, {count}, {wrong};);
+            }
+        }
         // The return lands with SFP at the callee frame, so pop it, as the
         // baseline return point does (`pop_frame`).
         let back = self.masm.assembler().mem(SFP, -callee);
@@ -3576,6 +3652,28 @@ impl<'a> Emitter<'a> {
                 onlineasm!(*self.asm(); move {AC}, 1;);
                 let ra = self.masm.assembler().mem(SFP, 0);
                 onlineasm!(*self.asm(); jmp {ra};);
+            }
+            LirTerm::ReturnMany { values } => {
+                // Find where the caller takes several values before anything
+                // is written. Every return address has an mv target, the
+                // interpreter's return glue (self-referential header) and
+                // the runtime markers included, so this never leaves the
+                // function.
+                let ra_at = self.masm.assembler().mem(SFP, 0);
+                onlineasm!(*self.asm(); loadq {T1}, {ra_at};);
+                let values_error = ValuesError::Address(template_interpreter().values_error);
+                self.masm.emit_mv_target(T1, T2, T3, values_error);
+                // `fp[2..]` is below every spill slot.
+                for (i, &value) in values.iter().enumerate() {
+                    let src = self.read(value, RV_TEMP)?;
+                    let dst = self.masm.assembler().mem(SFP, 16 + 8 * i as i32);
+                    onlineasm!(*self.asm(); storeq {dst}, {src};);
+                }
+                let count = values.len() as i64;
+                onlineasm!(*self.asm();
+                    move {AC}, {count};
+                    jmp {T2};
+                );
             }
             LirTerm::TailCall {
                 target,

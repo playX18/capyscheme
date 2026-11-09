@@ -750,6 +750,14 @@ fn analyze_uses(
                     unsupported(candidate, Escape::GlobalEscape);
                 }
             }
+            Terminator::ReturnMany { values, .. } => {
+                if values
+                    .iter()
+                    .any(|&value| object_of(func, value) == Some(alloc))
+                {
+                    unsupported(candidate, Escape::GlobalEscape);
+                }
+            }
             Terminator::Jump(_) | Terminator::Deopt { .. } | Terminator::Unreachable => {}
         }
         // Any edge argument is a block-parameter flow, which a marker cannot

@@ -147,7 +147,9 @@ impl Lazy for CallSite {
         let link = self.link();
         let plan = self.plan(link);
         let known = known_blocks(link).len() as u64;
-        let sig = plan.tag() | (known << 8);
+        // The megamorphic bit changes the stub's miss arm, so a site that
+        // fills its cases regenerates.
+        let sig = plan.tag() | (known << 8) | ((link.is_megamorphic() as u64) << 40);
         if cx.state() == CellState::Specialized && self.sig.load(Relaxed) == sig {
             return Materialize::Later;
         }
@@ -314,6 +316,7 @@ fn emit_plain_stub(masm: &mut Masm, link: &CallLinkInfo, ip: Ip, cell: usize, is
     use crate::runtime::sabi::CLOSURE_CODE;
     use onlineasm::onlineasm;
 
+    let link_is_mega = link.is_megamorphic();
     let link = crate::runtime::codegen::addr::imm(mmtk::util::Address::from_ref(link));
     let (cp, ac, sfp) = (regs::CP, regs::AC, regs::SFP);
     let (t0, t1, t2, t3) = (tmp::T0, tmp::T1, tmp::T2, tmp::T3);
@@ -338,6 +341,27 @@ fn emit_plain_stub(masm: &mut Masm, link: &CallLinkInfo, ip: Ip, cell: usize, is
             loadq {t2}, {slot};
             bqeq {t2}, {t3}, {entered};
         );
+    }
+    // A megamorphic site has nothing left to record: a closure callee enters
+    // through its own compiled entry without a Rust round trip. A
+    // non-closure callee still goes through the cell, which owns that
+    // dispatch (and left `CP` at the caller's closure).
+    if link_is_mega {
+        use crate::runtime::sabi::builtin_class_ids;
+        let callee_at = if is_call {
+            masm.assembler().mem(t1, 8)
+        } else {
+            masm.assembler().mem(sfp, 8)
+        };
+        let not_closure = masm.label();
+        onlineasm!(*masm.assembler(); loadq {t2}, {callee_at};);
+        masm.branch_not_heap_class(t2, builtin_class_ids::CLOSURE, t0, not_closure);
+        onlineasm!(*masm.assembler();
+            move {cp}, {t2};
+            loadq {t3}, {block_at};
+            jmp {hit};
+        );
+        masm.bind(not_closure);
     }
     // An unknown callee: stage the hit and let the cell record it.
     emit_cell_hit(masm, ip, cell);

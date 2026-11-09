@@ -125,6 +125,11 @@ impl Verifier<'_> {
             if let Terminator::Return(value) = term {
                 self.check_not_bool(*value, block, "return value");
             }
+            if let Terminator::ReturnMany { values, .. } = term {
+                for value in values {
+                    self.check_not_bool(*value, block, "return value");
+                }
+            }
             for value in func.terminator_uses(term) {
                 self.use_at(value, block, end, "terminator operand");
                 self.check_not_remat_operand(block, value, "terminator operand");
@@ -306,7 +311,8 @@ impl Verifier<'_> {
 
 fn term_frame(term: &Terminator) -> Option<FrameState> {
     match term {
-        Terminator::TailCall { frame, .. } | Terminator::Deopt { frame } => Some(*frame),
+        Terminator::TailCall { frame, .. }
+        | Terminator::Deopt { frame } => Some(*frame),
         _ => None,
     }
 }

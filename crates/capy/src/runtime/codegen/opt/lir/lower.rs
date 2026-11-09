@@ -5,7 +5,8 @@ use cranelift_entity::{EntityRef, SecondaryMap};
 use super::schedule::{self, Schedule};
 use super::{
     AllocLayout, CallTarget, DeoptExit, FloatOp, FrameValue, GuardKind, IntOp, LBlock, LEdge,
-    LirFunc, LirInst, LirRematDesc, LirTerm, NumberStoreKind, SafePoint, Test, VReg, VRepr,
+    LirFunc, LirInst, LirRematDesc, LirTerm, NumberStoreKind, ReturnedKind, SafePoint, Test, VReg,
+    VRepr,
     WideShiftOp,
 };
 use crate::runtime::codegen::jit::config::opt;
@@ -959,6 +960,21 @@ impl<'a> Lowerer<'a> {
                     index,
                 });
             }
+            Op::ReturnedValue(index) => {
+                let dst = self.define(inst)?;
+                let kind = ReturnedKind::Value;
+                self.push(LirInst::LoadReturned { dst, index, kind });
+            }
+            Op::ReturnedAddr(index) => {
+                let dst = self.define(inst)?;
+                let kind = ReturnedKind::Addr;
+                self.push(LirInst::LoadReturned { dst, index, kind });
+            }
+            Op::ReturnedCount(index) => {
+                let dst = self.define(inst)?;
+                let kind = ReturnedKind::Count;
+                self.push(LirInst::LoadReturned { dst, index, kind });
+            }
             Op::LoadCell => {
                 let cell = self.reg(args[0])?;
                 let dst = self.define(inst)?;
@@ -1441,7 +1457,12 @@ impl<'a> Lowerer<'a> {
             CallTarget::Prim(_) | CallTarget::PrimN(_) | CallTarget::Helper(_) => {
                 Some(self.exit(frame, GuardKind::Call)?)
             }
-            CallTarget::Known(_) | CallTarget::Generic if values == ReturnValues::Forward => {
+            CallTarget::Known(_) | CallTarget::Generic
+                if matches!(
+                    values,
+                    ReturnValues::Forward | ReturnValues::Take(_) | ReturnValues::TakeRest(_)
+                ) =>
+            {
                 Some(self.exit(frame, GuardKind::Return)?)
             }
             _ => None,
@@ -1530,6 +1551,13 @@ impl<'a> Lowerer<'a> {
                     args,
                     checked,
                 }
+            }
+            Terminator::ReturnMany { values } => {
+                let mut lowered = Vec::with_capacity(values.len());
+                for value in values {
+                    lowered.push(self.ensure(*value)?);
+                }
+                LirTerm::ReturnMany { values: lowered }
             }
             Terminator::Deopt { frame } => {
                 self.ensure_frame(*frame)?;

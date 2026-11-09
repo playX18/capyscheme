@@ -38,6 +38,7 @@ IMPLEMENTATIONS = {
 
 
 def benchmark_sources(suite, names):
+    names = [name for names in names for name in names.split(",")]
     sources = {
         source.stem: source
         for source in suite.joinpath("src").glob("*.scm")
@@ -61,7 +62,6 @@ def run_capy(capy, suite, source, timeout):
             + (suite / "src" / "common-postlude.scm").read_text()
         )
 
-    print(f"Running {program} with {capy}")
     return subprocess.run(
         [str(capy), "-s", str(program)],
         cwd=suite,

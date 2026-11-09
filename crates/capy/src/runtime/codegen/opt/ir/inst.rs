@@ -126,6 +126,10 @@ pub enum Helper {
     /// and a wide character in a narrow buffer deopt, so baseline raises or
     /// detaches exactly as before.
     StringSet = 14,
+    /// `[ptr, count] -> Any`: the list of the `count` values at `ptr`, the
+    /// extras of a `return_point_values_rest` entry. It allocates without
+    /// collecting, so the unrooted callee frame it reads stays valid.
+    ValuesRest = 15,
 }
 
 impl Helper {
@@ -181,6 +185,18 @@ pub enum ReturnValues {
     /// (`return_point_forward`). One value continues; any other count leaves
     /// for a deopt exit at the entry, which baseline resumes.
     Forward,
+    /// A return point that forwards to a `return_point_values` entry taking
+    /// exactly this many values (never one). A callee that returns that many
+    /// continues in Tier 2 code with the values left in the callee frame
+    /// (`Op::ReturnedValue`). Any other count, including one, leaves for a
+    /// deopt exit at the entry, as `Forward` does.
+    Take(u32),
+    /// A return point that forwards to a `return_point_values_rest` entry
+    /// taking this many values or more. The callee's values stay in the
+    /// callee frame: the fixed ones are read with `Op::ReturnedValue`, the
+    /// extras with `Op::ReturnedCount` and `Op::ReturnedAddr`. A count below
+    /// this leaves for a deopt exit at the entry, as `Forward` does.
+    TakeRest(u32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -522,6 +538,17 @@ pub enum Op {
     CallKnown(CodeRef, ReturnValues),
     /// `[callee, args...] -> Any`
     CallGeneric(ReturnValues),
+    /// `[call] -> Any`. The `index`th value a `ReturnValues::Take` call left
+    /// in the callee frame. It reads the frame the next call reuses, so it
+    /// must run right after `call` and stays ordered before any later call.
+    ReturnedValue(u32),
+    /// `[call] -> Int32`. The number of values a `Take`/`TakeRest` call
+    /// returned, less `skip`. It reads the count register, so it must run
+    /// right after `call`.
+    ReturnedCount(u32),
+    /// `[call] -> Int64`. The address of the `index`th value the call left in
+    /// the callee frame, for a helper that reads the extras.
+    ReturnedAddr(u32),
     /// `[args...] -> Any`. A returning runtime helper.
     CallOp(HelperRef),
     /// `[args...] -> Any`
@@ -574,6 +601,9 @@ impl Op {
             | Op::BoolToValue
             | Op::LoadFree { .. }
             | Op::LoadCell
+            | Op::ReturnedValue(_)
+            | Op::ReturnedCount(_)
+            | Op::ReturnedAddr(_)
             | Op::SlotGet { .. } => Some(1),
             Op::CheckIndex
             | Op::CheckIndexRaw
@@ -812,6 +842,11 @@ impl Op {
             Op::Store { region, .. } => Effects::write(region, SemanticEffects::NONE),
             Op::LoadFree { .. } => Effects::read(MemoryRegion::Heap, SemanticEffects::NONE),
             Op::LoadCell => Effects::read(MemoryRegion::Variables, SemanticEffects::VARIABLE),
+            // The callee frame is stack memory no other region names, and
+            // every call writes everything, so a later call stays after it.
+            Op::ReturnedValue(_) | Op::ReturnedCount(_) | Op::ReturnedAddr(_) => {
+                Effects::read(MemoryRegion::Unknown, SemanticEffects::NONE)
+            }
             Op::StoreCell => Effects::write(MemoryRegion::Variables, SemanticEffects::VARIABLE),
             Op::StoreFree { .. } => Effects::write(MemoryRegion::Heap, SemanticEffects::NONE),
             Op::WriteBarrier => Effects::write(MemoryRegion::Heap, SemanticEffects::NONE),
@@ -878,6 +913,13 @@ pub enum Terminator {
         density: SwitchDensity,
     },
     Return(Value),
+    /// Returns a fixed number of values other than one (`return-values`):
+    /// the values go to `fp[2..]` and the count to `AC`, and the caller's
+    /// `%mv-jump` target is entered. Every return address has one, so it
+    /// never leaves for a deopt exit.
+    ReturnMany {
+        values: Vec<Value>,
+    },
     /// A call that replaces the current frame. `frame` is the caller's.
     ///
     /// `check` is a profile-named code block the callee is expected to run.
@@ -913,6 +955,7 @@ impl Terminator {
                 .chain(std::iter::once(*default))
                 .collect(),
             Terminator::Return(_)
+            | Terminator::ReturnMany { .. }
             | Terminator::TailCall { .. }
             | Terminator::Deopt { .. }
             | Terminator::Unreachable => vec![],

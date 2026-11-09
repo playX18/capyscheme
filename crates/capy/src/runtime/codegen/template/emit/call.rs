@@ -478,13 +478,9 @@ pub fn op_return_values<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     onlineasm!(*masm.assembler(); jmp {ra};);
     masm.bind(many);
     // Multiple values: an interpreted caller resumes inline with the count
-    // in `AC` (its return point validates it), a compiled one jumps to its
-    // `%mv-jump` target. Only runtime-owned markers and values-error
-    // headers still leave generated code.
-    let slow = masm.label();
-    context.resume_caller_mv(masm, slow);
-    masm.bind(slow);
-    context.control(masm, SlowPath::ReturnMv);
+    // in `AC` (its return point validates it), anything else jumps to the
+    // `%mv-jump` target of its header. Nothing leaves generated code.
+    context.resume_caller_mv(masm);
 }
 
 /// Pop `frame` slots: `SFP -= 8*frame`

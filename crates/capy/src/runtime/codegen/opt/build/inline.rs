@@ -290,8 +290,10 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         first_arg: u32,
         argc: u32,
         call: (ReturnValues, FrameState),
+        list: bool,
         tail: bool,
-    ) -> Result<Option<Value>, String> {
+    ) -> Result<Option<Vec<Value>>, String> {
+        let expect = Expect::of(call.0, tail, list);
         if !self.inline.enabled {
             return Ok(None);
         }
@@ -409,7 +411,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 // The callee does not carry the caller's dependency list, so
                 // a write to a statically known cell must keep its check.
                 false,
-                &[],
                 cx,
                 false,
                 &[],
@@ -429,7 +430,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                     return Ok(None);
                 }
             };
-            if let Err(why) = spliceable(&body) {
+            if let Err(why) = spliceable(&body, expect) {
                 self.inline.remaining.set(saved);
                 if poly {
                     self.skip_target(pc, &why);
@@ -544,7 +545,11 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         };
         let base = callee_reg - 1;
         let cont = self.func.new_block();
-        let result = self.func.append_param(cont, Type::Any);
+        let results: Vec<Value> = expect
+            .param_types()
+            .into_iter()
+            .map(|ty| self.func.append_param(cont, ty))
+            .collect();
         let count = bodies.len();
         let partial = poly && count < named;
 
@@ -570,6 +575,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                     base,
                     cont,
                     call,
+                    expect,
                     candidate,
                     code,
                 )?;
@@ -590,7 +596,8 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             operands.extend(fallback_args.unwrap_or_default());
             let frame = call.1;
             let value = self.value_op(Op::CallGeneric(call.0), &operands, Type::Any, Some(frame));
-            let edge = self.func.edge(cont, &[value]);
+            let args = taken_args(&mut self.func, self.cur, expect, value, frame);
+            let edge = self.func.edge(cont, &args);
             self.terminate(Terminator::Jump(edge));
         } else {
             let candidate = &bodies[0];
@@ -609,6 +616,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 base,
                 cont,
                 call,
+                expect,
                 candidate,
                 code,
             )?;
@@ -624,7 +632,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         }
         super::calls::inlined(count, site_hits, poly, partial);
         self.cur = cont;
-        Ok(Some(result))
+        Ok(Some(results))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -637,6 +645,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         base: u32,
         cont: Block,
         call: (ReturnValues, FrameState),
+        expect: Expect,
         candidate: &Candidate<'gc>,
         code: CodeRef,
     ) -> Result<(), String> {
@@ -656,6 +665,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             base,
             cont,
             call,
+            expect,
             call_pc: pc as u32,
             blocks: SecondaryMap::new(),
             values: vec![None; candidate.body.values.len()],
@@ -704,7 +714,7 @@ struct Candidate<'gc> {
 
 /// Whether `body` can be spliced: it has no OSR entry and does not loop back
 /// to its entry.
-fn spliceable(body: &Func<'_>) -> Result<(), String> {
+fn spliceable(body: &Func<'_>, expect: Expect) -> Result<(), String> {
     if !body.osr.is_empty() || body.entry_selector.is_some() {
         return Err("the callee has OSR entries".to_string());
     }
@@ -718,7 +728,128 @@ fn spliceable(body: &Func<'_>) -> Result<(), String> {
     {
         return Err("the callee loops back to its entry".to_string());
     }
+    // The call site's return point takes a fixed number of values, so a
+    // body that returns another number is a call, not a splice.
+    for data in body.blocks.values() {
+        let count = match &data.term {
+            Some(Terminator::Return(_)) => 1,
+            Some(Terminator::ReturnMany { values, .. }) => values.len(),
+            _ => continue,
+        };
+        if !expect.accepts(count) {
+            return Err(format!(
+                "the callee returns {count} value{} to a return point that takes {}",
+                if count == 1 { "" } else { "s" },
+                expect.describe()
+            ));
+        }
+    }
     Ok(())
+}
+
+/// What the return point of an inlined call takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Expect {
+    /// A tail call: whatever the body returns, the caller returns.
+    Tail,
+    /// Exactly one value.
+    One,
+    /// Exactly this many values (never one).
+    Fixed(u32),
+    /// At least `fixed` values, and the extras as a list when `list`.
+    Rest { fixed: u32, list: bool },
+}
+
+impl Expect {
+    fn of(values: ReturnValues, tail: bool, list: bool) -> Expect {
+        match values {
+            _ if tail => Expect::Tail,
+            ReturnValues::Take(count) => Expect::Fixed(count),
+            ReturnValues::TakeRest(fixed) => Expect::Rest { fixed, list },
+            _ => Expect::One,
+        }
+    }
+
+    fn accepts(self, count: usize) -> bool {
+        match self {
+            Expect::Tail => true,
+            Expect::One => count == 1,
+            Expect::Fixed(fixed) => count == fixed as usize,
+            Expect::Rest { fixed, .. } => count >= fixed as usize,
+        }
+    }
+
+    fn describe(self) -> String {
+        match self {
+            Expect::Tail => "any number".to_string(),
+            Expect::One => "one".to_string(),
+            Expect::Fixed(fixed) => fixed.to_string(),
+            Expect::Rest { fixed, .. } => format!("{fixed} or more"),
+        }
+    }
+
+    /// The parameters of the block the body returns to: the values, and for
+    /// a rest entry the extra count and the list of the extras.
+    fn param_types(self) -> Vec<Type> {
+        match self {
+            Expect::Tail | Expect::One => vec![Type::Any],
+            Expect::Fixed(fixed) => vec![Type::Any; fixed as usize],
+            Expect::Rest { fixed, .. } => {
+                let mut types = vec![Type::Any; fixed as usize];
+                types.push(Type::Int32);
+                types.push(Type::Any);
+                types
+            }
+        }
+    }
+}
+
+/// The arguments of the edge into the returned-to block for the values the
+/// call `result` left in the callee frame, read in `block` right after it.
+fn taken_args<'gc>(
+    func: &mut Func<'gc>,
+    block: Block,
+    expect: Expect,
+    result: Value,
+    frame: FrameState,
+) -> Vec<Value> {
+    let mut push = |func: &mut Func<'gc>, op, args: &[Value], ty, frame| {
+        func.push_inst(block, op, args, Some(ty), frame)
+            .expect("an operation with a result returns one")
+    };
+    match expect {
+        Expect::Tail | Expect::One => vec![result],
+        Expect::Fixed(fixed) => (0..fixed)
+            .map(|i| push(func, Op::ReturnedValue(i), &[result], Type::Any, None))
+            .collect(),
+        Expect::Rest { fixed, list } => {
+            let mut args: Vec<Value> = (0..fixed)
+                .map(|i| push(func, Op::ReturnedValue(i), &[result], Type::Any, None))
+                .collect();
+            let count = push(func, Op::ReturnedCount(fixed), &[result], Type::Int32, None);
+            let extras = if list {
+                let from = push(func, Op::ReturnedAddr(fixed), &[result], Type::Int64, None);
+                push(
+                    func,
+                    Op::CallOp(Helper::ValuesRest.helper_ref()),
+                    &[from, count],
+                    Type::Any,
+                    Some(frame),
+                )
+            } else {
+                push(
+                    func,
+                    Op::Const(Constant::Bits(SchemeValue::null().bits())),
+                    &[],
+                    Type::Any,
+                    None,
+                )
+            };
+            args.push(count);
+            args.push(extras);
+            args
+        }
+    }
 }
 
 /// One splice of a callee function into the caller's.
@@ -744,6 +875,8 @@ struct Splice<'a, 'gc> {
     /// How a tail call of the callee becomes a call of the caller: what its
     /// return point does with other than one value, and its frame.
     call: (ReturnValues, FrameState),
+    /// What the call site's return point takes from the body.
+    expect: Expect,
     /// The caller's bytecode pc of the call, for deopt diagnostics.
     call_pc: u32,
     blocks: SecondaryMap<Block, Option<Block>>,
@@ -871,15 +1004,83 @@ impl<'a, 'gc> Splice<'a, 'gc> {
                         Some(frame),
                     )
                     .expect("a call has a result");
+                let args = taken_args(self.dest, target, self.expect, result, frame);
                 let cont = self.cont;
-                let edge = self.dest.edge(cont, &[result]);
+                let edge = self.dest.edge(cont, &args);
                 self.dest.set_terminator(target, Terminator::Jump(edge));
+                continue;
+            }
+            if let Terminator::Return(value) = term {
+                let value = self.value(*value)?;
+                self.return_to(target, &[value])?;
+                continue;
+            }
+            if let Terminator::ReturnMany { values } = term {
+                let mut mapped = Vec::with_capacity(values.len());
+                for &value in values {
+                    mapped.push(self.value(value)?);
+                }
+                if self.expect == Expect::Tail {
+                    // The body returns to this function's caller.
+                    self.dest
+                        .set_terminator(target, Terminator::ReturnMany { values: mapped });
+                } else {
+                    self.return_to(target, &mapped)?;
+                }
                 continue;
             }
             let term = self.terminator(term)?;
             self.dest.set_terminator(target, term);
         }
         // The callee's heap constants and globals are the caller's now.
+        Ok(())
+    }
+
+    /// Ends `block`, where the body returned `values`, with a jump to the
+    /// block the call site continues in.
+    fn return_to(&mut self, block: Block, values: &[Value]) -> Result<(), String> {
+        let mut args = Vec::new();
+        match self.expect {
+            Expect::Tail | Expect::One | Expect::Fixed(_) => args.extend_from_slice(values),
+            Expect::Rest { fixed, list } => {
+                let (fixed, extras) = values.split_at((fixed as usize).min(values.len()));
+                args.extend_from_slice(fixed);
+                let count = self
+                    .dest
+                    .push_inst(
+                        block,
+                        Op::Const(Constant::Int32(extras.len() as i32)),
+                        &[],
+                        Some(Type::Int32),
+                        None,
+                    )
+                    .expect("a constant has a result");
+                let null = SchemeValue::null().bits();
+                let mut chain = self
+                    .dest
+                    .push_inst(
+                        block,
+                        Op::Const(Constant::Bits(null)),
+                        &[],
+                        Some(Type::Any),
+                        None,
+                    )
+                    .expect("a constant has a result");
+                if list {
+                    for &extra in extras.iter().rev() {
+                        chain = self
+                            .dest
+                            .push_inst(block, Op::AllocPair, &[extra, chain], Some(Type::Pair), None)
+                            .expect("an allocation has a result");
+                    }
+                }
+                args.push(count);
+                args.push(chain);
+            }
+        }
+        let cont = self.cont;
+        let edge = self.dest.edge(cont, &args);
+        self.dest.set_terminator(block, Terminator::Jump(edge));
         Ok(())
     }
 
@@ -951,6 +1152,9 @@ impl<'a, 'gc> Splice<'a, 'gc> {
         Ok(match op {
             Op::Const(constant) => Op::Const(self.constant(constant)?),
             Op::CheckCode(code) => Op::CheckCode(self.code(code)?),
+            // A polymorphic guard in a nested body names its code ref in the
+            // callee's table; unmapped it would test another code block.
+            Op::TestCode(code) => Op::TestCode(self.code(code)?),
             Op::AllocClosure(code) => Op::AllocClosure(self.code(code)?),
             // A direct call in the callee stays direct: its code ref is
             // remapped like every other code ref (a self-call maps to the
@@ -1046,10 +1250,8 @@ impl<'a, 'gc> Splice<'a, 'gc> {
                     density: *density,
                 }
             }
-            Terminator::Return(value) => {
-                let value = self.value(*value)?;
-                let cont = self.cont;
-                Terminator::Jump(self.dest.edge(cont, &[value]))
+            Terminator::Return(_) | Terminator::ReturnMany { .. } => {
+                return Err("a return reached the generic terminator copy".to_string());
             }
             Terminator::TailCall { .. } => return Err("a callee tail calls".to_string()),
             Terminator::Deopt { frame } => Terminator::Deopt {

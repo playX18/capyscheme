@@ -85,6 +85,8 @@ pub(crate) mod version;
 #[cfg(test)]
 pub(crate) mod testutil;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use cranelift_entity::{EntityList, ListPool, SecondaryMap};
 
 use super::ir::func::{Block, Func, Value};
@@ -197,21 +199,43 @@ const PIPELINE: [PassDef; 19] = [
     },
 ];
 
+/// Wall time spent in each pass of [`PIPELINE`], summed over every
+/// compile, in microseconds. Only filled under `CAPY_JIT_STATS`.
+static PASS_MICROS: [AtomicU64; PIPELINE.len()] = [const { AtomicU64::new(0) }; PIPELINE.len()];
+
+/// The per-pass time totals, one line per pass that ran.
+pub(crate) fn pass_time_report() -> String {
+    let mut out = String::from("tier 2 passes (us):");
+    for (pass, micros) in PIPELINE.iter().zip(&PASS_MICROS) {
+        let micros = micros.load(Ordering::Relaxed);
+        if micros > 0 {
+            out.push_str(&format!(" {}={micros}", pass.name));
+        }
+    }
+    out
+}
+
 /// Runs the pass pipeline on `func` until it reaches a fixed point or runs
 /// out of gas. `name` names the dump files.
 pub(crate) fn run(func: &mut Func, name: &str) -> Result<PipelineStats, String> {
     let config = opt();
+    let timed = crate::utils::flags::jit_stats();
     let mut stats = PipelineStats::default();
     let mut gas = DEFAULT_GAS;
     'rounds: loop {
         stats.rounds += 1;
         let mut changed = false;
-        for pass in &PIPELINE {
+        for (index, pass) in PIPELINE.iter().enumerate() {
             if gas == 0 {
                 stats.ran_out_of_gas = true;
                 break 'rounds;
             }
+            let started = timed.then(std::time::Instant::now);
             let outcome = (pass.run)(func);
+            if let Some(started) = started {
+                let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+                PASS_MICROS[index].fetch_add(micros, Ordering::Relaxed);
+            }
             gas = gas.saturating_sub(outcome.work);
             stats.gas_used += outcome.work;
             changed |= outcome.changed;
@@ -394,6 +418,11 @@ fn remap_terminator(term: &mut Terminator, pool: &mut ListPool<Value>, subst: &S
             remap_edge(default, pool, subst);
         }
         Terminator::Return(value) => *value = subst.resolve(*value),
+        Terminator::ReturnMany { values, .. } => {
+            for value in values.iter_mut() {
+                *value = subst.resolve(*value);
+            }
+        }
         Terminator::TailCall { callee, args, .. } => {
             *callee = subst.resolve(*callee);
             if let Some(new) = remap_list(pool, *args, subst) {
@@ -457,3 +486,4 @@ fn clobbers(op: Op) -> MemoryRanges {
         effects.writes
     }
 }
+

@@ -12,6 +12,8 @@ mod profile;
 mod state;
 mod value;
 
+pub use state::ValuesError;
+
 pub const EXTERN_NAMESPACE_RUNTIME: u32 = 1;
 #[cfg(test)]
 pub const EXTERN_NAMESPACE_TEST: u32 = 2;
@@ -91,6 +93,7 @@ runtime_externs! {
         OptPutSlot => opt::glue::capy_opt_put_slot,
         OptCollectRest => opt::glue::capy_opt_collect_rest,
         OptRestList => opt::glue::capy_opt_rest_list,
+        OptValuesRest => opt::glue::capy_opt_values_rest,
         OptPrimN => opt::glue::capy_opt_prim_n,
         OptVariableSet => opt::glue::capy_opt_variable_set,
         OptArith => opt::glue::capy_opt_arith,

@@ -277,6 +277,33 @@ pub(crate) unsafe extern "C" fn capy_opt_collect_rest(
     }
 }
 
+/// The list of the `count` values at `from`: the extras of a
+/// `return_point_values_rest` entry, read out of the callee frame the call
+/// just popped. The frame is above the live registers, so nothing collects
+/// before the values are copied.
+///
+/// # Safety
+///
+/// `th` is the current mutator's context, and `from` points at `count` words
+/// of Scheme values.
+pub(crate) unsafe extern "C" fn capy_opt_values_rest(
+    th: *const (),
+    from: u64,
+    count: u64,
+) -> OptReturn {
+    // SAFETY: `th` is the mutator context the emitter passes, and the
+    // emitter passes the callee frame's value words.
+    unsafe {
+        let ctx: MutationContext<'_> = MutationContext::from_ptr(th);
+        let values = std::slice::from_raw_parts(from as *const Value<'_>, count as usize);
+        let mut list = Value::null();
+        for &value in values.iter().rev() {
+            list = Value::cons(ctx, value, list);
+        }
+        OptReturn::ok(list.bits())
+    }
+}
+
 /// Runs primitive `prim` over the `count` consecutive words at `from`, as the
 /// baseline's `capy_prim_n` does for a variadic call, but returns instead of
 /// raising. A primitive error is the status (its kind code, never 0) and the

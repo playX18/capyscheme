@@ -108,6 +108,11 @@ impl Display for LirInst {
         match self {
             LirInst::Move { dst, src } => write!(f, "{dst} = move {src}"),
             LirInst::Const { dst, value } => write!(f, "{dst} = const {value}"),
+            LirInst::LoadReturned { dst, index, kind } => match kind {
+                ReturnedKind::Value => write!(f, "{dst} = returned[{index}]"),
+                ReturnedKind::Addr => write!(f, "{dst} = returned.addr[{index}]"),
+                ReturnedKind::Count => write!(f, "{dst} = returned.count -{index}"),
+            },
             LirInst::TagInt { dst, src } => write!(f, "{dst} = tag.int {src}"),
             LirInst::BoolToValue { dst, src } => write!(f, "{dst} = bool.value {src}"),
             LirInst::UntagInt { dst, src } => write!(f, "{dst} = untag.int {src}"),
@@ -394,6 +399,11 @@ impl Display for LirTerm {
                 write_edge(f, default)
             }
             LirTerm::Return { value } => write!(f, "return {value}"),
+            LirTerm::ReturnMany { values } => {
+                f.write_str("return-values (")?;
+                write_vregs(f, values)?;
+                f.write_str(")")
+            }
             LirTerm::TailCall { target, args, checked } => {
                 write!(f, "tailcall {target}(")?;
                 write_vregs(f, args)?;

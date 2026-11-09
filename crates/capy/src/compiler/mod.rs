@@ -1,6 +1,6 @@
 //! Compilation pipeline: expander IR -> graph CPS -> CFG/SSA -> bytecode -> FASL.
 //!
-//! [`lower_to_cps`] (in the private `pipeline` module) is the frontend
+//! [`lower_to_cps`](pipeline::lower_to_cps) (in the private `pipeline` module) is the frontend
 //! driver. It runs the expander-level passes, primitive resolution,
 //! free-variable annotation, letrec rectification, recursive-binding
 //! rewriting, well-known-procedure expansion, assignment elimination
@@ -29,7 +29,6 @@ pub mod tree;
 
 pub use bootstrap::compile_file;
 pub use object::{BackendDumpOptions, CompilationOptions};
-pub use pipeline::lower_to_cps;
 
 pub(crate) use dump::{
     begin_compilation_artifact, merge_compile_dump_options, resolve_artifact_dump_path,

@@ -57,6 +57,24 @@ impl TierCompiler for OptimizingCompiler {
         req: &CompileRequest<'a, 'gc>,
         masm: &mut Masm,
     ) -> io::Result<Option<BuiltUnit<'gc>>> {
+        // `CAPY_JIT_STATS` attributes the whole Tier 2 compile, and the
+        // register allocator inside it, as a fraction of an end-to-end run.
+        let started = std::time::Instant::now();
+        let result = self.build_inner(req, masm);
+        if flags::jit_stats() {
+            let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+            super::jit::config::OPT_BUILD_MICROS.fetch_add(micros, std::sync::atomic::Ordering::Relaxed);
+        }
+        result
+    }
+}
+
+impl OptimizingCompiler {
+    fn build_inner<'a, 'gc>(
+        &self,
+        req: &CompileRequest<'a, 'gc>,
+        masm: &mut Masm,
+    ) -> io::Result<Option<BuiltUnit<'gc>>> {
         let name = crate::runtime::objectmodel::proc::procedure_label(req.code_block);
         // Deopt rebuilds baseline frames, so there must be a
         // baseline unit to rebuild them for.
@@ -74,7 +92,13 @@ impl TierCompiler for OptimizingCompiler {
             .max(inlined_extent(&func, req.code_block.frame_size));
         let (regs, scratch) = emit::register_file();
 
+        let alloc_started = std::time::Instant::now();
         let mut alloc = regalloc::allocate(&mut lir, &regs, scratch).map_err(io::Error::other)?;
+        if flags::jit_stats() {
+            let micros = u64::try_from(alloc_started.elapsed().as_micros()).unwrap_or(u64::MAX);
+            super::jit::config::OPT_REGALLOC_MICROS
+                .fetch_add(micros, std::sync::atomic::Ordering::Relaxed);
+        }
 
         if super::jit::config::opt().layout {
             passes::layout::reorder(&lir, &mut alloc.order);

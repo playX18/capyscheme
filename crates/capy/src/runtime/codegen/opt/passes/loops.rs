@@ -201,6 +201,7 @@ pub(super) fn retarget(term: &mut Terminator, from: Block, to: Block) {
             fix(default);
         }
         Terminator::Return(_)
+        | Terminator::ReturnMany { .. }
         | Terminator::TailCall { .. }
         | Terminator::Deopt { .. }
         | Terminator::Unreachable => {}
@@ -247,7 +248,8 @@ pub(super) fn for_each_block_use(func: &Func, block: Block, f: &mut dyn FnMut(Va
         for value in func.terminator_uses(term) {
             f(value);
         }
-        if let Terminator::TailCall { frame: fs, .. } | Terminator::Deopt { frame: fs } = term {
+        if let Terminator::TailCall { frame: fs, .. } | Terminator::Deopt { frame: fs } = term
+        {
             frame(func, *fs, f);
         }
     }

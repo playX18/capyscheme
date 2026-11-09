@@ -599,6 +599,12 @@ define_flags! {
     opt_layout: Bool, "CAPY_OPT_LAYOUT", Some("--opt-layout"), "0", "jit",
         "Optimizing tier: reorder blocks for fallthrough using static loop weights. Off by default.";
 
+    opt_regalloc: Text, "CAPY_OPT_REGALLOC", Some("--opt-regalloc"), "greedy", "jit",
+        "Register allocator for Tier 2 JIT. Available options: LSRA and Greedy. Greedy by default.";
+
+    opt_evict: Bool, "CAPY_OPT_EVICT", None, "0", "jit",
+        "Optimizing tier: let linear scan evict a cheaper active piece when no register is free, instead of spilling the incoming one. Experimental: it costs more moves than it saves.";
+
     opt_generics: Bool, "CAPY_OPT_GENERICS", Some("--opt-generics"), "0", "jit",
         "Optimizing tier: devirtualize a generic accessor call through the descriptor's slot cache, guarded by class identity, layout stamp and the epoch seqlock. Off by default.";
 

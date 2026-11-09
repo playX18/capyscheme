@@ -226,10 +226,17 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             // In an inlined body, a monomorphic tail call inlines in turn: its
             // frames replace this body's, as the tail call replaces the frame.
             if self.inline.depth > 0 {
-                if let Some(result) =
-                    self.try_inline(pc, pc, 1, 2, argc, (ReturnValues::Ignore, frame), true)?
-                {
-                    self.terminate(Terminator::Return(result));
+                if let Some(result) = self.try_inline(
+                    pc,
+                    pc,
+                    1,
+                    2,
+                    argc,
+                    (ReturnValues::Ignore, frame),
+                    false,
+                    true,
+                )? {
+                    self.terminate(Terminator::Return(result[0]));
                     return Ok(());
                 }
             }

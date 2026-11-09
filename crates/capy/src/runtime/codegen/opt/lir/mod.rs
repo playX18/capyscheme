@@ -11,6 +11,7 @@
 
 pub mod lower;
 pub mod schedule;
+pub(crate) mod weights;
 
 use std::fmt::{self, Display, Formatter};
 
