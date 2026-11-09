@@ -2,6 +2,7 @@
 
 use cranelift_entity::{EntityRef, SecondaryMap};
 
+use super::pos;
 use crate::runtime::codegen::opt::lir::{LBlock, LirFunc, Operand, Role};
 
 /// Linear numbering of the blocks and instructions of a function.
@@ -48,19 +49,34 @@ impl Numbering {
         Ok(num)
     }
 
-    /// The first position of a block.
+    /// The first position of a block: the gap before its first instruction.
     pub(crate) fn from(&self, b: LBlock) -> u32 {
-        2 * self.base[b]
+        pos::pre(self.base[b])
     }
 
     /// One past the last position of a block.
     pub(crate) fn to(&self, b: LBlock) -> u32 {
-        2 * (self.term[b] + 1)
+        pos::pre(self.term[b] + 1)
     }
 
     /// The position where a block's terminator reads its operands.
     pub(crate) fn term_pos(&self, b: LBlock) -> u32 {
-        2 * self.term[b]
+        pos::early(self.term[b])
+    }
+
+    /// Whether a piece may change location at `p`: a gap that has an
+    /// instruction after it in the same block. A move at the gap after a
+    /// terminator would run after the jump.
+    pub(crate) fn can_split_at(&self, p: u32) -> bool {
+        if !pos::is_gap(p) {
+            return false;
+        }
+        let g = pos::inst_of(p);
+        if g >= self.count {
+            return false;
+        }
+        let b = self.block_at[g as usize];
+        p % pos::POINTS == 0 || self.term[b] != g
     }
 }
 

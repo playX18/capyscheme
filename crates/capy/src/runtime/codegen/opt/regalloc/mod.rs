@@ -1,33 +1,34 @@
 //! Register allocation for the Tier 2 LIR.
 //!
-//! Wimmer–Franz linear scan with lifetime holes, interval splitting and
-//! spill-slot reuse, followed by parallel-move resolution and stack maps.
+//! - [`linear_scan`]: Wimmer–Franz linear scan, the default.
+//! - [`greedy`]: whole-function greedy allocation based on LLVM/WebKit Greedy algorithm.
 //!
-//! Positions: instruction `g` of the linear layout reads its operands at
-//! `2g` and writes its results at `2g + 1`. A call or poll clobbers every
-//! allocatable register at `2g + 1`, so every value live across it is in a
-//! spill slot there. A helper's operands are pinned to the
-//! `OpArg` registers at `2g`, and a call's result is pinned to the return
-//! register at `2g + 1`. Two-address ops are legalized so that the
-//! destination is the left operand's vreg.
 //!
 //! [`allocate`] rewrites the function (copies, split edges, livemasks) and
 //! returns an [`Allocation`]. The register pool comes in as a [`RegFile`].
 //! The emitter maps its abstract [`PhysReg`] ids to machine registers.
 
+mod assign;
+mod flowcheck;
+mod greedy;
 mod intervals;
 mod linear_scan;
 mod liveness;
+mod loops;
+pub(crate) mod pos;
 mod resolve;
 mod slots;
+mod split;
 mod stackmap;
+pub(crate) mod stats;
+mod weights;
 
 use std::collections::BTreeMap;
 use std::fmt::{self, Display, Formatter, Write as _};
 
 use cranelift_entity::{PrimaryMap, SecondaryMap};
 
-use crate::runtime::codegen::jit::config::opt;
+use crate::runtime::codegen::jit::config::{RegAllocKind, opt};
 use crate::runtime::codegen::opt::ir::inst::{Constant, RematKind};
 use crate::runtime::codegen::opt::lir::{
     Clobbers, Constraint, DeoptExit, LBlock, LirFunc, LirInst, PhysRole, RegClass, Role, SafePoint,
@@ -35,7 +36,7 @@ use crate::runtime::codegen::opt::lir::{
 };
 use crate::utils::flags;
 
-/// An abstract physical register. The emitter maps ids to machine registers.
+/// An abstract physical register
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhysReg(pub u16);
 
@@ -45,7 +46,7 @@ impl Display for PhysReg {
     }
 }
 
-/// The registers of one target. The allocator takes this as input.
+/// The registers of one target.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegFile {
     /// Allocatable general-purpose registers, in preference order.
@@ -61,9 +62,6 @@ pub struct RegFile {
     pub slow_clobbers: Vec<PhysReg>,
     /// Pool registers that a Rust helper call preserves (the target C ABI's
     /// callee-saved set). Empty means every register is call-clobbered.
-    /// Linear scan hands them only to pieces that cover a frame value of a
-    /// non-collecting call; any other tagged value must stay in its spill
-    /// slot so the safepoint's livemask covers it.
     pub callee_saved: Vec<PhysReg>,
 }
 
@@ -127,7 +125,7 @@ pub struct Scratch {
 }
 
 /// Where a value lives.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Loc {
     Reg(PhysReg),
     /// A spill slot, numbered from 0. The emitter maps slots to frame words.
@@ -150,10 +148,17 @@ pub struct Move {
     pub class: RegClass,
     pub src: Loc,
     pub dst: Loc,
+    /// A reload of a constant: the emitter rebuilds the constant
+    /// `Allocation::consts[i]` in `dst` instead of reading `src`. The slot
+    /// still holds the value, so the move keeps its meaning for the checkers.
+    pub konst: Option<u32>,
 }
 
 impl Display for Move {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        if let Some(i) = self.konst {
+            return write!(f, "{} <- #const{i}", self.dst);
+        }
         write!(f, "{} <- {}", self.dst, self.src)
     }
 }
@@ -222,6 +227,8 @@ pub struct Allocation {
     /// Moves before each instruction, by global index. Each block's terminator
     /// is its last instruction.
     pub moves: Vec<Vec<Move>>,
+    /// The constants that `Move::konst` rebuilds.
+    pub consts: Vec<Constant>,
     /// The pieces of each vreg.
     pub pieces: SecondaryMap<VReg, Vec<Piece>>,
     /// The deopt locations of each exit, in the order of its frame values.
@@ -230,9 +237,17 @@ pub struct Allocation {
     pub remat: PrimaryMap<DeoptExit, Vec<RematDesc>>,
     /// The registers each yieldpoint saves across its yield, and their slots.
     pub polls: SecondaryMap<SafePoint, Vec<stackmap::PollSave>>,
+    /// The representative of the affinity group of each coalesced vreg.
+    pub group: SecondaryMap<VReg, Option<VReg>>,
 }
 
 impl Allocation {
+    /// The vreg that stands for `v` when values are compared: coalesced vregs
+    /// are one value.
+    pub(crate) fn canon(&self, v: VReg) -> VReg {
+        self.group[v].unwrap_or(v)
+    }
+
     /// The global index of instruction `k` of `block`. `k` equals the number
     /// of instructions for the terminator.
     pub fn index(&self, block: LBlock, k: u32) -> u32 {
@@ -265,11 +280,114 @@ pub fn allocate(
     let num = liveness::Numbering::new(func)?;
     let live = liveness::compute(func, &num)?;
     let built = intervals::build(func, &num, &live, regs)?;
-    let mut asg = linear_scan::run(func, &num, built, regs)?;
-    let moves = resolve::resolve(func, &num, &live, &asg, scratch)?;
+    let weights = weights::Weights::compute(func, &num);
+    let cfg = opt();
+
+    // Compare mode: every allocator named after the active one runs the same
+    // post-pass and the same verifier, but only the active one is kept. They
+    // run first because the post-pass writes the safepoint masks of `func`.
+    for &other in cfg.regalloc_compare() {
+        if let Err(err) = compare(other, func, &num, &live, &built, regs, &weights, scratch) {
+            crate::heap::logging::ensure_max_level(log::LevelFilter::Warn);
+            log::warn!(
+                target: crate::heap::logging::JIT_LOG_TARGET,
+                "regalloc {} failed: {err}",
+                other.name()
+            );
+            stats::record_failure(other);
+        }
+    }
+
+    let started = std::time::Instant::now();
+    let asg = run_one(cfg.regalloc(), func, &num, &built, regs, &weights)?;
+    let alloc = complete(func, &num, &live, asg, regs, scratch)?;
+    if stats::enabled() {
+        let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        stats::record(cfg.regalloc(), &alloc, &weights, micros);
+    }
+    if cfg.verify {
+        if let Err(err) = check(func, &num, &alloc, regs) {
+            // Without this a rejected allocation leaves no trace: the unit is
+            // simply never installed, and the reason is lost.
+            if cfg.dump.iter().any(|stage| stage == "regalloc") {
+                crate::heap::logging::ensure_max_level(log::LevelFilter::Error);
+                log::error!("allocation rejected: {err}\n{}", display(func, &alloc));
+            }
+            return Err(err);
+        }
+    }
+    Ok(alloc)
+}
+
+/// Runs one allocator. Every allocator takes the same inputs and returns the
+/// same placement, so the choice is a single dispatch.
+fn run_one(
+    kind: RegAllocKind,
+    func: &LirFunc,
+    num: &liveness::Numbering,
+    built: &intervals::Built,
+    regs: &RegFile,
+    weights: &weights::Weights,
+) -> Result<assign::Assignment, String> {
+    match kind {
+        RegAllocKind::LinearScan => linear_scan::run(func, num, built, regs, weights),
+        RegAllocKind::Greedy => greedy::run(func, num, built, regs, weights),
+    }
+}
+
+/// Runs a non-active allocator for its measurements: the same post-pass and
+/// verifier as the active one, with the result dropped.
+fn compare(
+    kind: RegAllocKind,
+    func: &mut LirFunc,
+    num: &liveness::Numbering,
+    live: &liveness::Liveness,
+    built: &intervals::Built,
+    regs: &RegFile,
+    weights: &weights::Weights,
+    scratch: Scratch,
+) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    let asg = run_one(kind, func, num, built, regs, weights)?;
+    let alloc = complete(func, num, live, asg, regs, scratch)?;
+    if let Err(err) = check(func, num, &alloc, regs) {
+        if opt().dump.iter().any(|stage| stage == "regalloc") {
+            crate::heap::logging::ensure_max_level(log::LevelFilter::Error);
+            log::error!(
+                target: crate::heap::logging::JIT_LOG_TARGET,
+                "allocation rejected ({}): {err}\n{}",
+                kind.name(),
+                display(func, &alloc)
+            );
+        }
+        return Err(err);
+    }
+    let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+    if stats::enabled() {
+        stats::record(kind, &alloc, weights, micros);
+    } else {
+        log::debug!(
+            "regalloc {}: {} spill slots, {} moves, {micros} us",
+            kind.name(),
+            alloc.spill_slots,
+            alloc.moves.iter().map(Vec::len).sum::<usize>(),
+        );
+    }
+    Ok(())
+}
+
+fn complete(
+    func: &mut LirFunc,
+    num: &liveness::Numbering,
+    live: &liveness::Liveness,
+    mut asg: assign::Assignment,
+    regs: &RegFile,
+    scratch: Scratch,
+) -> Result<Allocation, String> {
+    let (moves, consts) = resolve::resolve(func, num, live, &asg, scratch)?;
     let spill_slots_before_polls = asg.spill_slots;
-    let polls = stackmap::reserve_poll_saves(func, &num, &mut asg);
-    let (deopt, remat) = stackmap::build(func, &num, &asg, regs, &polls)?;
+    let polls = stackmap::reserve_poll_saves(func, num, &mut asg);
+    let (deopt, remat) = stackmap::build(func, num, &asg, regs, &polls)?;
 
     let mut pieces: SecondaryMap<VReg, Vec<Piece>> = SecondaryMap::new();
     for v in func.vregs.keys() {
@@ -286,24 +404,27 @@ pub fn allocate(
         list.sort_by_key(|p| p.ranges[0].0);
         pieces[v] = list;
     }
-    let alloc = Allocation {
+    Ok(Allocation {
         order: num.order.clone(),
         base: num.base.clone(),
         spill_slots: asg.spill_slots,
         spill_slots_before_polls,
         moves,
+        consts,
         pieces,
         deopt,
         remat,
         polls,
-    };
-    if opt().verify {
-        check(func, &alloc, regs)?;
-    }
-    Ok(alloc)
+        group: asg.groups.clone(),
+    })
 }
 
-pub fn check(func: &LirFunc, alloc: &Allocation, regs: &RegFile) -> Result<(), String> {
+pub fn check(
+    func: &LirFunc,
+    num: &liveness::Numbering,
+    alloc: &Allocation,
+    regs: &RegFile,
+) -> Result<(), String> {
     // Pieces that share a location must not overlap.
     let mut by_loc: BTreeMap<(u8, u32), Vec<(u32, u32, VReg)>> = BTreeMap::new();
     for v in func.vregs.keys() {
@@ -318,21 +439,32 @@ pub fn check(func: &LirFunc, alloc: &Allocation, regs: &RegFile) -> Result<(), S
                 }
             };
             for &(lo, hi) in &piece.ranges {
-                by_loc.entry(key).or_default().push((lo, hi, v));
+                by_loc
+                    .entry(key)
+                    .or_default()
+                    .push((lo, hi, alloc.canon(v)));
             }
         }
     }
-    for mut list in by_loc.into_values() {
+    for (key, mut list) in by_loc {
         list.sort();
-        for w in list.windows(2) {
-            if w[0].1 > w[1].0 {
-                return Err(format!(
-                    "{} and {} share a location at {}",
-                    w[0].2, w[1].2, w[1].0
-                ));
+        // Members of one coalesced group may overlap: they are one value.
+        let mut cur = list[0];
+        for &(lo, hi, v) in &list[1..] {
+            if v == cur.2 && lo <= cur.1 {
+                cur.1 = cur.1.max(hi);
+            } else if lo < cur.1 {
+                let loc = match key {
+                    (0, r) => format!("p{r}"),
+                    (_, s) => format!("[s{s}]"),
+                };
+                return Err(format!("{} and {} share {loc} at {lo}", cur.2, v));
+            } else {
+                cur = (lo, hi, v);
             }
         }
     }
+    check_coalescing(func, num, alloc)?;
 
     let in_pool = |r: PhysReg| regs.gprs.contains(&r) || regs.fprs.contains(&r);
     for &b in &alloc.order {
@@ -371,7 +503,7 @@ pub fn check(func: &LirFunc, alloc: &Allocation, regs: &RegFile) -> Result<(), S
                     let covers = piece
                         .ranges
                         .iter()
-                        .any(|&(lo, hi)| lo <= 2 * g + 1 && 2 * g + 1 < hi);
+                        .any(|&(lo, hi)| lo <= pos::late(g) && pos::late(g) < hi);
                     if let (true, Loc::Slot(s)) = (covers, piece.loc) {
                         if !has(s) {
                             return Err(format!(
@@ -395,7 +527,7 @@ pub fn check(func: &LirFunc, alloc: &Allocation, regs: &RegFile) -> Result<(), S
                     ..
                 }
             );
-            let pos = if poll { 2 * g + 1 } else { 2 * g };
+            let pos = if poll { pos::late(g) } else { pos::early(g) };
             for v in func.vregs.keys() {
                 if func.class(v) != RegClass::Gpr || !func.is_gc_root(v) {
                     continue;
@@ -431,7 +563,80 @@ pub fn check(func: &LirFunc, alloc: &Allocation, regs: &RegFile) -> Result<(), S
             }
         }
     }
-    Ok(())
+
+    for v in func.vregs.keys() {
+        let pieces = &alloc.pieces[v];
+        let is_slot = |l: Loc| matches!(l, Loc::Slot(_));
+        for a in pieces {
+            for &(_, p) in &a.ranges {
+                let Some(b) = pieces.iter().find(|b| b.ranges.iter().any(|r| r.0 == p)) else {
+                    continue;
+                };
+                if std::ptr::eq(a, b) || a.loc == b.loc || pos::inst_of(p) >= num.count {
+                    continue;
+                }
+                let block = num.block_at[pos::inst_of(p) as usize];
+                if p == num.from(block) {
+                    continue;
+                }
+
+                if !num.can_split_at(p) {
+                    return Err(format!(
+                        "{v} changes location from {} to {} at {p}, which is not a gap",
+                        a.loc, b.loc
+                    ));
+                }
+
+                let g = pos::inst_of(p) as usize;
+                if !is_slot(a.loc)
+                    && is_slot(b.loc)
+                    && !reaches(
+                        alloc,
+                        if p % pos::POINTS == 0 { g } else { g + 1 },
+                        a.loc,
+                        b.loc,
+                    )
+                {
+                    continue;
+                }
+
+                let at = if p % pos::POINTS == 0 { g } else { g + 1 };
+
+                if !reaches(alloc, at, a.loc, b.loc) {
+                    return Err(format!(
+                        "no move connects {v} from {} to {} at {p} (expected before {at})",
+                        a.loc, b.loc
+                    ));
+                }
+            }
+        }
+    }
+    flowcheck::check(func, num, alloc, regs)
+}
+
+/// Whether the parallel move at instruction `at` carries a value from `from`
+/// to `to`.
+fn reaches(alloc: &Allocation, at: usize, from: Loc, to: Loc) -> bool {
+    let Some(moves) = alloc.moves.get(at) else {
+        return from == to;
+    };
+    let mut frontier = vec![from];
+    let mut seen: Vec<Loc> = Vec::new();
+    while let Some(loc) = frontier.pop() {
+        if loc == to {
+            return true;
+        }
+        if seen.contains(&loc) {
+            continue;
+        }
+        seen.push(loc);
+        for m in moves {
+            if m.src == loc {
+                frontier.push(m.dst);
+            }
+        }
+    }
+    from == to
 }
 
 fn check_ops(
@@ -442,9 +647,9 @@ fn check_ops(
 ) -> Result<(), String> {
     for op in ops {
         let pos = if op.role == Role::Use {
-            2 * g
+            pos::early(g)
         } else {
-            2 * g + 1
+            pos::late(g)
         };
         let loc = alloc
             .loc_at(op.vreg, pos)
@@ -488,8 +693,8 @@ fn check_ops(
     for op in ops.iter().filter(|o| o.role == Role::Def) {
         if let Constraint::Tied(n) = op.constraint {
             let src = ops.get(n).ok_or("a tied operand is missing")?;
-            let a = alloc.loc_at(src.vreg, 2 * g);
-            let b = alloc.loc_at(op.vreg, 2 * g + 1);
+            let a = alloc.loc_at(src.vreg, pos::early(g));
+            let b = alloc.loc_at(op.vreg, pos::late(g));
             if a != b {
                 return Err(format!("the tied operands of {} differ", op.vreg));
             }
@@ -518,7 +723,7 @@ fn check_clobbers(
                     let covers = piece
                         .ranges
                         .iter()
-                        .any(|&(lo, hi)| lo <= 2 * g + 1 && 2 * g + 1 < hi);
+                        .any(|&(lo, hi)| lo <= pos::late(g) && pos::late(g) < hi);
                     if !covers {
                         continue;
                     }
@@ -536,7 +741,7 @@ fn check_clobbers(
                     let covers = piece
                         .ranges
                         .iter()
-                        .any(|&(lo, hi)| lo <= 2 * g + 1 && 2 * g + 1 < hi);
+                        .any(|&(lo, hi)| lo <= pos::late(g) && pos::late(g) < hi);
                     if !covers {
                         continue;
                     }
@@ -560,7 +765,7 @@ fn check_clobbers(
                     let covers = piece
                         .ranges
                         .iter()
-                        .any(|&(lo, hi)| lo < 2 * g + 2 && 2 * g < hi);
+                        .any(|&(lo, hi)| lo < pos::post(g) && pos::early(g) < hi);
                     if !covers {
                         continue;
                     }
@@ -669,4 +874,52 @@ pub fn display(func: &LirFunc, alloc: &Allocation) -> String {
         }
     }
     out
+}
+
+fn check_coalescing(
+    func: &LirFunc,
+    num: &liveness::Numbering,
+    alloc: &Allocation,
+) -> Result<(), String> {
+    let mut members: BTreeMap<VReg, Vec<VReg>> = BTreeMap::new();
+    for v in func.vregs.keys() {
+        if let Some(rep) = alloc.group[v] {
+            members.entry(rep).or_default().push(v);
+        }
+    }
+    if members.is_empty() {
+        return Ok(());
+    }
+    let live_at = |v: VReg, p: u32| {
+        alloc.pieces[v]
+            .iter()
+            .any(|piece| assign::covers(&piece.ranges, p))
+    };
+    for &b in &num.order {
+        for (k, inst) in func.blocks[b].insts.iter().enumerate() {
+            let q = pos::late(num.base[b] + k as u32);
+            for op in inst.operands(func) {
+                if op.role != Role::Def {
+                    continue;
+                }
+                let Some(rep) = alloc.group[op.vreg] else {
+                    continue;
+                };
+                if let LirInst::Move { src, .. } = inst {
+                    if alloc.group[*src] == Some(rep) {
+                        continue;
+                    }
+                }
+                for &w in &members[&rep] {
+                    if w != op.vreg && live_at(w, q) {
+                        return Err(format!(
+                            "{}: a non-copy def of {} at {q} while its group member {w} is live",
+                            b, op.vreg
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }

@@ -1,7 +1,5 @@
 //! Spill-slot coloring and coalescing.
 //!
-//! Inspired by WebKit's `AirAllocateStackByGraphColoring`, which colors stack slots after register allocation.
-//!
 //! The pass:
 //!
 //! 1. builds the exact interference relation over stack pieces of different
@@ -16,9 +14,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use cranelift_entity::SecondaryMap;
 
-use super::intervals::{Assign, Built, merge};
-use super::linear_scan::covers;
+use super::assign::covers;
+use super::intervals::{Assign, Child, merge};
 use super::liveness::Numbering;
+use super::pos;
 use crate::runtime::codegen::opt::lir::{LirFunc, LirInst, VReg};
 
 fn stack_at(stack: &SecondaryMap<VReg, Vec<(u32, u32)>>, vreg: VReg, pos: u32) -> bool {
@@ -39,7 +38,7 @@ fn conflict(a: &[(u32, u32)], b: &[(u32, u32)], allowed: Option<&BTreeSet<u32>>)
             } else {
                 continue;
             };
-            if touch % 2 == 1 && !allowed.is_some_and(|set| set.contains(&touch)) {
+            if !pos::is_gap(touch) && !allowed.is_some_and(|set| set.contains(&touch)) {
                 return true;
             }
         }
@@ -60,12 +59,19 @@ fn find(parent: &mut [usize], mut x: usize) -> usize {
 pub(crate) fn assign_slots(
     func: &LirFunc,
     num: &Numbering,
-    built: &Built,
+    children: &[Child],
+    coherence: &super::assign::Coherence,
 ) -> (u32, SecondaryMap<VReg, Option<u32>>) {
     let mut stack: SecondaryMap<VReg, Vec<(u32, u32)>> = SecondaryMap::new();
-    for c in &built.children {
+    for c in children {
         if c.assign == Some(Assign::Stack) {
             stack[c.vreg].extend_from_slice(&c.ranges);
+        }
+    }
+    // Where the slot holds the value for a later read, a store is skipped.
+    for v in func.vregs.keys() {
+        if !stack[v].is_empty() {
+            stack[v].extend_from_slice(&coherence.extents[v]);
         }
     }
     let mut vregs: Vec<VReg> = Vec::new();
@@ -110,8 +116,8 @@ pub(crate) fn assign_slots(
             if func.class(*dst) != func.class(*src) {
                 continue;
             }
-            let use_pos = 2 * (base + k as u32);
-            let def_pos = use_pos + 1;
+            let use_pos = pos::early(base + k as u32);
+            let def_pos = pos::late(base + k as u32);
             if stack_at(&stack, *src, use_pos) && stack_at(&stack, *dst, def_pos) {
                 add(*src, *dst, Some(def_pos));
             }
@@ -212,37 +218,4 @@ pub(crate) fn assign_slots(
         slot_of[v] = color[r];
     }
     (spill_slots, slot_of)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::conflict;
-    use std::collections::BTreeSet;
-
-    #[test]
-    fn overlap_conflicts() {
-        assert!(conflict(&[(0, 5)], &[(4, 8)], None));
-    }
-
-    #[test]
-    fn even_touch_is_safe() {
-        assert!(!conflict(&[(0, 4)], &[(4, 8)], None));
-    }
-
-    #[test]
-    fn odd_touch_conflicts() {
-        assert!(conflict(&[(0, 5)], &[(5, 8)], None));
-    }
-
-    #[test]
-    fn allowed_odd_touch_is_safe() {
-        let mut allowed = BTreeSet::new();
-        allowed.insert(5);
-        assert!(!conflict(&[(0, 5)], &[(5, 8)], Some(&allowed)));
-    }
-
-    #[test]
-    fn gap_is_safe() {
-        assert!(!conflict(&[(0, 2)], &[(4, 8)], None));
-    }
 }

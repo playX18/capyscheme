@@ -5,8 +5,9 @@ use std::collections::{HashMap, HashSet};
 
 use cranelift_entity::{PrimaryMap, SecondaryMap};
 
-use super::linear_scan::{Assignment, covers};
+use super::assign::{Assignment, covers};
 use super::liveness::Numbering;
+use super::pos;
 use super::{DeoptLoc, Loc, PhysReg, RegFile, RematDesc};
 use crate::runtime::codegen::opt::ir::inst::Constant;
 use crate::runtime::codegen::opt::lir::{
@@ -39,7 +40,7 @@ pub(crate) fn reserve_poll_saves(
             let LirInst::Poll { safepoint } = inst else {
                 continue;
             };
-            let pos = 2 * (base + k as u32);
+            let pos = pos::early(base + k as u32);
             let mut saves = Vec::new();
             for v in func.vregs.keys() {
                 if func.class(v) != RegClass::Gpr {
@@ -162,7 +163,7 @@ pub(crate) fn build(
             }
             for &id in &asg.vreg_children[v] {
                 let c = &asg.children[id];
-                if c.assign == Some(super::intervals::Assign::Stack) && covers(&c.ranges, 2 * g + 1)
+                if c.assign == Some(super::intervals::Assign::Stack) && covers(&c.ranges, pos::late(g))
                 {
                     if let Some(s) = asg.slot_of[v] {
                         set(&mut w, s);
@@ -172,13 +173,13 @@ pub(crate) fn build(
 
             match kind {
                 Kind::Poll => {
-                    if let Some(Loc::Reg(r)) = asg.loc_at(v, 2 * g + 1) {
+                    if let Some(Loc::Reg(r)) = asg.loc_at(v, pos::late(g)) {
                         regmask.set(r.0);
                     }
                 }
 
                 Kind::RustCall => {
-                    if let Some(Loc::Reg(r)) = asg.loc_at(v, 2 * g) {
+                    if let Some(Loc::Reg(r)) = asg.loc_at(v, pos::early(g)) {
                         if regs.call_preserved(r) {
                             regmask.set(r.0);
                         }
@@ -198,7 +199,7 @@ pub(crate) fn build(
             if !func.is_gc_root(vreg) {
                 continue;
             }
-            match asg.loc_at(vreg, 2 * g) {
+            match asg.loc_at(vreg, pos::early(g)) {
                 Some(Loc::Slot(s)) => set(&mut w, s),
                 Some(Loc::Reg(_)) if polls[sp].iter().any(|s| s.vreg == vreg) => {
                     let save = polls[sp].iter().find(|s| s.vreg == vreg).unwrap();
@@ -223,7 +224,7 @@ pub(crate) fn build(
             func,
             asg,
             const_of: &const_of,
-            pos: 2 * g,
+            pos: pos::early(g),
             exit: e,
             table: Vec::new(),
             memo: HashMap::new(),

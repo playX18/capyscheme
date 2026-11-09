@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use cranelift_entity::{EntityRef, SecondaryMap};
 
 use super::liveness::{Liveness, Numbering};
+use super::pos;
 use super::{PhysReg, RegFile};
 use crate::runtime::codegen::opt::lir::{
     CallTarget, Clobbers, Constraint, LBlock, LEdge, LirBlock, LirFunc, LirInst, LirTerm, PhysRole,
@@ -362,8 +363,8 @@ pub(crate) fn copy_hints(
             if func.class(*dst) != func.class(*src) {
                 continue;
             }
-            let use_pos = 2 * (base + k as u32);
-            let def_pos = use_pos + 1;
+            let use_pos = pos::early(base + k as u32);
+            let def_pos = pos::late(base + k as u32);
             hints[*dst].push(Hint {
                 pos: def_pos,
                 partner: *src,
@@ -425,28 +426,31 @@ pub(crate) fn build(
         }
         for op in term_ops(func, term) {
             if op.role == Role::Use {
+                let hi = *open.entry(op.vreg).or_insert(tpos + 1);
                 if let Constraint::Fixed(role) = op.constraint {
                     let reg = phys_for(regs, role)?;
+                    // A piece changes location only at a gap, so the fixed
+                    // piece starts at the gap before the terminator.
+                    let lo = pos::pre(num.term[b]);
                     specials[op.vreg].push(Special {
-                        lo: tpos,
-                        hi: tpos + 1,
+                        lo,
+                        hi,
                         assign: Assign::Reg(reg),
                     });
                     // Linear scan only sees a pre-assigned piece through
                     // `fixed`. Without this, a dead block parameter defined
                     // at the same position can take the same register, and
                     // its edge move then overwrites the returned value.
-                    fixed.entry(reg).or_default().push((tpos, tpos + 1));
+                    fixed.entry(reg).or_default().push((lo, hi));
                 }
-                open.entry(op.vreg).or_insert(tpos + 1);
             }
         }
 
         let base = num.base[b];
         for (k, inst) in data.insts.iter().enumerate().rev() {
             let g = base + k as u32;
-            let use_pos = 2 * g;
-            let def_pos = use_pos + 1;
+            let use_pos = pos::early(g);
+            let def_pos = pos::late(g);
             let ops = inst_ops(func, inst);
             {
                 let mut frame: Vec<VReg> = Vec::new();
@@ -477,27 +481,39 @@ pub(crate) fn build(
                     fixed.entry(reg).or_default().push((def_pos, def_pos + 1));
                 }
             }
+
+            let live_after: HashSet<VReg> = open.keys().copied().collect();
             for op in ops.iter().filter(|o| o.role == Role::Use) {
                 open.entry(op.vreg).or_insert(use_pos + 1);
                 if op.call_safe {
                     call_safe[op.vreg].push(use_pos);
                 }
+
+                // A constrained use starts at the Pre gap: the piece cannot
+                // begin between Pre and Early, where no move can run.
+                let lo = pos::pre(g);
+                let hi = if live_after.contains(&op.vreg) {
+                    pos::post(g)
+                } else {
+                    pos::late(g)
+                };
                 if op.slot {
                     specials[op.vreg].push(Special {
-                        lo: use_pos,
-                        hi: use_pos + 1,
+                        lo,
+                        hi,
                         assign: Assign::Stack,
                     });
                 } else if let Constraint::Fixed(role) = op.constraint {
                     let reg = phys_for(regs, role)?;
                     specials[op.vreg].push(Special {
-                        lo: use_pos,
-                        hi: use_pos + 1,
+                        lo,
+                        hi,
                         assign: Assign::Reg(reg),
                     });
-                    fixed.entry(reg).or_default().push((use_pos, use_pos + 1));
+                    fixed.entry(reg).or_default().push((lo, hi));
                 }
             }
+
             match inst.clobbers() {
                 Clobbers::All => {
                     for &r in regs.gprs.iter().chain(&regs.fprs) {
@@ -559,12 +575,19 @@ pub(crate) fn build(
         if ss.is_empty() && sps.is_empty() {
             continue;
         }
-        sps.sort_by_key(|s| s.lo);
-        // A safepoint can list one vreg in several frame slots. Each listing is
-        // the same constraint at the same position, so one is enough.
-        sps.dedup_by(|later, kept| {
-            later.lo == kept.lo && later.hi == kept.hi && later.assign == kept.assign
-        });
+        sps.sort_by_key(|s| (s.lo, s.hi));
+
+        let mut merged: Vec<Special> = Vec::with_capacity(sps.len());
+        for sp in sps {
+            match merged.last_mut() {
+                Some(last) if last.assign == sp.assign && sp.lo <= last.hi + 1 => {
+                    last.hi = last.hi.max(sp.hi);
+                }
+                _ => merged.push(sp),
+            }
+        }
+
+        let sps = merged;
         let mut si = 0;
         for &(lo, hi) in &ss {
             let mut cur = lo;
