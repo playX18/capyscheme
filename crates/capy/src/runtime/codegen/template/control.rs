@@ -1,5 +1,6 @@
 //! The shared slow-path call both contexts leave through.
 
+use crate::runtime::codegen::import::ImportKey;
 use onlineasm::{Extern, VReg, onlineasm};
 
 use super::super::masm::Masm;
@@ -102,7 +103,7 @@ pub(crate) fn emit_control(masm: &mut Masm, paths: &SlowPaths, path: SlowPath) {
 #[derive(Clone, Copy)]
 pub(crate) enum SiteOperand {
     Register(VReg),
-    Immediate(usize),
+    Cell(usize),
 }
 
 /// Leave through a stub repatching slow path: exactly [`emit_control`]'s
@@ -124,9 +125,7 @@ pub(crate) fn emit_site_slow_call(masm: &mut Masm, target: Extern, site: SiteOpe
         SiteOperand::Register(register) => onlineasm!(*masm.assembler();
             move {a1}, {register};
         ),
-        SiteOperand::Immediate(addr) => onlineasm!(*masm.assembler();
-            move {a1}, {addr as i64};
-        ),
+        SiteOperand::Cell(index) => masm.load_import(a1, ImportKey::Cell(index as u32)),
     }
     onlineasm!(*masm.assembler();
         move {a0}, {tc};
@@ -147,9 +146,9 @@ pub(crate) fn emit_staged_control(
 ) {
     // Neither is live in compiled code otherwise.
     let (pc, m) = (regs::PC, regs::MD);
-    onlineasm!(*masm.assembler(); move {pc}, {ip as i64};);
+    masm.load_ip(pc, ip as usize);
     if let SlowPath::CallSlow = path {
-        onlineasm!(*masm.assembler(); move {m}, {md as i64};);
+        masm.load_md(m, md);
     }
     emit_control(masm, paths, path);
 }

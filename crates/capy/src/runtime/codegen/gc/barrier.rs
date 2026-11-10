@@ -3,6 +3,7 @@ use onlineasm::{Label, VReg, onlineasm};
 use smallvec::ToSmallVec;
 
 use super::GcCodegen;
+use crate::runtime::codegen::import::{ImportKey, RuntimeSym};
 use crate::runtime::codegen::masm::{Masm, RuntimeExtern};
 use crate::runtime::codegen::template::{
     OpArg, OpContinue, OpResult, OpTarget, OperationCall, TemplateContext,
@@ -75,10 +76,10 @@ impl GcCodegen {
             BarrierSelector::NoBarrier => {}
             BarrierSelector::ObjectBarrier | BarrierSelector::SATBBarrier => {
                 let byte = masm.assembler().mem(t, 0);
+                masm.load_import(t2, ImportKey::Runtime(RuntimeSym::UnlogBase));
                 onlineasm!(*masm.assembler();
                     move {t}, {obj};
                     urshiftp {t}, 6;
-                    move {t2}, {self.info.unlog_side_metadata_base as i64};
                     addp {t}, {t}, {t2};
                     loadb {t2}, {byte};
                     move {t}, {obj};

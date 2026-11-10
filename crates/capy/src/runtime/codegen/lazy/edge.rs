@@ -24,10 +24,9 @@ use mmtk::util::Address;
 use onlineasm::asmkit::Span;
 use onlineasm::{Label, PatchHandle, VReg, onlineasm};
 
-use super::super::addr::{CodeOffset, imm};
-use super::super::emission::Emission;
+use super::super::addr::CodeOffset;
 use super::super::masm::{Masm, RuntimeExtern};
-use super::super::reloc::{Reloc, masm_move_patchable};
+use super::super::import::ImportKey;
 use super::super::template::{SiteOperand, emit_site_slow_call, tmp};
 use super::{CellHeader, CellState};
 use crate::runtime::code_memory::code_memory;
@@ -48,23 +47,16 @@ pub(crate) enum EdgeKind {
 
 pub(crate) const SITE_TMP: VReg = tmp::T3;
 
-pub(crate) fn emit_indirect_edge(masm: &mut Masm, emission: &mut Emission, pending: usize) {
+pub(crate) fn emit_indirect_edge(masm: &mut Masm, cell: usize) {
     // The jump reads the cell's first word.
-    let at = masm_move_patchable(masm, SITE_TMP);
+    masm.load_import(SITE_TMP, ImportKey::Cell(cell as u32));
     let slot = masm.assembler().mem(SITE_TMP, 0);
     onlineasm!(*masm.assembler(); jmp {slot};);
-    emission.reloc(Reloc::Cell { at, pending });
 }
 
-/// An indirect edge whose cell address is known now (a cell allocated while
-/// materializing): the same code with the address baked.
-pub(crate) fn emit_indirect_edge_to(masm: &mut Masm, cell: Address) {
-    let slot = masm.assembler().mem(SITE_TMP, 0);
-    let cell = imm(cell);
-    onlineasm!(*masm.assembler();
-        move {SITE_TMP}, {cell};
-        jmp {slot};
-    );
+/// An indirect edge to the unit's arena cell `cell`.
+pub(crate) fn emit_indirect_edge_to(masm: &mut Masm, cell: usize) {
+    emit_indirect_edge(masm, cell);
 }
 
 /// The direct jump of a [`Direct`](EdgeKind::Direct) edge: patch-aligned, to
@@ -194,7 +186,7 @@ pub(crate) fn resolve_direct(header: &CellHeader, to: CellState, entry: Address)
 /// passing the cell in the second C argument. Terminal: calls and jumps where
 /// the hit says.
 pub(crate) fn emit_hit_block(masm: &mut Masm, ip: Ip, cell: SiteOperand) {
-    onlineasm!(*masm.assembler(); move {regs::PC}, {ip as i64};);
+    masm.load_ip(regs::PC, ip as usize);
     let hit = masm.declare_rust_fn(RuntimeExtern::LazyHit);
     emit_site_slow_call(masm, hit, cell);
 }

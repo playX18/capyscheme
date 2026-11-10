@@ -107,6 +107,8 @@ impl VRepr {
             Constant::Int64(_) => VRepr::RawInt64,
             Constant::Double(_) => VRepr::Double,
             Constant::Bits(_) | Constant::Table(_) | Constant::Pool { .. } => VRepr::Tagged,
+            // A raw pointer into a code buffer, never a Scheme word.
+            Constant::Block { .. } => VRepr::RawBits,
         }
     }
 

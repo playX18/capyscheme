@@ -8,10 +8,7 @@
 
 use onlineasm::{Label, VReg, onlineasm};
 
-use super::super::emission::Emission;
 use super::super::masm::Masm;
-#[cfg(target_arch = "aarch64")]
-use super::super::reloc::{Reloc, masm_move_patchable};
 use super::super::template::tmp;
 use crate::{
     runtime::sabi::{self, regs},
@@ -31,7 +28,7 @@ pub(crate) fn emit_enter_callee(masm: &mut Masm) {
 
 /// The entry of a baseline unit: jump to the block's current entry when it is
 /// not this redirect, otherwise fall through to the baseline instructions.
-pub(crate) fn emit_optimized_redirect(masm: &mut Masm, emission: &mut Emission, redirect: Label) {
+pub(crate) fn emit_optimized_redirect(masm: &mut Masm, redirect: Label) {
     let (cp, t0, t1) = (regs::CP, tmp::T0, tmp::T1);
     let block = masm.assembler().mem(cp, sabi::CLOSURE_CODE_BLOCK as i32);
     let entry = masm.assembler().mem(t0, sabi::CODE_BLOCK_ENTRY as i32);
@@ -43,15 +40,6 @@ pub(crate) fn emit_optimized_redirect(masm: &mut Masm, emission: &mut Emission, 
         bpeq {t1}, -1, {interpreted};
     );
 
-    #[cfg(target_arch = "aarch64")]
-    {
-        let at = masm_move_patchable(masm, t0);
-        emission.reloc(Reloc::LabelAddr {
-            at,
-            target: redirect,
-        });
-    }
-    #[cfg(not(target_arch = "aarch64"))]
     onlineasm!(*masm.assembler(); leap {t0}, {redirect};);
     onlineasm!(*masm.assembler();
         bpeq {t1}, {t0}, {interpreted};

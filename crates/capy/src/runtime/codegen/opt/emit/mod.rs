@@ -23,9 +23,8 @@
 //!
 //! The deopt exit saves the frame's registers in the layout that
 //! [`SaveArea`](super::deopt::metadata::SaveArea) reads, and resumes at the
-//! address the runtime returns, with the registers reloaded. A constant-table slot is loaded through an absolute address
-//! that is a patchable immediate: the installer points it at the owner's
-//! reference box once the box exists ([`Emitted::constant_sites`]).
+//! address the runtime returns, with the registers reloaded. A constant-table slot is loaded through the owner import, the
+//! address of the code image, at a fixed offset into its inline references.
 //! [`HELPERS`] lists the runtime helpers that a `CallOp` names by index. The
 //! builder emits those calls.
 
@@ -47,20 +46,18 @@ use onlineasm::{Label, VReg as MReg, onlineasm};
 
 use crate::heap::object::builtin_class_ids;
 use crate::runtime::codegen::gc::alloc::AllocSize;
+use crate::runtime::codegen::import::{ImportKey, RuntimeSym, Section};
 use crate::runtime::codegen::gc::{GcCodegen, header_word};
-use crate::runtime::codegen::jit::config::template_interpreter;
 use crate::runtime::codegen::jit::entry::emit_enter_callee;
 use crate::runtime::codegen::masm::{
-    HeaderTarget, Masm, RuntimeExtern, TOPLINK_TO_IMAGE_START, ValuesError,
+    HeaderTarget, Livemask, Masm, RuntimeExtern, TOPLINK_TO_IMAGE_START, ValuesError,
 };
 use crate::runtime::codegen::operation::{
     ERROR_REG, OpArg, OpContinue, OpResult, OpTarget, OperationCall, emit_operation_call,
 };
 use crate::runtime::codegen::reloc::Reloc;
-use crate::runtime::codegen::reloc::masm_move_patchable;
 use crate::runtime::codegen::stubs;
 use crate::runtime::codegen::template::tmp;
-use crate::runtime::codegen::template_image::interpreter_enter_if_loaded;
 use crate::runtime::sabi;
 use crate::runtime::sabi::regs::{self, AC, CP, RV, SFP, TC};
 
@@ -187,15 +184,9 @@ pub(crate) struct Emitted {
     pub(crate) owner: Label,
     /// Words in the frame: bytecode frame plus spill slots.
     pub(crate) frame_words: u32,
-    /// Live masks too large for a header word. The unit keeps them alive.
-    pub(crate) masks: Vec<Box<[u64]>>,
     /// Patches the installer applies after load: AArch64 label addresses,
     /// and on both targets the words of dense switch tables.
     pub(crate) relocs: Vec<Reloc>,
-    /// Patchable address loads of constant-table slots: the immediate at each
-    /// label takes the address of reference slot `slot`. The installer applies
-    /// them once the owner's reference box exists.
-    pub(crate) constant_sites: Vec<(Label, u32)>,
     /// The optimizer's own data islands: the start label and byte length of
     /// each dense switch table. The registry prints them as words, never
     /// as instructions.
@@ -221,9 +212,7 @@ pub(crate) fn emit(masm: &mut Masm, input: Input<'_>) -> Result<Emitted, String>
     emitter.deferred()?;
     emitter.deopt_common()?;
     let frame_words = emitter.frame_words;
-    let masks = std::mem::take(&mut emitter.masks);
     let relocs = std::mem::take(&mut emitter.relocs);
-    let constant_sites = std::mem::take(&mut emitter.constant_sites);
     let data = std::mem::take(&mut emitter.data);
     let osr = std::mem::take(&mut emitter.osr);
     let annotations = std::mem::take(&mut emitter.annotations);
@@ -234,9 +223,7 @@ pub(crate) fn emit(masm: &mut Masm, input: Input<'_>) -> Result<Emitted, String>
         osr,
         owner,
         frame_words,
-        masks,
         relocs,
-        constant_sites,
         data,
         annotations,
     })
@@ -317,7 +304,7 @@ enum Deferred {
         slow: Label,
         join: Label,
         ra: Label,
-        livemask: usize,
+        livemask: Livemask,
         /// The GPRs the poll keeps across the yield, with their frame slots.
         /// The slow path stores them before the call and reloads them after.
         saves: Vec<(MReg, u32)>,
@@ -389,12 +376,8 @@ struct Emitter<'a> {
     blocks: HashMap<LBlock, Label>,
     exits: HashMap<DeoptExit, Label>,
     deferred: Vec<Deferred>,
-    masks: Vec<Box<[u64]>>,
     relocs: Vec<Reloc>,
     constants: u32,
-    constant_sites: Vec<(Label, u32)>,
-    /// Data-island word holding the address of a patched constant slot.
-    pool_slots: HashMap<u32, Label>,
     /// Dense switch tables: `(start label, byte length)`.
     data: Vec<(Label, usize)>,
     code_slots: &'a [u32],
@@ -439,9 +422,7 @@ impl<'a> Emitter<'a> {
         masm.reset();
         // The owner word comes first: the image starts with it, as baseline
         // images do, so return points' toplinks reach the owner slot.
-        let owner = masm.label();
-        masm.bind(owner);
-        masm.reserve_words(8);
+        let owner = masm.import_inline(ImportKey::Owner);
         let entry = masm.label();
         let deopt_common = masm.label();
         let osr = input
@@ -470,11 +451,8 @@ impl<'a> Emitter<'a> {
             blocks: HashMap::new(),
             exits: HashMap::new(),
             deferred: Vec::new(),
-            masks: Vec::new(),
             relocs: Vec::new(),
             constants: input.constants,
-            constant_sites: Vec::new(),
-            pool_slots: HashMap::new(),
             data: Vec::new(),
             code_slots: input.code_slots,
             g: 0,
@@ -533,17 +511,9 @@ impl<'a> Emitter<'a> {
         arch::FPR_TEMP
     }
 
-    /// Loads the address of `target` into `dst`. On AArch64 a label address
-    /// is `adrp` plus `add`, which assumes the image starts a page, so the
-    /// address is a patchable immediate and a relocation (as the baseline's
-    /// `call_return_point` does). x86-64 uses a RIP-relative `leap`.
+    /// Loads the address of `target` into `dst`, PC-relative (`adrp`/`add`
+    /// with a load-time relocation on AArch64).
     fn label_addr(&mut self, dst: MReg, target: Label) {
-        #[cfg(target_arch = "aarch64")]
-        {
-            let at = masm_move_patchable(self.masm, dst);
-            self.relocs.push(Reloc::LabelAddr { at, target });
-        }
-        #[cfg(not(target_arch = "aarch64"))]
         onlineasm!(*self.asm(); leap {dst}, {target};);
     }
 
@@ -555,24 +525,16 @@ impl<'a> Emitter<'a> {
         if slot == 0 || slot > self.constants {
             return Err(format!("constant table slot {slot} is missing"));
         }
-        let label = self.constant_slot_word(slot);
-        let at = self.masm.assembler().mem_label(label);
-        onlineasm!(*self.asm(); loadq {dst}, {at};);
-        Ok(())
-    }
-
-    /// The data word holding the (install-patched) address of a constant
-    /// slot, created once per slot. Empty words deliberately bypass the
-    /// value pool's deduplication: each slot is patched independently.
-    fn constant_slot_word(&mut self, slot: u32) -> Label {
-        if let Some(&label) = self.pool_slots.get(&slot) {
-            return label;
+        // The owner word holds the address of the code image, which keeps its
+        // references inline.
+        self.masm.load_import(dst, ImportKey::Owner);
+        let mut offset = crate::runtime::objectmodel::CodeImage::ref_offset(slot as usize);
+        while offset > 0 {
+            let step = offset.min(4095);
+            onlineasm!(*self.asm(); addq {dst}, {dst}, {step as i64};);
+            offset -= step;
         }
-        let label = self.masm.assembler().embed_u64(0);
-        self.pool_slots.insert(slot, label);
-        self.constant_sites.push((label, slot));
-        self.data.push((label, 8));
-        label
+        Ok(())
     }
 
     /// `dst = bits` from a shared, PC-relative constant island. One
@@ -728,8 +690,8 @@ impl<'a> Emitter<'a> {
 
     /// The live mask of safepoint `sp` in header form: bit `i` for `fp[i + 1]`.
     /// The closure is always live. A spill slot `s` is `fp[frame_size + s]`.
-    /// Returns the header word, or the address of a boxed mask.
-    fn livemask(&mut self, sp: SafePoint) -> Result<usize, String> {
+    /// Returns the header word, or a mask block embedded in the image.
+    fn livemask(&mut self, sp: SafePoint) -> Result<Livemask, String> {
         let data = &self.func.safepoints[sp];
         let mask = data
             .livemask
@@ -757,19 +719,16 @@ impl<'a> Emitter<'a> {
             .find(|(_, w)| **w != 0)
             .map_or(0, |(i, w)| i * 64 + 64 - w.leading_zeros() as usize);
         if length < 63 {
-            return Ok(sabi::livemask_fixnum(bits[0] as usize));
+            return Ok(Livemask::Word(sabi::livemask_fixnum(bits[0] as usize)));
         }
         let mut words = vec![bits.len() as u64];
         words.extend_from_slice(&bits);
-        let words = words.into_boxed_slice();
-        let addr = words.as_ptr() as usize;
-        self.masks.push(words);
-        Ok(addr)
+        Ok(self.masm.embed_mask(&words))
     }
 
     /// Emits the return point header for `ra` (binding it) with `livemask`,
     /// describing this frame.
-    fn rp_header(&mut self, ra: Label, target: HeaderTarget, livemask: usize) {
+    fn rp_header(&mut self, ra: Label, target: HeaderTarget, livemask: Livemask) {
         let bytes = (8 * self.frame_words) as isize;
         self.masm
             .emit_rp_header_at(ra, target, livemask, TOPLINK_TO_IMAGE_START, bytes);
@@ -911,8 +870,8 @@ impl<'a> Emitter<'a> {
         );
         let md_at = self.masm.assembler().mem(regs::CONSTANT_POINTER, -8);
         onlineasm!(*self.asm(); loadp {regs::MD}, {md_at};);
-        let baseline = self.baseline_entry as i64;
-        onlineasm!(*self.asm(); move {T0}, {baseline}; jmp {T0};);
+        self.masm.load_import(T0, ImportKey::BaselineEntry);
+        onlineasm!(*self.asm(); jmp {T0};);
 
         for (selector, label) in self.osr.clone() {
             self.masm.bind(label);
@@ -1082,10 +1041,10 @@ impl<'a> Emitter<'a> {
             // Tier 2 entry counter (`CAPY_JIT_STATS`). Emitted only when stats
             // are on, so a run without them carries no counter. The room
             // check above has passed, so the entry is taken.
-            let counter =
-                std::ptr::addr_of!(crate::runtime::codegen::jit::config::OPT_ENTRIES) as i64;
+            self.masm
+                .load_import(T0, ImportKey::Runtime(RuntimeSym::OptEntries));
             let at = self.masm.assembler().mem(T0, 0);
-            onlineasm!(*self.asm(); move {T0}, {counter}; loadq {T1}, {at}; addq {T1}, {T1}, 1; storeq {at}, {T1};);
+            onlineasm!(*self.asm(); loadq {T1}, {at}; addq {T1}, {T1}, 1; storeq {at}, {T1};);
         }
         let params = self.func.blocks[entry_block].params.clone();
         let regs = self.entry_regs.len();
@@ -1637,10 +1596,20 @@ impl<'a> Emitter<'a> {
                             return Err("a constant of an inlined code block is not supported yet"
                                 .to_string());
                         }
-                        let addr = (self.constant_slot)(index) as u64;
-                        self.const_pool_load(T0, addr);
+                        self.masm.load_import(
+                            T0,
+                            ImportKey::Block(0, Section::Bytecode, -8 * (3 + index as i32)),
+                        );
                         let mem = self.masm.assembler().mem(T0, 0);
                         onlineasm!(*self.asm(); loadq {t.reg}, {mem};);
+                    }
+                    Constant::Block {
+                        code,
+                        section,
+                        offset,
+                    } => {
+                        self.masm
+                            .load_import(t.reg, ImportKey::Block(code.index() as u32, section, offset));
                     }
                     Constant::Table(index) => {
                         self.load_constant_addr(T0, index)?;
@@ -2868,8 +2837,7 @@ impl<'a> Emitter<'a> {
 
     /// Branches to `fail` when the unit has been invalidated.
     fn branch_invalid(&mut self, fail: Label) {
-        let addr = self.invalid_word as i64;
-        onlineasm!(*self.asm(); move {T0}, {addr};);
+        self.masm.load_import(T0, ImportKey::InvalidWord);
         let mem = self.masm.assembler().mem(T0, 0);
         onlineasm!(*self.asm(); loadi {T0}, {mem}; bqneq {T0}, 0, {fail};);
     }
@@ -2954,10 +2922,9 @@ impl<'a> Emitter<'a> {
     /// baseline's `closure` template does. The `StoreFree`s that follow fill
     /// every free variable before any safepoint.
     fn init_closure(&mut self, obj: MReg, code: CodeRef, free: u32) -> Result<(), String> {
-        let enter = interpreter_enter_if_loaded().ok_or("the interpreter entry is not loaded")?
-            as usize as i64;
         let slot = self.code_slot(code)?;
-        onlineasm!(*self.asm(); move {T0}, {enter};);
+        self.masm
+            .load_import(T0, ImportKey::Runtime(RuntimeSym::InterpreterEnter));
         let code_at = self.masm.assembler().mem(obj, sabi::CLOSURE_CODE as i32);
         onlineasm!(*self.asm(); storeq {code_at}, {T0};);
         self.load_constant_addr(T1, slot)?;
@@ -3151,7 +3118,7 @@ impl<'a> Emitter<'a> {
         // several values reach `ra`, which takes the first.
         let mut take_labels = None;
         let target = match values {
-            ReturnValues::Error => HeaderTarget::Absolute(template_interpreter().values_error),
+            ReturnValues::Error => HeaderTarget::Runtime(RuntimeSym::ValuesError),
             ReturnValues::Ignore => HeaderTarget::Label(ra),
             // Several values reach the entry's exit, which pops the callee
             // frame and hands the count over (`Deferred::Returned`).
@@ -3661,7 +3628,7 @@ impl<'a> Emitter<'a> {
                 // function.
                 let ra_at = self.masm.assembler().mem(SFP, 0);
                 onlineasm!(*self.asm(); loadq {T1}, {ra_at};);
-                let values_error = ValuesError::Address(template_interpreter().values_error);
+                let values_error = ValuesError::Import;
                 self.masm.emit_mv_target(T1, T2, T3, values_error);
                 // `fp[2..]` is below every spill slot.
                 for (i, &value) in values.iter().enumerate() {

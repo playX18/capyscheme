@@ -19,6 +19,7 @@ use crate::bytecode::def::{
 };
 use crate::heap::Gc;
 use crate::runtime::MutationContext;
+use crate::runtime::codegen::import::Section;
 use crate::runtime::codegen::jit::config::opt;
 use crate::runtime::codegen::opt::ir::frame_state::{
     CallSite, FrameState, FrameStateData, ReturnedValues,
@@ -2642,15 +2643,23 @@ impl<'s, 'gc> Builder<'s, 'gc> {
     /// non-moving code buffer, which the unit keeps alive, so the address is
     /// a plain constant.
     fn table_address(&mut self, pool_index: u32) -> Value {
-        let address = self.buffer.pool().as_ptr() as u64 + 4 * u64::from(pool_index);
-        self.bits(address)
+        self.konst(Constant::Block {
+            code: root(),
+            section: Section::Pool,
+            offset: 4 * pool_index as i32,
+        })
     }
 
     /// The address of a metadata entry, computed from the code buffer's
     /// metadata area by `entry`.
     fn metadata_address(&mut self, entry: impl FnOnce(*mut u8) -> u64) -> Value {
-        let address = entry(self.buffer.metadata());
-        self.bits(address)
+        let md = self.buffer.metadata();
+        let offset = entry(md) as usize - md as usize;
+        self.konst(Constant::Block {
+            code: root(),
+            section: Section::Metadata,
+            offset: offset as i32,
+        })
     }
 
     /// Ends the block with a symbol switch whose case index is `key`, an

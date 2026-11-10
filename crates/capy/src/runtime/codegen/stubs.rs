@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize};
 
 use onlineasm::{Extern, Label, VReg, onlineasm};
 
-use super::addr::imm;
 use super::gc::GcCodegen;
+use super::import::{ImportKey, RuntimeSym};
 use super::image::LoadedImage;
 use super::lazy::builder::StubBuilder;
 use super::masm::{Masm, RuntimeExtern, SymbolKind};
@@ -86,7 +86,7 @@ pub fn op_counts() -> [[u64; 256]; 3] {
     })
 }
 
-fn op_count_addr(width: usize, byte: u8) -> usize {
+pub(crate) fn op_count_addr(width: usize, byte: u8) -> usize {
     debug_assert!(width < 3);
     &OP_COUNTS[width * 256 + byte as usize] as *const AtomicU64 as usize
 }
@@ -278,10 +278,15 @@ pub fn emit_op_count(masm: &mut Masm, width: usize, byte: u8, enabled: bool) {
     if !enabled {
         return;
     }
-    let addr = op_count_addr(width, byte) as i64;
     let (t0, t1) = (tmp::T0, tmp::T1);
+    masm.load_import(
+        t1,
+        ImportKey::Runtime(RuntimeSym::OpCount {
+            width: width as u8,
+            byte,
+        }),
+    );
     onlineasm!(*masm.assembler();
-        move {t1}, {addr};
         loadq {t0}, [{t1}];
         addq {t0}, {t0}, 1;
         storeq [{t1}], {t0};
@@ -1144,7 +1149,7 @@ fn generate_stub<'gc>(
     } else {
         RuntimeExtern::IcMissTcall
     });
-    emit_call_ic_stub(&mut masm, link, miss, is_call);
+    emit_call_ic_stub(&mut masm, miss, is_call);
     let name = if is_call {
         "call_ic_stub"
     } else {
@@ -1153,7 +1158,10 @@ fn generate_stub<'gc>(
     let loaded = StubBuilder::new(masm, name, start, SymbolKind::Stub)
         .with_cfi(sabi::SCHEME_ENTRY_CFA_OFFSET as u32)
         .finish()?
-        .load()?;
+        .load_with(&|key| match key {
+            ImportKey::CallLink => Some(link as *const CallLinkInfo as u64),
+            _ => None,
+        })?;
     let base = loaded.base();
     let bytes = loaded.code_size();
     #[cfg(test)]
@@ -1167,6 +1175,7 @@ fn generate_stub<'gc>(
             image: loaded,
             bytes,
         }),
+        &[],
     );
     Ok(BuiltStub { base, owner })
 }
@@ -1216,8 +1225,7 @@ pub(crate) fn emit_bump_counter(
 /// `tail-call`). Compares the block against each traced case slot of the site,
 /// a hit enters the block's compiled code directly when it has some, else
 /// goes through `closure.code`. Anything else misses to `miss`.
-pub fn emit_call_ic_stub(masm: &mut Masm, link: &CallLinkInfo, miss: Extern, is_call: bool) {
-    let link = imm(Address::from_ref(link));
+pub fn emit_call_ic_stub(masm: &mut Masm, miss: Extern, is_call: bool) {
     let (cp, ac, sfp) = (regs::CP, regs::AC, regs::SFP);
     let (t0, t1, t2, t3) = (tmp::T0, tmp::T1, tmp::T2, tmp::T3);
     let hit = masm.label();
@@ -1225,9 +1233,7 @@ pub fn emit_call_ic_stub(masm: &mut Masm, link: &CallLinkInfo, miss: Extern, is_
     let case_hits = core::mem::offset_of!(CallLinkInfo, case_hits);
     let hits = core::mem::offset_of!(CallLinkInfo, hits);
     let entered: Vec<_> = (0..CALL_IC_CASES).map(|_| masm.label()).collect();
-    onlineasm!(*masm.assembler();
-        move {t0}, {link};
-    );
+    masm.load_import(t0, ImportKey::CallLink);
     for (index, &entered) in entered.iter().enumerate() {
         let slot = masm.assembler().mem(t0, (cases + index * 8) as i32);
         onlineasm!(*masm.assembler();
@@ -1241,9 +1247,9 @@ pub fn emit_call_ic_stub(masm: &mut Masm, link: &CallLinkInfo, miss: Extern, is_
     let ac_slot = masm.assembler().mem(regs::TC, sabi::TC_AC as i32);
     let (a0, a1, a2) = arg_regs();
     let frame = if is_call { t1 } else { sfp };
+    masm.load_import(a2, ImportKey::CallLink);
     onlineasm!(*masm.assembler();
         storeq {ac_slot}, {ac};
-        move {a2}, {link};
         move {a1}, {frame};
         move {a0}, {regs::TC};
     );

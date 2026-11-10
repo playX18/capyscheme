@@ -216,8 +216,8 @@ pub enum SiteLink {
     /// A live site is created for this instruction when the shape can
     /// still narrow (JIT compile).
     Live,
-    /// The stub being generated repatches the existing site at this
-    /// address (a plain address, stable for the site's life).
+    /// The stub being generated repatches the existing site: the index of
+    /// its cell in the unit's arena.
     Resident(usize),
 }
 

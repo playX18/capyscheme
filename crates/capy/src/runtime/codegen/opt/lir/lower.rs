@@ -153,6 +153,7 @@ impl<'a> Lowerer<'a> {
                 c @ (Constant::Int32(_)
                 | Constant::Int64(_)
                 | Constant::Bits(_)
+                | Constant::Block { .. }
                 | Constant::Double(_)),
             ) => Some(c),
             _ => None,

@@ -627,14 +627,13 @@ impl<'a, 'gc> Reader<'a, 'gc> {
                 Value::from(Pair::new(self.ctx, car, cdr))
             }
             RematKind::Closure { code, .. } => {
-                let slot = self
+                let value = self
                     .owner
-                    .ref_slot(self.code_slot(code))
+                    .ref_value(self.code_slot(code))
                     .unwrap_or_else(|| {
                         fatal(self.exit, "a closure descriptor names a missing code slot")
                     });
 
-                let value = unsafe { *slot.to_ptr::<Value<'gc>>() };
                 if !value.is::<CodeBlock>() {
                     fatal(self.exit, "a remat closure code slot holds no code block");
                 }
@@ -742,12 +741,14 @@ fn constant_value<'gc>(
         Constant::Double(bits) => Value::from_f64(f64::from_bits(bits)),
         Constant::Bits(bits) => Value::from_raw_i64(bits as i64),
         Constant::Table(index) => {
-            let slot = owner
-                .ref_slot(index as usize)
-                .unwrap_or_else(|| fatal(exit, "a constant names a missing table slot"));
-
-            unsafe { *slot.to_ptr::<Value<'gc>>() }
+            owner
+                .ref_value(index as usize)
+                .unwrap_or_else(|| fatal(exit, "a constant names a missing table slot"))
         }
+        Constant::Block { .. } => fatal(
+            exit,
+            "a raw block address is not a Scheme value and has no deopt rematerialization",
+        ),
         Constant::Pool { code, index } => {
             if code.index() != 0 {
                 fatal(

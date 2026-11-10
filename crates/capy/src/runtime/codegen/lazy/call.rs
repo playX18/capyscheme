@@ -189,14 +189,14 @@ impl CallSite {
     }
 
     fn emit_plain<'gc>(&self, cx: &mut MaterializeCx<'gc>, link: &CallLinkInfo) -> Materialize {
-        let mut masm = Masm::new();
+        let mut masm = cx.masm();
         let start = masm.label();
         masm.bind(start);
         emit_plain_stub(
             &mut masm,
             link,
             self.ip,
-            cx.cell_addr().as_usize(),
+            cx.cell_index(),
             !self.tail,
         );
         let name = format!("call_site:{:#x}:{}", self.link, self.pc);
@@ -317,7 +317,7 @@ fn emit_plain_stub(masm: &mut Masm, link: &CallLinkInfo, ip: Ip, cell: usize, is
     use onlineasm::onlineasm;
 
     let link_is_mega = link.is_megamorphic();
-    let link = crate::runtime::codegen::addr::imm(mmtk::util::Address::from_ref(link));
+    let link_addr = link as *const CallLinkInfo as usize;
     let (cp, ac, sfp) = (regs::CP, regs::AC, regs::SFP);
     let (t0, t1, t2, t3) = (tmp::T0, tmp::T1, tmp::T2, tmp::T3);
     let hit = masm.label();
@@ -331,10 +331,8 @@ fn emit_plain_stub(masm: &mut Masm, link: &CallLinkInfo, ip: Ip, cell: usize, is
     let block_at = masm
         .assembler()
         .mem(cp, crate::runtime::sabi::CLOSURE_CODE_BLOCK as i32);
-    onlineasm!(*masm.assembler();
-        loadq {t3}, {block_at};
-        move {t0}, {link};
-    );
+    onlineasm!(*masm.assembler(); loadq {t3}, {block_at};);
+    masm.load_md(t0, link_addr);
     for (index, &entered) in entered.iter().enumerate() {
         let slot = masm.assembler().mem(t0, (cases + index * 8) as i32);
         onlineasm!(*masm.assembler();
@@ -387,7 +385,7 @@ fn emit_plain_stub(masm: &mut Masm, link: &CallLinkInfo, ip: Ip, cell: usize, is
 }
 
 pub(crate) fn emit_cell_hit(masm: &mut Masm, ip: Ip, cell: usize) {
-    super::edge::emit_hit_block(masm, ip, SiteOperand::Immediate(cell));
+    super::edge::emit_hit_block(masm, ip, SiteOperand::Cell(cell));
 }
 
 pub(crate) fn emit_enter_callee_stub(masm: &mut Masm, tail: bool) {

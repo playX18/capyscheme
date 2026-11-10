@@ -175,9 +175,6 @@ pub(crate) struct OptInfo {
     pub(crate) osr: Vec<(BytecodePc, CodeOffset)>,
     /// The reference slot of each `Func::codes` entry.
     pub(crate) code_slots: Vec<u32>,
-    /// The patchable address loads of constant-table slots, as the code offset
-    /// of each and the reference slot its immediate takes.
-    pub(crate) constant_sites: Vec<(CodeOffset, u32)>,
     pub(crate) invalid: Box<AtomicU32>,
     pub(crate) entry_jump: CodeOffset,
     pub(crate) reheal: CodeOffset,
@@ -195,8 +192,6 @@ pub(crate) struct CodeUnit {
     pub(crate) bytes: usize,
     /// Bytecode offset -> machine address, for resumes.
     pub(crate) resume: ResumeTable,
-    /// Live masks too large for a header word.
-    pub(crate) masks: Vec<Box<[u64]>>,
     pub(crate) id: usize,
     /// The bytecode entry address this was compiled from.
     pub(crate) constant_pointer: Address,
@@ -216,7 +211,6 @@ impl CodeUnit {
         image: LoadedImage,
         entry: Address,
         resume: ResumeTable,
-        masks: Vec<Box<[u64]>>,
         id: usize,
         constant_pointer: Address,
         listing: Listing,
@@ -234,7 +228,6 @@ impl CodeUnit {
             entry,
             bytes,
             resume,
-            masks,
             id,
             constant_pointer,
             generation: 0,
@@ -290,7 +283,7 @@ impl Drop for CodeUnit {
 /// # Safety
 ///
 /// `ra` is a return address in compiled code.
-pub(crate) unsafe fn owner_slot<'gc>(ra: Ip) -> Slot<'gc> {
+pub(crate) unsafe fn owner_cell<'gc>(ra: Ip) -> Slot<'gc> {
     // SAFETY: `ra`'s toplink and image layout follow the runtime ABI by
     // the caller's contract, so the chunk start holds the owner slot.
     unsafe {

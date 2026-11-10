@@ -350,7 +350,7 @@ unsafe fn visit_code_owner<'gc>(ret: Ra, mask: Mask, visit: &mut dyn FnMut(Slot<
         if let Mask::Header(_) = mask
             && crate::runtime::sabi::entry_offset(ret) != 0
         {
-            visit(crate::runtime::codegen::unit::owner_slot(ret));
+            visit(crate::runtime::codegen::unit::owner_cell(ret));
         }
     }
     #[cfg(not(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64"))))]

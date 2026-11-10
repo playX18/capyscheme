@@ -3,6 +3,7 @@ use std::io;
 use onlineasm::{Label, PatchHandle, PatchLocation};
 
 use super::super::image::{self, LoadedImage, UnloadedImage};
+use super::super::import::Resolve;
 use super::super::masm::{Masm, SymbolKind};
 use super::super::template_image::resolve_slow_path;
 
@@ -84,6 +85,11 @@ impl UnloadedStub {
 
     /// Load into the runtime code memory.
     pub(crate) fn load(self) -> io::Result<LoadedImage> {
-        image::load(self.image, |name| resolve_slow_path(name))
+        self.load_with(&|_| None)
+    }
+
+    /// Load, filling the stub's import slots through `imports`.
+    pub(crate) fn load_with(self, imports: Resolve<'_>) -> io::Result<LoadedImage> {
+        image::load_with(self.image, |name| resolve_slow_path(name), imports)
     }
 }

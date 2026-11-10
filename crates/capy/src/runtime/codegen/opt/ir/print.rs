@@ -59,6 +59,11 @@ impl Display for Constant {
             Constant::Bits(bits) => write!(f, "{bits:#x}"),
             Constant::Table(slot) => write!(f, "table[{slot}]"),
             Constant::Pool { code, index } => write!(f, "pool[{code}][{index}]"),
+            Constant::Block {
+                code,
+                section,
+                offset,
+            } => write!(f, "block[{code}].{section:?}+{offset}"),
         }
     }
 }

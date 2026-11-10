@@ -19,6 +19,30 @@ use crate::runtime::MutationContext;
 use crate::runtime::objectmodel::{Closure, CodeBlock, CodeBlockKind};
 use crate::utils::flags;
 
+/// While set, the runtime is still booting: boot procedures run a handful of
+/// times each, so tiering them up is pure startup cost.
+static BOOT_HOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// RAII guard for [`set_boot_hold`]: releases the hold on drop.
+pub(crate) struct BootHold;
+
+impl BootHold {
+    pub(crate) fn hold() -> Self {
+        set_boot_hold(true);
+        Self
+    }
+}
+
+impl Drop for BootHold {
+    fn drop(&mut self) {
+        set_boot_hold(false);
+    }
+}
+
+pub(crate) fn set_boot_hold(hold: bool) {
+    BOOT_HOLD.store(hold, Relaxed);
+}
+
 /// Promotion policy: when is a block hot enough to tier up.
 pub(crate) trait HotnessPolicy {
     /// Heat threshold for baseline, or `None` when tier-up is off
@@ -130,6 +154,11 @@ fn request_inner<'gc, P: HotnessPolicy>(
     if install(ctx, code_block) {
         code_block.hot_count.store(0, Relaxed);
         return Installed;
+    }
+    if BOOT_HOLD.load(Relaxed) {
+        // Still booting: never tier up, and drop the accumulated heat
+        code_block.hot_count.store(0, Relaxed);
+        return Skipped;
     }
     let Some(threshold) = policy.hot_threshold() else {
         return Skipped;

@@ -3,6 +3,7 @@
 use onlineasm::{Assembler, Extern, ExternalName, Label, Target, VReg, onlineasm};
 
 use super::image::UnloadedImage;
+use super::import::{ImportKey, RuntimeSym, Section};
 use crate::runtime::objectmodel::Value;
 use crate::runtime::sabi::{self, RpCompactHeader, builtin_class_ids, regs};
 use crate::utils::flags;
@@ -178,7 +179,8 @@ pub struct CfiRecord {
 /// Target of an `RpHeader`'s mv return address.
 #[derive(Clone, Copy)]
 pub enum HeaderTarget {
-    Absolute(usize),
+    /// A named runtime address, recorded as a data relocation.
+    Runtime(RuntimeSym),
     Label(Label),
 }
 
@@ -186,12 +188,27 @@ pub enum HeaderTarget {
 /// word back to the start of the image, which is the code chunk's header.
 pub const TOPLINK_TO_IMAGE_START: usize = usize::MAX;
 
+/// The `livemask` word of a full return-point header: a fixnum-encoded mask,
+/// or a pointer to a mask block embedded in the image
+/// ([`Masm::embed_mask`]), resolved at load as an image offset.
+#[derive(Clone, Copy, Debug)]
+pub enum Livemask {
+    Word(usize),
+    Data(Label),
+}
+
+impl From<usize> for Livemask {
+    fn from(word: usize) -> Self {
+        Livemask::Word(word)
+    }
+}
+
 /// The words of a return-point header, filled at load.
 pub enum HeaderWords {
     /// `rp-header`: 32 bytes.
     Full {
         mv_return_address: HeaderTarget,
-        livemask: usize,
+        livemask: Livemask,
         toplink: usize,
         frame_size: isize,
     },
@@ -211,6 +228,16 @@ pub struct Masm {
     symbols: Vec<SymbolRecord>,
     cfi: Vec<CfiRecord>,
     headers: Vec<PendingHeader>,
+    /// Mask blocks embedded by [`Masm::embed_mask`]: label and byte length.
+    mask_blocks: Vec<(Label, usize)>,
+    /// Import slots reserved by [`Masm::import`], in reservation order.
+    imports: Vec<(ImportKey, Label)>,
+    /// The slot of each key, for deduplication.
+    import_labels: std::collections::HashMap<ImportKey, Label>,
+    /// The code block this image belongs to (bytecode entry, metadata
+    /// base), against which absolute `ip`s and metadata addresses are
+    /// turned into offsets. See [`Masm::bind_block`].
+    block: Option<(usize, usize)>,
     externs: Vec<ExternalName>,
     /// 64-bit constants already embedded as data islands, keyed by bits.
     pool_words: std::collections::HashMap<u64, Label>,
@@ -222,6 +249,10 @@ impl Masm {
         let symbols = std::mem::take(&mut self.symbols);
         let cfi = std::mem::take(&mut self.cfi);
         let headers = std::mem::take(&mut self.headers);
+        let mask_blocks = std::mem::take(&mut self.mask_blocks);
+        let imports = std::mem::take(&mut self.imports);
+        self.import_labels.clear();
+        self.block = None;
         let result = self.asm.finish();
         // The buffer is reset either way; drop any per-image records a
         // failed build left behind so they cannot leak into the next image.
@@ -233,6 +264,8 @@ impl Masm {
             symbols,
             cfi,
             headers,
+            mask_blocks,
+            imports,
             tables: Vec::new(),
         })
     }

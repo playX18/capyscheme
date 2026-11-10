@@ -1,10 +1,10 @@
 //! Allocation: the LAB bump, and `capy_op_alloc` when it fails.
 
-use std::sync::atomic::AtomicU64;
 
 use onlineasm::{Label, VReg, onlineasm};
 
-use super::{FAST_ALLOCS, GcCodegen, alloc_stats};
+use super::{GcCodegen, alloc_stats};
+use crate::runtime::codegen::import::{ImportKey, RuntimeSym};
 use crate::runtime::codegen::masm::{Masm, RuntimeExtern};
 use crate::runtime::codegen::template::{
     OpArg, OpContinue, OpResult, OpTarget, OperationCall, TemplateContext,
@@ -167,8 +167,8 @@ impl GcCodegen {
         );
         if alloc_stats() {
             let counter = masm.assembler().mem(end, 0);
+            masm.load_import(end, ImportKey::Runtime(RuntimeSym::FastAllocs));
             onlineasm!(*masm.assembler();
-                move {end}, {&FAST_ALLOCS as *const AtomicU64 as i64};
                 loadq {limit}, {counter};
                 addq {limit}, {limit}, 1;
                 storeq {counter}, {limit};

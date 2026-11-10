@@ -228,8 +228,12 @@ fn process(func: &mut Func, scope: &mut Scope, inst: Inst, added: &mut Vec<Key>)
                 Op::CheckInt64 => Op::Box(Repr::Int64),
                 _ => Op::Box(Repr::Double),
             };
-            if let Some(raw) = boxed_from(func, scope, source, raw_op) {
-                return remove(scope, inst, result, raw);
+            // `Box(Int64)` is a bignum outside the fixnum range, which
+            // `CheckInt64` must reject, so it cannot be forwarded as is.
+            if op != Op::CheckInt64 {
+                if let Some(raw) = boxed_from(func, scope, source, raw_op) {
+                    return remove(scope, inst, result, raw);
+                }
             }
             let key = (op, canonical, None);
             if let Some(&prev) = scope.avail.get(&key) {

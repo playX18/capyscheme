@@ -12,8 +12,9 @@ use onlineasm::Finished;
 use onlineasm::Label;
 use onlineasm::asmkit::{ExternalName, LoadedCode, Span};
 
+use super::import::{ImportKey, ImportSlot, Resolve, RuntimeSym};
 use super::masm::{
-    CfiRecord, HeaderTarget, HeaderWords, PendingHeader, SymbolKind, SymbolRecord,
+    CfiRecord, HeaderTarget, HeaderWords, Livemask, PendingHeader, SymbolKind, SymbolRecord,
     TOPLINK_TO_IMAGE_START,
 };
 use crate::runtime::code_memory::{CodeMemory, code_memory};
@@ -25,6 +26,10 @@ pub struct UnloadedImage {
     pub symbols: Vec<SymbolRecord>,
     pub cfi: Vec<CfiRecord>,
     pub headers: Vec<PendingHeader>,
+    /// Embedded live-mask blocks (data, not code): label and byte length.
+    pub mask_blocks: Vec<(Label, usize)>,
+    /// Import slots: what each 8-byte data island holds once linked.
+    pub imports: Vec<(ImportKey, Label)>,
     pub tables: Vec<TablePatch>,
 }
 
@@ -35,6 +40,23 @@ pub struct TablePatch {
     pub entries: Vec<Label>,
 }
 
+/// What a data word that holds an address refers to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DataTarget {
+    /// The image's own byte at this offset.
+    Image(usize),
+    /// A named runtime address.
+    Runtime(RuntimeSym),
+}
+
+/// An 8-byte data word at image offset `at` holding the address `target`
+/// names, as loaded.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DataReloc {
+    pub(crate) at: usize,
+    pub(crate) target: DataTarget,
+}
+
 pub struct LoadedSymbol {
     pub name: String,
     pub addr: usize,
@@ -43,10 +65,12 @@ pub struct LoadedSymbol {
 }
 
 pub struct LoadedImage {
-    loaded: LoadedCode,
-    symbols: Vec<LoadedSymbol>,
-    eh_frame: Option<EhFrame>,
-    gdb: Option<GdbJitRegistration>,
+    pub(crate) loaded: LoadedCode,
+    pub(crate) symbols: Vec<LoadedSymbol>,
+    pub(crate) eh_frame: Option<EhFrame>,
+    pub(crate) gdb: Option<GdbJitRegistration>,
+    pub(crate) imports: Vec<ImportSlot>,
+    pub(crate) data_relocs: Vec<DataReloc>,
 }
 
 /// Loads the image: extern resolution, header patching, symbol publishing and
@@ -55,6 +79,19 @@ pub struct LoadedImage {
 pub fn load(
     image: UnloadedImage,
     resolve: impl Fn(&ExternalName) -> *const u8,
+) -> io::Result<LoadedImage> {
+    load_with(image, resolve, &|_| None)
+}
+
+/// [`load`], also filling the image's import slots: named runtime addresses
+/// resolve here, every other key through `imports`. A slot whose key
+/// resolves to `None` is an error, except the owner word and the constant slots,
+/// which the driver fills ([`LoadedImage::patch_word`]);
+/// [`LoadedImage::imports`] lists them all.
+pub fn load_with(
+    image: UnloadedImage,
+    resolve: impl Fn(&ExternalName) -> *const u8,
+    imports: Resolve<'_>,
 ) -> io::Result<LoadedImage> {
     let memory = code_memory();
     let mut loaded = memory
@@ -67,6 +104,8 @@ pub fn load(
         symbols: Vec::new(),
         eh_frame: None,
         gdb: None,
+        imports: Vec::new(),
+        data_relocs: Vec::new(),
     };
 
     let mut symbols = Vec::with_capacity(image.symbols.len());
@@ -87,19 +126,27 @@ pub fn load(
         });
     }
 
-    patch_headers(
+    image_out.data_relocs = patch_headers(
         memory,
         &mut image_out.loaded,
         rx,
         &image.finished,
         &image.headers,
     )?;
-    patch_tables(
+    image_out.data_relocs.extend(patch_tables(
         memory,
         &mut image_out.loaded,
         rx,
         &image.finished,
         &image.tables,
+    )?);
+
+    image_out.imports = fill_imports(
+        memory,
+        &mut image_out.loaded,
+        &image.finished,
+        &image.imports,
+        imports,
     )?;
 
     if flags::jit_gdb() && !symbols.is_empty() {
@@ -126,6 +173,17 @@ pub fn load(
 }
 
 impl LoadedImage {
+    /// Every data word of the image that holds an address (return-point
+    /// headers, address tables), and what it refers to.
+    pub(crate) fn data_relocs(&self) -> &[DataReloc] {
+        &self.data_relocs
+    }
+
+    /// Every import slot of the image, resolved or not.
+    pub(crate) fn imports(&self) -> &[ImportSlot] {
+        &self.imports
+    }
+
     pub fn symbols(&self) -> &[LoadedSymbol] {
         &self.symbols
     }
@@ -162,6 +220,22 @@ impl LoadedImage {
         code_memory().patch(self.loaded.span_mut(), offset, bytes)
     }
 
+    /// Write the 8-byte word `value` at `offset` (an import slot).
+    pub fn patch_word(&mut self, offset: usize, value: u64) -> io::Result<()> {
+        self.patch(offset, &value.to_ne_bytes())
+    }
+
+    /// Write the address `base + offset` at `offset` (an address table or
+    /// switch-table word).
+    pub(crate) fn patch_reloc(&mut self, at: usize, offset: usize) -> io::Result<()> {
+        let value = (self.base() + offset).as_usize() as u64;
+        self.data_relocs.push(DataReloc {
+            at,
+            target: DataTarget::Image(offset),
+        });
+        self.patch(at, &value.to_ne_bytes())
+    }
+
     /// Write `bytes` at `offset` into code that is not published yet, through
     /// a shared reference: the image already sits in its heap owner.
     ///
@@ -179,7 +253,8 @@ impl Drop for LoadedImage {
     fn drop(&mut self) {
         self.eh_frame.take();
         drop(self.gdb.take());
-        if let Err(err) = code_memory().release_span(*self.loaded.span()) {
+        let span = *self.loaded.span();
+        if let Err(err) = code_memory().release_span(span) {
             log::warn!(target: crate::heap::logging::JIT_LOG_TARGET, " {err}");
         }
     }
@@ -197,9 +272,10 @@ fn patch_headers(
     rx: usize,
     finished: &Finished,
     headers: &[PendingHeader],
-) -> io::Result<()> {
+) -> io::Result<Vec<DataReloc>> {
+    let mut relocs = Vec::new();
     if headers.is_empty() {
-        return Ok(());
+        return Ok(relocs);
     }
     let mut blobs: Vec<(usize, Vec<u8>)> = Vec::with_capacity(headers.len());
     for header in headers {
@@ -220,14 +296,38 @@ fn patch_headers(
                 frame_size,
             } => {
                 let mv_return_address = match *mv_return_address {
-                    HeaderTarget::Absolute(addr) => addr,
+                    HeaderTarget::Runtime(sym) => {
+                        relocs.push(DataReloc {
+                            at,
+                            target: DataTarget::Runtime(sym),
+                        });
+                        sym.address() as usize
+                    }
                     HeaderTarget::Label(label) => {
-                        rx + label_offset(finished, label, "RpHeader mv return address")? as usize
+                        let off = label_offset(finished, label, "RpHeader mv return address")?
+                            as usize;
+                        relocs.push(DataReloc {
+                            at,
+                            target: DataTarget::Image(off),
+                        });
+                        rx + off
+                    }
+                };
+                let livemask = match *livemask {
+                    Livemask::Word(word) => word,
+                    Livemask::Data(label) => {
+                        let off =
+                            label_offset(finished, label, "RpHeader livemask block")? as usize;
+                        relocs.push(DataReloc {
+                            at: at + 8,
+                            target: DataTarget::Image(off),
+                        });
+                        rx + off
                     }
                 };
                 vec![
                     mv_return_address as u64,
-                    *livemask as u64,
+                    livemask as u64,
                     resolve_toplink(*toplink),
                     *frame_size as u64,
                 ]
@@ -252,7 +352,44 @@ fn patch_headers(
         ));
     }
     let patches: Vec<(usize, &[u8])> = blobs.iter().map(|(at, blob)| (*at, &blob[..])).collect();
-    memory.patch_many(loaded.span_mut(), &patches)
+    memory.patch_many(loaded.span_mut(), &patches)?;
+    Ok(relocs)
+}
+
+fn fill_imports(
+    memory: &CodeMemory,
+    loaded: &mut LoadedCode,
+    finished: &Finished,
+    imports: &[(ImportKey, Label)],
+    resolve: Resolve<'_>,
+) -> io::Result<Vec<ImportSlot>> {
+    let mut slots = Vec::with_capacity(imports.len());
+    let mut blobs: Vec<(usize, [u8; 8])> = Vec::new();
+    for &(key, label) in imports {
+        let at = label_offset(finished, label, "import slot")? as usize;
+        slots.push(ImportSlot { key, at });
+        let value = match key {
+            ImportKey::Runtime(sym) => Some(sym.address()),
+            key => resolve(&key),
+        };
+        match value {
+            Some(value) => blobs.push((at, value.to_ne_bytes())),
+            // The owner word and the constant slots are filled when the
+            // unit is installed. Any other key left unresolved would run
+            // with its placeholder, so it fails the load.
+            None if matches!(key, ImportKey::Owner) => {}
+            None => {
+                return Err(io::Error::other(format!(
+                    "the import {key:?} of the image was not resolved"
+                )));
+            }
+        }
+    }
+    let patches: Vec<(usize, &[u8])> = blobs.iter().map(|(at, blob)| (*at, &blob[..])).collect();
+    if !patches.is_empty() {
+        memory.patch_many(loaded.span_mut(), &patches)?;
+    }
+    Ok(slots)
 }
 
 fn patch_tables(
@@ -261,16 +398,21 @@ fn patch_tables(
     rx: usize,
     finished: &Finished,
     tables: &[TablePatch],
-) -> io::Result<()> {
+) -> io::Result<Vec<DataReloc>> {
+    let mut relocs = Vec::new();
     if tables.is_empty() {
-        return Ok(());
+        return Ok(relocs);
     }
     let mut blobs: Vec<(usize, Vec<u8>)> = Vec::with_capacity(tables.len());
     for table in tables {
         let at = label_offset(finished, table.base, "address table")? as usize;
         let mut blob = Vec::with_capacity(table.entries.len() * 8);
-        for entry in &table.entries {
+        for (index, entry) in table.entries.iter().enumerate() {
             let off = label_offset(finished, *entry, "address table entry")? as usize;
+            relocs.push(DataReloc {
+                at: at + index * 8,
+                target: DataTarget::Image(off),
+            });
             blob.extend_from_slice(&(rx + off).to_ne_bytes());
         }
         blobs.push((at, blob));
@@ -279,7 +421,8 @@ fn patch_tables(
         .iter()
         .map(|(at, blob)| (*at, blob.as_slice()))
         .collect();
-    memory.patch_many(loaded.span_mut(), &patches)
+    memory.patch_many(loaded.span_mut(), &patches)?;
+    Ok(relocs)
 }
 
 pub(crate) fn publish_perf_map_range(name: &str, start: usize, end: usize) {
@@ -328,7 +471,7 @@ unsafe extern "C" {
 /// Synthesized `.eh_frame` (CIE + one FDE per region + terminator), kept alive
 /// while registered. libunwind on macOS takes a single FDE pointer per call,
 /// libgcc on Linux takes the `.eh_frame` start.
-struct EhFrame {
+pub(crate) struct EhFrame {
     bytes: Box<[u8]>,
     fdes: Vec<*const u8>,
 }
@@ -375,8 +518,28 @@ impl EhFrame {
             return Ok(None);
         }
 
-        let (bytes, _fde_offsets) =
-            Self::build(rx, finished, regions, cfg!(target_vendor = "apple"))?;
+        let mut offsets = Vec::with_capacity(regions.len());
+        for region in regions {
+            offsets.push((
+                label_offset(finished, region.start, "CFI region")? as usize,
+                label_offset(finished, region.end, "CFI region")? as usize,
+                region.cfa_offset,
+            ));
+        }
+        Self::register_offsets(rx, &offsets)
+    }
+
+    /// [`Self::register`] for regions already in image offsets, as a restored
+    /// image keeps them.
+    pub(crate) fn register_offsets(
+        rx: usize,
+        regions: &[(usize, usize, u32)],
+    ) -> io::Result<Option<Self>> {
+        if regions.is_empty() {
+            return Ok(None);
+        }
+
+        let (bytes, _fde_offsets) = Self::build_offsets(rx, regions, cfg!(target_vendor = "apple"))?;
         // SAFETY: the pointers stay valid until `drop` deregisters them with
         // the exact registered pointer. Concurrent registration races the
         // exit-time static deregistration in `_dl_fini`, so the JIT exit
@@ -427,6 +590,21 @@ impl EhFrame {
         regions: &[CfiRecord],
         pcrel: bool,
     ) -> io::Result<(Box<[u8]>, Vec<usize>)> {
+        let mut offsets = Vec::with_capacity(regions.len());
+        for region in regions {
+            let start = label_offset(finished, region.start, "CFI region")? as usize;
+            let end = label_offset(finished, region.end, "CFI region")? as usize;
+            offsets.push((start, end, region.cfa_offset));
+        }
+        Self::build_offsets(rx, &offsets, pcrel)
+    }
+
+    /// [`Self::build`] for regions already in image offsets.
+    pub(crate) fn build_offsets(
+        rx: usize,
+        regions: &[(usize, usize, u32)],
+        pcrel: bool,
+    ) -> io::Result<(Box<[u8]>, Vec<usize>)> {
         let mut bytes = Vec::new();
         let mut fde_offsets = Vec::with_capacity(regions.len());
 
@@ -454,9 +632,7 @@ impl EhFrame {
 
         // pc_begin targets, for the PC-relative fixup below.
         let mut pc_begins = Vec::with_capacity(regions.len());
-        for region in regions {
-            let start = label_offset(finished, region.start, "CFI region")? as usize;
-            let end = label_offset(finished, region.end, "CFI region")? as usize;
+        for &(start, end, cfa_offset) in regions {
             if end < start {
                 return Err(io::Error::other("CFI region ends before it starts"));
             }
@@ -478,7 +654,7 @@ impl EhFrame {
             push_uleb(&mut bytes, 0); // FDE augmentation data length
             bytes.push(DW_CFA_DEF_CFA);
             push_uleb(&mut bytes, CFA_REG);
-            push_uleb(&mut bytes, region.cfa_offset as u64);
+            push_uleb(&mut bytes, cfa_offset as u64);
             bytes.push(DW_CFA_OFFSET | RA_REG as u8);
             push_uleb(&mut bytes, RA_FACTORED_OFFSET);
             while (bytes.len() - fde_at) % 4 != 0 {

@@ -59,10 +59,10 @@ impl RecordPlan {
 
     /// Emit and install the stub.
     pub(crate) fn materialize<'gc>(&self, cx: &mut MaterializeCx<'gc>) -> Materialize {
-        let mut masm = Masm::new();
+        let mut masm = cx.masm();
         let start = masm.label();
         masm.bind(start);
-        let cell = cx.cell_addr().as_usize();
+        let cell = cx.cell_index();
         let (t0, t2, t3) = (tmp::T0, tmp::T2, tmp::T3);
         let access = masm.label();
         let generic = masm.label();

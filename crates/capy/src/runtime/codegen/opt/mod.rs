@@ -11,7 +11,6 @@ use super::addr::{BytecodePc, CodeOffset};
 use super::emission::{Emission, Layout, Linked};
 use super::jit::compile::{BuiltUnit, CompileRequest, TierCompiler};
 use super::masm::Masm;
-use super::reloc::Reloc;
 use super::template::tmp;
 use super::unit::{Annotation, CodeUnit, DeoptPoint, InlinedSite, OptInfo, ReturnedExit, Tier};
 use crate::bytecode::def::{self, Instruction};
@@ -63,7 +62,8 @@ impl TierCompiler for OptimizingCompiler {
         let result = self.build_inner(req, masm);
         if flags::jit_stats() {
             let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
-            super::jit::config::OPT_BUILD_MICROS.fetch_add(micros, std::sync::atomic::Ordering::Relaxed);
+            super::jit::config::OPT_BUILD_MICROS
+                .fetch_add(micros, std::sync::atomic::Ordering::Relaxed);
         }
         result
     }
@@ -85,6 +85,30 @@ impl OptimizingCompiler {
 
         let (table, code_slots) =
             constants::for_codes(&func, req.code_block).map_err(io::Error::other)?;
+
+        let mut block_addrs = Vec::with_capacity(func.codes.len());
+        for (_, source) in func.codes.iter() {
+            let buffer = match *source {
+                ir::types::CodeSource::Root => req.code_block.buffer,
+                ir::types::CodeSource::Heap(value) => {
+                    value
+                        .downcast::<crate::runtime::objectmodel::CodeBlock>()
+                        .buffer
+                }
+                ir::types::CodeSource::Pool(index) => {
+                    req.code_block
+                        .buffer
+                        .constant(index as usize)
+                        .downcast::<crate::runtime::objectmodel::CodeBlock>()
+                        .buffer
+                }
+            };
+            block_addrs.push(crate::runtime::codegen::import::BlockAddrs {
+                bytecode: buffer.entry() as usize,
+                metadata: buffer.metadata() as usize,
+                pool: buffer.pool().as_ptr() as usize,
+            });
+        }
         let mut lir = lir::lower::lower(&func, &name).map_err(io::Error::other)?;
         // A packed primitive call lays its arguments out above the frame.
         let max_deopt_extent = lir
@@ -143,9 +167,7 @@ impl OptimizingCompiler {
         let emit::Emitted {
             entry,
             osr: osr_labels,
-            owner,
-            masks,
-            constant_sites,
+            owner: _,
             relocs,
             data,
             frame_words,
@@ -269,13 +291,6 @@ impl OptimizingCompiler {
             Some(PatchLocation::Jump(jump)) => jump.offset() as usize,
             _ => return Err(io::Error::other("the entry jump is not a jump site")),
         };
-        let constant_sites = constant_sites
-            .into_iter()
-            .map(|(label, slot)| {
-                let at = image.finished.offset(label).expect("bound label");
-                (CodeOffset(at as u32), slot)
-            })
-            .collect();
         if flags::jit_dump_dir().is_some()
             && crate::runtime::codegen::jit::config::opt()
                 .dump
@@ -294,7 +309,6 @@ impl OptimizingCompiler {
         for (start, len) in data {
             emission.data_range(start, len);
         }
-        emission.reloc(Reloc::OwnerSlot { at: owner });
         let labels = HashMap::new();
         // The prologue, before the image is moved into the link. The body is
         // emitted before the unit's entry jump, so a perf range that starts at
@@ -321,6 +335,11 @@ impl OptimizingCompiler {
                 end,
                 entry: None,
             },
+            &crate::runtime::codegen::import::block_resolver(
+                block_addrs,
+                Some(&*invalid as *const AtomicU32 as usize),
+                Some(baseline_entry),
+            ),
         )?;
         let entry_addr = loaded.base() + entry_off;
         // The perf-map range is published by the install, not by the build:
@@ -333,7 +352,6 @@ impl OptimizingCompiler {
             frame_words: frame_words + max_deopt_extent,
             osr,
             code_slots,
-            constant_sites,
             invalid,
             entry_jump: CodeOffset(jump_at as u32),
             reheal: CodeOffset(reheal_off as u32),
@@ -344,7 +362,6 @@ impl OptimizingCompiler {
             rows: Vec::new(),
             entry_addr,
             cells,
-            masks,
             ranges: Vec::new(),
             code_start: prologue_off,
             annotations,

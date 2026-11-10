@@ -236,6 +236,11 @@ impl Scheme {
         scm.enter(|ctx| {
             crate::runtime::linklet::install_capy_primitive_instance(ctx);
 
+            // Boot procedures run a handful of times: keep the JIT from
+            // tiering them up. Released before the CLI runs.
+            #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
+            let _boot_hold = crate::runtime::codegen::jit::BootHold::hold();
+
             let t = std::time::Instant::now();
             let thunk = load_thunk_in_vicinity::<true>(ctx, "boot/main.scm", None::<&str>, false, None)
                 .expect("Failed to load boot/main.scm");

@@ -25,11 +25,21 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 /// the native part in place.
 #[repr(C)]
 pub struct CodeImage<'gc> {
+    /// The image itself, as a value. It sits at offset 0 so the address of the
+    /// image is also the address of this slot: the stack walker visits it to
+    /// keep the image alive while a frame runs its code (the image start word
+    /// of generated code holds that address).
     owner: UnsafeCell<Value<'gc>>,
     released: AtomicBool,
+    /// Number of trailing references.
+    nrefs: u32,
     native: UnsafeCell<ManuallyDrop<PublishedCode>>,
-
-    refs: UnsafeCell<Box<[Value<'gc>]>>,
+    /// The references this image keeps alive, inline after the fixed part:
+    /// index 0 is the baseline image of an optimized unit, the last one the
+    /// previous optimized image, the ones between are its constants. Generated
+    /// code reads them through the image, never through a copy of their
+    /// address.
+    refs: [UnsafeCell<Value<'gc>>; 0],
 }
 
 // SAFETY: the native part is written once before the image is published and is
@@ -39,53 +49,112 @@ pub struct CodeImage<'gc> {
 unsafe impl Send for CodeImage<'_> {}
 unsafe impl Sync for CodeImage<'_> {}
 
+extern "C" fn trace_code_image(obj: GcObject, visitor: &mut Visitor) {
+    // SAFETY: `obj` is a `CodeImage` allocated by `CodeImage::alloc`, whose
+    // `nrefs` references are initialized before it is reachable.
+    unsafe {
+        obj.to_address().as_mut_ref::<CodeImage>().trace(visitor);
+    }
+}
+
+// SAFETY: visits the owner slot and every inline reference, and nothing else
+// holds a heap reference.
+unsafe impl<'gc> Trace for CodeImage<'gc> {
+    unsafe fn trace(&mut self, visitor: &mut Visitor) {
+        // SAFETY: the owner and the first `nrefs` trailing words are initialized.
+        unsafe {
+            visitor.trace(&mut *self.owner.get());
+            for index in 0..self.nrefs as usize {
+                visitor.trace(&mut *self.refs_base().add(index));
+            }
+        }
+    }
+}
+
+extern "C" fn process_weak_code_image(_obj: GcObject, _weak_processor: &mut WeakProcessor) {}
+
+extern "C" fn compute_code_image_size(obj: GcObject) -> usize {
+    // SAFETY: `obj` is a `CodeImage`, `nrefs` is written before it is reachable.
+    unsafe { CodeImage::size_for(obj.to_address().as_ref::<CodeImage>().nrefs as usize) }
+}
+
 impl<'gc> CodeImage<'gc> {
+    pub const HOOKS: AllocationHooks = AllocationHooks {
+        alignment: align_of::<CodeImage>(),
+        compute_alignment: None,
+        instance_size: size_of::<CodeImage>(),
+        compute_size: Some(compute_code_image_size),
+        trace: trace_code_image,
+        weak_proc: process_weak_code_image,
+        type_name: "code-image",
+    };
+
     pub(crate) fn header_word() -> u64 {
         class_header_word(
             ClassId::new(builtin_class_ids::CODE_IMAGE).expect("builtin class id is nonzero"),
         )
     }
 
-    pub(crate) fn alloc(ctx: MutationContext<'gc>, native: PublishedCode) -> Gc<'gc, Self> {
-        let image = ctx.allocate_in(
-            Space::Los,
-            Self {
-                owner: UnsafeCell::new(Value::null()),
-                released: AtomicBool::new(false),
-                native: UnsafeCell::new(ManuallyDrop::new(native)),
-                refs: UnsafeCell::new(Vec::new().into_boxed_slice()),
-            },
-            Self::header_word(),
-        );
-        // SAFETY: the image is not shared yet, and never moves.
-        unsafe { *image.owner.get() = Value::from(image) };
+    fn size_for(nrefs: usize) -> usize {
+        size_of::<Self>() + nrefs * size_of::<Value>()
+    }
+
+    fn refs_base(&self) -> *mut Value<'gc> {
+        self.refs.as_ptr().cast::<Value<'gc>>().cast_mut()
+    }
+
+    /// The byte offset of reference `index` from the image's address, for
+    /// code that loads it through the image.
+    pub(crate) const fn ref_offset(index: usize) -> usize {
+        std::mem::offset_of!(CodeImage<'static>, refs) + index * size_of::<Value>()
+    }
+
+    /// Allocate an image holding `native` and keeping `refs` alive.
+    pub(crate) fn alloc(
+        ctx: MutationContext<'gc>,
+        native: PublishedCode,
+        refs: &[Value<'gc>],
+    ) -> Gc<'gc, Self> {
+        let size = Self::size_for(refs.len());
+        // SAFETY: the allocation is `size` bytes in the non-moving large
+        // object space; every field and reference is initialized before the
+        // image is used, and the collector cannot trace it before the
+        // mutator's next safepoint.
+        let image = unsafe {
+            let object = ctx.allocate_raw(size, 8, Self::header_word(), Space::Los);
+            let this = object.to_address().as_mut_ref::<Self>();
+            std::ptr::addr_of_mut!(this.released).write(AtomicBool::new(false));
+            std::ptr::addr_of_mut!(this.nrefs).write(
+                u32::try_from(refs.len()).expect("too many references in a code image"),
+            );
+            std::ptr::addr_of_mut!(this.native).write(UnsafeCell::new(ManuallyDrop::new(native)));
+            let base = this.refs_base();
+            for (index, value) in refs.iter().enumerate() {
+                base.add(index).write(*value);
+            }
+            let image: Gc<'gc, Self> = Gc::from_gc_object(object);
+            std::ptr::addr_of_mut!(this.owner).write(UnsafeCell::new(Value::from(image)));
+            // The image is not a nursery object, so the references just
+            // stored have to be remembered.
+            ctx.remember_new_object(object);
+            image
+        };
         ctx.finalizers()
             .register_finalizer(&crate::runtime::codegen::reclaim::FINALIZERS, image);
         image
     }
 
-    /// The address of the slot that holds this image, for the code's header.
-    pub(crate) fn owner_slot(&self) -> Address {
-        Address::from_mut_ptr(self.owner.get())
+    /// The address of the image, which generated code keeps in its owner
+    /// word and loads constants through ([`Self::ref_offset`]). Images never
+    /// move.
+    pub(crate) fn address(&self) -> Address {
+        Address::from_ref(self)
     }
 
-    /// Set the references this image keeps alive, before it is published.
-    ///
-    /// # Safety
-    ///
-    /// No thread reads the image's refs yet, and the caller holds the
-    /// mutation scope the image was allocated in.
-    pub(crate) unsafe fn set_refs(&self, refs: Box<[Value<'gc>]>) {
-        // SAFETY: by the contract, nothing else reads or writes `refs` now.
-        unsafe { *self.refs.get() = refs };
-    }
-
-    /// The address of reference slot `index`, for code that loads it.
-    pub(crate) fn ref_slot(&self, index: usize) -> Option<Address> {
-        // SAFETY: a shared read of the box's length, the boxed slice never
-        // reallocates once set.
-        let refs = unsafe { &*self.refs.get() };
-        (index < refs.len()).then(|| Address::from_ptr(refs.as_ptr().wrapping_add(index)))
+    /// Reference `index`, as the collector last left it.
+    pub(crate) fn ref_value(&self, index: usize) -> Option<Value<'gc>> {
+        // SAFETY: in bounds by the check, initialized by `alloc`.
+        (index < self.nrefs as usize).then(|| unsafe { *self.refs_base().add(index) })
     }
 
     fn native(&self) -> &PublishedCode {
@@ -114,6 +183,11 @@ impl<'gc> CodeImage<'gc> {
         }
     }
 
+    /// Number of references this image keeps alive.
+    pub(crate) fn nrefs(&self) -> usize {
+        self.nrefs as usize
+    }
+
     /// Drops the native part, once.
     ///
     /// # Safety
@@ -123,18 +197,6 @@ impl<'gc> CodeImage<'gc> {
         if !self.released.swap(true, Ordering::AcqRel) {
             // SAFETY: by the contract, and dropped once by the swap above.
             unsafe { ManuallyDrop::drop(&mut *self.native.get()) };
-            // SAFETY: the image is dead, so nothing reads its references.
-            drop(unsafe { std::mem::take(&mut *self.refs.get()) });
-        }
-    }
-}
-
-// SAFETY: visits every reference the image keeps, and nothing else holds a
-// heap reference.
-unsafe impl<'gc> Trace for CodeImage<'gc> {
-    unsafe fn trace(&mut self, visitor: &mut Visitor) {
-        for slot in self.refs.get_mut().iter_mut() {
-            visitor.trace(slot);
         }
     }
 }

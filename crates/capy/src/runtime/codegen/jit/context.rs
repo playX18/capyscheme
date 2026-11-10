@@ -33,8 +33,6 @@ use super::super::lazy::call::CallSite;
 use super::super::lazy::edge::{EdgeKind, emit_hit_block};
 use super::super::lazy::slot::SlotSite;
 use super::super::masm::{Masm, ValuesError};
-#[cfg(target_arch = "aarch64")]
-use super::super::reloc::{Reloc, masm_move_patchable};
 use super::super::stubs;
 use super::super::template::{
     ArithShape, ArithSpec, Condition, Flow, OpArg, OpResult, Operand, Operands, OperationCall,
@@ -42,15 +40,13 @@ use super::super::template::{
     emit_branch_to, emit_jump_to, emit_staged_control, metadata_entry_size, metadata_field_offset,
     metadata_id_operand, tmp,
 };
-use super::super::template_image::interpreter_enter_if_loaded;
 use super::arith_site::ArithSite;
-use super::config::template_interpreter;
 use super::entry::emit_enter_callee;
-use super::registry::{ResumeTable, origin_exit_addr};
+use super::registry::ResumeTable;
+use super::super::import::{ImportKey, RuntimeSym, Section};
 use crate::bytecode::def::OpcodeId;
 use crate::runtime::interp::stack::Ip;
 use crate::runtime::sabi::{self, regs};
-use mmtk::util::Address;
 
 /// One instruction's decoded operands, shared by the JIT and arithmetic
 /// stub contexts: both decode once, at emission time, from stable
@@ -134,15 +130,11 @@ impl DecodedInstruction {
         // dependent load). Otherwise the address comes from a shared
         // PC-relative island: one instruction on AArch64 instead of
         // `movz`+`movk*` (2-5), and smaller than `movabs` on x86-64.
-        #[cfg(target_arch = "x86_64")]
-        if let Ok(disp) = i32::try_from(addr) {
-            let slot = onlineasm::Mem::absolute(onlineasm::Disp::Const(disp));
-            onlineasm!(*masm.assembler();
-                loadq {dst}, {slot};
-            );
-            return;
-        }
-        masm.load_u64_const(dst, addr as u64);
+        let _ = addr;
+        masm.load_import(
+            dst,
+            ImportKey::Block(0, Section::Bytecode, -8 * (3 + index as i32)),
+        );
         let slot = masm.assembler().mem(dst, 0);
         onlineasm!(*masm.assembler();
             loadq {dst}, {slot};
@@ -152,7 +144,7 @@ impl DecodedInstruction {
     /// Address of metadata `field` of kind `kind` -> `dst`.
     pub(crate) fn metadata(&self, masm: &mut Masm, kind: usize, field: usize, dst: VReg) {
         let addr = self.metadata_addr(kind, field);
-        masm.load_u64_const(dst, addr as u64);
+        masm.load_md(dst, addr);
     }
 }
 
@@ -217,7 +209,7 @@ pub(crate) struct OriginExits<'t> {
 
 impl Targets for OriginExits<'_> {
     fn target(&mut self, _em: &mut Emission, _masm: &mut Masm, pc: usize) -> Target {
-        Target::Absolute(origin_exit_addr(self.origin_table, pc))
+        Target::Origin(pc)
     }
 
     fn placement(&self) -> Placement {
@@ -278,7 +270,7 @@ impl SpecSource for ProfileSpec {
 /// terminal (`cell` is `None`).
 pub(crate) struct FixedSpec {
     pub(crate) shape: ArithShape,
-    pub(crate) cell: Option<Address>,
+    pub(crate) cell: Option<usize>,
 }
 
 impl SpecSource for FixedSpec {
@@ -288,7 +280,7 @@ impl SpecSource for FixedSpec {
             profile_cell: None,
             link: self
                 .cell
-                .map_or(SiteLink::None, |cell| SiteLink::Resident(cell.as_usize())),
+                .map_or(SiteLink::None, |cell| SiteLink::Resident(cell)),
         }
     }
 }
@@ -366,7 +358,7 @@ impl<'e, T: Targets, S: SpecSource> CompiledContext<'e, T, S> {
                 Target::Label(target) | Target::Edge(target) => {
                     self.em.defer(label, Deferred::Jump { target })
                 }
-                Target::Absolute(addr) => self.em.defer(label, Deferred::JumpAbsolute { addr }),
+                Target::Origin(pc) => self.em.defer(label, Deferred::JumpOrigin { pc }),
             },
         }
     }
@@ -636,9 +628,7 @@ impl<T: Targets, S: SpecSource> Operands for CompiledContext<'_, T, S> {
     }
 
     fn machine_entry(&mut self, masm: &mut Masm, dst: VReg) {
-        let enter =
-            interpreter_enter_if_loaded().expect("the JIT runs on the template interpreter") as u64;
-        masm.load_u64_const(dst, enter);
+        masm.load_import(dst, ImportKey::Runtime(RuntimeSym::InterpreterEnter));
     }
 }
 
@@ -699,25 +689,14 @@ impl<T: Targets, S: SpecSource> Flow for CompiledContext<'_, T, S> {
         let target = self.target_of(masm, next);
         let resume = masm.assembler().mem(frame, -8);
         let ra = masm.assembler().mem(frame, 0);
-        onlineasm!(*masm.assembler();
-            move {tmp::T0}, {self.insn.entry as i64 + next as i64};
-            storep {resume}, {tmp::T0};
-        );
+        masm.load_ip(tmp::T0, self.insn.entry as usize + next);
+        onlineasm!(*masm.assembler(); storep {resume}, {tmp::T0};);
         match target {
             Target::Label(label) | Target::Edge(label) => {
-                // onlineasm's `leap` of a label is `adrp`/`add` on AArch64,
-                // resolved as if the image started a page, this image need
-                // not.
-                #[cfg(target_arch = "aarch64")]
-                {
-                    let at = masm_move_patchable(masm, tmp::T0);
-                    self.em.reloc(Reloc::LabelAddr { at, target: label });
-                }
-                #[cfg(not(target_arch = "aarch64"))]
                 onlineasm!(*masm.assembler(); leap {tmp::T0}, {label};);
             }
-            Target::Absolute(addr) => {
-                masm.load_u64_const(tmp::T0, addr.as_usize() as u64);
+            Target::Origin(pc) => {
+                masm.load_import(tmp::T0, ImportKey::Origin(pc as u32));
             }
         }
         onlineasm!(*masm.assembler(); storep {ra}, {tmp::T0};);
@@ -737,7 +716,7 @@ impl<T: Targets, S: SpecSource> Flow for CompiledContext<'_, T, S> {
     }
 
     fn values_error(&self) -> ValuesError {
-        ValuesError::Address(template_interpreter().values_error)
+        ValuesError::Import
     }
 
     fn resume_caller_mv(&mut self, masm: &mut Masm) {
@@ -801,18 +780,8 @@ impl<T: Targets, S: SpecSource> Flow for CompiledContext<'_, T, S> {
                     subq {tmp::T2}, {tmp::T2}, {min};
                     bqaeq {tmp::T2}, {span}, {miss};
                 );
-                // The table base: RIP-relative on x86-64, on AArch64 a
-                // label address would assume a page start, so a patched
-                // immediate like `call_return_point`.
-                #[cfg(target_arch = "aarch64")]
-                {
-                    let at = masm_move_patchable(masm, tmp::T0);
-                    self.em.reloc(Reloc::LabelAddr {
-                        at,
-                        target: table_label,
-                    });
-                }
-                #[cfg(not(target_arch = "aarch64"))]
+                // The table base: PC-relative (`adrp`/`add` with a load-time
+                // relocation on AArch64).
                 onlineasm!(*masm.assembler(); leap {tmp::T0}, {table_label};);
                 let slot = masm.assembler().mem_indexed(tmp::T0, tmp::T2, 8, 0);
                 onlineasm!(*masm.assembler();
@@ -1102,7 +1071,7 @@ impl<T: Targets, S: SpecSource> Slow for CompiledContext<'_, T, S> {
             SiteLink::Resident(cell) if arith => {
                 debug_assert_eq!(self.targets.placement(), Placement::Inline);
                 masm.bind(label);
-                emit_hit_block(masm, self.insn.ip, SiteOperand::Immediate(cell));
+                emit_hit_block(masm, self.insn.ip, SiteOperand::Cell(cell));
             }
             _ => self.slow_control(masm, label, path),
         }

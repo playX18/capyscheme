@@ -13,6 +13,7 @@
 //! - then the slot load, or the slot store with the same write barrier as
 //!   the template.
 
+use crate::runtime::codegen::import::ImportKey;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 use onlineasm::onlineasm;
@@ -187,15 +188,15 @@ impl SlotSite {
         let Some(pc) = BytecodePc::new(self.next_pc) else {
             return Materialize::Sticky("next pc");
         };
-        let Some(next_addr) = cx.origin_table().lookup(pc) else {
+        let Some(_) = cx.origin_table().lookup(pc) else {
             return Materialize::Sticky("no next instruction");
         };
 
-        let mut masm = Masm::new();
+        let mut masm = cx.masm();
         let paths = declare_slow_paths(&mut masm);
         let start = masm.label();
         masm.bind(start);
-        let cell = cx.cell_addr().as_usize();
+        let cell = cx.cell_index();
         let (t0, t1, t2, t3) = (tmp::T0, tmp::T1, tmp::T2, tmp::T3);
         let do_access = masm.label();
         let poly_first = masm.label();
@@ -287,7 +288,7 @@ impl SlotSite {
                 loadq {t0}, {src};
                 storeq {slot}, {t0};
             );
-            emit_next(&mut masm, t0, next_addr.as_usize());
+            emit_next(&mut masm, t0, self.next_pc);
             let mut emission = Emission::default();
             let mut context = StubContext::new(
                 self.decoded(),
@@ -315,7 +316,7 @@ impl SlotSite {
             );
             let dst = masm.assembler().mem(regs::SFP, 8 * self.arg);
             onlineasm!(*masm.assembler(); storeq {dst}, {t0};);
-            emit_next(&mut masm, t0, next_addr.as_usize());
+            emit_next(&mut masm, t0, self.next_pc);
         }
 
         // Any guard failure re-enters the cell, which runs the slow path
@@ -345,9 +346,7 @@ impl SlotSite {
     }
 }
 
-fn emit_next(masm: &mut Masm, scratch: onlineasm::VReg, next: usize) {
-    onlineasm!(*masm.assembler();
-        move {scratch}, {next as i64};
-        jmp {scratch};
-    );
+fn emit_next(masm: &mut Masm, scratch: onlineasm::VReg, next_pc: usize) {
+    masm.load_import(scratch, ImportKey::Origin(next_pc as u32));
+    onlineasm!(*masm.assembler(); jmp {scratch};);
 }

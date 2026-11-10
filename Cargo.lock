@@ -102,9 +102,9 @@ checksum = "23b62fc65de8e4e7f52534fb52b0f3ed04746ae267519eef2a83941e8085068b"
 
 [[package]]
 name = "asmkit-rs"
-version = "0.8.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d302e551799da44e15c8b65e3f3c8026e1d6d860a9ea194a3c8720510e84ba21"
+checksum = "de772a7ffad28baa56ef2f50530a077b27825b1b36e98f70918678335dfdc68b"
 dependencies = [
  "bitflags",
  "cfgenius",
@@ -1732,9 +1732,9 @@ dependencies = [
 
 [[package]]
 name = "offlineasm-backend"
-version = "0.4.4"
+version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d01b46c4f184743ed3d3bbe701af1d70944130281cc455af0d97f3908851530b"
+checksum = "5b222fdf667239b525d266eb7faf3d630b7218c5501baff4d596f82acc90caa4"
 dependencies = [
  "offlineasm-ir",
  "proc-macro2",
@@ -1744,9 +1744,9 @@ dependencies = [
 
 [[package]]
 name = "offlineasm-ir"
-version = "0.4.4"
+version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e1877ec45c6864459ef6adedaa1de0dc306f3300faae113baa668e9c0f6f861"
+checksum = "3a01855107c9dc09c9e350306a8314428fa4cc86d0547e5ab76b0e81cc7cb393"
 dependencies = [
  "smallvec",
 ]
@@ -1765,9 +1765,9 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "onlineasm"
-version = "0.4.4"
+version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7530544eb606cf6ca8b51f30966c9daf390f1e3bae0aa0fcb3dd6be4c7a2844b"
+checksum = "4be3f2aec149440ea57c9789f5b4f87b176573f4cfe4fda7871d77902748154b"
 dependencies = [
  "asmkit-rs",
  "offlineasm-backend",
@@ -1778,9 +1778,9 @@ dependencies = [
 
 [[package]]
 name = "onlineasm-macros"
-version = "0.4.4"
+version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a06eac6cfd187e6fb211c7029eaf09a5ad72e200d74fe3aaa0947b953d620a34"
+checksum = "9d5b6e16f535ea7c855bb0aaf5772736b2d48b018a7ac90bbe69fe3b5c6824af"
 dependencies = [
  "offlineasm-ir",
  "proc-macro2",

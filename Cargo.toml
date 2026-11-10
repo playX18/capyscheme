@@ -20,7 +20,7 @@ edition = "2024"
 version = "3.1.0"
 
 [workspace.dependencies]
-onlineasm = "0.4.4"
+onlineasm = "0.4.5"
 mmtk = { git = "https://github.com/mmtk/mmtk-core", default-features = false }
 libc = "0.2.174"
 atomic = "0.6.1"
@@ -47,7 +47,6 @@ capy-derive = { path = "crates/capy-derive" }
 
 
 [profile.release]
-incremental = true
 rpath = true
 debug = false
 debug-assertions = false

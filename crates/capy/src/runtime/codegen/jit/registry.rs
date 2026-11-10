@@ -12,6 +12,7 @@
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
 use super::super::addr::{BytecodePc, CodeOffset};
+use super::super::import::BlockAddrs;
 use super::super::lazy::{CellArena, ErasedCell};
 use super::super::unit::{Annotation, CodeUnit, Listing};
 use super::config::{RESUME_HIT, RESUME_MISS, RESUME_UNCOMPILED};
@@ -81,6 +82,9 @@ pub(crate) struct ResumeTable {
     /// The procedure's lazy cells and the code materialized for them. A
     /// cell finds its unit through its `origin`, so a hit takes no lock.
     cells: CellArena,
+    /// The code block's section addresses, which the unit's lazy stubs
+    /// resolve their block imports against.
+    block: BlockAddrs,
 }
 
 impl ResumeTable {
@@ -88,7 +92,11 @@ impl ResumeTable {
     /// cells. All addresses belong to one image, so every offset from the
     /// lowest fits a `u32`. The cells do not know the table yet: call
     /// [`bind`](Self::bind) once it sits at its final address.
-    pub(crate) fn new(rows: Vec<(BytecodePc, Address)>, cells: Box<[ErasedCell]>) -> Self {
+    pub(crate) fn new(
+        rows: Vec<(BytecodePc, Address)>,
+        cells: Box<[ErasedCell]>,
+        block: BlockAddrs,
+    ) -> Self {
         let base = rows
             .iter()
             .map(|(_, addr)| *addr)
@@ -108,7 +116,23 @@ impl ResumeTable {
             base,
             offsets,
             cells: CellArena::new(cells),
+            block,
         }
+    }
+
+    /// The section addresses of the unit's code block.
+    pub(crate) fn block(&self) -> BlockAddrs {
+        self.block
+    }
+
+    /// The bytecode-to-machine offsets.
+    pub(crate) fn offsets(&self) -> &[u32] {
+        &self.offsets
+    }
+
+    /// The address the offsets are relative to.
+    pub(crate) fn base(&self) -> Address {
+        self.base
     }
 
     /// Point the unit's cells at this table. Once, after the unit reached

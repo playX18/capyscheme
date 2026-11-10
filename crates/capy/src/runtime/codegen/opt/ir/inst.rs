@@ -159,6 +159,14 @@ pub enum Constant {
         code: CodeRef,
         index: u32,
     },
+    /// The address of a section of code block `code`'s buffer, plus
+    /// `offset` bytes: a raw pointer into the non-moving buffer. Code loads
+    /// it through the unit's import table, never as an immediate.
+    Block {
+        code: CodeRef,
+        section: crate::runtime::codegen::import::Section,
+        offset: i32,
+    },
 }
 
 /// The unboxed representations.

@@ -7,6 +7,10 @@ impl Masm {
             symbols: Vec::new(),
             cfi: Vec::new(),
             headers: Vec::new(),
+            mask_blocks: Vec::new(),
+            imports: Vec::new(),
+            import_labels: std::collections::HashMap::new(),
+            block: None,
             externs: Vec::new(),
             pool_words: std::collections::HashMap::new(),
         }
@@ -17,6 +21,10 @@ impl Masm {
         self.symbols.clear();
         self.cfi.clear();
         self.headers.clear();
+        self.mask_blocks.clear();
+        self.imports.clear();
+        self.import_labels.clear();
+        self.block = None;
         self.externs.clear();
         self.pool_words.clear();
     }
@@ -37,7 +45,8 @@ impl Masm {
     /// `movz`+`movk*` sequence per use.
     pub fn load_u64_const(&mut self, dst: VReg, bits: u64) {
         let label = self.embed_u64(bits);
-        let at = self.asm.mem_label(label);
+        // Far form: an image can outgrow the `ldr` literal range (1 MiB).
+        let at = self.asm.mem_label_far(label);
         onlineasm!(self.asm;
             loadq {dst}, {at};
         );
@@ -335,7 +344,7 @@ impl Masm {
     pub fn emit_rp_header(
         &mut self,
         mv_return_address: HeaderTarget,
-        livemask: usize,
+        livemask: impl Into<Livemask>,
         toplink: usize,
         frame_size: isize,
     ) -> Label {
@@ -345,7 +354,7 @@ impl Masm {
             ra,
             HeaderWords::Full {
                 mv_return_address,
-                livemask,
+                livemask: livemask.into(),
                 toplink,
                 frame_size,
             },
@@ -356,7 +365,7 @@ impl Masm {
     /// its own return address: a stub takes any value count itself.
     pub fn emit_rp_header_self(
         &mut self,
-        livemask: usize,
+        livemask: impl Into<Livemask>,
         toplink: usize,
         frame_size: isize,
     ) -> Label {
@@ -366,7 +375,7 @@ impl Masm {
             ra,
             HeaderWords::Full {
                 mv_return_address: HeaderTarget::Label(ra),
-                livemask,
+                livemask: livemask.into(),
                 toplink,
                 frame_size,
             },
@@ -379,7 +388,7 @@ impl Masm {
         &mut self,
         ra: Label,
         mv_return_address: HeaderTarget,
-        livemask: usize,
+        livemask: impl Into<Livemask>,
         toplink: usize,
         frame_size: isize,
     ) {
@@ -388,7 +397,7 @@ impl Masm {
             ra,
             HeaderWords::Full {
                 mv_return_address,
-                livemask,
+                livemask: livemask.into(),
                 toplink,
                 frame_size,
             },
@@ -403,6 +412,97 @@ impl Masm {
             ra,
             HeaderWords::Compact(header),
         );
+    }
+
+    /// The label of the 8-byte import slot for `key`, reserved on first use
+    /// and shared after. The slot holds a placeholder until the image is linked.
+    pub fn import(&mut self, key: ImportKey) -> Label {
+        if let Some(&label) = self.import_labels.get(&key) {
+            return label;
+        }
+        // `embed_data` shares identical constants, so each slot starts as a
+        // distinct placeholder; linking overwrites it.
+        let placeholder = 0x1a57_0000_0000_0000u64 | self.imports.len() as u64;
+        let label = self.asm.embed_data(&placeholder.to_ne_bytes());
+        self.imports.push((key, label));
+        self.import_labels.insert(key, label);
+        label
+    }
+
+    /// An 8-byte import slot at the current position (8-aligned), for words
+    /// that must sit at a fixed place in the image, like the owner word at
+    /// its start. Returns the label bound to it.
+    pub fn import_inline(&mut self, key: ImportKey) -> Label {
+        debug_assert!(!self.import_labels.contains_key(&key));
+        self.asm.align(8);
+        let label = self.label();
+        self.bind(label);
+        self.emit_nop_padding(8);
+        self.imports.push((key, label));
+        self.import_labels.insert(key, label);
+        label
+    }
+
+    /// Declare that this image belongs to the code block whose bytecode
+    /// starts at `bytecode` and whose metadata area starts at `metadata`
+    /// (0 when it has none). Absolute `ip`s and metadata addresses the
+    /// emitters hold are then emitted as offsets from imported bases.
+    pub fn bind_block(&mut self, bytecode: usize, metadata: usize) {
+        self.block = Some((bytecode, metadata));
+    }
+
+    /// `dst` = the bytecode address `ip`, as the imported bytecode base plus
+    /// its offset.
+    pub fn load_ip(&mut self, dst: VReg, ip: usize) {
+        let (bytecode, _) = self
+            .block
+            .expect("an image that names bytecode addresses binds its code block");
+        let offset = ip.wrapping_sub(bytecode) as isize;
+        self.load_import(
+            dst,
+            ImportKey::Block(
+                0,
+                Section::Bytecode,
+                i32::try_from(offset).expect("a bytecode offset fits in 32 bits"),
+            ),
+        );
+    }
+
+    /// `dst` = the metadata address `md` (an absolute address in this
+    /// image's code block), as the imported metadata base plus its offset.
+    pub fn load_md(&mut self, dst: VReg, md: usize) {
+        let (_, metadata) = self
+            .block
+            .expect("an image that names metadata addresses binds its code block");
+        let offset = md.wrapping_sub(metadata) as isize;
+        self.load_import(
+            dst,
+            ImportKey::Block(
+                0,
+                Section::Metadata,
+                i32::try_from(offset).expect("a metadata offset fits in 32 bits"),
+            ),
+        );
+    }
+
+    /// `dst = the value of import `key``: one PC-relative load.
+    pub fn load_import(&mut self, dst: VReg, key: ImportKey) {
+        let label = self.import(key);
+        // The page-pair form: the owner slot sits at the image start, and the
+        // literal form cannot be fixed up for a backward reference.
+        let at = self.asm.mem_label_far(label);
+        onlineasm!(self.asm;
+            loadq {dst}, {at};
+        );
+    }
+
+    /// Embeds a multi-word live mask (`[nwords][words...]`) in the image's
+    /// 8-aligned data island and returns the header word that points at it.
+    pub fn embed_mask(&mut self, words: &[u64]) -> Livemask {
+        let bytes: Vec<u8> = words.iter().flat_map(|word| word.to_ne_bytes()).collect();
+        let label = self.asm.embed_data(&bytes);
+        self.mask_blocks.push((label, bytes.len()));
+        Livemask::Data(label)
     }
 
     /// Reserve `bytes` (a multiple of 8) of code to patch after load.

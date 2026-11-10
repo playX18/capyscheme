@@ -347,6 +347,28 @@ impl CellArena {
         addr
     }
 
+    /// Append `cell`, returning its arena index and stable address.
+    pub(crate) fn push_indexed(&self, cell: ErasedCell) -> (usize, Address) {
+        let addr = cell.addr();
+        let mut cells = self.cells.lock().unwrap();
+        cells.push(cell);
+        (cells.len() - 1, addr)
+    }
+
+    /// The arena index of the cell at `addr`.
+    pub(crate) fn index_of(&self, addr: Address) -> Option<usize> {
+        self.cells
+            .lock()
+            .unwrap()
+            .iter()
+            .position(|cell| cell.addr() == addr)
+    }
+
+    /// The address of cell `index`.
+    pub(crate) fn addr_of(&self, index: usize) -> Option<Address> {
+        self.cells.lock().unwrap().get(index).map(|cell| cell.addr())
+    }
+
     /// Number of cells.
     pub(crate) fn len(&self) -> usize {
         self.cells.lock().unwrap().len()
@@ -543,6 +565,8 @@ struct NewEdge {
     thunk: Option<Label>,
     hit: Label,
     cell: Address,
+    /// The cell's index in the unit's arena, which stubs import it by.
+    index: usize,
     ip: Ip,
 }
 
@@ -600,6 +624,24 @@ impl<'gc> MaterializeCx<'gc> {
         unsafe { origin.0.as_ref() }
     }
 
+    /// A fresh masm bound to the unit's code block, for stubs that name its
+    /// bytecode or metadata addresses.
+    pub(crate) fn masm(&self) -> Masm {
+        let block = self.origin_table().block();
+        let mut masm = Masm::new();
+        masm.bind_block(block.bytecode, block.metadata);
+        masm
+    }
+
+    /// The arena index of the cell being materialized, which stubs import
+    /// it by.
+    pub(crate) fn cell_index(&self) -> usize {
+        self.origin_table()
+            .cells()
+            .index_of(self.cell_addr())
+            .expect("a materializing cell is in its unit's arena")
+    }
+
     /// Record why materializing failed, and decline for good.
     pub(crate) fn fail(&mut self, error: io::Error) -> Materialize {
         self.error = Some(error);
@@ -628,7 +670,7 @@ impl<'gc> MaterializeCx<'gc> {
                 }
                 None => None,
             });
-            edge::emit_indirect_edge_to(&mut masm, edge.cell);
+            edge::emit_indirect_edge_to(&mut masm, edge.index);
             masm.bind(edge.hit);
             edge::emit_hit_block(&mut masm, edge.ip, SiteOperand::Register(edge::SITE_TMP));
         }
@@ -645,7 +687,18 @@ impl<'gc> MaterializeCx<'gc> {
                 })
             })
             .collect();
-        let loaded = stub.load()?;
+        let table = self.origin_table();
+        let blocks = super::import::block_resolver(vec![table.block()], None, None);
+        let loaded = stub.load_with(&|key| match *key {
+            super::import::ImportKey::Origin(pc) => table
+                .lookup(crate::runtime::codegen::addr::BytecodePc::new(pc as usize)?)
+                .map(|addr| addr.as_usize() as u64),
+            super::import::ImportKey::Cell(index) => table
+                .cells()
+                .addr_of(index as usize)
+                .map(|addr| addr.as_usize() as u64),
+            _ => blocks(key),
+        })?;
         let base = loaded.base();
         for ((edge, hit), direct_at) in edges.iter().zip(hits).zip(direct_ats) {
             // SAFETY: the cell is in the arena, alive with the unit.
@@ -676,12 +729,13 @@ impl Lazies for MaterializeCx<'_> {
         // The new cell belongs to the same unit as the one materializing:
         // its own materialize resolves exits and declares cells there.
         cell.header().bind_origin(table);
-        let cell = table.cells().push(cell);
+        let (index, cell) = table.cells().push_indexed(cell);
         self.edges.push(NewEdge {
             label,
             thunk: (kind == EdgeKind::Direct).then(|| masm.label()),
             hit: masm.label(),
             cell,
+            index,
             ip,
         });
     }

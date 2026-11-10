@@ -5,12 +5,13 @@ use onlineasm::{Label, PatchHandle, PatchLocation, onlineasm};
 
 use super::addr::CodeOffset;
 use super::image::{self, LoadedImage, UnloadedImage};
+use super::import::{ImportKey, ImportSlot, Resolve};
 use super::jit::registry::{DataRange, InstructionRange};
 use super::lazy::edge::{self, EdgeKind};
 use super::lazy::{ErasedCell, Lazies, Lazy};
 use super::masm::Masm;
 use super::operation::{ERROR_REG, RESULT_REG, emit_operation_call};
-use super::reloc::{Reloc, patch_imm64};
+use super::reloc::{self, Reloc, Resolved};
 use super::template::{
     OpContinue, OpResult, OperationCall, SiteOperand, SlowPath, SlowPaths, Target, emit_jump_to,
     emit_staged_control,
@@ -18,7 +19,6 @@ use super::template::{
 use super::template_image::resolve_slow_path;
 use crate::runtime::interp::stack::Ip;
 use crate::runtime::sabi::regs;
-use mmtk::util::Address;
 
 /// A deferred slow/taken block
 #[derive(Clone)]
@@ -28,7 +28,7 @@ pub(crate) enum Deferred {
     /// Jump to the already-decoded `target`.
     Jump { target: Label },
     /// Jump to a machine address known at emission time.
-    JumpAbsolute { addr: Address },
+    JumpOrigin { pc: usize },
     /// A dense switch jump table: one machine address per bytecode-pc
     /// `target`, reserved here and patched at link.
     Table { targets: Vec<usize> },
@@ -109,6 +109,10 @@ pub(crate) struct Linked {
     pub(crate) entry_off: Option<usize>,
     /// Image offset of the owner word, patched at publish.
     pub(crate) owner_at: usize,
+    /// Every import slot of the image. Those `link` could not resolve
+    /// still hold zero: the driver fills them with
+    /// [`LoadedImage::patch_word`] once their values exist.
+    pub(crate) imports: Vec<ImportSlot>,
 }
 
 impl Emission {
@@ -141,7 +145,7 @@ impl Emission {
                 Deferred::Jump { target } => {
                     onlineasm!(*masm.assembler(); jmp {target};);
                 }
-                Deferred::JumpAbsolute { addr } => emit_jump_to(masm, Target::Absolute(addr)),
+                Deferred::JumpOrigin { pc } => emit_jump_to(masm, Target::Origin(pc)),
                 Deferred::Table { targets } => {
                     masm.reserve_words(targets.len() * 8);
                     self.data.push((label, targets.len() * 8));
@@ -153,7 +157,7 @@ impl Emission {
                         });
                     }
                 }
-                Deferred::LazyEdge { pending } => edge::emit_indirect_edge(masm, self, pending),
+                Deferred::LazyEdge { pending } => edge::emit_indirect_edge(masm, pending),
                 Deferred::LazyDirect { pending, thunk } => {
                     let jump = edge::emit_direct_jump(masm, thunk);
                     self.direct_jumps.push((pending, jump));
@@ -194,7 +198,12 @@ impl Emission {
     /// yieldpoint comes before the lock. Pre-publication and
     /// single-threaded: nothing executes the image yet. Returns the
     /// loaded image with its cells, as the driver publishes it.
-    pub(crate) fn link(self, image: UnloadedImage, layout: &Layout<'_>) -> std::io::Result<Linked> {
+    pub(crate) fn link(
+        self,
+        image: UnloadedImage,
+        layout: &Layout<'_>,
+        resolve: Resolve<'_>,
+    ) -> std::io::Result<Linked> {
         let off = |label: Label| image.finished.offset(label).expect("bound label") as usize;
         // Every fallen-through `next` must sit exactly at the next label:
         // anything emitted after it (a stale `next_may_elide` entry) drifts
@@ -227,32 +236,61 @@ impl Emission {
             })
             .collect::<std::io::Result<_>>()?;
         // Relocations, as image offsets. Every target pc has a label
-        let mut label_addrs = Vec::new();
-        let mut table_words = Vec::new();
-        let mut cell_loads = Vec::new();
-        let mut owner_at = None;
+        let mut records = Vec::with_capacity(self.relocs.len());
         for reloc in &self.relocs {
             match *reloc {
-                Reloc::LabelAddr { at, target } => label_addrs.push((off(at), off(target))),
-                Reloc::TableWord { table, index, pc } => {
-                    table_words.push((off(table) + index * 8, offsets[&pc]))
-                }
+                Reloc::TableWord { table, index, pc } => records.push(reloc::Record {
+                    at: off(table) + index * 8,
+                    target: Resolved::Image(offsets[&pc]),
+                }),
                 Reloc::TableLabel {
                     table,
                     index,
                     target,
-                } => table_words.push((off(table) + index * 8, off(target))),
-                Reloc::Cell { at, pending } => cell_loads.push((off(at), pending)),
-                Reloc::OwnerSlot { at } => owner_at = Some(off(at)),
+                } => records.push(reloc::Record {
+                    at: off(table) + index * 8,
+                    target: Resolved::Image(off(target)),
+                }),
             }
         }
-        let owner_at = owner_at.expect("an image reserves its owner word");
+        let import_slots: Vec<ImportSlot> = image
+            .imports
+            .iter()
+            .map(|&(key, label)| ImportSlot {
+                key,
+                at: off(label),
+            })
+            .collect();
+        let owner_at = import_slots
+            .iter()
+            .find(|slot| slot.key == ImportKey::Owner)
+            .expect("an image reserves its owner word")
+            .at;
+        // Cells exist before load and never move: their addresses resolve
+        // `Cell` imports directly.
+        let cell_addrs: Vec<u64> = self
+            .cells
+            .iter()
+            .map(|pending| pending.cell.addr().as_usize() as u64)
+            .collect();
 
-        let mut data = Vec::with_capacity(self.data.len() + image.headers.len());
+        let mut data = Vec::with_capacity(self.data.len() + image.headers.len() + image.mask_blocks.len());
         for &(start, len) in &self.data {
             data.push(DataRange {
                 offset: off(start),
                 len,
+            });
+        }
+        for &(label, len) in &image.mask_blocks {
+            data.push(DataRange {
+                offset: off(label),
+                len,
+            });
+        }
+        for slot in &import_slots {
+            data.push(DataRange {
+                offset: slot.at,
+                len: 8,
             });
         }
         for header in &image.headers {
@@ -282,16 +320,17 @@ impl Emission {
             });
         }
 
-        let mut loaded = image::load(image, |name| resolve_slow_path(name))?;
+        let mut loaded = image::load_with(
+            image,
+            |name| resolve_slow_path(name),
+            &|key| match *key {
+                ImportKey::Cell(index) => Some(cell_addrs[index as usize]),
+                _ => resolve(key),
+            },
+        )?;
         let base = loaded.base();
-        for (at, target) in label_addrs {
-            patch_imm64(&mut loaded, at, (base + target).as_usize() as u64)?;
-        }
-        for (at, target) in table_words {
-            loaded.patch(at, &((base + target).as_usize() as u64).to_ne_bytes())?;
-        }
-        // Lazy cells: point each at its hit block, then bake the cell
-        // addresses into the edges.
+        // Lazy cells: point each at its hit block, then write every
+        // record, which bakes the cell addresses into the edges.
         let cells: Box<[ErasedCell]> = self
             .cells
             .into_iter()
@@ -301,9 +340,7 @@ impl Emission {
                 pending.cell
             })
             .collect();
-        for (at, pending) in cell_loads {
-            patch_imm64(&mut loaded, at, cells[pending].addr().as_usize() as u64)?;
-        }
+        reloc::apply(&mut loaded, &records)?;
         for (pending, at) in direct_ats {
             cells[pending]
                 .header()
@@ -319,6 +356,7 @@ impl Emission {
             end_off,
             entry_off,
             owner_at,
+            imports: import_slots,
         })
     }
 }

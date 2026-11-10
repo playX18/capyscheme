@@ -481,7 +481,11 @@ impl Greedy<'_> {
         }
         fixed_regs.sort_by(|a, b| b.0.total_cmp(&a.0));
         out.extend(fixed_regs.into_iter().map(|(_, r)| r));
-        out.retain(|&r| self.allowed(id, r));
+        // A fixed operand can sit in a register outside the pool (a helper
+        // argument register is also an emitter scratch), which a free piece
+        // must never take.
+        let pool = self.regs.pool(self.class_of(id));
+        out.retain(|&r| pool.contains(&r) && self.allowed(id, r));
         let mut seen = HashSet::new();
         out.retain(|r| seen.insert(*r));
         out

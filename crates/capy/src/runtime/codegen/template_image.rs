@@ -225,9 +225,12 @@ fn generate() -> io::Result<(LoadedImage, [[HandlerKind; 256]; 3])> {
     let values_error_path = masm.declare_rust_fn(RuntimeExtern::ValuesError);
     let paths = declare_slow_paths(&mut masm);
 
-    // The opcode map lives at the end of the image, dispatch sites reference
-    // it forward.
-    let map = masm.label();
+    // The opcode map is a data constant of the image, filled after load. It
+    // is embedded first so it leads the constant pool, ahead of import
+    // slots and masks, and dispatch sites reference it by label.
+    let map = masm
+        .assembler()
+        .embed_data(&vec![0u8; (MAP_ENTER_SLOT + 1) * 8]);
 
     // One return glue with a self-referential header: a multiple-values
     // return to an interpreted caller resumes at `interpreter_return` itself.
@@ -438,15 +441,9 @@ fn generate() -> io::Result<(LoadedImage, [[HandlerKind; 256]; 3])> {
 
     // Opcode map: 3 × 256 × 8 bytes of handler addresses plus the
     // `interpreter_return` and `interpreter_enter` slots templates read through
-    // `MAP_RETURN_OFF` and `MAP_ENTER_OFF`, all filled after load.
-    masm.align(16);
-    masm.bind(map);
-    let map_data = vec![0u8; (MAP_ENTER_SLOT + 1) * 8];
-    let _ = masm.assembler().embed_data(&map_data);
-    let map_end = masm.label();
-    masm.bind(map_end);
-    masm.define_symbol("opcode_map", map, map_end, SymbolKind::Handler);
-
+    // `MAP_RETURN_OFF` and `MAP_ENTER_OFF`, all filled after load. The
+    // symbol is the map's start: constants have no end label to bind.
+    masm.define_symbol("opcode_map", map, map, SymbolKind::Handler);
     let mut entries = Vec::with_capacity(MAP_ENTER_SLOT + 1);
     for width in 0..3 {
         for slot in 0..256 {

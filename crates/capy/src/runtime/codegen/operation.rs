@@ -3,10 +3,10 @@
 use onlineasm::{Label, VReg, onlineasm};
 use smallvec::SmallVec;
 
+use super::import::{ImportKey, RuntimeSym};
 use super::masm::{Masm, RuntimeExtern};
 use super::stubs;
 use super::template::tmp;
-use crate::runtime::prims::calls::PRIM_WRAPPERS;
 use crate::runtime::sabi::regs;
 
 /// The function an operation call reaches.
@@ -220,9 +220,9 @@ pub(crate) fn emit_operation_call(
             let (table, target) = (tmp::T2, tmp::T3);
             let from = saved_at(masm, reg);
             let entry = masm.assembler().mem_indexed(table, target, 8, 0);
+            onlineasm!(*masm.assembler(); loadq {target}, {from};);
+            masm.load_import(table, ImportKey::Runtime(RuntimeSym::PrimWrappers));
             onlineasm!(*masm.assembler();
-                loadq {target}, {from};
-                move {table}, {PRIM_WRAPPERS.as_ptr() as i64};
                 loadq {target}, {entry};
                 call {target};
             );

@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::mem::size_of;
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
 
 use bytecodegen::OperandWidth;
@@ -13,14 +12,14 @@ use super::super::emission::{Emission, Layout, Linked};
 use super::super::image::LoadedImage;
 use super::super::lazy::ErasedCell;
 use super::super::lazy::edge::encode_jump;
-use super::super::masm::{HeaderTarget, Masm, SymbolKind, TOPLINK_TO_IMAGE_START};
+use super::super::import::{BlockAddrs, ImportKey, RuntimeSym};
+use super::super::masm::{HeaderTarget, Livemask, Masm, SymbolKind, TOPLINK_TO_IMAGE_START};
 use super::super::opt::OptimizingCompiler;
-use super::super::reloc::Reloc;
 use super::super::template::emit;
 use super::super::template_image::{declare_slow_paths, ensure_loaded};
 use super::super::unit::{Annotation, CodeUnit, Listing, OptInfo, PublishedCode, Tier};
 use super::config::{
-    Bisect, COMPILES, OPT_BUILD_FAILURES, OPT_INSTALLS, bisect, template_interpreter,
+    Bisect, COMPILES, OPT_BUILD_FAILURES, OPT_INSTALLS, bisect,
 };
 use super::context::{DecodedInstruction, JitTemplateContext, ProcTargets, ProfileSpec};
 use super::entry::emit_optimized_redirect;
@@ -255,7 +254,6 @@ fn install_optimized<'gc>(
         rows,
         entry_addr,
         cells,
-        masks,
         ranges,
         code_start,
         annotations,
@@ -272,18 +270,21 @@ fn install_optimized<'gc>(
     if code_block.machine.load(Acquire).is_none() {
         return Err(io::Error::other("no baseline unit to fall back to"));
     }
-    let sites = opt.constant_sites.clone();
-
-    let mut refs = vec![Value::null(); 1 + constants.len() + 1];
-    let refs_base = refs.as_ptr() as usize;
     let perf_start = loaded.base().as_usize() + code_start;
     let perf_end = loaded.base().as_usize() + end_off;
     let mut unit = CodeUnit::new(
         tier,
         loaded,
         entry_addr,
-        ResumeTable::new(rows, cells),
-        masks,
+        ResumeTable::new(
+            rows,
+            cells,
+            BlockAddrs {
+                bytecode: code_block.buffer.entry() as usize,
+                metadata: code_block.buffer.metadata() as usize,
+                pool: code_block.buffer.pool().as_ptr() as usize,
+            },
+        ),
         id,
         Address::from_ptr(code_block.buffer.entry()),
         Listing {
@@ -295,47 +296,24 @@ fn install_optimized<'gc>(
             code_end: end_off,
         },
     );
-    for &(at, slot) in &sites {
-        if slot == 0 || slot as usize > constants.len() {
-            return Err(io::Error::other(format!(
-                "constant table slot {slot} is missing"
-            )));
-        }
-        let addr = refs_base + slot as usize * size_of::<Value>();
-        unit.image.patch(at.get(), &(addr as u64).to_ne_bytes())?;
-    }
     unit.generation = generation;
     unit.opt = Some(opt);
-    let owner = CodeImage::alloc(mutator, PublishedCode::Unit(unit));
-    let unit = CodeUnit::of_image(owner).expect("an owner of a unit holds one");
-    unit.resume.bind();
-    // The baseline image is read now, after the allocation, from the block
-    // that keeps it alive.
+    // The baseline image is read now, from the block that keeps it alive.
     let baseline = code_block
         .machine
         .get()
         .ok_or_else(|| io::Error::other("no baseline unit to fall back to"))?;
-    refs[0] = Value::from(baseline);
-    for (slot, constant) in refs[1..].iter_mut().zip(&constants) {
-        *slot = *constant;
-    }
-
-    if !flags::jit_stable_entry()
-        && let Some(previous) = code_block.optimized.load(Acquire)
-    {
-        let last = refs.len() - 1;
-        refs[last] = Value::from(previous);
-    }
-    let refs = refs.into_boxed_slice();
-    if refs.as_ptr() as usize != refs_base {
-        return Err(io::Error::other(
-            "the reference box moved before it was owned",
-        ));
-    }
-    // SAFETY: the owner was allocated just above and is unpublished, and the
-    // mutation scope is the one it was allocated in.
-    unsafe { owner.set_refs(refs) };
-    let slot_addr = owner.owner_slot().as_usize() as u64;
+    let mut refs = Vec::with_capacity(constants.len() + 2);
+    refs.push(Value::from(baseline));
+    refs.extend(constants.iter().copied());
+    refs.push(match code_block.optimized.load(Acquire) {
+        Some(previous) if !flags::jit_stable_entry() => Value::from(previous),
+        _ => Value::null(),
+    });
+    let owner = CodeImage::alloc(mutator, PublishedCode::Unit(unit), &refs);
+    let unit = CodeUnit::of_image(owner).expect("an owner of a unit holds one");
+    unit.resume.bind();
+    let slot_addr = owner.address().as_usize() as u64;
     unit.image
         .patch_unpublished(owner_at, &slot_addr.to_ne_bytes())?;
 
@@ -503,7 +481,6 @@ pub(crate) struct BuiltUnit<'gc> {
     pub(crate) rows: Vec<(BytecodePc, Address)>,
     pub(crate) entry_addr: Address,
     pub(crate) cells: Box<[ErasedCell]>,
-    pub(crate) masks: Vec<Box<[u64]>>,
     pub(crate) ranges: Vec<InstructionRange>,
     /// Image offset where the code starts, past the owner word.
     pub(crate) code_start: usize,
@@ -539,7 +516,6 @@ pub(crate) fn attach<'gc>(
         rows,
         entry_addr,
         cells,
-        masks,
         ranges,
         code_start,
         annotations,
@@ -556,12 +532,16 @@ pub(crate) fn attach<'gc>(
         constants.is_empty() && dependencies.is_empty() && class_dependencies.is_empty(),
         "baseline units carry no constant table or watchpoint assumptions"
     );
+    let block_addrs = BlockAddrs {
+        bytecode: buffer.entry() as usize,
+        metadata: buffer.metadata() as usize,
+        pool: buffer.pool().as_ptr() as usize,
+    };
     let mut unit = CodeUnit::new(
         tier,
         loaded,
         entry_addr,
-        ResumeTable::new(rows, cells),
-        masks,
+        ResumeTable::new(rows, cells, block_addrs),
         id,
         Address::from_ptr(buffer.entry()),
         Listing {
@@ -577,11 +557,11 @@ pub(crate) fn attach<'gc>(
 
     // The owner holds the unit. Its slot never moves, and its address goes
     // into the code's header before the code is published.
-    let owner = CodeImage::alloc(mutator, PublishedCode::Unit(unit));
+    let owner = CodeImage::alloc(mutator, PublishedCode::Unit(unit), &[]);
     let unit = CodeUnit::of_image(owner).expect("an owner of a unit holds one");
     // The unit sits where it stays: its cells can point at its table.
     unit.resume.bind();
-    let slot_addr = owner.owner_slot().as_usize() as u64;
+    let slot_addr = owner.address().as_usize() as u64;
     unit.image
         .patch_unpublished(owner_at, &slot_addr.to_ne_bytes())?;
     buffer.built.set(Gc::write(mutator, buffer), Some(owner));
@@ -751,24 +731,21 @@ fn build_image<'gc>(
     }
 
     masm.reset();
+    masm.bind_block(entry as usize, md.as_usize());
     let paths = declare_slow_paths(masm);
     let start = masm.label();
     masm.bind(start);
-    // The chunk header: the owner slot's address, patched at publish.
-    let owner = masm.label();
-    masm.bind(owner);
-    masm.reserve_words(8);
+    // The chunk header: the owner import, filled at publish.
+    masm.import_inline(ImportKey::Owner);
 
     let redirect = masm.label();
     masm.bind(redirect);
     let mut emission = Emission::default();
-    emit_optimized_redirect(masm, &mut emission, redirect);
+    emit_optimized_redirect(masm, redirect);
     let labels: HashMap<usize, Label> = instructions
         .iter()
         .map(|(pc, ..)| (*pc, masm.label()))
         .collect();
-    let mut masks = Vec::new();
-
     let &(first_pc, first_op, first_width, first_len) = instructions
         .first()
         .expect("a procedure compiles at least one instruction");
@@ -842,19 +819,16 @@ fn build_image<'gc>(
                     );
                 } else {
                     let livemask = if length < 63 {
-                        sabi::livemask_fixnum(bits[0] as usize)
+                        Livemask::Word(sabi::livemask_fixnum(bits[0] as usize))
                     } else {
                         let mut words = vec![bits.len() as u64];
                         words.extend_from_slice(&bits);
-                        let words = words.into_boxed_slice();
-                        let addr = words.as_ptr() as usize;
-                        masks.push(words);
-                        addr
+                        masm.embed_mask(&words)
                     };
                     let target = match mv {
                         Some(pc) => HeaderTarget::Label(context.label_at(pc)),
                         None if values_error => {
-                            HeaderTarget::Absolute(template_interpreter().values_error)
+                            HeaderTarget::Runtime(RuntimeSym::ValuesError)
                         }
                         None => HeaderTarget::Label(label),
                     };
@@ -886,7 +860,6 @@ fn build_image<'gc>(
         emit::emit_template(masm, &mut context, op);
     }
     let labels = context.into_targets().into_labels();
-    emission.reloc(Reloc::OwnerSlot { at: owner });
     // The deferred slow/taken blocks, in template order: every fast path
     // above falls through to the next instruction.
     let slows_start = masm.label();
@@ -925,6 +898,7 @@ fn build_image<'gc>(
         end_off,
         entry_off,
         owner_at,
+        ..
     } = emission.link(
         image,
         &Layout {
@@ -934,6 +908,15 @@ fn build_image<'gc>(
             end,
             entry: Some(redirect),
         },
+        &super::super::import::block_resolver(
+            vec![super::super::import::BlockAddrs {
+                bytecode: entry as usize,
+                metadata: md.as_usize(),
+                pool: pool.as_ptr() as usize,
+            }],
+            None,
+            None,
+        ),
     )?;
     let base = loaded.base();
 
@@ -974,7 +957,6 @@ fn build_image<'gc>(
         rows,
         entry_addr,
         cells,
-        masks,
         code_start: ranges.first().map_or(0, |range| range.offset),
         ranges,
         annotations: Vec::new(),

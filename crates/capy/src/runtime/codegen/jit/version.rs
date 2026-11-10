@@ -91,9 +91,8 @@ impl VersionTargets {
 impl Targets for VersionTargets {
     fn target(&mut self, em: &mut Emission, masm: &mut Masm, pc: usize) -> Target {
         use super::super::lazy::Lazies;
-        if let Some(&addr) = self.versions.get(&(pc, self.context.clone())) {
-            return Target::Absolute(addr);
-        }
+
+        let _ = &self.versions;
         let label = em.edge(
             masm,
             EdgeKind::Direct,

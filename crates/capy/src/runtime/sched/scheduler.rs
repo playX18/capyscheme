@@ -413,6 +413,8 @@ where
         }
     }
 
+    let t_main = std::time::Instant::now();
+
     install_guard_handler();
     preempt::install();
     let cfg = Config::from_env();
@@ -469,12 +471,19 @@ where
     }
     sysmon::spawn(shared.clone());
 
+    if std::env::var_os("CAPY_STARTUP_DEBUG").is_some() {
+        eprintln!("startup: scheduler bring-up {:?}", t_main.elapsed());
+    }
     worker_loop(&shared, 0, mutator);
 
     // Give the other workers a moment to notice the stop flag
+    let t_stop = std::time::Instant::now();
     let deadline = std::time::Instant::now() + Duration::from_secs(1);
     while shared.running_workers() > 0 && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(1));
+    }
+    if std::env::var_os("CAPY_STARTUP_DEBUG").is_some() {
+        eprintln!("startup: scheduler shutdown {:?}", t_stop.elapsed());
     }
 }
 

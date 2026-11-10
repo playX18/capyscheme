@@ -6,7 +6,8 @@ use super::*;
 #[derive(Clone, Copy)]
 pub enum ValuesError {
     Label(Label),
-    Address(usize),
+    /// The runtime image's `values_error`, imported by name.
+    Import,
 }
 
 impl Masm {
@@ -47,10 +48,10 @@ impl Masm {
         self.bind(error);
         match values_error {
             ValuesError::Label(label) => onlineasm!(self.asm; jmp {label};),
-            ValuesError::Address(addr) => onlineasm!(self.asm;
-                move {tmp0}, {addr as i64};
-                jmp {tmp0};
-            ),
+            ValuesError::Import => {
+                self.load_import(tmp0, ImportKey::Runtime(RuntimeSym::ValuesError));
+                onlineasm!(self.asm; jmp {tmp0};);
+            }
         }
     }
 
@@ -92,7 +93,9 @@ impl Masm {
         self.bind(error);
         match values_error {
             ValuesError::Label(label) => onlineasm!(self.asm; leap {target}, {label};),
-            ValuesError::Address(addr) => onlineasm!(self.asm; move {target}, {addr as i64};),
+            ValuesError::Import => {
+                self.load_import(target, ImportKey::Runtime(RuntimeSym::ValuesError))
+            }
         }
         self.bind(done);
     }

@@ -1,6 +1,6 @@
 //! Where a bytecode pc becomes a jump target.
 
-use mmtk::util::Address;
+use crate::runtime::codegen::import::ImportKey;
 use onlineasm::{Label, onlineasm};
 
 use super::super::emission::Emission;
@@ -15,8 +15,9 @@ use super::{
 pub(crate) enum Target {
     /// A label of the image under construction.
     Label(Label),
-    /// A machine address already known at emission time (another image).
-    Absolute(Address),
+    /// The origin image's code for bytecode `pc`, imported by key and
+    /// resolved when the stub loads (the origin is loaded by then).
+    Origin(usize),
     /// A label bound to a lazy edge: reaching it may materialize code.
     Edge(Label),
 }
@@ -54,8 +55,8 @@ pub(crate) fn emit_jump_to(masm: &mut Masm, target: Target) {
         Target::Label(label) | Target::Edge(label) => {
             onlineasm!(*masm.assembler(); jmp {label};);
         }
-        Target::Absolute(addr) => {
-            masm.load_u64_const(tmp::T0, addr.as_usize() as u64);
+        Target::Origin(pc) => {
+            masm.load_import(tmp::T0, ImportKey::Origin(pc as u32));
             onlineasm!(*masm.assembler();
                 jmp {tmp::T0};
             );

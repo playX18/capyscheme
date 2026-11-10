@@ -10,7 +10,6 @@ use bytecodegen::OperandWidth;
 
 use super::super::emission::Emission;
 use super::super::lazy::{CellState, HitCx, Lazy, Materialize, MaterializeCx};
-use super::super::masm::Masm;
 use super::super::template::{ArithShape, emit};
 use super::super::template_image::declare_slow_paths;
 use super::config::MATH_STUBS;
@@ -82,7 +81,7 @@ impl ArithSite {
         shape: ArithShape,
         terminal: bool,
     ) -> std::io::Result<()> {
-        let mut masm = Masm::new();
+        let mut masm = cx.masm();
         let paths = declare_slow_paths(&mut masm);
         let start = masm.label();
         masm.bind(start);
@@ -103,7 +102,7 @@ impl ArithSite {
             },
             FixedSpec {
                 shape,
-                cell: (!terminal).then(|| cx.cell_addr()),
+                cell: (!terminal).then(|| cx.cell_index()),
             },
             &mut emission,
             paths,

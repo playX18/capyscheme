@@ -12,6 +12,7 @@ pub(crate) mod cache;
 pub(crate) mod emission;
 pub mod gc;
 pub mod image;
+pub(crate) mod import;
 pub(crate) mod install;
 pub mod jit;
 pub(crate) mod lazy;

@@ -1144,6 +1144,15 @@ impl<'a, 'gc> Splice<'a, 'gc> {
                     Constant::Bits(value.bits())
                 }
             }
+            Constant::Block {
+                code,
+                section,
+                offset,
+            } => Constant::Block {
+                code: self.code(code)?,
+                section,
+                offset,
+            },
             other => other,
         })
     }
