@@ -403,6 +403,15 @@ in CPS with `call.tail`."
         );
 
         let module = self.scheme_attribute.module_path.resolve();
+        // the first input is the `call` that `emit_tokens` inserted, not an argument of the procedure
+        let arg_tys = self.transformed_function.sig.inputs.iter().skip(1).filter_map(|arg| {
+            if let syn::FnArg::Typed(pat_type) = arg {
+                Some(pat_type.ty.clone())
+            } else {
+                None
+            }
+        });
+        let gc_lifetime = &self.gc_lifetime;
 
         let (make, make_static) = if self.is_continuation() {
             (
@@ -427,13 +436,23 @@ in CPS with `call.tail`."
                         Value::new(column!() as i32)
                     );
 
-                    let props = list!(ctx,
-                        Value::cons(ctx, ctx.intern("name"), ctx.intern(#scm_name)),
-                        Value::cons(ctx, ctx.intern("source"), loc.into()),
-                        Value::cons(ctx, ctx.intern("documentation"), ctx.str(#doc))
-                    );
+                    type Args<#gc_lifetime> = (#(#arg_tys),*);
 
-                    props
+                    let name = Value::cons(ctx, ctx.intern("name"), ctx.intern(#scm_name));
+                    let source = Value::cons(ctx, ctx.intern("source"), loc.into());
+                    let documentation = Value::cons(ctx, ctx.intern("documentation"), ctx.str(#doc));
+
+                    // The arity of the native, as the mask `procedure-arity-mask` reads: the
+                    // closure itself accepts any number of arguments, its trampoline checks.
+                    match <Args<#gc_lifetime> as FromValues>::ARITY.mask() {
+                        Some(mask) => list!(ctx,
+                            name,
+                            source,
+                            documentation,
+                            Value::cons(ctx, ctx.intern("arity-mask"), Value::new(mask))
+                        ),
+                        None => list!(ctx, name, source, documentation),
+                    }
                 };
             );
 
