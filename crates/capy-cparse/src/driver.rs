@@ -1,10 +1,10 @@
 use crate::ast::Expr;
 use crate::consteval::ConstVal;
+use crate::emit::{Builder, Emit, Ser};
 use crate::parse::Parser;
 use crate::pp::oracle::CompilerOracle;
 use crate::pp::{Config, Preprocessor, Severity};
 use crate::probe::{self, Target};
-use crate::emit::{Builder, Emit, Ser};
 use crate::token::{Punct, Token};
 use crate::types::{Abi, Ident, IntKind, Type, Unit};
 use std::path::PathBuf;
@@ -156,11 +156,7 @@ fn fmacro_entry<E: Emit>(
     }
 }
 
-fn macros_sexp<E: Emit>(
-    b: &Builder<E>,
-    pp: &mut Preprocessor,
-    parser: &mut Parser,
-) -> E::V {
+fn macros_sexp<E: Emit>(b: &Builder<E>, pp: &mut Preprocessor, parser: &mut Parser) -> E::V {
     let mut ms: Vec<_> = pp.macros().filter(|m| m.loc.file != 0).cloned().collect();
     ms.sort_by(|a, b| a.name.cmp(&b.name));
     let mut out = vec![b.sym("macros")];
@@ -214,10 +210,7 @@ fn diagnostics<E: Emit>(b: &Builder<E>, pp: &Preprocessor, u: &Unit) -> (E::V, u
     (b.list(out), errors)
 }
 
-pub fn process_header<E: Emit>(
-    b: &Builder<E>,
-    opts: &Options,
-) -> Result<Output<E::V>, String> {
+pub fn process_header<E: Emit>(b: &Builder<E>, opts: &Options) -> Result<Output<E::V>, String> {
     let cc = opts.cc.clone().or_else(probe::find_cc);
     let target = probe::probe(cc.as_deref(), opts.std.as_deref())?;
     let cfg = Config {

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 
 use crate::token::Query;
 
@@ -81,11 +82,18 @@ impl FeatureOracle for StaticOracle {
 }
 
 /// Asks the host compiler by preprocessing a one-line probe.
+
 pub struct CompilerOracle {
     cc: String,
     args: Vec<String>,
-    memo: HashMap<(Query, String), i64>,
     fallback: StaticOracle,
+}
+
+type MemoKey = (String, Vec<String>, Query, String);
+
+fn memo() -> &'static Mutex<HashMap<MemoKey, i64>> {
+    static MEMO: OnceLock<Mutex<HashMap<MemoKey, i64>>> = OnceLock::new();
+    MEMO.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 impl CompilerOracle {
@@ -101,7 +109,6 @@ impl CompilerOracle {
         CompilerOracle {
             cc: cc.into(),
             args,
-            memo: HashMap::new(),
             fallback: StaticOracle,
         }
     }
@@ -129,14 +136,20 @@ impl CompilerOracle {
 
 impl FeatureOracle for CompilerOracle {
     fn query(&mut self, q: Query, arg: &str) -> i64 {
-        let key = (q, arg.trim().to_string());
-        if let Some(v) = self.memo.get(&key) {
+        let key = (
+            self.cc.clone(),
+            self.args.clone(),
+            q,
+            arg.trim().to_string(),
+        );
+        if let Some(v) = memo().lock().unwrap().get(&key) {
             return *v;
         }
+
         let v = self
             .ask(q, arg.trim())
             .unwrap_or_else(|| self.fallback.query(q, arg));
-        self.memo.insert(key, v);
+        memo().lock().unwrap().insert(key, v);
         v
     }
 }

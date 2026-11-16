@@ -76,7 +76,9 @@ impl Preprocessor {
                 Expanded::Pushed
             }
             Some(_) => {
-                let Some(next) = self.get() else { return Expanded::Out(t) };
+                let Some(next) = self.get() else {
+                    return Expanded::Out(t);
+                };
                 if !next.is_punct(Punct::LParen) {
                     self.unget(next);
                     return Expanded::Out(t);
@@ -102,7 +104,9 @@ impl Preprocessor {
         let mut args: Vec<Vec<Token>> = vec![Vec::new()];
         let mut depth = 0;
         let rparen = loop {
-            let Some(mut t) = self.get() else { return Err("unterminated argument list".into()) };
+            let Some(mut t) = self.get() else {
+                return Err("unterminated argument list".into());
+            };
             if t.is_punct(Punct::LParen) {
                 depth += 1;
             } else if t.is_punct(Punct::RParen) {
@@ -110,7 +114,10 @@ impl Preprocessor {
                     break t;
                 }
                 depth -= 1;
-            } else if t.is_punct(Punct::Comma) && depth == 0 && !(m.variadic && args.len() == nparams) {
+            } else if t.is_punct(Punct::Comma)
+                && depth == 0
+                && !(m.variadic && args.len() == nparams)
+            {
                 args.push(Vec::new());
                 continue;
             }
@@ -135,12 +142,22 @@ impl Preprocessor {
         Ok((args, rparen))
     }
 
-    fn substitute(&mut self, m: &Macro, args: &[Vec<Token>], hs: &crate::token::HideSet, call: &Token) -> Vec<Token> {
+    fn substitute(
+        &mut self,
+        m: &Macro,
+        args: &[Vec<Token>],
+        hs: &crate::token::HideSet,
+        call: &Token,
+    ) -> Vec<Token> {
         let va_nonempty = m.variadic && args.last().is_some_and(|a| !a.is_empty());
         let body = resolve_va_opt(&m.body, va_nonempty);
         let params: &[Rc<str>] = m.params.as_deref().unwrap_or(&[]);
         let param_idx = |t: &Token| -> Option<usize> {
-            if t.kind == Kind::Ident && !params.is_empty() { params.iter().position(|p| *p == t.text) } else { None }
+            if t.kind == Kind::Ident && !params.is_empty() {
+                params.iter().position(|p| *p == t.text)
+            } else {
+                None
+            }
         };
         let mut expanded: Vec<Option<Vec<Token>>> = vec![None; params.len()];
         let mut out: Vec<Token> = Vec::new();
@@ -224,7 +241,14 @@ impl Preprocessor {
             t.hide = hide_intersect(&l.hide, &r.hide);
             vec![t]
         } else {
-            self.diag(Severity::Error, l.loc, format!("pasting \"{}\" and \"{}\" does not give a valid token", l.text, r.text));
+            self.diag(
+                Severity::Error,
+                l.loc,
+                format!(
+                    "pasting \"{}\" and \"{}\" does not give a valid token",
+                    l.text, r.text
+                ),
+            );
             vec![l, r]
         }
     }
@@ -236,18 +260,26 @@ impl Preprocessor {
             n.space = t.space;
             n
         };
-        let Some(word) = t.word else { return Expanded::Out(t) };
+        let Some(word) = t.word else {
+            return Expanded::Out(t);
+        };
         let out = match word {
             Word::Line => mk(Kind::Number, t.loc.line.to_string()),
             Word::File | Word::BaseFile => {
                 let name = self.file_name(t.loc.file).display().to_string();
-                mk(Kind::Str, format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\"")))
+                mk(
+                    Kind::Str,
+                    format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\"")),
+                )
             }
             Word::Counter => {
                 self.counter += 1;
                 mk(Kind::Number, (self.counter - 1).to_string())
             }
-            Word::IncludeLevel => mk(Kind::Number, self.frames.len().saturating_sub(1).to_string()),
+            Word::IncludeLevel => mk(
+                Kind::Number,
+                self.frames.len().saturating_sub(1).to_string(),
+            ),
             Word::Date => mk(Kind::Str, "\"Jan  1 1970\"".into()),
             Word::Time => mk(Kind::Str, "\"00:00:00\"".into()),
             Word::PragmaOperator => return self.pragma_operator(t),
@@ -261,8 +293,17 @@ impl Preprocessor {
         let s = self.get();
         let close = self.get();
         match (open, s, close) {
-            (Some(o), Some(s), Some(c)) if o.is_punct(Punct::LParen) && s.kind == Kind::Str && c.is_punct(Punct::RParen) => {
-                let inner = s.text.trim_start_matches(|c| c != '"').trim_matches('"').replace("\\\"", "\"").replace("\\\\", "\\");
+            (Some(o), Some(s), Some(c))
+                if o.is_punct(Punct::LParen)
+                    && s.kind == Kind::Str
+                    && c.is_punct(Punct::RParen) =>
+            {
+                let inner = s
+                    .text
+                    .trim_start_matches(|c| c != '"')
+                    .trim_matches('"')
+                    .replace("\\\"", "\"")
+                    .replace("\\\\", "\\");
                 let toks = lex(&inner, t.loc.file);
                 self.do_pragma(&toks, t.loc);
                 Expanded::Pushed
@@ -284,7 +325,9 @@ fn resolve_va_opt(body: &[Token], va_nonempty: bool) -> Vec<Token> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < body.len() {
-        if body[i].is_word(Word::VaOpt) && body.get(i + 1).is_some_and(|t| t.is_punct(Punct::LParen)) {
+        if body[i].is_word(Word::VaOpt)
+            && body.get(i + 1).is_some_and(|t| t.is_punct(Punct::LParen))
+        {
             let mut depth = 0;
             let mut j = i + 1;
             while j < body.len() {

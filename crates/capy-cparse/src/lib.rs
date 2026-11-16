@@ -7,8 +7,8 @@ pub mod lex;
 pub mod parse;
 
 pub mod driver;
+pub mod emit;
 pub mod pp;
 pub mod probe;
-pub mod emit;
 pub mod token;
 pub mod types;

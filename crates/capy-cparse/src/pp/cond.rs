@@ -58,7 +58,11 @@ impl Preprocessor {
                             let r = self.resolve_include(&h, quoted, word == Word::HasIncludeNext);
                             match (word, r) {
                                 (Word::HasEmbed, Some((p, _))) => {
-                                    if std::fs::metadata(&p).map_or(true, |m| m.len() == 0) { 2 } else { 1 }
+                                    if std::fs::metadata(&p).map_or(true, |m| m.len() == 0) {
+                                        2
+                                    } else {
+                                        1
+                                    }
                                 }
                                 (_, r) => r.is_some() as i64,
                             }
@@ -91,7 +95,10 @@ impl Preprocessor {
         let pre = self.resolve_operators(toks)?;
         let expanded = self.expand_isolated(pre);
         let resolved = self.resolve_operators(&expanded)?;
-        let mut p = Eval { toks: &resolved, i: 0 };
+        let mut p = Eval {
+            toks: &resolved,
+            i: 0,
+        };
         let v = p.comma(true)?;
         if p.i < resolved.len() {
             return Err(format!("unexpected token '{}'", resolved[p.i].text));
@@ -101,14 +108,21 @@ impl Preprocessor {
 
     pub(crate) fn read_embed(&mut self, rest: &[Token], _loc: Loc) -> Result<Vec<Token>, String> {
         let hdr_end = if rest.first().is_some_and(|t| t.is_punct(Punct::Lt)) {
-            rest.iter().position(|t| t.is_punct(Punct::Gt)).map_or(rest.len(), |p| p + 1)
+            rest.iter()
+                .position(|t| t.is_punct(Punct::Gt))
+                .map_or(rest.len(), |p| p + 1)
         } else {
             1.min(rest.len())
         };
-        let (name, quoted) = self.header_name(&rest[..hdr_end]).ok_or("malformed resource name")?;
-        let (path, _) = self.resolve_include(&name, quoted, false).ok_or_else(|| format!("'{name}' file not found"))?;
+        let (name, quoted) = self
+            .header_name(&rest[..hdr_end])
+            .ok_or("malformed resource name")?;
+        let (path, _) = self
+            .resolve_include(&name, quoted, false)
+            .ok_or_else(|| format!("'{name}' file not found"))?;
         let mut limit = usize::MAX;
-        let (mut prefix, mut suffix, mut if_empty): (Vec<Token>, Vec<Token>, Vec<Token>) = Default::default();
+        let (mut prefix, mut suffix, mut if_empty): (Vec<Token>, Vec<Token>, Vec<Token>) =
+            Default::default();
         let mut i = hdr_end;
         while i < rest.len() {
             let pname = rest[i].text.trim_matches('_').to_string();
@@ -158,7 +172,10 @@ struct Val {
 
 impl Val {
     fn s(v: i64) -> Val {
-        Val { bits: v as u64, unsigned: false }
+        Val {
+            bits: v as u64,
+            unsigned: false,
+        }
     }
     fn b(v: bool) -> Val {
         Val::s(v as i64)
@@ -207,7 +224,10 @@ impl Eval<'_> {
             let b = self.cond(ev && !c.truthy())?;
             let unsigned = a.unsigned || b.unsigned;
             let r = if c.truthy() { a } else { b };
-            return Ok(Val { bits: r.bits, unsigned });
+            return Ok(Val {
+                bits: r.bits,
+                unsigned,
+            });
         }
         Ok(c)
     }
@@ -231,7 +251,9 @@ impl Eval<'_> {
     }
 
     fn unary(&mut self, ev: bool) -> R {
-        let Some(t) = self.toks.get(self.i) else { return Err("unexpected end of expression".into()) };
+        let Some(t) = self.toks.get(self.i) else {
+            return Err("unexpected end of expression".into());
+        };
         self.i += 1;
         match t.kind {
             Kind::Number => parse_int(&t.text),
@@ -247,11 +269,17 @@ impl Eval<'_> {
             Kind::Punct(Punct::Plus) => self.unary(ev),
             Kind::Punct(Punct::Minus) => {
                 let v = self.unary(ev)?;
-                Ok(Val { bits: v.bits.wrapping_neg(), unsigned: v.unsigned })
+                Ok(Val {
+                    bits: v.bits.wrapping_neg(),
+                    unsigned: v.unsigned,
+                })
             }
             Kind::Punct(Punct::Tilde) => {
                 let v = self.unary(ev)?;
-                Ok(Val { bits: !v.bits, unsigned: v.unsigned })
+                Ok(Val {
+                    bits: !v.bits,
+                    unsigned: v.unsigned,
+                })
             }
             Kind::Punct(Punct::Bang) => Ok(Val::b(!self.unary(ev)?.truthy())),
             _ => Err(format!("unexpected token '{}'", t.text)),
@@ -263,13 +291,28 @@ fn apply(op: BinOp, a: Val, b: Val, ev: bool) -> R {
     use BinOp::*;
     let unsigned = a.unsigned || b.unsigned;
     let (x, y) = (a.bits, b.bits);
-    let cmp = |f: fn(i64, i64) -> bool, g: fn(u64, u64) -> bool| Val::b(if unsigned { g(x, y) } else { f(x as i64, y as i64) });
+    let cmp = |f: fn(i64, i64) -> bool, g: fn(u64, u64) -> bool| {
+        Val::b(if unsigned {
+            g(x, y)
+        } else {
+            f(x as i64, y as i64)
+        })
+    };
     Ok(match op {
         LOr => Val::b(a.truthy() || b.truthy()),
         LAnd => Val::b(a.truthy() && b.truthy()),
-        BitOr => Val { bits: x | y, unsigned },
-        BitXor => Val { bits: x ^ y, unsigned },
-        BitAnd => Val { bits: x & y, unsigned },
+        BitOr => Val {
+            bits: x | y,
+            unsigned,
+        },
+        BitXor => Val {
+            bits: x ^ y,
+            unsigned,
+        },
+        BitAnd => Val {
+            bits: x & y,
+            unsigned,
+        },
         Eq => Val::b(x == y),
         Ne => Val::b(x != y),
         Lt => cmp(|p, q| p < q, |p, q| p < q),
@@ -278,24 +321,46 @@ fn apply(op: BinOp, a: Val, b: Val, ev: bool) -> R {
         Ge => cmp(|p, q| p >= q, |p, q| p >= q),
         Shl => {
             if (b.unsigned || (y as i64) >= 0) && y < 64 {
-                Val { bits: x << y, unsigned: a.unsigned }
+                Val {
+                    bits: x << y,
+                    unsigned: a.unsigned,
+                }
             } else {
-                Val { bits: 0, unsigned: a.unsigned }
+                Val {
+                    bits: 0,
+                    unsigned: a.unsigned,
+                }
             }
         }
         Shr => {
             let v = if y >= 64 {
-                if !a.unsigned && (x as i64) < 0 { u64::MAX } else { 0 }
+                if !a.unsigned && (x as i64) < 0 {
+                    u64::MAX
+                } else {
+                    0
+                }
             } else if a.unsigned {
                 x >> y
             } else {
                 ((x as i64) >> y) as u64
             };
-            Val { bits: v, unsigned: a.unsigned }
+            Val {
+                bits: v,
+                unsigned: a.unsigned,
+            }
         }
-        Add => Val { bits: x.wrapping_add(y), unsigned },
-        Sub => Val { bits: x.wrapping_sub(y), unsigned },
-        Mul => Val { bits: x.wrapping_mul(y), unsigned },
+        Add => Val {
+            bits: x.wrapping_add(y),
+            unsigned,
+        },
+        Sub => Val {
+            bits: x.wrapping_sub(y),
+            unsigned,
+        },
+        Mul => Val {
+            bits: x.wrapping_mul(y),
+            unsigned,
+        },
         Div | Rem => {
             if y == 0 {
                 if ev {
@@ -328,17 +393,24 @@ fn parse_int(text: &str) -> R {
     } else {
         (body, 10)
     };
-    let v = u128::from_str_radix(digits, radix).map_err(|_| format!("invalid integer constant '{text}'"))?;
+    let v = u128::from_str_radix(digits, radix)
+        .map_err(|_| format!("invalid integer constant '{text}'"))?;
     if v > u64::MAX as u128 {
         return Err(format!("integer constant '{text}' is too large"));
     }
     // Unsuffixed decimal values that overflow intmax_t are treated as unsigned too.
-    Ok(Val { bits: v as u64, unsigned: suffix_unsigned || v > i64::MAX as u128 })
+    Ok(Val {
+        bits: v as u64,
+        unsigned: suffix_unsigned || v > i64::MAX as u128,
+    })
 }
 
 fn parse_char(text: &str) -> R {
     let body = text.trim_start_matches(|c| c != '\'');
-    let inner = body.strip_prefix('\'').and_then(|b| b.strip_suffix('\'')).ok_or("bad character constant")?;
+    let inner = body
+        .strip_prefix('\'')
+        .and_then(|b| b.strip_suffix('\''))
+        .ok_or("bad character constant")?;
     let mut chars = inner.chars().peekable();
     let mut value: i64 = 0;
     let mut n = 0;
@@ -376,7 +448,11 @@ fn parse_char(text: &str) -> R {
         } else {
             c as u32
         };
-        value = if v > 0xff { v as i64 } else { (value << 8) | v as i64 };
+        value = if v > 0xff {
+            v as i64
+        } else {
+            (value << 8) | v as i64
+        };
         n += 1;
     }
     // Plain `char` constants are signed on all supported hosts.

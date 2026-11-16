@@ -31,7 +31,11 @@ impl Parser {
         if !self.eat(Punct::Question) {
             return Ok(c);
         }
-        let a = if self.at(Punct::Colon) { c.clone() } else { self.parse_expr()? };
+        let a = if self.at(Punct::Colon) {
+            c.clone()
+        } else {
+            self.parse_expr()?
+        };
         self.expect(Punct::Colon)?;
         let b = self.parse_cond()?;
         Ok(Expr::Cond(Box::new(c), Box::new(a), Box::new(b)))
@@ -40,7 +44,9 @@ impl Parser {
     fn parse_binary(&mut self, min: u8) -> PR<Expr> {
         let mut lhs = self.parse_cast()?;
         loop {
-            let Some((op, p)) = self.tok().punct().and_then(BinOp::from_punct) else { break };
+            let Some((op, p)) = self.tok().punct().and_then(BinOp::from_punct) else {
+                break;
+            };
             if p <= min {
                 break;
             }
@@ -76,10 +82,21 @@ impl Parser {
             Some(p @ (Punct::Inc | Punct::Dec)) => {
                 self.bump();
                 let e = self.parse_unary()?;
-                let op = if p == Punct::Inc { UnOp::PreInc } else { UnOp::PreDec };
+                let op = if p == Punct::Inc {
+                    UnOp::PreInc
+                } else {
+                    UnOp::PreDec
+                };
                 return Ok(Expr::Unary(op, Box::new(e)));
             }
-            Some(p @ (Punct::Amp | Punct::Star | Punct::Plus | Punct::Minus | Punct::Tilde | Punct::Bang)) => {
+            Some(
+                p @ (Punct::Amp
+                | Punct::Star
+                | Punct::Plus
+                | Punct::Minus
+                | Punct::Tilde
+                | Punct::Bang),
+            ) => {
                 self.bump();
                 let e = self.parse_cast()?;
                 let op = match p {
@@ -170,7 +187,11 @@ impl Parser {
                 let n = self.ident()?;
                 e = Expr::Arrow(Box::new(e), n);
             } else if self.at(Punct::Inc) || self.at(Punct::Dec) {
-                let op = if self.bump().is_punct(Punct::Inc) { IncDec::Inc } else { IncDec::Dec };
+                let op = if self.bump().is_punct(Punct::Inc) {
+                    IncDec::Inc
+                } else {
+                    IncDec::Dec
+                };
                 e = Expr::PostInc(op, Box::new(e));
             } else {
                 return Ok(e);
@@ -278,7 +299,10 @@ impl Parser {
                 self.expect(Punct::Comma)?;
                 let b = self.type_name()?;
                 self.expect(Punct::RParen)?;
-                Ok(Expr::Int(self.u.types_compatible(&a, &b) as i128, IntKind::Int))
+                Ok(Expr::Int(
+                    self.u.types_compatible(&a, &b) as i128,
+                    IntKind::Int,
+                ))
             }
             _ => {
                 if self.fn_depth > 0 {
@@ -322,7 +346,11 @@ impl Parser {
             if !desig.is_empty() {
                 self.expect(Punct::Assign)?;
             }
-            let v = if self.at(Punct::LBrace) { Init::List(self.init_list()?) } else { Init::Expr(self.parse_assign()?) };
+            let v = if self.at(Punct::LBrace) {
+                Init::List(self.init_list()?)
+            } else {
+                Init::Expr(self.parse_assign()?)
+            };
             items.push((desig, v));
             if !self.eat(Punct::Comma) {
                 self.expect(Punct::RBrace)?;
@@ -335,7 +363,11 @@ impl Parser {
         let s: String = text.chars().filter(|&c| c != '\'').collect();
         let lower = s.to_ascii_lowercase();
         let is_hex = lower.starts_with("0x");
-        let is_float = if is_hex { lower.contains('p') || (lower.contains('.')) } else { lower.contains('.') || lower.contains('e') };
+        let is_float = if is_hex {
+            lower.contains('p') || (lower.contains('.'))
+        } else {
+            lower.contains('.') || lower.contains('e')
+        };
         if is_float {
             let (body, kind) = if let Some(b) = lower.strip_suffix("f128") {
                 (b, FloatKind::Float128)
@@ -346,14 +378,27 @@ impl Parser {
             } else if let Some(b) = lower.strip_suffix("f32") {
                 (b, FloatKind::Float)
             } else if let Some(b) = lower.strip_suffix('f') {
-                if is_hex && !lower.contains('p') { (lower.as_str(), FloatKind::Double) } else { (b, FloatKind::Float) }
+                if is_hex && !lower.contains('p') {
+                    (lower.as_str(), FloatKind::Double)
+                } else {
+                    (b, FloatKind::Float)
+                }
             } else if let Some(b) = lower.strip_suffix('l') {
                 (b, FloatKind::LongDouble)
             } else {
                 (lower.as_str(), FloatKind::Double)
             };
-            let v = if is_hex { parse_hex_float(body)? } else { body.parse::<f64>().map_err(|_| format!("bad floating constant '{text}'"))? };
-            let v = if kind == FloatKind::Float { v as f32 as f64 } else { v };
+            let v = if is_hex {
+                parse_hex_float(body)?
+            } else {
+                body.parse::<f64>()
+                    .map_err(|_| format!("bad floating constant '{text}'"))?
+            };
+            let v = if kind == FloatKind::Float {
+                v as f32 as f64
+            } else {
+                v
+            };
             return Ok(Expr::Float(v, kind));
         }
         let body = lower.trim_end_matches(['u', 'l']);
@@ -372,19 +417,36 @@ impl Parser {
         } else {
             (body, 10)
         };
-        let v = u128::from_str_radix(digits, radix).map_err(|_| format!("bad integer constant '{text}'"))?;
+        let v = u128::from_str_radix(digits, radix)
+            .map_err(|_| format!("bad integer constant '{text}'"))?;
         let decimal = radix == 10;
         let abi = &self.u.abi;
         let fits = |k: IntKind| {
             let bits = abi.int_size(k) * 8;
-            if abi.is_unsigned(k) { bits >= 128 || v < (1u128 << bits) } else { bits >= 128 || v < (1u128 << (bits - 1)) }
+            if abi.is_unsigned(k) {
+                bits >= 128 || v < (1u128 << bits)
+            } else {
+                bits >= 128 || v < (1u128 << (bits - 1))
+            }
         };
         let candidates: &[IntKind] = match (unsigned_suffix, longs, decimal) {
             (false, 0, true) => &[IntKind::Int, IntKind::Long, IntKind::LongLong],
-            (false, 0, false) => &[IntKind::Int, IntKind::UInt, IntKind::Long, IntKind::ULong, IntKind::LongLong, IntKind::ULongLong],
+            (false, 0, false) => &[
+                IntKind::Int,
+                IntKind::UInt,
+                IntKind::Long,
+                IntKind::ULong,
+                IntKind::LongLong,
+                IntKind::ULongLong,
+            ],
             (true, 0, _) => &[IntKind::UInt, IntKind::ULong, IntKind::ULongLong],
             (false, 1, true) => &[IntKind::Long, IntKind::LongLong],
-            (false, 1, false) => &[IntKind::Long, IntKind::ULong, IntKind::LongLong, IntKind::ULongLong],
+            (false, 1, false) => &[
+                IntKind::Long,
+                IntKind::ULong,
+                IntKind::LongLong,
+                IntKind::ULongLong,
+            ],
             (true, 1, _) => &[IntKind::ULong, IntKind::ULongLong],
             (false, _, true) => &[IntKind::LongLong],
             (false, _, false) => &[IntKind::LongLong, IntKind::ULongLong],
@@ -394,7 +456,11 @@ impl Parser {
             .iter()
             .copied()
             .find(|k| fits(*k))
-            .unwrap_or(if v > u64::MAX as u128 { IntKind::UInt128 } else { IntKind::ULongLong });
+            .unwrap_or(if v > u64::MAX as u128 {
+                IntKind::UInt128
+            } else {
+                IntKind::ULongLong
+            });
         Ok(Expr::Int(v as i128, k))
     }
 
@@ -403,7 +469,13 @@ impl Parser {
         let inner = rest.trim_matches('\'');
         let vals = decode_chars(inner);
         let kind = match prefix {
-            "L" => if self.u.abi.wchar_signed { IntKind::Int } else { IntKind::UInt },
+            "L" => {
+                if self.u.abi.wchar_signed {
+                    IntKind::Int
+                } else {
+                    IntKind::UInt
+                }
+            }
             "u" => IntKind::UShort,
             "U" => IntKind::UInt,
             "u8" => IntKind::UChar,
