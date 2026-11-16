@@ -593,6 +593,9 @@ pub fn primitive_effects(primitive: Primitive) -> Effects {
         }
         Primitive::CacheRef => Effects::read(MemoryRegion::Runtime, SemanticEffects::UNKNOWN),
         Primitive::CacheSet => Effects::write(MemoryRegion::Runtime, SemanticEffects::UNKNOWN),
+        Primitive::CovHit | Primitive::CovRegister => {
+            Effects::write(MemoryRegion::Runtime, SemanticEffects::UNKNOWN)
+        }
         // Slot access reads or writes memory and may run Scheme through
         // its slow path (`slot-unbound`, `slot-missing`, MOP methods), so
         // it is never dead even when its result is unused.

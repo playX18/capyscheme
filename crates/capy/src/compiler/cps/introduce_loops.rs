@@ -31,6 +31,7 @@
 //! All non-tail self calls must match and all exits must agree, otherwise the
 //! function falls back to tail-only loopification. Mixing is unsound: a
 //! leftover call would return to its continuation and drop the accumulator.
+//!
 
 use std::collections::HashMap;
 
@@ -256,6 +257,7 @@ fn self_calls_of<'gc>(
             &exits,
             &literals,
             functions_by_binder,
+            data.body,
         ) {
             plan = Some(acc_plan);
             exits = remaining_exits;
@@ -401,6 +403,7 @@ fn accumulate_plan<'gc>(
     exits: &[Subterm],
     literals: &HashMap<BoundVar, Value<'gc>>,
     functions_by_binder: &HashMap<BoundVar, FunctionId>,
+    body: Subterm,
 ) -> Option<(AccPlan<'gc>, Vec<Subterm>)> {
     // The terminal `continue self_cont` inside an accumulate continuation is
     // replaced by the accumulation, not treated as a loop exit.
@@ -430,7 +433,50 @@ fn accumulate_plan<'gc>(
     if mode == AccMode::ConsReverse && !base.is_null() {
         return None;
     }
+    if mode == AccMode::ConsReverse && body_uses_division(graph, body) {
+        return None;
+    }
     Some((AccPlan { mode, prim, base }, remaining))
+}
+
+fn body_uses_division(graph: &Graph<'_>, link: Subterm) -> bool {
+    let Some(term) = graph.read_term_link(link) else {
+        return false;
+    };
+    match graph[term].kind {
+        TermKind::LetVal((_, expr), body) => {
+            if let Some(expr) = graph.read_expr_link(expr) {
+                if let ExprKind::PrimCall(prim, _) = graph[expr].kind {
+                    if is_division_prim(prim) {
+                        return true;
+                    }
+                }
+            }
+            body_uses_division(graph, body)
+        }
+        TermKind::Letk(functions, body) | TermKind::Fix(functions, body) => {
+            graph
+                .live_functions(&functions)
+                .iter()
+                .any(|function| body_uses_division(graph, graph[*function].body))
+                || body_uses_division(graph, body)
+        }
+        TermKind::If(_, consequent, alternative, _) => {
+            body_uses_division(graph, consequent) || body_uses_division(graph, alternative)
+        }
+        TermKind::App(..)
+        | TermKind::Continue(..)
+        | TermKind::BranchPrim(..)
+        | TermKind::Raise(..) => false,
+    }
+}
+
+fn is_division_prim(prim: Value<'_>) -> bool {
+    let name = prim.downcast::<Symbol>().to_string();
+    matches!(
+        name.as_str(),
+        "quotient" | "remainder" | "modulo" | "div" | "mod" | "div0" | "mod0" | "/"
+    )
 }
 
 /// The literal returned by every exit, which becomes the accumulator's initial

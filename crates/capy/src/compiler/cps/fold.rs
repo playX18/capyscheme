@@ -171,14 +171,14 @@ fn build_table<'gc>(ctx: MutationContext<'gc>) -> FoldingTable<'gc> {
             let a = a.number()?;
             let b = b.number()?;
 
-            Some((Number::compare(ctx, a, b) != Some(std::cmp::Ordering::Less)).into_value(ctx))
+            Some(matches!(Number::compare(ctx, a, b), Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)).into_value(ctx))
         }
     "<=" => le(ctx, a,b) {
 
             let a = a.number()?;
             let b = b.number()?;
 
-            Some((Number::compare(ctx, a, b) != Some(std::cmp::Ordering::Greater)).into_value(ctx))
+            Some(matches!(Number::compare(ctx, a, b), Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)).into_value(ctx))
         }
     "not" => not(ctx, a) {
             Some(Value::new(!a.as_bool()))

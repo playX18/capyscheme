@@ -77,11 +77,7 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
                 env_part
             )
         }
-        Instruction::MakeCaseClosure {
-            dst,
-            code,
-            clauses,
-        } => {
+        Instruction::MakeCaseClosure { dst, code, clauses } => {
             let parts = clauses
                 .iter()
                 .map(|operand| render_operand(*operand))

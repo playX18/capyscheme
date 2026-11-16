@@ -10,8 +10,8 @@ use crate::compiler::cps::{
     },
 };
 use crate::expander::core::{
-    GlobalSlot, LVarRef, LetStyle, Proc, Term, TermKind, TermRef as CoreTermRef, constant,
-    fresh_lvar, proc_term, seq_from_slice,
+    GlobalSlot, LVarRef, LetStyle, Proc, Term, TermKind, TermRef as CoreTermRef, call_term,
+    constant, fresh_lvar, proc_term, seq_from_slice,
 };
 use crate::heap::alloc::array::Array;
 use crate::heap::object::builtin_class_ids;
@@ -87,7 +87,58 @@ pub struct GraphCpsBuilder<'gc> {
     unbound_checked: std::collections::HashSet<LVarRef<'gc>>,
     /// Identity of the next `case-lambda` clause group.
     case_group_count: u32,
+    /// Coverage instrumentation state, only with `--coverage`
+    cov: Option<CovBuilder<'gc>>,
 }
+
+/// Probes of one compilation unit, see `runtime::coverage`.
+struct CovBuilder<'gc> {
+    /// The unit's table bytevector, referenced by every probe.
+    table: Value<'gc>,
+    /// `#(file line col kind arm name)` per probe, by probe index.
+    records: Vec<Value<'gc>>,
+    /// `(file, line)` already probed on the current straight-line path:
+    /// a nested term on the same line runs whenever its parent does, so it
+    /// needs no probe of its own. Reset at function bodies and branch arms.
+    scope: Option<(String, i32)>,
+    /// Set until the unit's toplevel function is entered.
+    toplevel_pending: bool,
+    /// `--coverage-filter` substrings.
+    filter: Vec<String>,
+}
+
+impl<'gc> CovBuilder<'gc> {
+    fn new(ctx: MutationContext<'gc>) -> Self {
+        use crate::runtime::coverage::{TABLE_BYTES, fresh_unit_uid};
+        use crate::runtime::objectmodel::ByteVector;
+        let table = ByteVector::new::<false>(ctx, TABLE_BYTES, false);
+        // SAFETY: a fresh 24-byte buffer.
+        unsafe {
+            let ptr = table.contents().to_mut_ptr::<u8>();
+            std::ptr::write_bytes(ptr, 0, TABLE_BYTES);
+            ptr.cast::<u64>().write_unaligned(fresh_unit_uid());
+        }
+        let filter = crate::utils::flags::coverage_filter()
+            .map(|f| {
+                f.split(',')
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            table: table.into(),
+            records: Vec::new(),
+            scope: None,
+            toplevel_pending: true,
+            filter,
+        }
+    }
+}
+
+/// `(file, file-as-string, line, column)` of a source vector.
+type CovSite<'gc> = (Value<'gc>, String, i32, i32);
 
 impl<'gc> GraphCpsBuilder<'gc> {
     pub fn new(ctx: MutationContext<'gc>) -> Self {
@@ -100,7 +151,95 @@ impl<'gc> GraphCpsBuilder<'gc> {
             current_meta: Value::null(),
             unbound_checked: std::collections::HashSet::new(),
             case_group_count: 0,
+            cov: crate::utils::flags::coverage().then(|| CovBuilder::new(ctx)),
         }
+    }
+
+    /// Decode `src` into a coverage site, `None` when it carries no usable
+    /// position or its file is filtered out.
+    fn cov_site(&self, src: Value<'gc>) -> Option<CovSite<'gc>> {
+        let cov = self.cov.as_ref()?;
+        let fields = src.try_as::<Vector>()?;
+        let fields = fields.as_slice();
+        if fields.len() < 3 {
+            return None;
+        }
+        let file = fields[0];
+        let name = file.try_as::<Str>()?.to_string();
+        if !cov.filter.is_empty() && !cov.filter.iter().any(|f| name.contains(f.as_str())) {
+            return None;
+        }
+        let line = fields[1].int32()?;
+        let col = fields[2].int32().unwrap_or(0);
+        Some((file, name, line, col))
+    }
+
+    fn cov_probe(
+        &mut self,
+        file: Value<'gc>,
+        line: i32,
+        col: i32,
+        kind: i32,
+        arm: i32,
+        name: Value<'gc>,
+    ) -> i32 {
+        let ctx = self.ctx;
+        let cov = self.cov.as_mut().expect("coverage on");
+        let record = Vector::from_slice(
+            ctx,
+            &[
+                file,
+                Value::new(line),
+                Value::new(col),
+                Value::new(kind),
+                Value::new(arm),
+                name,
+            ],
+        );
+        cov.records.push(record.into());
+        (cov.records.len() - 1) as i32
+    }
+
+    /// `owner: (%cov-hit table index) ; body`.
+    fn emit_cov_hit(
+        &mut self,
+        owner: Subterm,
+        index: i32,
+        src: Value<'gc>,
+        body: Subterm,
+    ) -> TermId {
+        let table = self.cov.as_ref().expect("coverage on").table;
+        let binding = self.fresh_variable("cov");
+        self.emit_prim_let(
+            owner,
+            binding,
+            Symbol::from_str(self.ctx, "%cov-hit").into(),
+            [Atom::Constant(table), Atom::Constant(Value::new(index))],
+            src,
+            body,
+        )
+    }
+
+    /// A line probe for `exp` unless its line is already probed on this path.
+    fn cov_line_probe(&mut self, src: Value<'gc>) -> Option<(i32, (String, i32))> {
+        let (file, name, line, col) = self.cov_site(src)?;
+        let cov = self.cov.as_ref()?;
+        if cov
+            .scope
+            .as_ref()
+            .is_some_and(|(f, l)| *l == line && *f == name)
+        {
+            return None;
+        }
+        let index = self.cov_probe(
+            file,
+            line,
+            col,
+            crate::runtime::coverage::KIND_LINE,
+            0,
+            Value::new(false),
+        );
+        Some((index, (name, line)))
     }
 
     fn fresh_case_group(&mut self) -> u32 {
@@ -553,6 +692,62 @@ impl<'gc> GraphCpsBuilder<'gc> {
         })
     }
 
+    /// The body of `proc` under coverage: a function-entry probe, and for the
+    /// unit's toplevel the `%cov-register!` of every probe the unit made.
+    fn cov_proc_body(&mut self, proc: &Proc<'gc>, return_cont: LVarRef<'gc>) -> Subterm {
+        let cov = self.cov.as_mut().expect("coverage on");
+        let is_unit_entry = std::mem::take(&mut cov.toplevel_pending);
+        let saved_scope = cov.scope.take();
+        let entry_probe = if is_unit_entry {
+            None
+        } else {
+            self.cov_site(proc.source).map(|(file, _, line, col)| {
+                let name = if proc.name.is::<Symbol>() || proc.name.is::<Str>() {
+                    proc.name
+                } else {
+                    Value::new(false)
+                };
+                self.cov_probe(
+                    file,
+                    line,
+                    col,
+                    crate::runtime::coverage::KIND_FUNCTION,
+                    0,
+                    name,
+                )
+            })
+        };
+        let inner = self.new_child_link();
+        convert(self, proc.body, return_cont, inner, AttachmentMode::Tail);
+        self.cov.as_mut().expect("coverage on").scope = saved_scope;
+
+        let mut head = inner;
+        if let Some(index) = entry_probe {
+            let link = self.new_child_link();
+            self.emit_cov_hit(link, index, proc.source, head);
+            head = link;
+        }
+        if is_unit_entry {
+            let cov = self.cov.as_ref().expect("coverage on");
+            if !cov.records.is_empty() {
+                let table = cov.table;
+                let records: Value<'gc> = Vector::from_slice(self.ctx, &cov.records).into();
+                let link = self.new_child_link();
+                let binding = self.fresh_variable("covreg");
+                self.emit_prim_let(
+                    link,
+                    binding,
+                    Symbol::from_str(self.ctx, "%cov-register!").into(),
+                    [Atom::Constant(table), Atom::Constant(records)],
+                    Value::new(false),
+                    head,
+                );
+                head = link;
+            }
+        }
+        head
+    }
+
     fn make_proc_func(
         &mut self,
         proc: &Proc<'gc>,
@@ -573,8 +768,13 @@ impl<'gc> GraphCpsBuilder<'gc> {
             .collect::<Vec<_>>();
         let variadic = proc.variadic.map(|arg| self.bind_lvar(arg));
         let vars = self.graph.new_bound_vars(args);
-        let body = self.new_child_link();
-        convert(self, proc.body, return_cont, body, AttachmentMode::Tail);
+        let body = if self.cov.is_some() {
+            self.cov_proc_body(proc, return_cont)
+        } else {
+            let body = self.new_child_link();
+            convert(self, proc.body, return_cont, body, AttachmentMode::Tail);
+            body
+        };
         self.current_meta = old_meta;
 
         self.new_function(Function {
@@ -1223,15 +1423,18 @@ primitive_transformers!(
     }
 );
 
+/// Whether `meta` is the decl of a program: the vector `#(#%library key ...)` of a library
+/// (see `environments.scm`) whose key is `(%program ...)`.
 fn is_program_meta<'gc>(ctx: MutationContext<'gc>, meta: Value<'gc>) -> bool {
-    if !meta.is_pair() || meta.car() != Symbol::from_str(ctx, "#%library").into() {
+    if !meta.is::<Vector>() {
         return false;
     }
-    let key = meta.cdr();
-    key.is_pair() && {
-        let key = key.car();
-        key.is_pair() && key.car() == Symbol::from_str(ctx, "%program").into()
+    let decl = meta.downcast::<Vector>();
+    if decl.len() < 2 || decl[0].get() != Symbol::from_str(ctx, "#%library").into() {
+        return false;
     }
+    let key = decl[1].get();
+    key.is_pair() && key.car() == Symbol::from_str(ctx, "%program").into()
 }
 
 fn checked_global_ref<'gc>(
@@ -1352,7 +1555,7 @@ pub fn cached_prim_box<'gc>(
     cps.let_prim(
         kinit_body,
         "var",
-        Symbol::from_str(cps.ctx, "late-variable").into(),
+        Symbol::from_str(cps.ctx, "capy-variable").into(),
         [Atom::Constant(name)],
         src,
         |cps, owner, var| {
@@ -1628,8 +1831,8 @@ fn convert_branch_prim<'gc>(
         unreachable!("branch primitives are primitive calls");
     };
 
-    let (if_true, true_cont) = branch_arm(cps, "ktrue", consequent, k, mode);
-    let (if_false, false_cont) = branch_arm(cps, "kfalse", alternate, k, mode);
+    let (if_true, true_cont) = branch_arm(cps, "ktrue", consequent, k, mode, src, 0);
+    let (if_false, false_cont) = branch_arm(cps, "kfalse", alternate, k, mode, src, 1);
 
     let body = cps.new_child_link();
     convert_args(
@@ -1661,10 +1864,12 @@ fn branch_arm<'gc>(
     body: CoreTermRef<'gc>,
     k: LVarRef<'gc>,
     mode: AttachmentMode,
+    site: Value<'gc>,
+    arm: i32,
 ) -> (LVarRef<'gc>, FunctionId) {
     let binding = cps.fresh_variable(name);
     let link = cps.new_child_link();
-    convert(cps, body, k, link, mode);
+    convert_arm(cps, body, k, link, mode, site, arm);
     let cont = cps.make_cont(
         binding,
         &[],
@@ -1692,8 +1897,8 @@ fn convert_nested_if<'gc>(
     mode: AttachmentMode,
 ) -> TermId {
     let src = test.source();
-    let (if_true, true_cont) = branch_arm(cps, "ktrue", consequent, k, mode);
-    let (if_false, false_cont) = branch_arm(cps, "kfalse", alternate, k, mode);
+    let (if_true, true_cont) = branch_arm(cps, "ktrue", consequent, k, mode, src, 0);
+    let (if_false, false_cont) = branch_arm(cps, "kfalse", alternate, k, mode, src, 1);
     let body = cps.new_child_link();
     convert_condition(cps, test, if_true, if_false, body);
     cps.emit_letk(owner, &[true_cont, false_cont], body, src)
@@ -2067,6 +2272,54 @@ pub fn convert<'gc>(
     owner: Subterm,
     mode: AttachmentMode,
 ) -> TermId {
+    if cps.cov.is_some()
+        && let Some((index, line)) = cps.cov_line_probe(exp.source())
+    {
+        let saved = cps.cov.as_mut().expect("coverage on").scope.replace(line);
+        let inner = cps.new_child_link();
+        convert_term(cps, exp, k, inner, mode);
+        cps.cov.as_mut().expect("coverage on").scope = saved;
+        return cps.emit_cov_hit(owner, index, exp.source(), inner);
+    }
+    convert_term(cps, exp, k, owner, mode)
+}
+
+fn convert_arm<'gc>(
+    cps: &mut GraphCpsBuilder<'gc>,
+    exp: CoreTermRef<'gc>,
+    k: LVarRef<'gc>,
+    owner: Subterm,
+    mode: AttachmentMode,
+    site: Value<'gc>,
+    arm: i32,
+) -> TermId {
+    if cps.cov.is_some()
+        && let Some((file, _, line, col)) = cps.cov_site(site)
+    {
+        let index = cps.cov_probe(
+            file,
+            line,
+            col,
+            crate::runtime::coverage::KIND_BRANCH,
+            arm,
+            Value::new(false),
+        );
+        let saved = cps.cov.as_mut().expect("coverage on").scope.take();
+        let inner = cps.new_child_link();
+        convert(cps, exp, k, inner, mode);
+        cps.cov.as_mut().expect("coverage on").scope = saved;
+        return cps.emit_cov_hit(owner, index, site, inner);
+    }
+    convert(cps, exp, k, owner, mode)
+}
+
+fn convert_term<'gc>(
+    cps: &mut GraphCpsBuilder<'gc>,
+    exp: CoreTermRef<'gc>,
+    k: LVarRef<'gc>,
+    owner: Subterm,
+    mode: AttachmentMode,
+) -> TermId {
     let src = exp.source();
 
     match &exp.kind {
@@ -2098,9 +2351,9 @@ pub fn convert<'gc>(
             owner,
             Box::new(move |cps, owner, test| {
                 let consequent_link = cps.new_child_link();
-                convert(cps, *consequent, k, consequent_link, mode);
+                convert_arm(cps, *consequent, k, consequent_link, mode, src, 0);
                 let alternate_link = cps.new_child_link();
-                convert(cps, *alternate, k, alternate_link, mode);
+                convert_arm(cps, *alternate, k, alternate_link, mode, src, 1);
                 cps.emit_if(
                     owner,
                     test,
@@ -2229,20 +2482,19 @@ pub fn convert<'gc>(
                 src,
                 linklet.meta,
             );
-            let tag = Symbol::from_str(ctx, "#%linklet").into();
-            let vals = [
-                constant(ctx, tag),
+            let args = [
                 constant(ctx, linklet.name),
                 constant(ctx, linklet.imports),
                 constant(ctx, linklet.exports),
                 proc,
                 constant(ctx, linklet.meta),
             ];
-            let values = ctx.allocate(Term {
+            let make_ref = ctx.allocate(Term {
                 source: crate::heap::cell::Lock::new(src),
-                kind: TermKind::Values(Array::from_slice(ctx, &vals)),
+                kind: TermKind::PrimRef(Symbol::from_str(ctx, "make-linklet").into()),
             });
-            convert(cps, values, k, owner, mode)
+            let make = call_term(ctx, make_ref, args, src);
+            convert(cps, make, k, owner, mode)
         }
 
         TermKind::Proc(proc) => with_pop_1(cps, owner, src, k, mode, |cps, k, owner| {
