@@ -7,7 +7,9 @@
 //!
 //! Frame layout: `fp[0]` is the return address, `fp[1]` the
 //! closure, and bytecode registers `r` sit at `fp[r]`. Spill slot `s` is
-//! `fp[frame_size + s]`. The frame is `frame_size + spill_slots` words. A call
+//! `fp[frame_size + s]`. The frame is `frame_size + spill_slots` words. An
+//! entry parameter may instead use its incoming word `fp[r]` as its spill slot
+//! (a home slot, see `regalloc::home_slot`). A call
 //! writes its callee frame at `fp[frame_words..]`, with its own return point
 //! header carrying the caller's livemask.
 //!
@@ -46,8 +48,8 @@ use onlineasm::{Label, VReg as MReg, onlineasm};
 
 use crate::heap::object::builtin_class_ids;
 use crate::runtime::codegen::gc::alloc::AllocSize;
-use crate::runtime::codegen::import::{ImportKey, RuntimeSym, Section};
 use crate::runtime::codegen::gc::{GcCodegen, header_word};
+use crate::runtime::codegen::import::{ImportKey, RuntimeSym, Section};
 use crate::runtime::codegen::jit::entry::emit_enter_callee;
 use crate::runtime::codegen::masm::{
     HeaderTarget, Livemask, Masm, RuntimeExtern, TOPLINK_TO_IMAGE_START, ValuesError,
@@ -68,7 +70,7 @@ use super::ir::inst::{Cmp, Constant, HelperRef, PrimRef, ReturnValues, SwitchDen
 use super::ir::types::{ClassRef, CodeRef};
 use super::lir::{
     AllocLayout, CallTarget, DeoptExit, FloatOp, IntOp, LBlock, LEdge, LirFunc, LirInst, LirTerm,
-    NumberStoreKind, RegClass, ReturnedKind, Role, SafePoint, Test, VReg, WideShiftOp,
+    NumberStoreKind, RegClass, ReturnedKind, Role, SafePoint, Test, VReg, VRepr, WideShiftOp,
 };
 use super::regalloc::{Allocation, Loc, Move, PhysReg, RegFile, Scratch};
 
@@ -202,10 +204,15 @@ pub(crate) fn register_file() -> (RegFile, Scratch) {
     arch::reg_file()
 }
 
-/// Emits `input` as one image into `masm`, which the caller keeps: the
-/// assembler is reset first and returned to the caller through the borrow,
-/// so its buffer capacity survives across compilations.
+/// Emits `input` as one image into `masm`
 pub(crate) fn emit(masm: &mut Masm, input: Input<'_>) -> Result<Emitted, String> {
+    masm.set_near_imports(true);
+    let result = emit_image(masm, input);
+    masm.set_near_imports(false);
+    result
+}
+
+fn emit_image(masm: &mut Masm, input: Input<'_>) -> Result<Emitted, String> {
     let mut emitter = Emitter::new(input, masm);
     emitter.prologue()?;
     emitter.blocks()?;
@@ -239,6 +246,16 @@ enum AllocDeferred {
     Words { count: MReg, base: usize },
 }
 
+#[derive(Clone, Debug)]
+enum SlowSaves {
+    /// Every `slow_clobbers` register.
+    All,
+    Live {
+        gprs: Vec<MReg>,
+        fprs: Vec<MReg>,
+    },
+}
+
 /// A slow block, emitted after the code that jumps to it.
 enum Deferred {
     /// A deopt exit: `move SITE_TMP, id; jmp deopt_common`.
@@ -253,6 +270,14 @@ enum Deferred {
         /// The callee frame's offset from this frame's fp, in bytes.
         callee: i32,
     },
+
+    Taken {
+        label: Label,
+        join: Label,
+        wrong: Label,
+        count: u32,
+        rest: bool,
+    },
     /// The allocation slow path. It returns to `join`.
     Alloc {
         slow: Label,
@@ -260,6 +285,7 @@ enum Deferred {
         obj: MReg,
         size: AllocDeferred,
         header: u64,
+        saves: SlowSaves,
     },
     /// The wide path of `Box(Repr::Int64)`: allocate a one-limb `BIGINT`,
     /// write its payload and continue at `done`. The fixnum path falls
@@ -274,6 +300,7 @@ enum Deferred {
         src: BoxSrc,
         bytes: usize,
         header: u64,
+        saves: SlowSaves,
     },
     /// The two-limb path of `Box(Repr::Int128)`: allocate a 32-byte
     /// sign-magnitude `BIGINT` with `count = 2`, write its payload and
@@ -288,6 +315,7 @@ enum Deferred {
         hi: BoxSrc,
         bytes: usize,
         header: u64,
+        saves: SlowSaves,
     },
     /// The barrier slow path, which logs `obj`.
     /// `preserve` names emitter temporaries the code after the barrier
@@ -354,6 +382,13 @@ enum Fused {
     Test(Test, VReg, u32),
 }
 
+/// The right operand of a binary instruction.
+#[derive(Clone, Copy)]
+enum Rhs {
+    Reg(MReg),
+    Imm(i64),
+}
+
 struct Emitter<'a> {
     func: &'a LirFunc,
     alloc: &'a Allocation,
@@ -391,6 +426,15 @@ struct Emitter<'a> {
     fused: Option<Fused>,
     /// How many operands name each register, to find single-use flags.
     use_counts: HashMap<VReg, u32>,
+    /// Raw integer constants that every user encodes as an immediate.
+    immediates: HashMap<VReg, i64>,
+    /// The spilled vreg that `T0` still holds after the previous instruction,
+    /// if that instruction left it there. It becomes [`t0_holds`](Self::t0_holds)
+    /// for the next instruction when nothing is emitted in between.
+    t0_pending: Option<VReg>,
+    /// The spilled vreg that `T0` holds on entry to the current instruction,
+    /// so its reload can be skipped. See [`Emitter::read_held`].
+    t0_holds: Option<VReg>,
     /// The selector value and prologue label of each OSR entry.
     osr: Vec<(u32, Label)>,
     /// Whether the entry block ends with a selector parameter.
@@ -460,6 +504,9 @@ impl<'a> Emitter<'a> {
             next_block: None,
             fused: None,
             use_counts: HashMap::new(),
+            immediates: HashMap::new(),
+            t0_pending: None,
+            t0_holds: None,
             osr,
             has_selector: input.has_selector,
             rest: input.rest,
@@ -511,29 +558,27 @@ impl<'a> Emitter<'a> {
         arch::FPR_TEMP
     }
 
-    /// Loads the address of `target` into `dst`, PC-relative (`adrp`/`add`
-    /// with a load-time relocation on AArch64).
+    /// `dst = &target`. Every label here lives in this function's own
+    /// buffer, far below the ±1 MiB an AArch64 `adr` reaches, so this is one
+    /// instruction rather than `adrp` + `add`. A function that did outgrow it
+    /// fails at `finish` and stays in baseline.
     fn label_addr(&mut self, dst: MReg, target: Label) {
-        onlineasm!(*self.asm(); leap {dst}, {target};);
+        self.masm.assembler().label_address_near(dst, target);
     }
 
-    /// Loads the address of constant-table slot `slot` into `dst`. The address
-    /// lives in a data word next to the code, which the installer points at
-    /// the owner's reference box. Code then loads the slot's
-    /// value through that address, so the collector's updates are seen.
-    fn load_constant_addr(&mut self, dst: MReg, slot: u32) -> Result<(), String> {
+    /// Loads the value of constant-table slot `slot` into `dst`, using `tmp`
+    /// (which may be `dst`) for the image address. The table lives in the
+    /// code image, which the owner word next to the code points at, so the
+    /// collector's updates to it are seen. The slot offset rides in the load's
+    /// displacement.
+    fn load_constant(&mut self, dst: MReg, tmp: MReg, slot: u32) -> Result<(), String> {
         if slot == 0 || slot > self.constants {
             return Err(format!("constant table slot {slot} is missing"));
         }
-        // The owner word holds the address of the code image, which keeps its
-        // references inline.
-        self.masm.load_import(dst, ImportKey::Owner);
-        let mut offset = crate::runtime::objectmodel::CodeImage::ref_offset(slot as usize);
-        while offset > 0 {
-            let step = offset.min(4095);
-            onlineasm!(*self.asm(); addq {dst}, {dst}, {step as i64};);
-            offset -= step;
-        }
+        self.masm.load_import(tmp, ImportKey::Owner);
+        let offset = crate::runtime::objectmodel::CodeImage::ref_offset(slot as usize);
+        let at = self.masm.assembler().mem(tmp, offset as i32);
+        onlineasm!(*self.asm(); loadq {dst}, {at};);
         Ok(())
     }
 
@@ -555,8 +600,15 @@ impl<'a> Emitter<'a> {
             .ok_or_else(|| format!("{code} has no code-block slot in the constant table"))
     }
 
+    /// The byte offset from `SFP` of a spill slot or a home slot.
     fn slot_disp(&self, slot: u32) -> i32 {
-        (8 * (self.frame_size + slot)) as i32
+        (8 * super::regalloc::slot_word(slot, self.frame_size)) as i32
+    }
+
+    /// Whether `slot` is the home of the entry parameter that arrives in
+    /// frame word `word`: the entry load of that parameter is then a no-op.
+    fn is_home_of(slot: u32, word: u32) -> bool {
+        super::regalloc::home_word(slot) == Some(word)
     }
 
     fn slot_mem(&mut self, slot: u32) -> onlineasm::Mem {
@@ -590,17 +642,31 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    /// Sets `CP` to the call's callee, which is argument 0. The value is read
-    /// from its argument location instead of the callee slot the call just
-    /// wrote; when it already lives in `CP`, no instruction is emitted.
-    fn set_cp_from_closure_arg(&mut self, args: &[VReg]) -> Result<(), String> {
+    fn read_held(&mut self, v: VReg, tmp: MReg) -> Result<MReg, String> {
+        if tmp == T0
+            && self.t0_holds == Some(v)
+            && matches!(self.loc(v, self.use_pos())?, Loc::Slot(_))
+        {
+            return Ok(T0);
+        }
+        self.read(v, tmp)
+    }
+
+    fn set_cp_from_closure_arg(&mut self, args: &[VReg], callee_frame: i32) -> Result<(), String> {
         let Some(&callee) = args.first() else {
             return Ok(());
         };
         let cp = self.gpr_of(arch::CP)?;
+        if let Loc::Slot(s) = self.loc(callee, self.use_pos())? {
+            if super::regalloc::home_word(s).is_some() {
+                let mem = self.masm.assembler().mem(SFP, callee_frame + 8);
+                onlineasm!(*self.asm(); loadq {cp}, {mem};);
+                return Ok(());
+            }
+        }
         let from = self.read(callee, cp)?;
         if from != cp {
-            onlineasm!(*self.asm(); move {cp}, {from};);
+            self.mov(cp, from);
         }
         Ok(())
     }
@@ -689,7 +755,8 @@ impl<'a> Emitter<'a> {
     }
 
     /// The live mask of safepoint `sp` in header form: bit `i` for `fp[i + 1]`.
-    /// The closure is always live. A spill slot `s` is `fp[frame_size + s]`.
+    /// The closure is always live. A spill slot `s` is `fp[frame_size + s]`; a
+    /// home slot is the entry parameter's own word.
     /// Returns the header word, or a mask block embedded in the image.
     fn livemask(&mut self, sp: SafePoint) -> Result<Livemask, String> {
         let data = &self.func.safepoints[sp];
@@ -707,6 +774,15 @@ impl<'a> Emitter<'a> {
                 continue;
             }
             let bit = (self.frame_size + s - 1) as usize;
+            if bits.len() <= bit / 64 {
+                bits.resize(bit / 64 + 1, 0);
+            }
+            bits[bit / 64] |= 1 << (bit % 64);
+        }
+
+        // A home slot is the frame word `fp[w]` of an entry parameter.
+        for &w in &mask.homes {
+            let bit = (w - 1) as usize;
             if bits.len() <= bit / 64 {
                 bits.resize(bit / 64 + 1, 0);
             }
@@ -734,15 +810,29 @@ impl<'a> Emitter<'a> {
             .emit_rp_header_at(ra, target, livemask, TOPLINK_TO_IMAGE_START, bytes);
     }
 
-    /// Runs a move list in order. `resolve` has already sequentialized each
-    /// group, and the groups of one instruction are concatenated in time
-    /// order, so a move may read a location that an earlier move in the list
-    /// wrote. Reordering the list as if it were a parallel move changes the
-    /// values read, and it can loop forever when a cycle runs through the
-    /// scratch register.
+    /// Runs a move list in order.
     fn sequence(&mut self, moves: &[Move], consts: &[Constant]) -> Result<(), String> {
         for m in moves {
-            if let Some(i) = m.konst {
+            if let Some(u) = m.untag {
+                // A reload of an untagged int: read the tagged source and
+                // sign-extend its 32-bit payload, as `UntagInt` and
+                // `UntagInt64` do.
+                let Loc::Reg(p) = m.dst else {
+                    return Err("an untag is rebuilt into a slot".to_string());
+                };
+                let reg = self.gpr_of(p)?;
+                match u.from {
+                    Loc::Slot(s) => {
+                        let mem = self.slot_mem(s);
+                        onlineasm!(*self.asm(); loadq {reg}, {mem};);
+                        self.masm.unbox_int32(reg, reg);
+                    }
+                    Loc::Reg(q) => {
+                        let from = self.gpr_of(q)?;
+                        self.masm.unbox_int32(reg, from);
+                    }
+                }
+            } else if let Some(i) = m.konst {
                 // A reload of a constant: rebuild it from its immediate.
                 let Loc::Reg(p) = m.dst else {
                     return Err("a constant is rebuilt into a slot".to_string());
@@ -776,6 +866,12 @@ impl<'a> Emitter<'a> {
             Loc::Reg(p) if p.0 >= arch::FPR_BASE => End::F(self.fpr_of(p)?),
             Loc::Reg(p) => End::G(self.gpr_of(p)?),
         })
+    }
+
+    fn mov(&mut self, dst: MReg, src: MReg) {
+        if dst != src {
+            onlineasm!(*self.asm(); move {dst}, {src};);
+        }
     }
 
     fn move_loc(&mut self, src: Loc, dst: Loc) -> Result<(), String> {
@@ -847,13 +943,7 @@ impl<'a> Emitter<'a> {
             }
             self.enter_block(0, arity_fail, true)?;
         }
-        // Arity or overflow mismatch: the baseline entry checks again and
-        // takes over. Nothing has been written yet (a case-lambda replaces
-        // r1 only past its frame check). The baseline image resumes at
-        // bytecode entry 0, so restore the entry state it expects: `PC` at
-        // the code buffer's entry, the constant pointer there, and `MD`.
-        // A direct call (`enter_known`) reaches this prologue without
-        // setting them.
+
         self.masm.bind(arity_fail);
         let block_at = self
             .masm
@@ -920,10 +1010,17 @@ impl<'a> Emitter<'a> {
                     subp {T0}, {AC}, {required};
                     addp {T0}, {T0}, {total};
                 );
+                self.masm.check_frame_limit(T0, T1, T2, fail);
             } else {
-                onlineasm!(*self.asm(); move {T0}, {total};);
+                // The size is a constant, so the end of the frame is one add.
+                self.masm.check_frame_limit_const_at(
+                    8 * total as i32,
+                    T1,
+                    T2,
+                    fail,
+                    crate::runtime::sabi::TC_ESP,
+                );
             }
-            self.masm.check_frame_limit(T0, T1, T2, fail);
             // Only now, past the point that can fall back to baseline, replace
             // r1 with this clause's closure: the clause body's free variables
             // are the clause closure's, not the group's. Baseline's `enter_case`
@@ -976,7 +1073,7 @@ impl<'a> Emitter<'a> {
                 match self.loc(slot, base)? {
                     Loc::Reg(q) => {
                         let to = self.gpr_of(q)?;
-                        onlineasm!(*self.asm(); move {to}, {T0};);
+                        self.mov(to, T0);
                     }
                     Loc::Slot(s) => {
                         let to = self.slot_mem(s);
@@ -1010,37 +1107,26 @@ impl<'a> Emitter<'a> {
 
     /// Checks the frame room, loads the entry parameters from the frame, sets
     /// the selector parameter to `selector`, and jumps to the entry block.
-    /// On a normal fixed-arity entry (`count_entry`), bytecode register 1 is
-    /// taken from `CP`, which already holds the running closure, instead of
-    /// being reloaded from `fp[1]`.
-    /// Jumps to `fail` when the frame does not fit, before anything is
-    /// written.
     fn enter_block(&mut self, selector: u32, fail: Label, count_entry: bool) -> Result<(), String> {
         let entry_block = self.func.entry;
         let total = (self.frame_words + self.deopt_extent) as i64;
         if let Some(rest) = self.rest {
-            // The extras need room too: baseline's `enter_rest` checks the
-            // frame plus the extra count, and a deopt rebuilds that frame.
             let required = rest.required as i64;
             onlineasm!(*self.asm(); subp {T0}, {AC}, {required}; addp {T0}, {T0}, {total};);
-        } else {
-            onlineasm!(*self.asm(); move {T0}, {total};);
         }
-        // The normal entry's check is also its yieldpoint: `TC_ESP` is nulled
-        // to ask for a yield, and the slow path handles it. An OSR entry has
-        // already transferred, cannot fall back (its failure branch traps),
-        // and must not confuse that yield request with a full frame: it checks
-        // the owning thread's `real_esp` limit instead, which only it writes.
+
         let limit = if count_entry {
             crate::runtime::sabi::TC_ESP
         } else {
             crate::runtime::sabi::TC_REAL_ESP
         };
-        self.masm.check_frame_limit_at(T0, T1, T2, fail, limit);
+        if self.rest.is_some() {
+            self.masm.check_frame_limit_at(T0, T1, T2, fail, limit);
+        } else {
+            self.masm
+                .check_frame_limit_const_at(8 * total as i32, T1, T2, fail, limit);
+        }
         if count_entry && crate::utils::flags::jit_stats() {
-            // Tier 2 entry counter (`CAPY_JIT_STATS`). Emitted only when stats
-            // are on, so a run without them carries no counter. The room
-            // check above has passed, so the entry is taken.
             self.masm
                 .load_import(T0, ImportKey::Runtime(RuntimeSym::OptEntries));
             let at = self.masm.assembler().mem(T0, 0);
@@ -1053,10 +1139,10 @@ impl<'a> Emitter<'a> {
             return Err("entry parameters and their bytecode registers differ".to_string());
         }
         let base = super::regalloc::pos::pre(self.alloc.base[entry_block]);
-        // The extras are still in the incoming frame, where the parameter
-        // loads below may write spill slots, so collect them first.
+
         let mut rest_param = None;
         let mut cnt_param = None;
+
         if let Some(rest) = self.rest {
             // The vector, or in scalar mode the tail vector.
             let vector_reg = match rest.scalars {
@@ -1069,30 +1155,35 @@ impl<'a> Emitter<'a> {
                     rest.reg
                 }
             };
+
             rest_param = self.entry_regs.iter().position(|&reg| reg == vector_reg);
+
             if rest.scalars.is_some() {
                 // The count goes straight to its parameter. Both are moved
                 // before any other parameter load, which may use `T0`/`T1`.
                 cnt_param = self.entry_regs.iter().position(|&reg| reg == rest.cnt);
             }
+
             let Some(index) = rest_param else {
                 return Err("the entry has no rest vector parameter".to_string());
             };
+
             match self.loc(params[index], base)? {
                 Loc::Reg(q) => {
                     let to = self.gpr_of(q)?;
-                    onlineasm!(*self.asm(); move {to}, {T0};);
+                    self.mov(to, T0);
                 }
                 Loc::Slot(s) => {
                     let to = self.slot_mem(s);
                     onlineasm!(*self.asm(); storeq {to}, {T0};);
                 }
             }
+
             if let Some(index) = cnt_param {
                 match self.loc(params[index], base)? {
                     Loc::Reg(q) => {
                         let to = self.gpr_of(q)?;
-                        onlineasm!(*self.asm(); move {to}, {T1};);
+                        self.mov(to, T1);
                     }
                     Loc::Slot(s) => {
                         let to = self.slot_mem(s);
@@ -1101,21 +1192,20 @@ impl<'a> Emitter<'a> {
                 }
             }
         }
-        // `CP` holds the running closure on every normal call entry, so
-        // bytecode reg 1 is taken from it before any other parameter load can
-        // overwrite `CP`. OSR entries (`count_entry == false`) cannot rely on
-        // it, and a variadic entry's `collect_rest` calls a Rust helper that
-        // clobbers the caller-saved `CP` before the parameter loads.
+
         let closure_param = (count_entry && self.rest.is_none())
             .then(|| self.entry_regs.iter().position(|&reg| reg == 1))
             .flatten();
+
         if let Some(i) = closure_param {
             match self.loc(params[i], base)? {
                 Loc::Reg(q) if q == arch::CP => {}
                 Loc::Reg(q) => {
                     let to = self.gpr_of(q)?;
-                    onlineasm!(*self.asm(); move {to}, {CP};);
+                    self.mov(to, CP);
                 }
+                // The closure already sits in `fp[1]`, which is its home.
+                Loc::Slot(s) if Self::is_home_of(s, 1) => {}
                 Loc::Slot(s) => {
                     let to = self.slot_mem(s);
                     onlineasm!(*self.asm(); storeq {to}, {CP};);
@@ -1127,8 +1217,7 @@ impl<'a> Emitter<'a> {
                 continue;
             }
             let reg = self.entry_regs[i];
-            // A scalar extra is read from the argument area, where the call
-            // put it (and `collect_rest_scalar` cleaned it).
+
             let from = match self.rest {
                 Some(rest)
                     if rest
@@ -1145,6 +1234,8 @@ impl<'a> Emitter<'a> {
                     let to = self.gpr_of(q)?;
                     onlineasm!(*self.asm(); loadq {to}, {from};);
                 }
+                // The parameter's home is the word it arrives in.
+                Loc::Slot(s) if Self::is_home_of(s, reg) => {}
                 Loc::Slot(s) => {
                     onlineasm!(*self.asm(); loadq {T0}, {from};);
                     let to = self.slot_mem(s);
@@ -1171,16 +1262,6 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
-    /// Collects the extra arguments of a variadic entry into a vector, which
-    /// is left in `T0`, and stores their count in `r[cnt]` as a fixnum.
-    /// The helper returns the count as its status. It allocates without
-    /// collecting, so the frame needs no livemask yet.
-    ///
-    /// An entry with exactly the required arguments
-    /// has no extras: the rest register takes the canonical empty list (the
-    /// marker `capy_opt_rest_list` and the deopt rest-area rebuild understand)
-    /// and the count is a fixnum zero, without calling the helper or allocating
-    /// a vector. The collecting body is the slow path.
     fn collect_rest(&mut self, rest: RestInfo) -> Result<(), String> {
         let required = rest.required as i64;
 
@@ -1233,15 +1314,6 @@ impl<'a> Emitter<'a> {
         */
     }
 
-    /// The entry of a scalar-mode variadic procedure (`n` scalars). It reads
-    /// every extra before the entry parameters are stored (a spill slot can lie
-    /// over an extra): the slots of the first `n` extras that the call did not
-    /// fill get `undefined` in place, so the parameter loads that follow read
-    /// valid words from `fp[2 + required + i]`, and the extras from index `n`
-    /// on go to a fresh vector, left in `T0` (the empty-list marker when there
-    /// are none). The boxed count is left in `T1` for the entry to hand to the
-    /// `cnt` parameter; `r[cnt]` is not written (a deopt rebuilds it from the
-    /// state, and its slot may be the first extra's).
     fn collect_rest_scalar(&mut self, rest: RestInfo, n: u32) {
         let required = rest.required as i64;
         let first = 8 * (2 + rest.required) as i64;
@@ -1275,22 +1347,10 @@ impl<'a> Emitter<'a> {
         self.masm.bind(done);
     }
 
-    /// The collecting body of [`Emitter::collect_rest`] without the helper
-    /// call: bump-allocate a vector of `AC - required` words, copy the extras
-    /// out of the incoming frame and store their count as a fixnum in
-    /// `r[cnt]`. The vector is left in `T0`. Only the allocator's slow path
-    /// (a full LAB or a large object) calls out, through the deferred block
-    /// that `alloc_slow` emits; it keeps the count in `T3`. `AC` is free to
-    /// use once the count is taken: nothing reads it after the entry.
     fn collect_rest_inline(&mut self, rest: RestInfo) {
         self.collect_rest_tail(rest, 0, true);
     }
 
-    /// [`Emitter::collect_rest_inline`] for the extras from index `skip` on
-    /// (there must be some): the vector holds only those, and `r[cnt]` still
-    /// gets the full count.
-    /// With `store_count` false `r[cnt]` is left alone and the boxed count is
-    /// only left in `T1`.
     fn collect_rest_tail(&mut self, rest: RestInfo, skip: u32, store_count: bool) {
         let required = rest.required as i64 + i64::from(skip);
         let first = 8 * (2 + rest.required + skip) as i64;
@@ -1312,6 +1372,7 @@ impl<'a> Emitter<'a> {
             obj: T0,
             size: AllocDeferred::Words { count: T3, base },
             header,
+            saves: SlowSaves::All,
         });
         let length_at = self.masm.assembler().mem(T0, sabi::VECTOR_LENGTH as i32);
         onlineasm!(*self.asm(); storeq {length_at}, {T3};);
@@ -1370,6 +1431,7 @@ impl<'a> Emitter<'a> {
                 }
             }
         }
+        self.find_immediates();
         // Alignment policy (`CAPY_OPT_ALIGN`). Indirect-branch destinations
         // and loop headers are where placement decides throughput: the
         // opcode dispatch benchmark swings between 0.56 s and 0.87 s across
@@ -1418,6 +1480,8 @@ impl<'a> Emitter<'a> {
                 self.masm.align(switch_align);
             }
             self.masm.bind(label);
+            self.t0_pending = None;
+            self.t0_holds = None;
             let data = &func.blocks[b];
             let n = data.insts.len();
             // A compare that only feeds this block's branch folds into it,
@@ -1446,12 +1510,17 @@ impl<'a> Emitter<'a> {
             for (k, inst) in data.insts.iter().enumerate() {
                 self.g = alloc.index(b, k as u32);
                 self.mark();
-                self.sequence(alloc.moves_before(b, k as u32), &alloc.consts)?;
+                let carried = self.t0_pending.take();
+                let moves = alloc.moves_before(b, k as u32);
+                self.sequence(moves, &alloc.consts)?;
                 if self.fused.is_some() && k + 1 == n {
                     continue;
                 }
+                self.t0_holds = if moves.is_empty() { carried } else { None };
                 self.inst(inst)?;
+                self.t0_holds = None;
             }
+            self.t0_pending = None;
             self.g = alloc.index(b, n as u32);
             self.mark();
             let term = data
@@ -1462,6 +1531,98 @@ impl<'a> Emitter<'a> {
             self.term(term)?;
         }
         Ok(())
+    }
+
+    /// The operand of `inst` that may be encoded as an immediate
+    fn immediate_slot(inst: &LirInst) -> Option<VReg> {
+        match inst {
+            LirInst::Int64Wrapping {
+                op: IntOp::Add | IntOp::Sub,
+                rhs,
+                ..
+            }
+            | LirInst::IntArith {
+                op: IntOp::Add | IntOp::Sub,
+                rhs,
+                ..
+            }
+            | LirInst::Int64Arith {
+                op: IntOp::Add | IntOp::Sub,
+                rhs,
+                ..
+            }
+            | LirInst::IntCmp { rhs, .. }
+            | LirInst::GuardCmp { rhs, .. } => Some(*rhs),
+            _ => None,
+        }
+    }
+
+    /// Finds the constants that need no register
+    fn find_immediates(&mut self) {
+        let func = self.func;
+        let mut defs: HashMap<VReg, u32> = HashMap::new();
+        let mut candidates: HashMap<VReg, i64> = HashMap::new();
+        for data in func.blocks.values() {
+            for &p in &data.params {
+                *defs.entry(p).or_default() += 1;
+            }
+            for inst in &data.insts {
+                if let LirInst::Const { dst, value } = inst {
+                    let value = match *value {
+                        Constant::Int32(i) => Some(i64::from(i)),
+                        Constant::Int64(i) => Some(i),
+                        _ => None,
+                    };
+                    if let Some(value) = value
+                        && func.class(*dst) == RegClass::Gpr
+                        && matches!(
+                            func.repr(*dst),
+                            VRepr::RawInt | VRepr::RawInt64 | VRepr::RawBits
+                        )
+                        && arch::fits_immediate(value)
+                    {
+                        candidates.insert(*dst, value);
+                    }
+                }
+                for op in inst.operands(func) {
+                    if op.role == Role::Def {
+                        *defs.entry(op.vreg).or_default() += 1;
+                    }
+                }
+            }
+            if let Some(term) = &data.term {
+                for op in term.operands(func) {
+                    if op.role == Role::Def {
+                        *defs.entry(op.vreg).or_default() += 1;
+                    }
+                }
+            }
+        }
+        candidates.retain(|v, _| defs.get(v).copied() == Some(1));
+        let mut folded: HashMap<VReg, u32> = HashMap::new();
+        for data in func.blocks.values() {
+            for inst in &data.insts {
+                if let Some(v) = Self::immediate_slot(inst)
+                    && candidates.contains_key(&v)
+                {
+                    *folded.entry(v).or_default() += 1;
+                }
+            }
+        }
+        self.immediates = candidates
+            .into_iter()
+            .filter(|(v, _)| {
+                let folded = folded.get(v).copied().unwrap_or(0);
+                folded > 0 && self.use_counts.get(v).copied() == Some(folded)
+            })
+            .collect();
+    }
+
+    fn read_rhs(&mut self, v: VReg, tmp: MReg) -> Result<Rhs, String> {
+        match self.immediates.get(&v) {
+            Some(&i) => Ok(Rhs::Imm(i)),
+            None => Ok(Rhs::Reg(self.read(v, tmp)?)),
+        }
     }
 
     fn inst(&mut self, inst: &LirInst) -> Result<(), String> {
@@ -1561,6 +1722,8 @@ impl<'a> Emitter<'a> {
                 let d = self.loc(*dst, self.def_pos())?;
                 self.move_loc(s, d)?;
             }
+            // Every user takes this constant as an immediate.
+            LirInst::Const { dst, .. } if self.immediates.contains_key(dst) => {}
             LirInst::Const { dst, value } => {
                 let t = self.write(*dst)?;
                 match *value {
@@ -1608,13 +1771,13 @@ impl<'a> Emitter<'a> {
                         section,
                         offset,
                     } => {
-                        self.masm
-                            .load_import(t.reg, ImportKey::Block(code.index() as u32, section, offset));
+                        self.masm.load_import(
+                            t.reg,
+                            ImportKey::Block(code.index() as u32, section, offset),
+                        );
                     }
                     Constant::Table(index) => {
-                        self.load_constant_addr(T0, index)?;
-                        let mem = self.masm.assembler().mem(T0, 0);
-                        onlineasm!(*self.asm(); loadq {t.reg}, {mem};);
+                        self.load_constant(t.reg, T0, index)?;
                     }
                 }
                 self.commit(t);
@@ -1626,7 +1789,7 @@ impl<'a> Emitter<'a> {
                 self.commit(t);
             }
             LirInst::UntagInt { dst, src } => {
-                let s = self.read(*src, T0)?;
+                let s = self.read_held(*src, T0)?;
                 let t = self.write(*dst)?;
                 self.masm.unbox_int32(t.reg, s);
                 self.commit(t);
@@ -1641,8 +1804,8 @@ impl<'a> Emitter<'a> {
                 let s = self.read(*src, T0)?;
                 let t = self.write(*dst)?;
                 let d = t.reg;
+                self.mov(d, s);
                 onlineasm!(*self.asm();
-                    move {d}, {s};
                     urshiftq {d}, 16;
                     andq {d}, {d}, 0xffffffff;
                 );
@@ -1657,6 +1820,12 @@ impl<'a> Emitter<'a> {
                         Some(v) => {
                             let s = self.read(*v, T0)?;
                             self.branch_unless(*test, s, fail)?;
+                            // A guard's tests use `T1`/`T2` and leave the
+                            // operand alone, so a following untag of the same
+                            // spilled value can reuse `T0`.
+                            if s == T0 {
+                                self.t0_pending = Some(*v);
+                            }
                         }
                         None => self.branch_invalid(fail),
                     }
@@ -1686,16 +1855,9 @@ impl<'a> Emitter<'a> {
                 let fail = self.exit_label(*exit);
                 if !self.stress_guard(fail) {
                     let l = self.read(*lhs, T0)?;
-                    let r = self.read(*rhs, T1)?;
+                    let r = self.read_rhs(*rhs, T1)?;
                     // Branch to the exit when the comparison is false.
-                    match cmp {
-                        Cmp::Eq => onlineasm!(*self.asm(); bqneq {l}, {r}, {fail};),
-                        Cmp::Ne => onlineasm!(*self.asm(); bqeq {l}, {r}, {fail};),
-                        Cmp::Lt => onlineasm!(*self.asm(); bqgteq {l}, {r}, {fail};),
-                        Cmp::Le => onlineasm!(*self.asm(); bqgt {l}, {r}, {fail};),
-                        Cmp::Gt => onlineasm!(*self.asm(); bqlteq {l}, {r}, {fail};),
-                        Cmp::Ge => onlineasm!(*self.asm(); bqlt {l}, {r}, {fail};),
-                    }
+                    self.cmp_branch_rhs(negate(*cmp), l, r, fail);
                 }
             }
             LirInst::TestTag { dst, src, test } => {
@@ -1706,7 +1868,7 @@ impl<'a> Emitter<'a> {
                 onlineasm!(*self.asm(); move {T3}, 1;);
                 self.masm.bind(skip);
                 let t = self.write(*dst)?;
-                onlineasm!(*self.asm(); move {t.reg}, {T3};);
+                self.mov(t.reg, T3);
                 self.commit(t);
             }
             LirInst::IntArith {
@@ -1719,19 +1881,29 @@ impl<'a> Emitter<'a> {
                 // The op runs on a copy, so the operands survive an overflow
                 // for the exit's frame.
                 let l = self.read(*lhs, T0)?;
-                let r = self.read(*rhs, T1)?;
+                let rhs_loc = self.read_rhs(*rhs, T1)?;
                 let fail = self.exit_label(*exit);
-                onlineasm!(*self.asm(); move {T2}, {l};);
+                self.mov(T2, l);
+                if let Rhs::Imm(i) = rhs_loc {
+                    // Only an add or a subtract folds its right operand.
+                    match op {
+                        IntOp::Add => onlineasm!(*self.asm(); baddio {T2}, {T2}, {i}, {fail};),
+                        _ => onlineasm!(*self.asm(); bsubio {T2}, {T2}, {i}, {fail};),
+                    }
+                    onlineasm!(*self.asm(); sxi2q {T2}, {T2};);
+                    let t = self.write(*dst)?;
+                    self.mov(t.reg, T2);
+                    self.commit(t);
+                    return Ok(());
+                }
+                let Rhs::Reg(r) = rhs_loc else {
+                    unreachable!("the immediate form returned above");
+                };
                 match op {
                     IntOp::Add => onlineasm!(*self.asm(); baddio {T2}, {T2}, {r}, {fail};),
                     IntOp::Sub => onlineasm!(*self.asm(); bsubio {T2}, {T2}, {r}, {fail};),
                     IntOp::Mul => onlineasm!(*self.asm(); bmulio {T2}, {T2}, {r}, {fail};),
                     IntOp::Quot | IntOp::Rem => {
-                        // The three-operand divide expands on both targets:
-                        // x86-64 stages it through rax/rdx, which it saves and
-                        // restores, and only `r11` (outside the pool) is
-                        // scratch. A zero divisor deopts, and so does MIN / -1
-                        // for a quotient, which would not fit an int32.
                         onlineasm!(*self.asm(); bqeq {r}, 0, {fail};);
                         if *op == IntOp::Quot {
                             let ok = self.masm.label();
@@ -1746,10 +1918,6 @@ impl<'a> Emitter<'a> {
                         }
                     }
                     IntOp::Mod => {
-                        // The remainder takes the dividend's sign. A nonzero
-                        // remainder with the other sign from the divisor
-                        // moves by the divisor, which lands in the int32
-                        // range.
                         let negative = self.masm.label();
                         let adjust = self.masm.label();
                         let done = self.masm.label();
@@ -1772,18 +1940,33 @@ impl<'a> Emitter<'a> {
                 // Normalize the int32 result to a full sign-extended word.
                 onlineasm!(*self.asm(); sxi2q {T2}, {T2};);
                 let t = self.write(*dst)?;
-                onlineasm!(*self.asm(); move {t.reg}, {T2};);
+                self.mov(t.reg, T2);
                 self.commit(t);
             }
             LirInst::Int64Wrapping { op, dst, lhs, rhs } => {
                 let l = self.read(*lhs, T0)?;
-                let r = self.read(*rhs, T1)?;
+                let r = self.read_rhs(*rhs, T1)?;
                 let t = self.write(*dst)?;
-                match op {
-                    IntOp::Add => onlineasm!(*self.asm(); addq {t.reg}, {l}, {r};),
-                    IntOp::Sub => onlineasm!(*self.asm(); subq {t.reg}, {l}, {r};),
-                    // Only the total add, subtract and multiply use this.
-                    _ => onlineasm!(*self.asm(); mulq {t.reg}, {l}, {r};),
+                match (op, r) {
+                    (IntOp::Add, Rhs::Imm(i)) | (IntOp::Sub, Rhs::Imm(i)) => {
+                        let add = (*op == IntOp::Add) == (i >= 0);
+                        let magnitude = i.abs();
+                        if magnitude == 0 {
+                            self.mov(t.reg, l);
+                        } else if add {
+                            onlineasm!(*self.asm(); addq {t.reg}, {l}, {magnitude};);
+                        } else {
+                            onlineasm!(*self.asm(); subq {t.reg}, {l}, {magnitude};);
+                        }
+                    }
+                    (IntOp::Add, Rhs::Reg(r)) => {
+                        onlineasm!(*self.asm(); addq {t.reg}, {l}, {r};)
+                    }
+                    (IntOp::Sub, Rhs::Reg(r)) => {
+                        onlineasm!(*self.asm(); subq {t.reg}, {l}, {r};)
+                    }
+                    (_, Rhs::Reg(r)) => onlineasm!(*self.asm(); mulq {t.reg}, {l}, {r};),
+                    (_, Rhs::Imm(_)) => unreachable!("only an add or a subtract folds"),
                 }
                 self.commit(t);
             }
@@ -1794,21 +1977,29 @@ impl<'a> Emitter<'a> {
                 rhs,
                 exit,
             } => {
-                // The op runs on a copy, so the operands survive an overflow
-                // for the exit's frame.
                 let l = self.read(*lhs, T0)?;
-                let r = self.read(*rhs, T1)?;
+                let rhs_loc = self.read_rhs(*rhs, T1)?;
                 let fail = self.exit_label(*exit);
-                onlineasm!(*self.asm(); move {T2}, {l};);
+                self.mov(T2, l);
+                if let Rhs::Imm(i) = rhs_loc {
+                    // Only an add or a subtract folds its right operand.
+                    match op {
+                        IntOp::Add => onlineasm!(*self.asm(); baddqo {T2}, {T2}, {i}, {fail};),
+                        _ => onlineasm!(*self.asm(); bsubqo {T2}, {T2}, {i}, {fail};),
+                    }
+                    let t = self.write(*dst)?;
+                    self.mov(t.reg, T2);
+                    self.commit(t);
+                    return Ok(());
+                }
+                let Rhs::Reg(r) = rhs_loc else {
+                    unreachable!("the immediate form returned above");
+                };
                 match op {
                     IntOp::Add => onlineasm!(*self.asm(); baddqo {T2}, {T2}, {r}, {fail};),
                     IntOp::Sub => onlineasm!(*self.asm(); bsubqo {T2}, {T2}, {r}, {fail};),
                     IntOp::Mul => onlineasm!(*self.asm(); bmulqo {T2}, {T2}, {r}, {fail};),
                     IntOp::Quot => {
-                        // The divide expands on both targets (x86-64 saves
-                        // rax/rdx around it), so no fixed registers are
-                        // needed. A zero divisor deopts, and so does
-                        // `MIN / -1`, which traps in hardware.
                         let ok = self.masm.label();
                         onlineasm!(*self.asm(); bqeq {r}, 0, {fail};);
                         onlineasm!(*self.asm(); move {T0}, {i64::MIN};);
@@ -1844,7 +2035,7 @@ impl<'a> Emitter<'a> {
                     }
                 }
                 let t = self.write(*dst)?;
-                onlineasm!(*self.asm(); move {t.reg}, {T2};);
+                self.mov(t.reg, T2);
                 self.commit(t);
             }
             LirInst::BoxInt64 { dst, src } => {
@@ -1861,9 +2052,7 @@ impl<'a> Emitter<'a> {
                 let t = self.write(*dst)?;
                 let wide = self.masm.label();
                 let done = self.masm.label();
-                // Fits i32 exactly when sign-extending the low 32 bits gives
-                // the value back. That extension is also the untagged fixnum,
-                // so the fast path only has to add the tag.
+
                 onlineasm!(*self.asm(); sxi2q {T2}, {s}; bqneq {T2}, {s}, {wide};);
                 onlineasm!(*self.asm(); orq {t.reg}, {T2}, {regs::NUMBER_TAG};);
                 self.commit(t);
@@ -1876,6 +2065,7 @@ impl<'a> Emitter<'a> {
                     src,
                     bytes: sabi::OBJECT_HEADER_BYTES + 16,
                     header: header_word(builtin_class_ids::BIGINT),
+                    saves: self.slow_saves(*dst, &[])?,
                 });
             }
             LirInst::UnboxBigInt64 { dst, obj, exit } => {
@@ -1944,13 +2134,13 @@ impl<'a> Emitter<'a> {
                     self.masm.bind(nonnegative);
                     onlineasm!(*self.asm(); bqlt {c}, 0, {fail};);
                     self.masm.bind(valid);
-                    onlineasm!(*self.asm(); move {d}, {c};);
+                    self.mov(d, c);
                     self.masm.bind(done);
                 }
                 self.commit(t);
             }
             LirInst::UntagInt64 { dst, src } => {
-                let s = self.read(*src, T0)?;
+                let s = self.read_held(*src, T0)?;
                 let t = self.write(*dst)?;
                 onlineasm!(*self.asm(); sxi2q {t.reg}, {s};);
                 self.commit(t);
@@ -1960,7 +2150,7 @@ impl<'a> Emitter<'a> {
                 // move keeps the same word and int32 ops ignore the top half.
                 let s = self.read(*src, T0)?;
                 let t = self.write(*dst)?;
-                onlineasm!(*self.asm(); move {t.reg}, {s};);
+                self.mov(t.reg, s);
                 self.commit(t);
             }
             LirInst::Int64ToDouble { dst, src } => {
@@ -1998,16 +2188,26 @@ impl<'a> Emitter<'a> {
             }
             LirInst::IntCmp { cmp, dst, lhs, rhs } => {
                 let l = self.read(*lhs, T0)?;
-                let r = self.read(*rhs, T1)?;
+                let r = self.read_rhs(*rhs, T1)?;
                 let t = self.write(*dst)?;
                 let d = t.reg;
-                match cmp {
-                    Cmp::Eq => onlineasm!(*self.asm(); cqeq {d}, {l}, {r};),
-                    Cmp::Ne => onlineasm!(*self.asm(); cqneq {d}, {l}, {r};),
-                    Cmp::Lt => onlineasm!(*self.asm(); cqlt {d}, {l}, {r};),
-                    Cmp::Le => onlineasm!(*self.asm(); cqlteq {d}, {l}, {r};),
-                    Cmp::Gt => onlineasm!(*self.asm(); cqgt {d}, {l}, {r};),
-                    Cmp::Ge => onlineasm!(*self.asm(); cqgteq {d}, {l}, {r};),
+                match r {
+                    Rhs::Reg(r) => match cmp {
+                        Cmp::Eq => onlineasm!(*self.asm(); cqeq {d}, {l}, {r};),
+                        Cmp::Ne => onlineasm!(*self.asm(); cqneq {d}, {l}, {r};),
+                        Cmp::Lt => onlineasm!(*self.asm(); cqlt {d}, {l}, {r};),
+                        Cmp::Le => onlineasm!(*self.asm(); cqlteq {d}, {l}, {r};),
+                        Cmp::Gt => onlineasm!(*self.asm(); cqgt {d}, {l}, {r};),
+                        Cmp::Ge => onlineasm!(*self.asm(); cqgteq {d}, {l}, {r};),
+                    },
+                    Rhs::Imm(i) => match cmp {
+                        Cmp::Eq => onlineasm!(*self.asm(); cqeq {d}, {l}, {i};),
+                        Cmp::Ne => onlineasm!(*self.asm(); cqneq {d}, {l}, {i};),
+                        Cmp::Lt => onlineasm!(*self.asm(); cqlt {d}, {l}, {i};),
+                        Cmp::Le => onlineasm!(*self.asm(); cqlteq {d}, {l}, {i};),
+                        Cmp::Gt => onlineasm!(*self.asm(); cqgt {d}, {l}, {i};),
+                        Cmp::Ge => onlineasm!(*self.asm(); cqgteq {d}, {l}, {i};),
+                    },
                 }
                 self.commit(t);
             }
@@ -2429,7 +2629,7 @@ impl<'a> Emitter<'a> {
                 wide_cmp_set(self.masm, *cmp, true, T1, T0, T2);
                 self.masm.bind(done);
                 let t = self.write(*dst)?;
-                onlineasm!(*self.asm(); move {t.reg}, {T1};);
+                self.mov(t.reg, T1);
                 self.commit(t);
             }
             LirInst::WideShift {
@@ -2474,7 +2674,7 @@ impl<'a> Emitter<'a> {
                 let s = self.read(src, T0)?;
                 let t = self.write(*dst)?;
                 if t.reg != s {
-                    onlineasm!(*self.asm(); move {t.reg}, {s};);
+                    self.mov(t.reg, s);
                 }
                 self.commit(t);
             }
@@ -2513,6 +2713,7 @@ impl<'a> Emitter<'a> {
                 onlineasm!(*self.asm(); jmp {done};);
                 self.masm.bind(wide_check);
                 onlineasm!(*self.asm(); move {T3}, {T0}; rshiftq {T3}, 63; bqneq {T3}, {T1}, {two}; jmp {one};);
+                let saves = self.slow_saves(*dst, &[])?;
                 self.deferred.push(Deferred::BoxBigInt {
                     wide: one,
                     done,
@@ -2521,6 +2722,7 @@ impl<'a> Emitter<'a> {
                     src: BoxSrc::Reg(T0),
                     bytes: sabi::OBJECT_HEADER_BYTES + 16,
                     header: header_word(builtin_class_ids::BIGINT),
+                    saves: saves.clone(),
                 });
                 self.deferred.push(Deferred::BoxInt128Two {
                     wide: two,
@@ -2531,6 +2733,7 @@ impl<'a> Emitter<'a> {
                     hi: BoxSrc::Reg(T1),
                     bytes: sabi::OBJECT_HEADER_BYTES + 24,
                     header: header_word(builtin_class_ids::BIGINT),
+                    saves,
                 });
                 self.masm.bind(done);
             }
@@ -2568,8 +2771,7 @@ impl<'a> Emitter<'a> {
                         onlineasm!(*self.asm(); loadq {t.reg}, {mem};);
                     }
                     ReturnedKind::Addr => {
-                        let mem = self.masm.assembler().mem(SFP, disp);
-                        onlineasm!(*self.asm(); leap {t.reg}, {mem};);
+                        self.masm.lea_disp(t.reg, SFP, disp);
                     }
                     ReturnedKind::Count => {
                         let skip = i64::from(*index);
@@ -2658,13 +2860,14 @@ impl<'a> Emitter<'a> {
                     loadb {T3}, {mem};
                     jmp {ready};
                 );
-                // Wide: four-byte `char`, scaled index.
+                // Wide: four-byte `char`; `start` and the index count characters,
+                // so both are scaled.
                 self.masm.bind(wide);
                 onlineasm!(*self.asm();
                     loadq {T0}, {start_at};
                     move {T3}, {idx};
-                    lshiftq {T3}, 2;
                     addp {T3}, {T3}, {T0};
+                    lshiftq {T3}, 2;
                     addp {T2}, {T2}, {sabi::STRINGBUF_DATA as i64};
                     addp {T2}, {T2}, {T3};
                 );
@@ -2676,7 +2879,7 @@ impl<'a> Emitter<'a> {
                     orq {T3}, {T3}, {crate::runtime::objectmodel::Value::CHAR_TAG as i64};
                 );
                 let t = self.write(*dst)?;
-                onlineasm!(*self.asm(); move {t.reg}, {T3};);
+                self.mov(t.reg, T3);
                 self.commit(t);
             }
             LirInst::LoadByte { dst, base, index } => {
@@ -2748,7 +2951,7 @@ impl<'a> Emitter<'a> {
         for (vreg, temp) in [(a_lo, T0), (a_hi, T1), (b_lo, T2), (b_hi, T3)] {
             let got = self.read(vreg, temp)?;
             if got != temp {
-                onlineasm!(*self.asm(); move {temp}, {got};);
+                self.mov(temp, got);
             }
         }
         Ok(())
@@ -2759,10 +2962,10 @@ impl<'a> Emitter<'a> {
     /// high word is read; `hi` must not be `T2`.
     fn write_wide(&mut self, dst_lo: VReg, dst_hi: VReg, lo: MReg, hi: MReg) -> Result<(), String> {
         let t = self.write(dst_lo)?;
-        onlineasm!(*self.asm(); move {t.reg}, {lo};);
+        self.mov(t.reg, lo);
         self.commit(t);
         let t = self.write(dst_hi)?;
-        onlineasm!(*self.asm(); move {t.reg}, {hi};);
+        self.mov(t.reg, hi);
         self.commit(t);
         Ok(())
     }
@@ -2826,9 +3029,8 @@ impl<'a> Emitter<'a> {
                     .assembler()
                     .mem(s, sabi::CLOSURE_CODE_BLOCK as i32);
                 onlineasm!(*self.asm(); loadq {T1}, {block_at};);
-                self.load_constant_addr(T2, slot)?;
-                let cell_at = self.masm.assembler().mem(T2, 0);
-                onlineasm!(*self.asm(); loadq {T2}, {cell_at}; bqneq {T1}, {T2}, {fail};);
+                self.load_constant(T2, T2, slot)?;
+                onlineasm!(*self.asm(); bqneq {T1}, {T2}, {fail};);
             }
             Test::NotInvalid => self.branch_invalid(fail),
         }
@@ -2843,8 +3045,6 @@ impl<'a> Emitter<'a> {
     }
 
     fn alloc(&mut self, dst: VReg, layout: AllocLayout) -> Result<(), String> {
-        // The header word, the payload size in words, and a payload word 0
-        // written by the allocation (a length, or a packed stamp/length).
         let (header, payload_words, length_word): (u64, usize, Option<u64>) = match layout {
             AllocLayout::Pair => (header_word(ClassRef::PAIR.class_id()), 2, None),
             AllocLayout::Flonum => (header_word(builtin_class_ids::FLONUM), 1, None),
@@ -2904,6 +3104,7 @@ impl<'a> Emitter<'a> {
             obj,
             size: AllocDeferred::Bytes(bytes),
             header,
+            saves: self.slow_saves(dst, &[])?,
         });
         if let Some(n) = length_word {
             onlineasm!(*self.asm(); move {T0}, {n as i64};);
@@ -2927,9 +3128,7 @@ impl<'a> Emitter<'a> {
             .load_import(T0, ImportKey::Runtime(RuntimeSym::InterpreterEnter));
         let code_at = self.masm.assembler().mem(obj, sabi::CLOSURE_CODE as i32);
         onlineasm!(*self.asm(); storeq {code_at}, {T0};);
-        self.load_constant_addr(T1, slot)?;
-        let cell_at = self.masm.assembler().mem(T1, 0);
-        onlineasm!(*self.asm(); loadq {T1}, {cell_at};);
+        self.load_constant(T1, T1, slot)?;
         let block_at = self
             .masm
             .assembler()
@@ -3036,16 +3235,18 @@ impl<'a> Emitter<'a> {
     ) -> Result<(), String> {
         let tail = safepoint.is_none();
         let callee = 8 * self.frame_words as i32;
-        for (i, &arg) in args.iter().enumerate() {
-            let r = self.read(arg, T0)?;
+        let mut closure = None;
+
+        for i in (1..args.len()).chain(0..args.len().min(1)) {
+            let r = self.read(args[i], T0)?;
             let mem = self.masm.assembler().mem(SFP, callee + 8 * (1 + i as i32));
             onlineasm!(*self.asm(); storeq {mem}, {r};);
+            if i == 0 {
+                closure = Some(r);
+            }
         }
+
         if tail {
-            // A profile-named entry is only a hint: check the callee's code
-            // block first, before the down-copy writes the callee closure
-            // over slot 1. A mismatch takes the generic tail path below; no
-            // deopt is possible here (a tail-call frame is never rebuilt).
             let fallback = if checked {
                 let code = known.ok_or("a checked tail call needs a known target")?;
                 let mismatch = self.masm.label();
@@ -3057,9 +3258,7 @@ impl<'a> Emitter<'a> {
                     mismatch,
                 );
                 let slot = self.code_slot(code)?;
-                self.load_constant_addr(T1, slot)?;
-                let cell = self.masm.assembler().mem(T1, 0);
-                onlineasm!(*self.asm(); loadq {T1}, {cell};);
+                self.load_constant(T1, T1, slot)?;
                 let block_at = self
                     .masm
                     .assembler()
@@ -3072,6 +3271,7 @@ impl<'a> Emitter<'a> {
             } else {
                 None
             };
+
             // Copy the new arguments down over this frame's own.
             for i in 0..args.len() as i32 {
                 let from = self.masm.assembler().mem(SFP, callee + 8 * (1 + i));
@@ -3079,12 +3279,12 @@ impl<'a> Emitter<'a> {
                 let to = self.masm.assembler().mem(SFP, 8 * (1 + i));
                 onlineasm!(*self.asm(); storeq {to}, {T0};);
             }
-            // The closure is argument 0, still where the call read it: avoid
-            // the round trip through the slot just written.
-            self.set_cp_from_closure_arg(args)?;
+
+            self.set_cp_from_closure_arg(args, callee)?;
             let argc = args.len() as i64 - 1;
             onlineasm!(*self.asm(); move {AC}, {argc};);
             self.enter_frame_target(known)?;
+
             if let Some(mismatch) = fallback {
                 self.masm.bind(mismatch);
                 for i in 0..args.len() as i32 {
@@ -3093,7 +3293,7 @@ impl<'a> Emitter<'a> {
                     let to = self.masm.assembler().mem(SFP, 8 * (1 + i));
                     onlineasm!(*self.asm(); storeq {to}, {T0};);
                 }
-                self.set_cp_from_closure_arg(args)?;
+                self.set_cp_from_closure_arg(args, callee)?;
                 onlineasm!(*self.asm(); move {AC}, {argc};);
                 self.enter_frame_target(None)?;
             }
@@ -3105,23 +3305,21 @@ impl<'a> Emitter<'a> {
         self.label_addr(T1, ra);
         let ra_slot = self.masm.assembler().mem(SFP, callee);
         onlineasm!(*self.asm(); storeq {ra_slot}, {T1};);
-        self.set_cp_from_closure_arg(args)?;
+        if let Some(from) = closure {
+            let cp = self.gpr_of(arch::CP)?;
+            if from != cp {
+                self.mov(cp, from);
+            }
+        }
         let argc = args.len() as i64 - 1;
         onlineasm!(*self.asm(); move {AC}, {argc};);
-        let callee_fp = self.masm.assembler().mem(SFP, callee);
-        onlineasm!(*self.asm(); leap {SFP}, {callee_fp};);
+        self.masm.lea_disp(SFP, SFP, callee);
         self.enter_frame_target(known)?;
-        // The header sits between the jump and the return address, so only
-        // the callee's return reaches it. A single-value return point takes a
-        // callee that returns other than one value through the values-error
-        // stub, as the baseline's does (`MV_ERROR`). Otherwise the callee's
-        // several values reach `ra`, which takes the first.
+
         let mut take_labels = None;
         let target = match values {
             ReturnValues::Error => HeaderTarget::Runtime(RuntimeSym::ValuesError),
             ReturnValues::Ignore => HeaderTarget::Label(ra),
-            // Several values reach the entry's exit, which pops the callee
-            // frame and hands the count over (`Deferred::Returned`).
             ReturnValues::Forward => {
                 let exit = exit.ok_or("a forwarded return point has no deopt exit")?;
                 let label = self.masm.label();
@@ -3132,9 +3330,6 @@ impl<'a> Emitter<'a> {
                 });
                 HeaderTarget::Label(label)
             }
-            // The callee's values reach `taken` (the single value of a
-            // plain return falls into it from `ra`). It checks the count and
-            // pops the frame, leaving the values for `LoadReturned`.
             ReturnValues::Take(_) | ReturnValues::TakeRest(_) => {
                 let exit = exit.ok_or("a forwarded return point has no deopt exit")?;
                 let wrong = self.masm.label();
@@ -3149,34 +3344,38 @@ impl<'a> Emitter<'a> {
             }
         };
         self.rp_header(ra, target, livemask);
+        let join = self.masm.label();
         if let (ReturnValues::Take(count) | ReturnValues::TakeRest(count), Some((taken, wrong))) =
             (values, take_labels)
         {
-            // One value came back: it sits in `RV`, and the entry takes
-            // another count. Leave it where a multiple-values return puts
-            // its values, so the exit finds it in the callee frame.
-            let slot2 = self.masm.assembler().mem(SFP, 16);
-            onlineasm!(*self.asm();
-                storeq {slot2}, {RV};
-                move {AC}, 1;
-            );
-            self.masm.bind(taken);
-            let count = count as i64;
-            if matches!(values, ReturnValues::Take(_)) {
-                onlineasm!(*self.asm(); bqneq {AC}, {count}, {wrong};);
-            } else {
-                onlineasm!(*self.asm(); bqb {AC}, {count}, {wrong};);
+            let rest = matches!(values, ReturnValues::TakeRest(_));
+            let fits = if rest { count <= 1 } else { count == 1 };
+
+            if !fits || count == 0 {
+                let slot2 = self.masm.assembler().mem(SFP, 16);
+                onlineasm!(*self.asm(); storeq {slot2}, {RV};);
             }
+            if !fits {
+                onlineasm!(*self.asm();
+                    move {AC}, 1;
+                    jmp {wrong};
+                );
+            } else if rest {
+                onlineasm!(*self.asm(); move {AC}, 1;);
+            }
+            self.deferred.push(Deferred::Taken {
+                label: taken,
+                join,
+                wrong,
+                count,
+                rest,
+            });
         }
-        // The return lands with SFP at the callee frame, so pop it, as the
-        // baseline return point does (`pop_frame`).
-        let back = self.masm.assembler().mem(SFP, -callee);
-        onlineasm!(*self.asm(); leap {SFP}, {back};);
+        self.masm.bind(join);
+        self.masm.lea_disp(SFP, SFP, -callee);
         Ok(())
     }
 
-    /// Enter the callee: its known compiled entry when the IR named one,
-    /// otherwise through the closure's `code` (the generic path).
     fn enter_frame_target(&mut self, known: Option<CodeRef>) -> Result<(), String> {
         match known {
             Some(code) => self.enter_known(code),
@@ -3187,25 +3386,14 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    /// Jump to the compiled entry of the known code block. Its pointer sits
-    /// in the unit's constant table, which the installer patches, so the call
-    /// needs no closure load and no baseline-entry redirect. The entry word is
-    /// read fresh on every call: an install or a retire can change it at any
-    /// time. With no entry, `closure.code` is the interpreter entry, which
-    /// heals the block when compiled code appears.
     fn enter_known(&mut self, code: CodeRef) -> Result<(), String> {
-        // The root code block is the one being emitted: its entry is this
-        // unit's prologue, so a self call jumps straight to it instead of
-        // loading the block and its entry from the constant table.
         if code.index() == 0 {
             let entry = self.entry;
             onlineasm!(*self.asm(); jmp {entry};);
             return Ok(());
         }
         let slot = self.code_slot(code)?;
-        self.load_constant_addr(T0, slot)?;
-        let cell = self.masm.assembler().mem(T0, 0);
-        onlineasm!(*self.asm(); loadq {T0}, {cell};);
+        self.load_constant(T0, T0, slot)?;
         let entry = self.masm.assembler().mem(T0, sabi::CODE_BLOCK_ENTRY as i32);
         let interpreted = self.masm.label();
         onlineasm!(*self.asm();
@@ -3219,14 +3407,7 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
-    /// A returning runtime helper. Its arguments are in the helper argument
-    /// registers, and its result is in RV. The helper reports a status in
-    /// [`ERROR_REG`]. A nonzero status jumps to `exit`, which deopts before the
-    /// instruction, so baseline runs it.
-    /// A variadic primitive call. The arguments go to consecutive words in
-    /// the outgoing frame area, which the prologue checked
-    /// (`deopt_extent`), and the helper reads them from there. A nonzero
-    /// status exits to baseline, which runs the call from its own pc.
+    /// A returning runtime helper.
     fn prim_n_call(
         &mut self,
         prim: PrimRef,
@@ -3242,8 +3423,7 @@ impl<'a> Emitter<'a> {
             let mem = self.masm.assembler().mem(SFP, area + 8 * i as i32);
             onlineasm!(*self.asm(); storeq {mem}, {r};);
         }
-        let from = self.masm.assembler().mem(SFP, area);
-        onlineasm!(*self.asm(); leap {T3}, {from};);
+        self.masm.lea_disp(T3, SFP, area);
         let result = match rv {
             Some(_) => OpResult::Reg(self.gpr_of(self.regs.rv)?),
             None => OpResult::Reg(T0),
@@ -3313,10 +3493,7 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
-    /// A primitive call, as the baseline's `prim_direct` makes it: the wrapper
-    /// takes the context in the first argument register, the argument count
-    /// in the second, and the arguments after them (`Constraint::Fixed` puts
-    /// them there). It returns `(value, error)`.
+    /// A primitive call
     fn prim_call(
         &mut self,
         prim: PrimRef,
@@ -3338,8 +3515,7 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
-    /// The yieldpoint: a flag check, and on a pending request a call into the
-    /// yield glue on an out-of-line block that returns to the join point.
+    /// The yieldpoint
     fn poll(&mut self, safepoint: SafePoint) -> Result<(), String> {
         let livemask = self.livemask(safepoint)?;
         let mut saves = Vec::new();
@@ -3418,6 +3594,21 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// [`cmp_branch`](Self::cmp_branch) against a register or an immediate.
+    fn cmp_branch_rhs(&mut self, cmp: Cmp, l: MReg, r: Rhs, label: Label) {
+        match r {
+            Rhs::Reg(r) => self.cmp_branch(cmp, l, r, label),
+            Rhs::Imm(i) => match cmp {
+                Cmp::Eq => onlineasm!(*self.asm(); bqeq {l}, {i}, {label};),
+                Cmp::Ne => onlineasm!(*self.asm(); bqneq {l}, {i}, {label};),
+                Cmp::Lt => onlineasm!(*self.asm(); bqlt {l}, {i}, {label};),
+                Cmp::Le => onlineasm!(*self.asm(); bqlteq {l}, {i}, {label};),
+                Cmp::Gt => onlineasm!(*self.asm(); bqgt {l}, {i}, {label};),
+                Cmp::Ge => onlineasm!(*self.asm(); bqgteq {l}, {i}, {label};),
+            },
+        }
+    }
+
     /// Branches to `label` when `l cmp r` holds.
     fn cmp_branch(&mut self, cmp: Cmp, l: MReg, r: MReg, label: Label) {
         match cmp {
@@ -3430,14 +3621,7 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    /// A dense int switch: one signed range check against `min..min+span`,
-    /// then a scaled load from a table of block addresses.
-    ///
-    /// `key - min` is computed in 64 bits from the sign-extended i32 key, so
-    /// the unsigned range check is correct for `i32::MIN` and for negative
-    /// keys below `min` (their wrapped difference is huge). Missing keys and
-    /// duplicate targets need no special case: the builder fills holes with
-    /// the default target and every table entry names its block.
+    /// A dense int switch
     fn dense_switch(
         &mut self,
         value: VReg,
@@ -3569,12 +3753,12 @@ impl<'a> Emitter<'a> {
                         Fused::Cmp(cmp, lhs, rhs, at) => {
                             self.g = at;
                             let l = self.read(lhs, T0)?;
-                            let r = self.read(rhs, T1)?;
+                            let r = self.read_rhs(rhs, T1)?;
                             self.g = here;
                             if then_next && !else_next {
-                                self.cmp_branch(negate(cmp), l, r, else_label);
+                                self.cmp_branch_rhs(negate(cmp), l, r, else_label);
                             } else {
-                                self.cmp_branch(cmp, l, r, then_label);
+                                self.cmp_branch_rhs(cmp, l, r, then_label);
                                 if !else_next {
                                     onlineasm!(*self.asm(); jmp {else_label};);
                                 }
@@ -3615,7 +3799,7 @@ impl<'a> Emitter<'a> {
                 let v = self.read(*value, RV_TEMP)?;
                 let slot2 = self.masm.assembler().mem(SFP, 16);
                 onlineasm!(*self.asm(); storeq {slot2}, {v};);
-                onlineasm!(*self.asm(); move {RV}, {v};);
+                self.mov(RV, v);
                 onlineasm!(*self.asm(); move {AC}, 1;);
                 let ra = self.masm.assembler().mem(SFP, 0);
                 onlineasm!(*self.asm(); jmp {ra};);
@@ -3678,8 +3862,7 @@ impl<'a> Emitter<'a> {
                     callee,
                 } => {
                     self.masm.bind(label);
-                    let back = self.masm.assembler().mem(SFP, -callee);
-                    onlineasm!(*self.asm(); leap {SFP}, {back};);
+                    self.masm.lea_disp(SFP, SFP, -callee);
                     let ac_slot = self.masm.assembler().mem(regs::TC, sabi::TC_AC as i32);
                     onlineasm!(*self.asm(); storeq {ac_slot}, {AC};);
                     let id = exit.index() as i64;
@@ -3687,15 +3870,36 @@ impl<'a> Emitter<'a> {
                     let common = self.deopt_common;
                     onlineasm!(*self.asm(); jmp {common};);
                 }
+                Deferred::Taken {
+                    label,
+                    join,
+                    wrong,
+                    count,
+                    rest,
+                } => {
+                    self.masm.bind(label);
+                    let n = count as i64;
+                    if rest {
+                        onlineasm!(*self.asm(); bqb {AC}, {n}, {wrong};);
+                    } else {
+                        onlineasm!(*self.asm(); bqneq {AC}, {n}, {wrong};);
+                    }
+                    if count >= 1 {
+                        let first = self.masm.assembler().mem(SFP, 16);
+                        onlineasm!(*self.asm(); loadq {RV}, {first};);
+                    }
+                    onlineasm!(*self.asm(); jmp {join};);
+                }
                 Deferred::Alloc {
                     slow,
                     join,
                     obj,
                     size,
                     header,
+                    saves,
                 } => {
                     self.masm.bind(slow);
-                    self.alloc_slow(obj, size, header, join);
+                    self.alloc_slow(obj, size, header, join, &saves);
                 }
                 Deferred::BoxBigInt {
                     wide,
@@ -3705,6 +3909,7 @@ impl<'a> Emitter<'a> {
                     src,
                     bytes,
                     header,
+                    saves,
                 } => {
                     self.masm.bind(wide);
                     // The raw i64 is either in a pool register or in a spill
@@ -3761,7 +3966,7 @@ impl<'a> Emitter<'a> {
                     // The non-collecting allocator slow path, then back to the
                     // payload stores at `join`.
                     self.masm.bind(slow);
-                    self.alloc_slow(obj, AllocDeferred::Bytes(bytes), header, join);
+                    self.alloc_slow(obj, AllocDeferred::Bytes(bytes), header, join, &saves);
                 }
                 Deferred::BoxInt128Two {
                     wide,
@@ -3772,6 +3977,7 @@ impl<'a> Emitter<'a> {
                     hi,
                     bytes,
                     header,
+                    saves,
                 } => {
                     self.masm.bind(wide);
                     let l = match lo {
@@ -3839,7 +4045,7 @@ impl<'a> Emitter<'a> {
                     });
                     onlineasm!(*self.asm(); jmp {done};);
                     self.masm.bind(slow);
-                    self.alloc_slow(obj, AllocDeferred::Bytes(bytes), header, join);
+                    self.alloc_slow(obj, AllocDeferred::Bytes(bytes), header, join, &saves);
                 }
                 Deferred::Barrier {
                     slow,
@@ -3892,8 +4098,7 @@ impl<'a> Emitter<'a> {
                         move {T1}, {undefined};
                         storeq {rv_at}, {T1};
                     );
-                    let callee_fp = self.masm.assembler().mem(SFP, callee);
-                    onlineasm!(*self.asm(); leap {SFP}, {callee_fp};);
+                    self.masm.lea_disp(SFP, SFP, callee);
                     let (a0, _, _, _, _) = stubs::arg_regs5();
                     onlineasm!(*self.asm(); move {a0}, {regs::TC};);
                     let target = self.masm.declare_rust_fn(RuntimeExtern::OptYield);
@@ -3913,8 +4118,7 @@ impl<'a> Emitter<'a> {
                         loadp {T1}, {saved_sp};
                         storep {sp_at}, {T1};
                     );
-                    let back = self.masm.assembler().mem(SFP, -callee);
-                    onlineasm!(*self.asm(); leap {SFP}, {back};);
+                    self.masm.lea_disp(SFP, SFP, -callee);
                     for &(r, s) in &saves {
                         let mem = self.slot_mem(s);
                         onlineasm!(*self.asm(); loadq {r}, {mem};);
@@ -3943,24 +4147,76 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
+    fn slow_saves(&self, result: VReg, reads_after: &[VReg]) -> Result<SlowSaves, String> {
+        let late = super::regalloc::pos::late(self.g);
+        let post = super::regalloc::pos::post(self.g);
+        let early = self.use_pos();
+        let mut gprs: Vec<MReg> = Vec::new();
+        let mut fprs: Vec<MReg> = Vec::new();
+        for v in self.func.vregs.keys() {
+            if v == result {
+                continue;
+            }
+            let after = reads_after.contains(&v);
+            let at = if after && self.alloc.loc_at(v, early).is_some() {
+                self.alloc.loc_at(v, early)
+            } else if self.alloc.loc_at(v, post).is_some() {
+                self.alloc.loc_at(v, late)
+            } else {
+                None
+            };
+            let Some(Loc::Reg(p)) = at else {
+                continue;
+            };
+            if !self.regs.slow_clobbers.contains(&p) {
+                continue;
+            }
+            let reg = match self.func.class(v) {
+                RegClass::Gpr => self.gpr_of(p)?,
+                RegClass::Fpr => self.fpr_of(p)?,
+            };
+            let list = match self.func.class(v) {
+                RegClass::Gpr => &mut gprs,
+                RegClass::Fpr => &mut fprs,
+            };
+            if !list.contains(&reg) {
+                list.push(reg);
+            }
+        }
+        Ok(SlowSaves::Live { gprs, fprs })
+    }
+
     /// The allocation slow path. `operation.rs` spills what the helper
     /// clobbers, so this saves the GPRs it names and the FPRs around it.
-    fn alloc_slow(&mut self, obj: MReg, size: AllocDeferred, header: u64, join: Label) {
-        let fprs: Vec<MReg> = self
-            .regs
-            .slow_clobbers
-            .iter()
-            .filter(|p| p.0 >= arch::FPR_BASE)
-            .filter_map(|&p| arch::vreg(p))
-            .collect();
-        let mut live: Vec<MReg> = self
-            .regs
-            .slow_clobbers
-            .iter()
-            .filter(|p| p.0 < arch::FPR_BASE)
-            .filter_map(|&p| self.gpr_of(p).ok())
-            .filter(|&r| r != obj)
-            .collect();
+    fn alloc_slow(
+        &mut self,
+        obj: MReg,
+        size: AllocDeferred,
+        header: u64,
+        join: Label,
+        saves: &SlowSaves,
+    ) {
+        let (fprs, mut live): (Vec<MReg>, Vec<MReg>) = match saves {
+            SlowSaves::All => (
+                self.regs
+                    .slow_clobbers
+                    .iter()
+                    .filter(|p| p.0 >= arch::FPR_BASE)
+                    .filter_map(|&p| arch::vreg(p))
+                    .collect(),
+                self.regs
+                    .slow_clobbers
+                    .iter()
+                    .filter(|p| p.0 < arch::FPR_BASE)
+                    .filter_map(|&p| self.gpr_of(p).ok())
+                    .filter(|&r| r != obj)
+                    .collect(),
+            ),
+            SlowSaves::Live { gprs, fprs } => (
+                fprs.clone(),
+                gprs.iter().copied().filter(|&r| r != obj).collect(),
+            ),
+        };
         let bytes = match size {
             AllocDeferred::Bytes(bytes) => OpArg::Imm(bytes as i64),
             AllocDeferred::Words { count, base } => {
@@ -3995,11 +4251,6 @@ impl<'a> Emitter<'a> {
         onlineasm!(*self.asm(); jmp {join};);
     }
 
-    /// `make-vector` with a runtime size: guard the size, bump-allocate with
-    /// a word count, store the length and fill the data. The allocator's
-    /// slow path (a full LAB or a large object) is the deferred block
-    /// `alloc_slow` emits; the count stays in a fixed temporary that the slow
-    /// path saves around its call.
     fn alloc_vector_fill(
         &mut self,
         dst: VReg,
@@ -4008,14 +4259,10 @@ impl<'a> Emitter<'a> {
         exit: DeoptExit,
     ) -> Result<(), String> {
         let fail = self.exit_label(exit);
-        // The count lives in T3: `write` may hand a spilled destination T2,
-        // and the allocation must keep the count across both paths.
+
         let count = self.read(size, T0)?;
         onlineasm!(*self.asm(); move {T3}, {count};);
         if !self.stress_guard(fail) {
-            // A fixnum whose unsigned payload is below i32::MAX. A negative
-            // size sign-extends to a huge word and fails here, exactly as the
-            // baseline's unsigned compare sends it to the slow path.
             self.masm.branch_if_not_fixnum(T3, T0, fail);
             self.masm.unbox_int32(T3, T3);
             onlineasm!(*self.asm(); bqaeq {T3}, {i32::MAX as i64}, {fail};);
@@ -4040,17 +4287,16 @@ impl<'a> Emitter<'a> {
             obj,
             size: AllocDeferred::Words { count: T3, base },
             header,
+            saves: self.slow_saves(dst, &[fill])?,
         });
         // The length word, then the fill. The fill consumes the count.
         onlineasm!(*self.asm();
             move {T0}, {T3};
             storeq [{obj}], {T0};
         );
-        // `obj` is the temporary T2 when the destination is spilled, and the
-        // data pointer below reuses T2. Keep the object in T0 so `commit`
-        // stores the object itself, not the interior data pointer.
+
         if spilled {
-            onlineasm!(*self.asm(); move {T0}, {obj};);
+            self.mov(T0, obj);
         }
         let value = self.read(fill, T1)?;
         onlineasm!(*self.asm(); addp {T2}, {obj}, {sabi::VECTOR_DATA as i64};);
@@ -4067,7 +4313,6 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
-    /// The barrier slow path: `LogObject(obj)`, which returns to `join`.
     fn barrier_slow(&mut self, obj: MReg, preserve: &[MReg], join: Label) {
         let fprs: Vec<MReg> = self
             .regs
@@ -4130,12 +4375,6 @@ impl<'a> Emitter<'a> {
         onlineasm!(*self.asm(); addp sp, {bytes};);
     }
 
-    /// `deopt_common`: saves the frame's state to a save area on the native
-    /// stack, calls `capy_opt_deopt(th, exit, saved, owner)`, and resumes at
-    /// the address it returns. The layout is the one `SaveArea` reads: word 0
-    /// is `SFP`, word `1 + i` is the `i`-th pool GPR, the next `SAVE_TEMPS`
-    /// words are temporaries, and the pool FPRs follow. `owner` is the image's
-    /// owner word, which names the unit even after a recompile.
     fn deopt_common(&mut self) -> Result<(), String> {
         let label = self.deopt_common;
         self.masm.bind(label);
@@ -4226,9 +4465,6 @@ fn round16(n: i64) -> i64 {
 /// emitter needs no move.
 const RV_TEMP: MReg = T0;
 
-/// Sets `dst` to 0 or 1 from `a cmp b`. `unsigned` selects the low-limb
-/// comparison, which is unsigned because the high limbs already decided the
-/// sign; without it the comparison is signed, for the high limbs.
 fn wide_cmp_set(masm: &mut Masm, cmp: Cmp, unsigned: bool, dst: MReg, a: MReg, b: MReg) {
     match (cmp, unsigned) {
         (Cmp::Eq, _) => onlineasm!(*masm.assembler(); cqeq {dst}, {a}, {b};),

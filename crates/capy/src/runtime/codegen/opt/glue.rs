@@ -332,7 +332,7 @@ pub(crate) unsafe extern "C" fn capy_opt_prim_n(
                 ctx.state().exit_value.set(irritant);
                 OptReturn {
                     value: 0,
-                    status: kind.code() as u64,
+                    status: kind.status() as u64,
                 }
             }
         }
@@ -462,6 +462,10 @@ pub(crate) unsafe extern "C" fn capy_opt_length(_th: *const (), list: u64) -> Op
 /// barrier) is needed. An improper or circular `a` deopts, and baseline
 /// raises the error.
 ///
+/// The common short case validates and collects in one walk; a list longer
+/// than [`APPEND_SINGLE_PASS_CAP`] falls back to the validating walk plus a
+/// copy walk below, exactly as before.
+///
 /// # Safety
 ///
 /// `th` is the current mutator's context, called from Tier 2 code. It
@@ -473,10 +477,55 @@ pub(crate) unsafe extern "C" fn capy_opt_append(th: *const (), a: u64, b: u64) -
     if list.is_null() {
         return OptReturn::ok(b);
     }
+    const INLINE: usize = 32;
+    const APPEND_SINGLE_PASS_CAP: usize = 4096;
+
+    let mut small = [Value::null(); INLINE];
+    let mut big: Vec<Value<'_>> = Vec::new();
+    let mut cursor = list;
+    let mut len = 0usize;
+    let items: &[Value<'_>] = loop {
+        if !cursor.is_pair() {
+            if cursor.is_null() {
+                break if len <= INLINE {
+                    &small[..len]
+                } else {
+                    &big[..]
+                };
+            }
+            return OptReturn::DEOPT;
+        }
+        if len == APPEND_SINGLE_PASS_CAP {
+            return append_two_phase(ctx, list, tail);
+        }
+        let car = cursor.car();
+        cursor = cursor.cdr();
+        if len < INLINE {
+            small[len] = car;
+        } else {
+            if len == INLINE {
+                big.reserve(APPEND_SINGLE_PASS_CAP);
+                big.extend_from_slice(&small);
+            }
+            big.push(car);
+        }
+        len += 1;
+    };
+    let mut result = tail;
+    for &item in items.iter().rev() {
+        result = Value::cons(ctx, item, result);
+    }
+    OptReturn::ok(result.bits())
+}
+
+fn append_two_phase<'gc>(
+    ctx: MutationContext<'gc>,
+    list: Value<'gc>,
+    tail: Value<'gc>,
+) -> OptReturn {
     let Some(len) = proper_length(list) else {
         return OptReturn::DEOPT;
     };
-
     const INLINE: usize = 32;
     let mut small = [Value::null(); INLINE];
     let mut big: Vec<Value<'_>>;

@@ -62,19 +62,11 @@ pub(crate) struct PendingCell {
 /// The per-compile record of everything that is not yet machine code.
 #[derive(Default)]
 pub(crate) struct Emission {
-    /// Slow/taken blocks deferred to the end of the code, in template
-    /// order. [`emit_deferred`](Self::emit_deferred) binds each label and
-    /// emits its block.
     pub(crate) slows: Vec<(Label, Deferred)>,
     /// Values patched after load.
     pub(crate) relocs: Vec<Reloc>,
-    /// Lazy cells declared by edges, in declaration order. Link allocates
-    /// nothing more: it points each at its hit block and bakes its address
-    /// into the edge ([`Reloc::Cell`]).
     pub(crate) cells: Vec<PendingCell>,
-    /// Fallthrough proofs, checked at link: `(point, next)` where
-    /// `point` is bound where `next` fell through.
-    pub(crate) fallthrough_checks: Vec<(Label, Label)>,
+    pub(crate) fallthrough_checks: Vec<(usize, String, Label, Label)>,
     /// The patchable jumps of direct edges, by pending cell.
     direct_jumps: Vec<(usize, PatchHandle)>,
     /// Data embedded in the deferred blocks: `(start, bytes)`.
@@ -124,6 +116,22 @@ impl Emission {
     /// Record a value to patch after load.
     pub(crate) fn reloc(&mut self, reloc: Reloc) {
         self.relocs.push(reloc);
+    }
+
+    pub(crate) fn push_fallthrough_check(
+        &mut self,
+        pc: usize,
+        op: String,
+        point: Label,
+        next: Label,
+    ) {
+        if let Some(last) = self.fallthrough_checks.last_mut() {
+            if last.0 == pc {
+                *last = (pc, op, point, next);
+                return;
+            }
+        }
+        self.fallthrough_checks.push((pc, op, point, next));
     }
 
     /// Register `bytes` at `start` as data
@@ -205,26 +213,23 @@ impl Emission {
         resolve: Resolve<'_>,
     ) -> std::io::Result<Linked> {
         let off = |label: Label| image.finished.offset(label).expect("bound label") as usize;
-        // Every fallen-through `next` must sit exactly at the next label:
-        // anything emitted after it (a stale `next_may_elide` entry) drifts
-        // the points apart.
-        for &(point, next) in &self.fallthrough_checks {
-            let (point, next) = (off(point), off(next));
+
+        for (pc, op, point, next) in &self.fallthrough_checks {
+            let (point, next) = (off(*point), off(*next));
             if point != next {
                 return Err(std::io::Error::other(format!(
-                    "jit: fallthrough at {point:#x} does not reach its next label at {next:#x}"
+                    "jit: fallthrough at {point:#x} does not reach its next label at {next:#x} (pc={pc} op={op})"
                 )));
             }
         }
+
         let offsets: HashMap<usize, usize> = layout
             .labels
             .iter()
             .map(|(pc, label)| (*pc, off(*label)))
             .collect();
-        // Lazy cells: each hit block's image offset (based after load, with
-        // the rest).
+
         let hit_blocks: Vec<usize> = self.cells.iter().map(|pending| off(pending.hit)).collect();
-        // The direct jumps' words, by pending cell.
         let direct_ats: Vec<(usize, usize)> = self
             .direct_jumps
             .iter()
@@ -235,8 +240,8 @@ impl Emission {
                 )),
             })
             .collect::<std::io::Result<_>>()?;
-        // Relocations, as image offsets. Every target pc has a label
         let mut records = Vec::with_capacity(self.relocs.len());
+
         for reloc in &self.relocs {
             match *reloc {
                 Reloc::TableWord { table, index, pc } => records.push(reloc::Record {
@@ -253,6 +258,7 @@ impl Emission {
                 }),
             }
         }
+
         let import_slots: Vec<ImportSlot> = image
             .imports
             .iter()
@@ -266,15 +272,15 @@ impl Emission {
             .find(|slot| slot.key == ImportKey::Owner)
             .expect("an image reserves its owner word")
             .at;
-        // Cells exist before load and never move: their addresses resolve
-        // `Cell` imports directly.
+
         let cell_addrs: Vec<u64> = self
             .cells
             .iter()
             .map(|pending| pending.cell.addr().as_usize() as u64)
             .collect();
 
-        let mut data = Vec::with_capacity(self.data.len() + image.headers.len() + image.mask_blocks.len());
+        let mut data =
+            Vec::with_capacity(self.data.len() + image.headers.len() + image.mask_blocks.len());
         for &(start, len) in &self.data {
             data.push(DataRange {
                 offset: off(start),
@@ -320,17 +326,13 @@ impl Emission {
             });
         }
 
-        let mut loaded = image::load_with(
-            image,
-            |name| resolve_slow_path(name),
-            &|key| match *key {
+        let mut loaded =
+            image::load_with(image, |name| resolve_slow_path(name), &|key| match *key {
                 ImportKey::Cell(index) => Some(cell_addrs[index as usize]),
                 _ => resolve(key),
-            },
-        )?;
+            })?;
         let base = loaded.base();
-        // Lazy cells: point each at its hit block, then write every
-        // record, which bakes the cell addresses into the edges.
+
         let cells: Box<[ErasedCell]> = self
             .cells
             .into_iter()

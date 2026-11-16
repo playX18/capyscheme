@@ -51,6 +51,7 @@ use cranelift_entity::SecondaryMap;
 
 use super::PassOutcome;
 use super::forward::def_inst;
+use super::simplify::insert_before;
 use crate::runtime::codegen::opt::ir::func::{Block, Func, Value, ValueDef};
 use crate::runtime::codegen::opt::ir::inst::{Cmp, Constant, Edge, Inst, Op, Repr, Terminator};
 use crate::runtime::codegen::opt::ir::types::Type;
@@ -322,6 +323,19 @@ impl<'a> Analysis<'a> {
                 let b = self.interval_ctx(block, args[1], None, &mut memo);
                 cmp_truth(cmp, a, b)
             }
+            Op::EqBits => {
+                // Two values the domain knows are fixnums are `eq?` exactly
+                // when their payloads are equal.
+                if args
+                    .iter()
+                    .any(|&arg| self.func.value_type(arg) != Type::Any)
+                {
+                    return None;
+                }
+                let a = self.interval_ctx(block, args[0], None, &mut memo);
+                let b = self.interval_ctx(block, args[1], None, &mut memo);
+                cmp_truth(Cmp::Eq, a, b)
+            }
             Op::TestInt32 | Op::TestInt64 => {
                 let arg = args[0];
                 // A fixnum test on a value the domain already knows is a
@@ -469,6 +483,15 @@ impl<'a> Analysis<'a> {
                 }
                 state
             }
+            // The low word keeps the number when it fits `i32`; otherwise the
+            // result is anywhere in the type.
+            Op::Int64ToInt32 => match raw(memo, 0) {
+                State::Bottom => State::Bottom,
+                State::Range { lo, hi } if lo >= i32::MIN as i64 && hi <= i32::MAX as i64 => {
+                    State::Range { lo, hi }
+                }
+                _ => State::Top,
+            },
             Op::CheckBigIntFits64 => State::I64,
             Op::LoadRationalComponent { .. }
             | Op::LoadRationalComponentWide { .. }
@@ -652,9 +675,43 @@ impl<'a> Analysis<'a> {
                     insert_refinement(&mut out, self.func, arg, State::Bottom);
                 }
             }
+            Op::EqBits => {
+                // `eq?` against a fixnum constant: the taken arm holds the
+                // constant itself, so the other operand is that fixnum.
+                let (value, constant) = if let Some(n) = fixnum_constant(self.func, args[1]) {
+                    (args[0], n)
+                } else if let Some(n) = fixnum_constant(self.func, args[0]) {
+                    (args[1], n)
+                } else {
+                    return out;
+                };
+                if self.func.value_type(value) != Type::Any {
+                    return out;
+                }
+                let current = self.interval_ctx(pred, value, None, &mut memo);
+                if positive {
+                    let state = current.intersect(State::range(constant, constant));
+                    insert_refinement(&mut out, self.func, value, state);
+                } else {
+                    // A known fixnum that differs from the constant loses
+                    // that one value. An unknown value says nothing.
+                    if matches!(current, State::Range { .. }) {
+                        insert_refinement(&mut out, self.func, value, exclude(current, constant));
+                    }
+                }
+            }
             _ => {}
         }
         out
+    }
+}
+
+/// The payload of a tagged fixnum constant.
+fn fixnum_constant(func: &Func, value: Value) -> Option<i64> {
+    let inst = def_inst(func, value)?;
+    match func.insts[inst].op {
+        Op::Const(Constant::Bits(bits)) => SchemeValue::from_raw(bits).int32().map(i64::from),
+        _ => None,
     }
 }
 
@@ -1029,12 +1086,33 @@ fn cannot_overflow(op: Op, a: (i64, i64), b: (i64, i64)) -> bool {
     lo >= i64::MIN as i128 && hi <= i64::MAX as i128
 }
 
+fn wide_uses(func: &Func) -> HashSet<Value> {
+    let mut wide = HashSet::new();
+    for (_, block) in func.blocks.iter() {
+        for &inst in &block.insts {
+            if matches!(
+                func.insts[inst].op,
+                Op::Unbox(Repr::Int64) | Op::CheckInt64 | Op::CheckBigIntFits64
+            ) {
+                wide.extend(func.args(inst).iter().copied());
+            }
+        }
+        if let Some(term) = &block.term {
+            for edge in term.edges() {
+                wide.extend(func.edge_args(&edge).iter().copied());
+            }
+        }
+    }
+    wide
+}
+
 pub(super) fn run(func: &mut Func) -> PassOutcome {
     let analysis = analyze(func);
     let mut guards: Vec<(Inst, Repr, usize)> = Vec::new();
     let mut totals: Vec<(Inst, Op)> = Vec::new();
     let mut bools: Vec<(Inst, bool)> = Vec::new();
     let mut jumps: Vec<(Block, Edge)> = Vec::new();
+    let mut narrows: Vec<(Block, Inst)> = Vec::new();
     let mut work = 0;
 
     for &block in analysis.rpo() {
@@ -1091,6 +1169,21 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
                         bools.push((inst, value));
                     }
                 }
+                Op::Box(Repr::Int64) => {
+                    let Some(&source) = args.first() else {
+                        continue;
+                    };
+
+                    let forwarded = def_inst(func, source).is_some_and(|def| {
+                        matches!(
+                            func.insts[def].op,
+                            Op::CheckInt64 | Op::Unbox(Repr::Int64) | Op::Const(_)
+                        )
+                    });
+                    if !forwarded && analysis.fits_i32(block, source) {
+                        narrows.push((block, inst));
+                    }
+                }
                 _ => {}
             }
         }
@@ -1142,6 +1235,26 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
     for (block, edge) in jumps {
         func.set_terminator(block, Terminator::Jump(edge));
         changed = true;
+    }
+    if !narrows.is_empty() {
+        let wide = wide_uses(func);
+        for (block, inst) in narrows {
+            let Some(result) = func.insts[inst].result else {
+                continue;
+            };
+            if wide.contains(&result) {
+                continue;
+            }
+            let source = func.args(inst)[0];
+            // The proof says the value fits `i32`, so the truncation keeps
+            // it and the tagging cannot allocate a bignum or deopt.
+            let narrow = insert_before(func, block, inst, Op::Int64ToInt32, &[source], Type::Int32);
+            let data = &mut func.insts[inst];
+            data.op = Op::Box(Repr::Int32);
+            data.args = cranelift_entity::EntityList::from_slice(&[narrow], &mut func.pool);
+            data.frame = None;
+            changed = true;
+        }
     }
 
     PassOutcome {

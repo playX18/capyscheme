@@ -10,17 +10,15 @@ use onlineasm::Label;
 use super::super::addr::BytecodePc;
 use super::super::emission::{Emission, Layout, Linked};
 use super::super::image::LoadedImage;
+use super::super::import::{BlockAddrs, ImportKey, RuntimeSym};
 use super::super::lazy::ErasedCell;
 use super::super::lazy::edge::encode_jump;
-use super::super::import::{BlockAddrs, ImportKey, RuntimeSym};
 use super::super::masm::{HeaderTarget, Livemask, Masm, SymbolKind, TOPLINK_TO_IMAGE_START};
 use super::super::opt::OptimizingCompiler;
 use super::super::template::emit;
 use super::super::template_image::{declare_slow_paths, ensure_loaded};
 use super::super::unit::{Annotation, CodeUnit, Listing, OptInfo, PublishedCode, Tier};
-use super::config::{
-    Bisect, COMPILES, OPT_BUILD_FAILURES, OPT_INSTALLS, bisect,
-};
+use super::config::{Bisect, COMPILES, OPT_BUILD_FAILURES, OPT_INSTALLS, bisect};
 use super::context::{DecodedInstruction, JitTemplateContext, ProcTargets, ProfileSpec};
 use super::entry::emit_optimized_redirect;
 use super::registry::{DataRange, InstructionRange, NEXT_ID, ResumeTable};
@@ -265,8 +263,10 @@ fn install_optimized<'gc>(
         constants,
         dependencies,
         class_dependencies,
+        generic_dependencies,
     } = built;
     let opt: OptInfo = opt.ok_or_else(|| io::Error::other("an optimized build has no OptInfo"))?;
+    let cold_generic = opt.generic_cold;
     if code_block.machine.load(Acquire).is_none() {
         return Err(io::Error::other("no baseline unit to fall back to"));
     }
@@ -321,6 +321,13 @@ fn install_optimized<'gc>(
     for dependency in &dependencies {
         let (variable, folded) = (dependency.variable, dependency.value);
         let variable = variable.downcast::<crate::runtime::variable::Variable>();
+
+        if variable.get() != folded {
+            variable.mark_hot();
+            return Err(io::Error::other(
+                "a global that the unit folded changed during the compile",
+            ));
+        }
         let set = variable.watch_set(mutator);
         let registered = crate::runtime::watchpoint::WatchpointSet::add(
             set,
@@ -329,6 +336,7 @@ fn install_optimized<'gc>(
         );
         std::sync::atomic::fence(AcqRel);
         if !registered || variable.get() != folded {
+            variable.mark_hot();
             return Err(io::Error::other(
                 "a global that the unit folded changed during the compile",
             ));
@@ -347,14 +355,26 @@ fn install_optimized<'gc>(
         let id = crate::heap::object::ClassId::new(dependency.id)
             .ok_or_else(|| io::Error::other("a class dependency names no class"))?;
         let current = crate::runtime::objectmodel::class::class_table(mutator).lookup(id);
+
+        let stamp_now = |class: &crate::runtime::objectmodel::class::ClassDescriptor| {
+            if dependency.subtree {
+                class.subclass_stamp()
+            } else {
+                class.layout_stamp()
+            }
+        };
         if current.map(|current| current.as_ptr()) != Some(class.as_ptr())
-            || class.layout_stamp() != dependency.stamp
+            || stamp_now(&class) != dependency.stamp
         {
             return Err(io::Error::other(
                 "a class that the unit specialized changed during the compile",
             ));
         }
-        let set = class.redefinition_wp();
+        let set = if dependency.subtree {
+            class.subclass_wp()
+        } else {
+            class.redefinition_wp()
+        };
 
         let registered = crate::runtime::watchpoint::WatchpointSet::add(
             set,
@@ -362,9 +382,33 @@ fn install_optimized<'gc>(
             crate::runtime::watchpoint::Dependent::code(code_block, owner),
         );
         std::sync::atomic::fence(AcqRel);
-        if !registered || class.layout_stamp() != dependency.stamp {
+        if !registered || stamp_now(&class) != dependency.stamp {
             return Err(io::Error::other(
                 "a class that the unit specialized was redefined during the compile",
+            ));
+        }
+    }
+
+    // Register generic dependencies.
+    for dependency in &generic_dependencies {
+        let Some(generic) = crate::runtime::objectmodel::class::generic_descriptor_from_value(
+            mutator,
+            dependency.generic,
+        ) else {
+            return Err(io::Error::other(
+                "a generic dependency is not a generic procedure",
+            ));
+        };
+        let set = generic.change_wp();
+        let registered = crate::runtime::watchpoint::WatchpointSet::add(
+            set,
+            mutator,
+            crate::runtime::watchpoint::Dependent::code(code_block, owner),
+        );
+        std::sync::atomic::fence(AcqRel);
+        if !registered || generic.epoch() != dependency.epoch || dependency.epoch & 1 == 1 {
+            return Err(io::Error::other(
+                "a generic the unit devirtualized changed during the compile",
             ));
         }
     }
@@ -415,7 +459,23 @@ fn install_optimized<'gc>(
         unit.entry,
         unit.image.code_size()
     );
+    if cold_generic {
+        retire_cold_unit(code_block, owner);
+    }
     Ok(())
+}
+
+/// Max cold-cache retirements per block.
+pub(crate) const MAX_COLD_RETRIES: u32 = 6;
+
+/// Retire a cold-generic unit.
+fn retire_cold_unit<'gc>(code_block: Gc<'gc, CodeBlock<'gc>>, owner: Gc<'gc, CodeImage<'gc>>) {
+    let retries = code_block.cold_retries.load(Relaxed);
+    if retries >= MAX_COLD_RETRIES {
+        return;
+    }
+    code_block.cold_retries.store(retries + 1, Relaxed);
+    let _ = invalidate_optimized(code_block, owner);
 }
 
 /// Invalidate `code_block`'s optimized code, whose assumption broke.
@@ -500,6 +560,8 @@ pub(crate) struct BuiltUnit<'gc> {
     pub(crate) dependencies: Vec<super::super::unit::Dependency<'gc>>,
     /// Class layout assumptions the install registers. Empty for baseline.
     pub(crate) class_dependencies: Vec<super::super::unit::ClassDependency<'gc>>,
+    /// Generic dependencies.
+    pub(crate) generic_dependencies: Vec<super::super::unit::GenericDependency<'gc>>,
 }
 
 pub(crate) fn attach<'gc>(
@@ -527,9 +589,13 @@ pub(crate) fn attach<'gc>(
         constants,
         dependencies,
         class_dependencies,
+        generic_dependencies,
     } = built;
     debug_assert!(
-        constants.is_empty() && dependencies.is_empty() && class_dependencies.is_empty(),
+        constants.is_empty()
+            && dependencies.is_empty()
+            && class_dependencies.is_empty()
+            && generic_dependencies.is_empty(),
         "baseline units carry no constant table or watchpoint assumptions"
     );
     let block_addrs = BlockAddrs {
@@ -827,9 +893,7 @@ fn build_image<'gc>(
                     };
                     let target = match mv {
                         Some(pc) => HeaderTarget::Label(context.label_at(pc)),
-                        None if values_error => {
-                            HeaderTarget::Runtime(RuntimeSym::ValuesError)
-                        }
+                        None if values_error => HeaderTarget::Runtime(RuntimeSym::ValuesError),
                         None => HeaderTarget::Label(label),
                     };
                     masm.emit_rp_header_at(
@@ -968,5 +1032,6 @@ fn build_image<'gc>(
         constants: Vec::new(),
         dependencies: Vec::new(),
         class_dependencies: Vec::new(),
+        generic_dependencies: Vec::new(),
     }))
 }

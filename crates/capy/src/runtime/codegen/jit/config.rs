@@ -17,14 +17,17 @@ pub(crate) enum RegAllocKind {
 impl RegAllocKind {
     pub(crate) fn name(self) -> &'static str {
         match self {
-            RegAllocKind::LinearScan => "linear",
+            RegAllocKind::LinearScan => "lsra",
             RegAllocKind::Greedy => "greedy",
         }
     }
 
+    /// The kind named by `name`, case-insensitively. Linear scan answers to
+    /// `lsra` (what [`Self::name`] prints and the flag help says) and to
+    /// `linear`.
     fn parse(name: &str) -> Option<Self> {
-        Some(match name {
-            "lsra" => RegAllocKind::LinearScan,
+        Some(match name.to_ascii_lowercase().as_str() {
+            "lsra" | "linear" => RegAllocKind::LinearScan,
             "greedy" => RegAllocKind::Greedy,
             _ => return None,
         })
@@ -132,7 +135,7 @@ pub(crate) struct OptConfig {
 
 /// Parses `CAPY_OPT_REGALLOC` into the allocator list. Unknown or duplicate
 /// names are dropped; the first known name wins, and an empty list means the
-/// default linear scan.
+/// default, greedy.
 fn parse_regalloc(spec: &str) -> Vec<RegAllocKind> {
     let mut out: Vec<RegAllocKind> = Vec::new();
     for name in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
@@ -146,7 +149,7 @@ fn parse_regalloc(spec: &str) -> Vec<RegAllocKind> {
         }
     }
     if out.is_empty() {
-        out.push(RegAllocKind::LinearScan);
+        out.push(RegAllocKind::Greedy);
     }
     out
 }
@@ -178,7 +181,7 @@ impl OptConfig {
             spec_hoist: flags::opt_spec_hoist(),
             predicate: flags::opt_predicate(),
             layout: flags::opt_layout(),
-            regallocs: parse_regalloc(flags::opt_regalloc().unwrap_or("linear")),
+            regallocs: parse_regalloc(flags::opt_regalloc().unwrap_or("greedy")),
             evict: flags::opt_evict(),
             verify: flags::opt_verify() || cfg!(debug_assertions),
             dump,

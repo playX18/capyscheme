@@ -50,8 +50,8 @@
 //!   initialization store are still removed (they cannot fail).
 //! - **Tuples and instances**: `AllocTuple`/`AllocInstance` are the allocation
 //!   shapes the records/classes milestone reuses. Tuple fields behave like
-//!   vector elements with a static index; an instance has no static slot
-//!   access op yet, so an `AllocInstance` always stays on the heap.
+//!   vector elements with a static index. An instance has no static slot
+//!   access op yet, so a slot load/store keeps it on the heap.
 //!
 //! # Identity and mutation
 //!
@@ -71,7 +71,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cranelift_entity::{EntityList, SecondaryMap};
+use cranelift_entity::{EntityList, EntityRef, SecondaryMap};
 
 use super::simplify::edges_mut;
 
@@ -79,10 +79,44 @@ use super::{PassOutcome, Subst, replace_uses};
 use crate::runtime::codegen::opt::ir::frame_state::FrameState;
 use crate::runtime::codegen::opt::ir::func::{Block, DomTree, Func, Value, ValueDef};
 use crate::runtime::codegen::opt::ir::inst::{
-    Constant, Inst, MemoryRegion, Op, RematKind, Terminator,
+    Constant, Inst, MemoryRegion, Op, PrimRef, RematKind, Terminator,
 };
 use crate::runtime::codegen::opt::ir::types::{ClassRef, CodeRef, Type};
 use crate::runtime::objectmodel::Value as SchemeValue;
+use crate::runtime::prims::def::Primitive;
+
+fn is_eq_prim(prim: PrimRef) -> bool {
+    prim.index() as u16 == Primitive::IsEq.id()
+}
+
+fn eq_root(func: &Func, value: Value) -> Option<Inst> {
+    object_of(func, value)
+}
+
+fn const_bits(func: &Func, value: Value) -> Option<u64> {
+    match func.value_def(value) {
+        ValueDef::Inst(inst) => match func.insts[inst].op {
+            Op::Const(Constant::Bits(bits)) => Some(bits),
+            _ => None,
+        },
+        ValueDef::Param { .. } => None,
+    }
+}
+
+fn eq_foldable(func: &Func, args: &[Value]) -> bool {
+    if args.len() != 2 {
+        return false;
+    }
+    let rooted = args
+        .iter()
+        .filter(|&&arg| eq_root(func, arg).is_some())
+        .count();
+    let immediates = args
+        .iter()
+        .filter(|&&arg| const_bits(func, arg).is_some())
+        .count();
+    rooted == 2 || (rooted == 1 && immediates == 1)
+}
 
 /// The allocation shape of a candidate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -184,13 +218,19 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
             let Some(value) = func.insts[inst].result else {
                 continue;
             };
+
+            let all = func.args(inst).to_vec();
+            let fields = match shape {
+                Shape::Instance { .. } => all[3..].to_vec(),
+                _ => all,
+            };
             candidates.push(Candidate {
                 alloc: inst,
                 block,
                 value,
                 shape,
                 kind,
-                fields: func.args(inst).to_vec(),
+                fields,
                 frame_named: false,
                 mutated: false,
                 unsupported: false,
@@ -394,7 +434,7 @@ fn shape_and_kind(func: &Func, inst: Inst) -> Option<(Shape, RematKind)> {
         Op::AllocEnv => Some((Shape::Env { slots: args }, RematKind::Env { slots: args })),
         Op::AllocVector => Some((Shape::Vector { len: args }, RematKind::Vector { len: args })),
         Op::AllocTuple => Some((Shape::Tuple { len: args }, RematKind::Tuple { len: args })),
-        Op::AllocInstance { class, slots } if slots == args => Some((
+        Op::AllocInstance { class, slots } if slots + 3 == args => Some((
             Shape::Instance { class, slots },
             RematKind::Instance { class, slots },
         )),
@@ -674,6 +714,7 @@ fn analyze_uses(
                         | Op::TestHeap
                         | Op::TestCode(_)
                         | Op::EqBits => {}
+                        Op::CallPrim { prim, .. } if is_eq_prim(prim) => {}
                         // A call observes the object itself, not just its
                         // fields. The allocation must stay on the heap: a
                         // marker (or a removed allocation) has no runtime
@@ -707,6 +748,7 @@ fn analyze_uses(
                         | Op::AllocTuple
                         | Op::AllocInstance { .. } => candidate.parents.push(inst),
                         Op::EqBits => {}
+                        Op::CallPrim { prim, .. } if is_eq_prim(prim) => {}
                         _ => unsupported(candidate, Escape::ArgEscape),
                     },
                 }
@@ -1243,6 +1285,8 @@ fn plan_rewrite(
                         | Op::TestHeap
                         | Op::TestCode(_)
                         | Op::EqBits => {}
+                        Op::CallPrim { prim, .. }
+                            if is_eq_prim(prim) && eq_foldable(func, &args) => {}
                         // A call observes the object itself; a candidate with
                         // such a use is never rewritten (analyze_uses rejects
                         // it), so this is defensive.
@@ -1254,6 +1298,9 @@ fn plan_rewrite(
                         // into another object: such a use made it a field of
                         // an allocation, which keeps it on the heap.
                         Op::EqBits => {}
+                        // Same fold guarantee as above, for the later operand.
+                        Op::CallPrim { prim, .. }
+                            if is_eq_prim(prim) && eq_foldable(func, &args) => {}
                         _ => ok = false,
                     },
                 }
@@ -1303,6 +1350,36 @@ fn fold_reads(
                         _ => continue,
                     };
                     let value = fold_bool(func, block, inst, truth);
+                    subst.add(result, value);
+                    dead.insert(inst);
+                }
+                Op::CallPrim { prim, .. } if is_eq_prim(prim) => {
+                    let [a, b] = resolved.as_slice() else {
+                        continue;
+                    };
+                    let truth = match (eq_root(func, *a), eq_root(func, *b)) {
+                        (Some(ia), Some(ib)) => ia == ib,
+                        (Some(_), None) if const_bits(func, *b).is_some() => false,
+                        (None, Some(_)) if const_bits(func, *a).is_some() => false,
+                        _ => continue,
+                    };
+                    let result = match data.result {
+                        Some(result) if !subst.contains(result) => result,
+                        _ => continue,
+                    };
+                    let bits = if truth {
+                        SchemeValue::VALUE_TRUE as u64
+                    } else {
+                        SchemeValue::VALUE_FALSE as u64
+                    };
+                    let value = insert_before(
+                        func,
+                        block,
+                        inst,
+                        Op::Const(Constant::Bits(bits)),
+                        &[],
+                        Type::Any,
+                    );
                     subst.add(result, value);
                     dead.insert(inst);
                 }

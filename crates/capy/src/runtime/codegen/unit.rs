@@ -158,6 +158,15 @@ pub(crate) struct ClassDependency<'gc> {
     pub(crate) class: crate::runtime::objectmodel::Value<'gc>,
     pub(crate) id: u32,
     pub(crate) stamp: u32,
+    /// Subtree flag.
+    pub(crate) subtree: bool,
+}
+
+/// Generic dependency.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GenericDependency<'gc> {
+    pub(crate) generic: crate::runtime::objectmodel::Value<'gc>,
+    pub(crate) epoch: u32,
 }
 
 pub(crate) struct OptInfo {
@@ -176,6 +185,8 @@ pub(crate) struct OptInfo {
     /// The reference slot of each `Func::codes` entry.
     pub(crate) code_slots: Vec<u32>,
     pub(crate) invalid: Box<AtomicU32>,
+    /// Cold generic flag.
+    pub(crate) generic_cold: bool,
     pub(crate) entry_jump: CodeOffset,
     pub(crate) reheal: CodeOffset,
 }

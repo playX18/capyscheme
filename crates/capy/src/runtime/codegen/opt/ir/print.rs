@@ -1,8 +1,4 @@
 //! The textual form of IR, for `CAPY_OPT_DUMP`.
-//!
-//! The format is one block per paragraph, with instructions indented under
-//! their block. Frame states are listed after the blocks and named where
-//! they are used.
 
 use std::fmt::{self, Display, Formatter, Write};
 
@@ -259,7 +255,11 @@ impl Display for Func<'_> {
                 write!(f, " parent={parent}")?;
             }
             if let Some(returned) = data.returned {
-                write!(f, " returned(base={} count={:?})", returned.base, returned.count)?;
+                write!(
+                    f,
+                    " returned(base={} count={:?})",
+                    returned.base, returned.count
+                )?;
             }
             writeln!(f)?;
         }

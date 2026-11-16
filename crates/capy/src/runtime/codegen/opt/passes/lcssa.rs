@@ -253,6 +253,16 @@ impl Updater {
                     let def = self.read(func, pred, value);
                     add_edge_arg(func, pred, block, def);
                 }
+
+                let mut dead: Vec<Block> = Vec::new();
+                for &pred in &self.preds[block] {
+                    if !self.reach[pred] && !dead.contains(&pred) {
+                        dead.push(pred);
+                    }
+                }
+                for pred in dead {
+                    add_edge_arg(func, pred, block, value);
+                }
                 param
             }
         }

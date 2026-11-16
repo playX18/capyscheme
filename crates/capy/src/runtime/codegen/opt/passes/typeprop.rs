@@ -10,7 +10,7 @@
 //!   operand is the result, which has the same type);
 //! - a dominating branch on `TestInt32` proved the operand is a fixnum. Then
 //!   `CheckInt32` becomes a pure `Unbox`, with no frame.
-//!
+
 use std::collections::{HashMap, HashSet};
 
 use cranelift_entity::{EntityList, SecondaryMap};
@@ -18,7 +18,7 @@ use cranelift_entity::{EntityList, SecondaryMap};
 use super::forward::{IndexKey, index_key, object};
 use super::{PassOutcome, Subst, replace_uses};
 use crate::runtime::codegen::opt::ir::func::{Block, Func, Value, ValueDef};
-use crate::runtime::codegen::opt::ir::inst::{Edge, Inst, Op, Repr, Terminator};
+use crate::runtime::codegen::opt::ir::inst::{Constant, Edge, Inst, Op, Repr, Terminator};
 use crate::runtime::codegen::opt::ir::types::{ClassRef, CodeRef, Type};
 
 /// A fact a dominating branch's taken arm proves about one operand.
@@ -63,7 +63,8 @@ struct Scope {
     code_known: HashMap<Value, CodeRef>,
     /// Guards removed from their blocks.
     dead: HashSet<Inst>,
-    /// Guards turned into `Unbox`.
+    /// Guards turned into `Unbox` or `Int64ToInt32`, and tests turned into
+    /// constants.
     unboxed: usize,
 }
 
@@ -164,7 +165,13 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
                 }
                 let insts = func.blocks[block].insts.clone();
                 for inst in insts {
-                    process(func, &mut scope, inst, &mut keys_added[block]);
+                    process(
+                        func,
+                        &mut scope,
+                        inst,
+                        &mut keys_added[block],
+                        &mut fact_added[block],
+                    );
                 }
                 stack.push(Visit::Exit(block));
                 for &child in &children[block] {
@@ -207,7 +214,13 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
 
 /// Handles one instruction of the current block, recording its key when it
 /// is a guard that stays.
-fn process(func: &mut Func, scope: &mut Scope, inst: Inst, added: &mut Vec<Key>) {
+fn process(
+    func: &mut Func,
+    scope: &mut Scope,
+    inst: Inst,
+    added: &mut Vec<Key>,
+    learned: &mut Vec<Taken>,
+) {
     let op = func.insts[inst].op;
     let Some(result) = func.insts[inst].result else {
         return;
@@ -218,45 +231,95 @@ fn process(func: &mut Func, scope: &mut Scope, inst: Inst, added: &mut Vec<Key>)
         .map(|&v| scope.subst.resolve(v))
         .collect();
     match op {
-        Op::CheckInt32 | Op::CheckInt64 | Op::CheckDouble => {
+        Op::CheckInt32
+        | Op::CheckInt64
+        | Op::CheckDouble
+        | Op::Unbox(Repr::Int32)
+        | Op::Unbox(Repr::Int64)
+        | Op::Unbox(Repr::Double) => {
             let source = args[0];
-            // Facts are keyed by the canonical value (a class-check alias
-            // names the same object); the replacement keeps `source`'s type.
-            let canonical = object(func, &scope.subst, source);
-            let raw_op = match op {
-                Op::CheckInt32 => Op::Box(Repr::Int32),
-                Op::CheckInt64 => Op::Box(Repr::Int64),
-                _ => Op::Box(Repr::Double),
+            let (repr, is_check) = match op {
+                Op::CheckInt32 => (Repr::Int32, true),
+                Op::CheckInt64 => (Repr::Int64, true),
+                Op::CheckDouble => (Repr::Double, true),
+                Op::Unbox(repr) => (repr, false),
+                _ => return,
             };
+
+            if !is_check && func.value_type(source) != Type::Any {
+                return;
+            }
+
+            let canonical = object(func, &scope.subst, source);
             // `Box(Int64)` is a bignum outside the fixnum range, which
             // `CheckInt64` must reject, so it cannot be forwarded as is.
-            if op != Op::CheckInt64 {
-                if let Some(raw) = boxed_from(func, scope, source, raw_op) {
+            if repr != Repr::Int64 {
+                if let Some(raw) = boxed_from(func, scope, source, Op::Box(repr)) {
                     return remove(scope, inst, result, raw);
                 }
             }
-            let key = (op, canonical, None);
+            // A check and an unbox of one representation share a key.
+            let key = (Op::Unbox(repr), canonical, None);
             if let Some(&prev) = scope.avail.get(&key) {
                 return remove(scope, inst, result, prev);
             }
-            if matches!(op, Op::CheckInt32 | Op::CheckInt64)
-                && scope.int32_known.contains(&canonical)
-            {
-                // A branch on a fixnum test already proved the tag, so only
-                // the untag remains. Both checks test the same fixnum tag.
+            let fixnum = matches!(repr, Repr::Int32 | Repr::Int64);
+            if repr == Repr::Int32 {
+                let wide = (Op::Unbox(Repr::Int64), canonical, None);
+
+                if let Some(&wide) = scope.avail.get(&wide) {
+                    let data = &mut func.insts[inst];
+                    data.op = Op::Int64ToInt32;
+                    data.args = EntityList::from_slice(&[wide], &mut func.pool);
+                    data.frame = None;
+                    scope.unboxed += 1;
+                    return record(scope, key, result, added);
+                }
+            }
+
+            if is_check && fixnum && scope.int32_known.contains(&canonical) {
                 let data = &mut func.insts[inst];
-                data.op = match op {
-                    Op::CheckInt32 => Op::Unbox(Repr::Int32),
-                    _ => Op::Unbox(Repr::Int64),
-                };
+                data.op = Op::Unbox(repr);
                 data.frame = None;
                 scope.unboxed += 1;
             }
+
+            if fixnum && scope.int32_known.insert(canonical) {
+                learned.push(Taken {
+                    value: canonical,
+                    fact: Fact::Fixnum,
+                });
+            }
             record(scope, key, result, added);
         }
-        // `Box(Int64)` yields a fixnum, or a bignum when the value leaves the
-        // fixnum range. Either way it fits 64 bits, and the check returns the
-        // same number, so it cannot fail and its result is the raw value.
+        Op::TestInt32 | Op::TestInt64 => {
+            let canonical = object(func, &scope.subst, args[0]);
+            let proven = scope.int32_known.contains(&canonical)
+                || [Repr::Int32, Repr::Int64].iter().any(|&repr| {
+                    scope
+                        .avail
+                        .contains_key(&(Op::Unbox(repr), canonical, None))
+                });
+            if proven {
+                fold_true(func, scope, inst);
+            }
+        }
+        Op::TestPair | Op::TestClass(_) => {
+            let class = match op {
+                Op::TestClass(class) => class,
+                _ => ClassRef::PAIR,
+            };
+            let canonical = object(func, &scope.subst, args[0]);
+            let proven = scope.class_known.get(&canonical) == Some(&class)
+                || scope
+                    .avail
+                    .contains_key(&(Op::CheckClass(class), canonical, None))
+                || static_fact(func, args[0]) == Some(Fact::Class(class));
+            if proven {
+                fold_true(func, scope, inst);
+            }
+        }
+
         Op::CheckBigIntFits64 => {
             if let Some(raw) = boxed_from(func, scope, args[0], Op::Box(Repr::Int64)) {
                 remove(scope, inst, result, raw);
@@ -543,6 +606,14 @@ fn boxed_from(func: &Func, scope: &Scope, value: Value, box_op: Op) -> Option<Va
         return None;
     }
     Some(scope.subst.resolve(func.args(def)[0]))
+}
+
+fn fold_true(func: &mut Func, scope: &mut Scope, inst: Inst) {
+    let data = &mut func.insts[inst];
+    data.op = Op::Const(Constant::Bits(1));
+    data.args = EntityList::new();
+    data.frame = None;
+    scope.unboxed += 1;
 }
 
 fn remove(scope: &mut Scope, inst: Inst, result: Value, replacement: Value) {

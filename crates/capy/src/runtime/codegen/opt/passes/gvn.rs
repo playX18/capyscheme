@@ -64,6 +64,10 @@ fn numbered(op: Op) -> bool {
             | Op::Box(Repr::Int32)
             | Op::Box(Repr::Double)
             | Op::Unbox(Repr::Int32)
+            | Op::Unbox(Repr::Int64)
+            | Op::Unbox(Repr::Int128)
+            | Op::Int64ToInt32
+            | Op::Int32ToDouble
             // `Box(Repr::Int64)` allocates a one-limb bignum for a value
             // wider than i32, so it stays out of value numbering. The total
             // i64 ops are pure and can be numbered.
@@ -374,9 +378,7 @@ mod tests {
     use crate::runtime::codegen::opt::ir::inst::Terminator;
     use crate::runtime::codegen::opt::ir::types::Type;
     use crate::runtime::codegen::opt::ir::verify::verify;
-    use crate::runtime::codegen::opt::passes::testutil::{
-        block, branch, const_any, push, ret,
-    };
+    use crate::runtime::codegen::opt::passes::testutil::{block, branch, const_any, push, ret};
     use crate::runtime::objectmodel::Value as SchemeValue;
 
     /// The arm a block's terminator was folded to, when it became a jump.
@@ -458,6 +460,61 @@ mod tests {
             assert_eq!(jump_target(&func, inner), Some(no));
             verify(&func).expect("the folded function is valid");
         }
+    }
+
+    #[test]
+    fn duplicate_raw_int_conversions_number_together() {
+        use crate::runtime::codegen::opt::ir::inst::Repr;
+        use crate::runtime::codegen::opt::passes::testutil::const_i32;
+        // Two identical pure raw-int conversions of the same operand must
+        // collapse to one: the second is dead and its uses forward.
+        let mut func: Func<'static> = Func::new();
+        let entry = func.entry;
+        let tagged = const_any(&mut func, entry, SchemeValue::from_i32(7).bits());
+        let raw = const_i32(&mut func, entry, 7);
+        let a = push(
+            &mut func,
+            entry,
+            Op::Unbox(Repr::Int64),
+            &[tagged],
+            Type::Int64,
+        );
+        let b = push(
+            &mut func,
+            entry,
+            Op::Unbox(Repr::Int64),
+            &[tagged],
+            Type::Int64,
+        );
+        let c = push(&mut func, entry, Op::Int64ToInt32, &[a], Type::Int32);
+        let d = push(&mut func, entry, Op::Int64ToInt32, &[a], Type::Int32);
+        let e = push(&mut func, entry, Op::Int32ToDouble, &[raw], Type::Double);
+        let f = push(&mut func, entry, Op::Int32ToDouble, &[raw], Type::Double);
+        ret(&mut func, entry, tagged);
+        // Keep the first of each pair live through a frame-less use so DCE
+        // cannot hide a missed numbering.
+        let _ = (b, c, d, e, f);
+        verify(&func).expect("the test function is valid");
+        assert!(run(&mut func).changed);
+        let unboxes = func.blocks[entry]
+            .insts
+            .iter()
+            .filter(|inst| matches!(func.insts[**inst].op, Op::Unbox(Repr::Int64)))
+            .count();
+        let truncs = func.blocks[entry]
+            .insts
+            .iter()
+            .filter(|inst| matches!(func.insts[**inst].op, Op::Int64ToInt32))
+            .count();
+        let cvts = func.blocks[entry]
+            .insts
+            .iter()
+            .filter(|inst| matches!(func.insts[**inst].op, Op::Int32ToDouble))
+            .count();
+        assert_eq!(unboxes, 1, "duplicate Unbox(Int64) collapses");
+        assert_eq!(truncs, 1, "duplicate Int64ToInt32 collapses");
+        assert_eq!(cvts, 1, "duplicate Int32ToDouble collapses");
+        verify(&func).expect("the numbered function is valid");
     }
 
     #[test]

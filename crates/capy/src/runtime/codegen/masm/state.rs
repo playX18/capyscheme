@@ -59,13 +59,7 @@ impl Masm {
     /// of the return address in `ra` in `target` and falls through, so the
     /// caller can write the values first. A values-error header yields the
     /// `values_error` stub as the target. Clobbers `tmp`.
-    pub fn emit_mv_target(
-        &mut self,
-        ra: VReg,
-        target: VReg,
-        tmp: VReg,
-        values_error: ValuesError,
-    ) {
+    pub fn emit_mv_target(&mut self, ra: VReg, target: VReg, tmp: VReg, values_error: ValuesError) {
         let mode_at = self
             .asm
             .mem(ra, sabi::COMPACT_RETURN_ADDRESS_MASK_SIZE_MODE_DISP as i32);

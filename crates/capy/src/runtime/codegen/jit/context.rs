@@ -28,6 +28,7 @@ use bytecodegen::OperandWidth;
 use onlineasm::{Label, VReg, onlineasm};
 
 use super::super::emission::{Deferred, Emission};
+use super::super::import::{ImportKey, RuntimeSym, Section};
 use super::super::lazy::Lazies;
 use super::super::lazy::call::CallSite;
 use super::super::lazy::edge::{EdgeKind, emit_hit_block};
@@ -43,7 +44,6 @@ use super::super::template::{
 use super::arith_site::ArithSite;
 use super::entry::emit_enter_callee;
 use super::registry::ResumeTable;
-use super::super::import::{ImportKey, RuntimeSym, Section};
 use crate::bytecode::def::OpcodeId;
 use crate::runtime::interp::stack::Ip;
 use crate::runtime::sabi::{self, regs};
@@ -648,7 +648,12 @@ impl<T: Targets, S: SpecSource> Flow for CompiledContext<'_, T, S> {
             let (Target::Label(next) | Target::Edge(next)) = next else {
                 unreachable!("only a label can be fallen through to");
             };
-            self.em.fallthrough_checks.push((point, next));
+            self.em.push_fallthrough_check(
+                self.insn.pc(),
+                format!("{:?}", self.insn.op),
+                point,
+                next,
+            );
             return;
         }
         emit_jump_to(masm, next);

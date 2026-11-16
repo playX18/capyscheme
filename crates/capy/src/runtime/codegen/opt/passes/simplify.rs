@@ -8,7 +8,7 @@ use cranelift_entity::{EntityList, SecondaryMap};
 use super::{PassOutcome, Subst, reachable, replace_uses};
 use crate::runtime::codegen::opt::ir::func::{Block, Func, Value, ValueDef};
 use crate::runtime::codegen::opt::ir::inst::{Cmp, Constant, Edge, Inst, Op, Repr, Terminator};
-use crate::runtime::codegen::opt::ir::types::Type;
+use crate::runtime::codegen::opt::ir::types::{ClassRef, Type};
 use crate::runtime::objectmodel::Value as SchemeValue;
 
 pub(super) fn run(func: &mut Func) -> PassOutcome {
@@ -31,6 +31,8 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
     // is the consumer side of constant comparison folding: the producing
     // comparison is already decided, but a Bool has no constant form.
     changed |= fold_bool_ops(func, &mut subst);
+    changed |= fold_box_compares(func, &rpo);
+    changed |= fold_box_unbox(func, &mut subst);
     changed |= remove_trivial_params(func, &mut subst);
     changed |= merge_blocks(func, &mut subst);
     replace_uses(func, &subst);
@@ -38,6 +40,29 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
 
     work += func.blocks.len();
     PassOutcome { changed, work }
+}
+
+pub(super) fn insert_before(
+    func: &mut Func,
+    block: Block,
+    before: Inst,
+    op: Op,
+    args: &[Value],
+    ty: Type,
+) -> Value {
+    let value = func
+        .push_inst(block, op, args, Some(ty), None)
+        .expect("the operation has a result");
+    let created = func.blocks[block]
+        .insts
+        .pop()
+        .expect("push_inst appended the instruction");
+    let insts = &mut func.blocks[block].insts;
+    match insts.iter().position(|&inst| inst == before) {
+        Some(position) => insts.insert(position, created),
+        None => insts.push(created),
+    }
+    value
 }
 
 /// The constant an operand is, if it is a `Const` instruction.
@@ -142,9 +167,31 @@ fn eval_bool(func: &Func, value: Value) -> Option<bool> {
         }
         // An immediate is never a pair.
         Op::TestPair | Op::TestClass(_) | Op::TestHeap => {
-            bits_const(func, args[0])?;
-            Some(false)
+            if bits_const(func, args[0]).is_some() {
+                return Some(false);
+            }
+            known_test(func, func.insts[inst].op, args[0])
         }
+        _ => None,
+    }
+}
+
+fn known_test(func: &Func, op: Op, value: Value) -> Option<bool> {
+    let class = match op {
+        Op::TestPair => ClassRef::PAIR,
+        Op::TestClass(class) => class,
+        _ => return None,
+    };
+    let ValueDef::Inst(def) = func.value_def(value) else {
+        return None;
+    };
+    match func.insts[def].op {
+        Op::Box(Repr::Int32 | Repr::Double) | Op::BoolToValue => Some(false),
+        Op::Box(Repr::Int64 | Repr::Int128) => (class != ClassRef::BIGINT).then_some(false),
+        Op::AllocPair => Some(class == ClassRef::PAIR),
+        Op::AllocClosure(_) => Some(class == ClassRef::CLOSURE),
+        Op::AllocVector => Some(class == ClassRef::VECTOR),
+        Op::AllocInstance { class: id, .. } => Some(class.class_id() == id),
         _ => None,
     }
 }
@@ -178,6 +225,104 @@ fn fold_bool_ops(func: &Func, subst: &mut Subst) -> bool {
         }
     }
     changed
+}
+
+fn fold_box_unbox(func: &Func, subst: &mut Subst) -> bool {
+    let mut changed = false;
+    for (_, block) in func.blocks.iter() {
+        for &inst in &block.insts {
+            let want = match func.insts[inst].op {
+                Op::Unbox(r @ (Repr::Int32 | Repr::Int64 | Repr::Double)) => r,
+                _ => continue,
+            };
+            let Some(result) = func.insts[inst].result else {
+                continue;
+            };
+            let args = func.args(inst);
+            let [arg] = args else { continue };
+            let ValueDef::Inst(def) = func.value_def(*arg) else {
+                continue;
+            };
+            if !matches!(func.insts[def].op, Op::Box(r2) if r2 == want) {
+                continue;
+            }
+            let inner = func.args(def);
+            let [source] = inner else { continue };
+            subst.add(result, *source);
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn fold_box_compares(func: &mut Func, rpo: &[Block]) -> bool {
+    let mut changed = false;
+    for &block in rpo {
+        let insts = func.blocks[block].insts.clone();
+        for inst in insts {
+            if func.insts[inst].op != Op::EqBits {
+                continue;
+            }
+            let args = func.args(inst).to_vec();
+            let boxed = |value: Value| -> Option<(Repr, Value)> {
+                let ValueDef::Inst(def) = func.value_def(value) else {
+                    return None;
+                };
+                match func.insts[def].op {
+                    Op::Box(repr @ (Repr::Int32 | Repr::Int64)) => Some((repr, func.args(def)[0])),
+                    _ => None,
+                }
+            };
+            let fixnum = |value: Value| -> Option<i32> {
+                SchemeValue::from_raw(bits_const(func, value)?).int32()
+            };
+            // The compare, its left operand and its right operand: a value,
+            // or an immediate to create.
+            let rewrite = match (boxed(args[0]), boxed(args[1])) {
+                (Some((Repr::Int32, a)), Some((Repr::Int32, b))) => {
+                    Some((Op::CmpI32(Cmp::Eq), a, Err(b)))
+                }
+                (Some((repr, a)), None) => fixnum(args[1]).map(|k| payload_compare(repr, a, k)),
+                (None, Some((repr, b))) => fixnum(args[0]).map(|k| payload_compare(repr, b, k)),
+                _ => None,
+            };
+            let Some((op, lhs, rhs)) = rewrite else {
+                continue;
+            };
+            let rhs = match rhs {
+                Ok((constant, ty)) => {
+                    insert_before(func, block, inst, Op::Const(constant), &[], ty)
+                }
+                Err(value) => value,
+            };
+            let data = &mut func.insts[inst];
+            data.op = op;
+            data.args = EntityList::from_slice(&[lhs, rhs], &mut func.pool);
+            data.frame = None;
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// The compare of a boxed integer's raw operand with a fixnum's payload.
+fn payload_compare(
+    repr: Repr,
+    raw: Value,
+    payload: i32,
+) -> (Op, Value, Result<(Constant, Type), Value>) {
+    match repr {
+        Repr::Int32 => (
+            Op::CmpI32(Cmp::Eq),
+            raw,
+            Ok((Constant::Int32(payload), Type::Int32)),
+        ),
+        _ => (
+            Op::CmpI64(Cmp::Eq),
+            raw,
+            Ok((Constant::Int64(i64::from(payload)), Type::Int64)),
+        ),
+    }
 }
 
 /// Folds the instruction into a constant when its operands are constants.
@@ -288,6 +433,10 @@ fn fold_inst(func: &mut Func, inst: Inst) -> bool {
                 }
                 _ => None,
             }
+        }
+
+        Op::TestPair | Op::TestClass(_) => {
+            known_test(func, op, args[0]).map(|known| Constant::Bits(u64::from(known)))
         }
         Op::BoolToValue => eval_bool(func, args[0]).map(|b| {
             let bits = if b {

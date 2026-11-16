@@ -61,13 +61,18 @@ pub(crate) fn assign_slots(
     num: &Numbering,
     children: &[Child],
     coherence: &super::assign::Coherence,
+    homes: &SecondaryMap<VReg, bool>,
 ) -> (u32, SecondaryMap<VReg, Option<u32>>) {
     let mut stack: SecondaryMap<VReg, Vec<(u32, u32)>> = SecondaryMap::new();
+
+    // A home parameter spills to its own frame word, which no numbered slot
+    // can alias, so it takes no part in the coloring or the coalescing.
     for c in children {
-        if c.assign == Some(Assign::Stack) {
+        if c.assign == Some(Assign::Stack) && !homes[c.vreg] {
             stack[c.vreg].extend_from_slice(&c.ranges);
         }
     }
+
     // Where the slot holds the value for a later read, a store is skipped.
     for v in func.vregs.keys() {
         if !stack[v].is_empty() {
@@ -75,13 +80,16 @@ pub(crate) fn assign_slots(
         }
     }
     let mut vregs: Vec<VReg> = Vec::new();
+
     for v in func.vregs.keys() {
         if !stack[v].is_empty() {
             stack[v] = merge(std::mem::take(&mut stack[v]));
             vregs.push(v);
         }
     }
+
     let mut index: SecondaryMap<VReg, Option<usize>> = SecondaryMap::new();
+
     for (i, &v) in vregs.iter().enumerate() {
         index[v] = Some(i);
     }
@@ -94,18 +102,23 @@ pub(crate) fn assign_slots(
         if a == b {
             return;
         }
+
         let (Some(ia), Some(ib)) = (index[a], index[b]) else {
             return;
         };
+
         let key = if ia < ib { (ia, ib) } else { (ib, ia) };
         let entry = candidates
             .entry(key)
             .or_insert_with(|| (0, BTreeSet::new()));
+
         entry.0 += 1;
+
         if let Some(p) = allowed_pos {
             entry.1.insert(p);
         }
     };
+
     for &b in &num.order {
         let data = &func.blocks[b];
         let base = num.base[b];

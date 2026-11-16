@@ -10,14 +10,14 @@
 //!   f64 bits. `G` is `gprs.len()`.
 //!
 //! The words between the GPRs and the FPRs are temporaries that the runtime
-//! does not read. The emitter writes this layout.
+//! does not read.
 
 use std::sync::OnceLock;
 
 use crate::runtime::codegen::opt::emit;
 use crate::runtime::codegen::opt::ir::frame_state::FrameState;
 use crate::runtime::codegen::opt::ir::func::Func;
-use crate::runtime::codegen::opt::regalloc::{Loc, PhysReg, RegFile};
+use crate::runtime::codegen::opt::regalloc::{Loc, PhysReg, RegFile, slot_word};
 
 /// Words `deopt_common` reserves between the GPRs and the FPRs.
 pub(crate) const SAVE_TEMPS: usize = 8;
@@ -35,10 +35,20 @@ pub(crate) enum DeoptDest {
     /// Extra argument `index` of a scalar-mode variadic procedure: it goes to
     /// `r[base + index]` of frame `frame` when `index` is below the count in
     /// register `cnt`.
-    RestScalar { frame: u32, base: u32, index: u32, cnt: u32 },
+    RestScalar {
+        frame: u32,
+        base: u32,
+        index: u32,
+        cnt: u32,
+    },
     /// The vector of the extras from index `from` on: element `i` goes to
     /// `r[base + from + i]` of frame `frame`.
-    RestTail { frame: u32, base: u32, from: u32, cnt: u32 },
+    RestTail {
+        frame: u32,
+        base: u32,
+        from: u32,
+        cnt: u32,
+    },
 }
 
 /// The destinations of the values of `frame`, in the order of
@@ -62,7 +72,10 @@ pub(crate) fn deopt_dests(func: &Func<'_>, frame: FrameState) -> Vec<DeoptDest> 
         let rest = data.rest;
         dests.extend(data.registers.iter().map(|&(reg, _)| match rest {
             Some(rest) => match rest.scalars {
-                None if rest.reg == reg => DeoptDest::RestArea { frame: index, base: rest.base },
+                None if rest.reg == reg => DeoptDest::RestArea {
+                    frame: index,
+                    base: rest.base,
+                },
                 Some(n) if reg >= rest.reg && reg < rest.reg + n => DeoptDest::RestScalar {
                     frame: index,
                     base: rest.base,
@@ -138,7 +151,8 @@ pub(crate) enum DeoptRegClass {
 
 /// The raw word of a value in `loc`, with `fp` the optimized frame and
 /// `frame_size` its bytecode size in words. Spill slot `s` is word
-/// `frame_size + s`.
+/// `frame_size + s`, and a home slot is the entry parameter's own word (see
+/// [`slot_word`]).
 ///
 /// # Safety
 ///
@@ -155,7 +169,7 @@ pub(crate) unsafe fn raw_at(
             DeoptRegClass::Gpr => save.gpr(reg),
             DeoptRegClass::Fpr => save.fpr(reg),
         },
-        // SAFETY: a spill slot is inside the optimized frame.
-        Loc::Slot(slot) => Some(unsafe { *fp.add(frame_size + slot as usize) }),
+        // SAFETY: a spill or home slot is inside the optimized frame.
+        Loc::Slot(slot) => Some(unsafe { *fp.add(slot_word(slot, frame_size as u32) as usize) }),
     }
 }

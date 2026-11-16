@@ -111,12 +111,13 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             class: class_value,
             id: class.id().bits(),
             stamp,
+            subtree: false,
         };
         if !self
             .func
             .class_deps
             .iter()
-            .any(|mine| mine.class == dep.class)
+            .any(|mine| mine.class == dep.class && mine.subtree == dep.subtree)
         {
             self.func.class_deps.push(dep);
         }

@@ -17,8 +17,8 @@ use crate::runtime::codegen::template::{
 use crate::runtime::interp::profile::{
     ARITH_FIX_FLON, ARITH_FIXNUMS, ARITH_FLON_FIX, ARITH_FLON_FLON, ARRAY_FAST, ArrayProfile,
 };
-use crate::runtime::sabi::{self, builtin_class_ids};
 use crate::runtime::objectmodel::Value;
+use crate::runtime::sabi::{self, builtin_class_ids};
 use crate::runtime::vm::exceptions::RaiseKind;
 
 macro_rules! pair_op {

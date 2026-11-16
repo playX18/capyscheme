@@ -10,6 +10,11 @@ pub struct LirFunc {
     pub exits: PrimaryMap<DeoptExit, DeoptExitData>,
     pub safepoints: PrimaryMap<SafePoint, SafePointData>,
     pub remats: PrimaryMap<RematId, LirRematDesc>,
+    /// The frame word `fp[reg]` each entry parameter arrives in, in parameter
+    /// order, when the entry glue loads it from there and nothing else writes
+    /// that word during the body. The allocator may use the word as the
+    /// parameter's spill slot (its home). Empty when no parameter qualifies.
+    pub param_homes: Vec<Option<u32>>,
 }
 
 impl LirFunc {
@@ -39,6 +44,7 @@ impl LirFunc {
             exits: PrimaryMap::new(),
             safepoints: PrimaryMap::new(),
             remats: PrimaryMap::new(),
+            param_homes: Vec::new(),
         }
     }
 
@@ -639,6 +645,9 @@ impl Display for LirFunc {
             write_frame_values(f, &data.values)?;
             if let Some(mask) = &data.livemask {
                 write!(f, " livemask={:x?}", mask.words)?;
+                if !mask.homes.is_empty() {
+                    write!(f, " homes={:?}", mask.homes)?;
+                }
             }
             writeln!(f)?;
         }

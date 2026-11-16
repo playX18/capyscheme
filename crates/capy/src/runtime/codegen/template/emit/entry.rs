@@ -28,7 +28,12 @@ pub fn op_enter<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     );
     let frame = operand_register(masm, context, OpEnter::OPERAND_FRAME, OpEnter::SIGNED_FRAME);
     masm.check_frame_limit(frame, tmp::T1, tmp::T2, overflow_slow);
-    masm.maybe_hot_check_step(tmp::T1, tmp::T2, hot_slow, crate::utils::flags::jit_entry_heat() as i64);
+    masm.maybe_hot_check_step(
+        tmp::T1,
+        tmp::T2,
+        hot_slow,
+        crate::utils::flags::jit_entry_heat() as i64,
+    );
     context.next(masm);
     context.slow_control(masm, arity_slow, SlowPath::Arity);
     context.slow_control(masm, overflow_slow, SlowPath::Overflow);
@@ -145,7 +150,12 @@ pub fn op_enter_rest<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     );
     // The hot bump runs after the moves: the hot path resumes forward
     // past the whole instruction, so the moves must already be done.
-    masm.maybe_hot_check_step(tmp::T0, tmp::T3, hot_slow, crate::utils::flags::jit_entry_heat() as i64);
+    masm.maybe_hot_check_step(
+        tmp::T0,
+        tmp::T3,
+        hot_slow,
+        crate::utils::flags::jit_entry_heat() as i64,
+    );
     context.next(masm);
     context.slow_control(masm, arity_slow, SlowPath::Arity);
     context.slow_control(masm, overflow_slow, SlowPath::Overflow);

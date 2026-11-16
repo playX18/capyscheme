@@ -282,7 +282,9 @@ fn solve(
         return Err(format!("a piece of {} was left unplaced", c.vreg));
     }
 
-    let mut asg = finish(func, num, pieces);
+    let grouped: std::collections::HashSet<VReg> =
+        groups.iter().flat_map(|&(m, rep)| [m, rep]).collect();
+    let mut asg = finish(func, num, pieces, &grouped);
 
     for (v, rep) in groups {
         asg.groups[v] = Some(rep);
@@ -308,15 +310,19 @@ impl Greedy<'_> {
     }
 
     fn init_unit(&mut self, id: usize) {
+        self.map[id].crosses_holes = false;
         let owners: Vec<usize> = if self.map[id].members.is_empty() {
             vec![id]
         } else {
             self.map[id].members.clone()
         };
+
         let mut split_cost = 0.0f64;
         let mut holes = false;
+        let mut stays: Vec<(u32, u32)> = Vec::new();
         for owner in owners {
             let vreg = self.pieces.children[owner].vreg;
+            let mut first_store: Option<(u32, f64)> = None;
             for &s in &self.pieces.vreg_children[vreg] {
                 if s >= self.num_fixed || self.pieces.children[s].assign != Some(Assign::Stack) {
                     continue;
@@ -324,24 +330,73 @@ impl Greedy<'_> {
                 for &(lo, hi) in &self.pieces.children[s].ranges {
                     let before = self.pieces.children[id].ranges.iter().any(|r| r.1 == lo);
                     let after = self.pieces.children[id].ranges.iter().any(|r| r.0 == hi);
-                    let moves = u32::from(before) + u32::from(after);
-                    if moves > 0 {
-                        holes = true;
-                        split_cost += f64::from(moves) * self.block_frequency(lo);
+
+                    if !before && !after {
+                        continue;
+                    }
+
+                    holes = true;
+
+                    if after {
+                        split_cost += self.block_frequency(hi);
+                        if self.map[id].members.is_empty() {
+                            stays.extend(self.stay_in_slot(id, hi));
+                        }
+                    }
+
+                    if before && first_store.map_or(true, |(at, _)| lo < at) {
+                        first_store = Some((lo, self.block_frequency(lo)));
                     }
                 }
             }
+            split_cost += first_store.map_or(0.0, |(_, cost)| cost);
         }
         if !holes {
             self.set_stage_and_enqueue(id, Stage::TryAllocate);
         } else if split_cost < self.map[id].use_def_cost / SPLIT_MULTIPLIER {
-            // Already split around the clobbers.
-            self.map[id].split_around_clobbers_metadata_index = self.around_clobbers_metadata.len();
-            self.around_clobbers_metadata.push(Vec::new());
-            self.set_stage_and_enqueue(id, Stage::TryAllocate);
+            // The frame-slot holes are cheap enough to live with. Nothing is
+            // recorded on the tmp: `split_around_clobbers_metadata_index`
+            // marks a piece the clobber splitter cut, and the other
+            // splitters stay open to this one.
+            self.stay_in_slots(id, stays);
         } else {
             self.map[id].crosses_holes = true;
             self.set_stage_and_enqueue(id, Stage::TrySplit);
+        }
+    }
+
+    fn stay_in_slot(&self, id: usize, hi: u32) -> Option<(u32, u32)> {
+        if !self.num.can_split_at(hi) {
+            return None;
+        }
+        let c = &self.pieces.children[id];
+        let end = c.ranges.iter().find(|r| r.0 == hi)?.1;
+        let uses = &self.built.uses[c.vreg];
+        let first = uses.get(uses.partition_point(|&u| u < hi)).copied();
+        let cut = match first {
+            Some(u) if u < end => pos::gap_floor(u),
+            _ => end,
+        };
+        (cut > hi).then_some((hi, cut))
+    }
+
+    /// Places the `stays` of `id` in the slot, and queues what is left.
+    fn stay_in_slots(&mut self, id: usize, stays: Vec<(u32, u32)>) {
+        if stays.is_empty() {
+            self.set_stage_and_enqueue(id, Stage::TryAllocate);
+            return;
+        }
+        let mut stays = stays;
+        stays.sort_unstable();
+        stays.dedup();
+        let (keeps, new_ids) = self.pieces.punch(id, &stays);
+        for &n in &new_ids {
+            self.sync_map(n);
+            self.map[n].stage = Stage::Spilled;
+            self.pieces.children[n].assign = Some(Assign::Stack);
+        }
+        if keeps {
+            self.set_stage_and_enqueue(id, Stage::TryAllocate);
         }
     }
 

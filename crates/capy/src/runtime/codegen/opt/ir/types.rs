@@ -55,6 +55,12 @@ impl ClassRef {
     pub const fn class_id(self) -> u32 {
         self.0
     }
+
+    /// The class named by a class id, builtin or user-defined. The test is
+    /// the header id, so it matches exact instances of that class only.
+    pub const fn from_class_id(id: u32) -> Self {
+        Self(id)
+    }
 }
 
 /// The type of an SSA value.

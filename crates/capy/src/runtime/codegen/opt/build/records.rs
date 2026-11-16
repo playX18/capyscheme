@@ -1,27 +1,4 @@
 //! Record accessors, mutators and predicates in the builder.
-//!
-//! The closures `record-accessor`, `record-mutator` and `record-predicate`
-//! return are native procedures (`record_ops::make_record_accessor` and
-//! friends) whose **code block metadata** carries a private descriptor:
-//! `(kind, rtd, flat-offset, depth)`. The code block of each such closure is
-//! unique, and its metadata is not reachable from Scheme
-//! (`set-procedure-properties!` replaces the closure's `meta`, not the code
-//! block's), so the descriptor cannot be forged.
-//!
-//! A call is specialized when its callee is either a folded constant closure
-//! carrying that descriptor, or a monomorphic profile whose callee code block
-//! carries it. Both emit `CheckCode` first, so a stale register or a profile
-//! that named another closure deopts before the call.
-//!
-//! Records are `Tuple`s: payload word 0 is the length, word 1 the RTD, and
-//! field `i` (a flat `tuple-ref` index) is payload word `i + 1`. An accessor
-//! becomes `CheckClass(TUPLE)` plus an RTD identity guard plus `Load`; a
-//! mutator the same plus `Store` and a write barrier; a predicate a total
-//! `TestClass(TUPLE)`/RTD test materialized as `#t`/`#f`, which also indexes
-//! the RTD's ancestry tuple for a parented type.
-//!
-//! Every failed guard deopts *before* the call, so baseline runs the
-//! procedure again and raises the exact error the specialization suppressed.
 
 use crate::heap::Gc;
 use crate::runtime::codegen::opt::ir::frame_state::FrameState;
@@ -32,8 +9,7 @@ use crate::runtime::codegen::opt::ir::types::{ClassRef, Type};
 use crate::runtime::objectmodel::proc::Closure;
 use crate::runtime::objectmodel::{CodeBlock, Value as SchemeValue};
 use crate::runtime::record_ops::{
-    self, RECORD_KIND_ACCESSOR, RECORD_KIND_CONSTRUCTOR, RECORD_KIND_MUTATOR,
-    RECORD_KIND_PREDICATE,
+    self, RECORD_KIND_ACCESSOR, RECORD_KIND_CONSTRUCTOR, RECORD_KIND_MUTATOR, RECORD_KIND_PREDICATE,
 };
 
 use super::profile::{self, CallShape};
@@ -157,7 +133,12 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             for index in 0..op.offset as u32 {
                 elements.push(self.reg(first_arg + index)?);
             }
-            return Ok(Some(self.value_op(Op::AllocTuple, &elements, Type::Any, None)));
+            return Ok(Some(self.value_op(
+                Op::AllocTuple,
+                &elements,
+                Type::Any,
+                None,
+            )));
         }
         // A constant closure's descriptor is static: use the static field
         // offset and the RTD constant. Otherwise the profile names a code

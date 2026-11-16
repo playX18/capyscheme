@@ -9,7 +9,9 @@ use cranelift_entity::SecondaryMap;
 use super::liveness::Numbering;
 use super::pos;
 use crate::runtime::codegen::opt::lir::weights::block_weights;
-use crate::runtime::codegen::opt::lir::{Constraint, LirFunc, LirTerm, Role, VReg};
+use crate::runtime::codegen::opt::lir::{
+    Clobbers, Constraint, DeoptExit, LirFunc, LirTerm, Operand, Role, SafePoint, VReg,
+};
 
 const BIAS: u64 = 100_000;
 const SCALE: u128 = 1 << 24;
@@ -25,6 +27,7 @@ pub(crate) struct Weights {
     free_accesses: SecondaryMap<VReg, Vec<(u32, u64)>>,
     /// The first position and weight of each block, sorted by position.
     blocks: Vec<(u32, u64)>,
+    calls: Vec<u32>,
 }
 
 impl Weights {
@@ -33,68 +36,64 @@ impl Weights {
         let mut accesses: SecondaryMap<VReg, Vec<(u32, u64)>> = SecondaryMap::new();
         let mut free_accesses: SecondaryMap<VReg, Vec<(u32, u64)>> = SecondaryMap::new();
         let mut blocks: Vec<(u32, u64)> = Vec::with_capacity(num.order.len());
+        let mut calls: Vec<u32> = Vec::new();
         for &block in &num.order {
             let data = &func.blocks[block];
             let w = weights[block];
             blocks.push((num.from(block), w));
             for (k, inst) in data.insts.iter().enumerate() {
                 let g = num.base[block] + k as u32;
-
-                for op in inst.operands(func) {
-                    let at = if op.role == Role::Def {
-                        pos::late(g)
-                    } else {
-                        pos::early(g)
-                    };
-                    accesses[op.vreg].push((at, w));
-                    if !matches!(op.constraint, Constraint::Fixed(_)) {
-                        free_accesses[op.vreg].push((at, w));
-                    }
+                if inst.clobbers() == Clobbers::RustCall {
+                    calls.push(pos::late(g));
                 }
 
-                // A deopt exit or a safepoint reads its frame values here, not
-                // through the instruction's own operands. They still occupy a
-                // location at this position, so a split decision must see them.
-                if let Some(exit) = inst.deopt_exit() {
-                    for op in func.frame_ops(&func.exits[exit].values) {
-                        accesses[op.vreg].push((pos::early(g), w));
-                    }
-                }
+                let exit = if inst.safepoint().is_some() {
+                    None
+                } else {
+                    inst.deopt_exit()
+                };
 
-                if let Some(sp) = inst.safepoint() {
-                    for op in func.frame_ops(&func.safepoints[sp].values) {
-                        accesses[op.vreg].push((pos::early(g), w));
-                    }
-                }
+                let mut frame = frame_regs_of(func, exit, inst.safepoint());
+
+                record(
+                    &mut frame,
+                    inst.operands(func),
+                    (pos::early(g), pos::late(g)),
+                    w,
+                    &mut accesses,
+                    &mut free_accesses,
+                );
             }
+
             if let Some(term) = &data.term {
                 let g = num.term[block];
-                for op in term.operands(func) {
-                    let at = if op.role == Role::Def {
-                        pos::late(g)
-                    } else {
-                        pos::early(g)
-                    };
-                    accesses[op.vreg].push((at, w));
-                    if !matches!(op.constraint, Constraint::Fixed(_)) {
-                        free_accesses[op.vreg].push((at, w));
-                    }
-                }
-                if let LirTerm::Deopt { exit } = term {
-                    for op in func.frame_ops(&func.exits[*exit].values) {
-                        accesses[op.vreg].push((pos::early(g), w));
-                    }
-                }
+                let exit = match term {
+                    LirTerm::Deopt { exit } => Some(*exit),
+                    _ => None,
+                };
+                let mut frame = frame_regs_of(func, exit, None);
+
+                record(
+                    &mut frame,
+                    term.operands(func),
+                    (pos::early(g), pos::late(g)),
+                    w,
+                    &mut accesses,
+                    &mut free_accesses,
+                );
             }
         }
         for list in accesses.values_mut().chain(free_accesses.values_mut()) {
             list.sort_unstable();
         }
         blocks.sort_unstable();
+        calls.sort_unstable();
+
         Self {
             accesses,
             free_accesses,
             blocks,
+            calls,
         }
     }
 
@@ -153,11 +152,69 @@ impl Weights {
         self.blocks.get(i.wrapping_sub(1)).map_or(1, |&(_, w)| w)
     }
 
+    fn crosses_call(&self, ranges: &[(u32, u32)]) -> bool {
+        for &c in &self.calls {
+            for &(lo, hi) in ranges {
+                if lo < c && c < hi {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// The cost of spilling `ranges` of `vreg`: higher means more expensive.
     pub(crate) fn spill_weight(&self, vreg: VReg, ranges: &[(u32, u32)]) -> u64 {
         let cost = u128::from(self.piece_cost(vreg, ranges));
+        let cost = if self.crosses_call(ranges) {
+            cost.saturating_mul(2)
+        } else {
+            cost
+        };
+
         let denominator = u128::from(live_len(ranges).saturating_add(BIAS));
+
         u64::try_from(cost * SCALE / denominator).unwrap_or(u64::MAX)
+    }
+}
+
+/// The frame values a deopt exit or a safepoint reads at an instruction.
+fn frame_regs_of(
+    func: &LirFunc,
+    exit: Option<DeoptExit>,
+    safepoint: Option<SafePoint>,
+) -> Vec<VReg> {
+    let mut frame = Vec::new();
+    if let Some(e) = exit {
+        frame.extend(func.frame_regs(&func.exits[e].values));
+    }
+    if let Some(sp) = safepoint {
+        frame.extend(func.frame_regs(&func.safepoints[sp].values));
+    }
+    frame
+}
+
+/// Records the accesses of one instruction, leaving out its frame reads.
+fn record(
+    frame: &mut Vec<VReg>,
+    operands: Vec<Operand>,
+    (early, late): (u32, u32),
+    w: u64,
+    accesses: &mut SecondaryMap<VReg, Vec<(u32, u64)>>,
+    free_accesses: &mut SecondaryMap<VReg, Vec<(u32, u64)>>,
+) {
+    for op in operands.into_iter().rev() {
+        if op.role == Role::Use {
+            if let Some(i) = frame.iter().position(|&v| v == op.vreg) {
+                frame.swap_remove(i);
+                continue;
+            }
+        }
+        let at = if op.role == Role::Def { late } else { early };
+        accesses[op.vreg].push((at, w));
+        if !matches!(op.constraint, Constraint::Fixed(_)) {
+            free_accesses[op.vreg].push((at, w));
+        }
     }
 }
 

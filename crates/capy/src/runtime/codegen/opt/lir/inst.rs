@@ -866,6 +866,17 @@ impl LirInst {
         }
     }
 
+    /// Whether the emitter reads the use `vreg` after it writes the results.
+    /// Such a use stays live through the Late point, so no result of the
+    /// instruction may share its register
+    pub fn reads_after_def(&self, vreg: VReg) -> bool {
+        match self {
+            // The fill is stored after the allocation has written `dst`.
+            LirInst::AllocVectorFill { fill, .. } => *fill == vreg,
+            _ => false,
+        }
+    }
+
     /// The deopt exit this instruction branches to on failure, if any.
     pub fn deopt_exit(&self) -> Option<DeoptExit> {
         match self {

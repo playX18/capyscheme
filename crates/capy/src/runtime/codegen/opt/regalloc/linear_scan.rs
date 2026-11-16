@@ -62,7 +62,7 @@ pub(crate) fn run(
     if let Some(c) = pieces.children.iter().find(|c| c.assign.is_none()) {
         return Err(format!("a piece of {} was left unplaced", c.vreg));
     }
-    Ok(finish(func, num, pieces))
+    Ok(finish(func, num, pieces, &Default::default()))
 }
 
 fn scan_class(

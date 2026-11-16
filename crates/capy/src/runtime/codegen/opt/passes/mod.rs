@@ -113,6 +113,8 @@ pub(crate) struct PipelineStats {
     pub(crate) rounds: usize,
     pub(crate) gas_used: usize,
     pub(crate) ran_out_of_gas: bool,
+    pub(crate) insts_before: usize,
+    pub(crate) insts_after: usize,
 }
 
 struct PassDef {
@@ -221,6 +223,7 @@ pub(crate) fn run(func: &mut Func, name: &str) -> Result<PipelineStats, String> 
     let config = opt();
     let timed = crate::utils::flags::jit_stats();
     let mut stats = PipelineStats::default();
+    stats.insts_before = func.insts.len();
     let mut gas = DEFAULT_GAS;
     'rounds: loop {
         stats.rounds += 1;
@@ -256,11 +259,14 @@ pub(crate) fn run(func: &mut Func, name: &str) -> Result<PipelineStats, String> 
             break;
         }
     }
+    stats.insts_after = func.insts.len();
     log::debug!(
         target: crate::heap::logging::JIT_LOG_TARGET,
-        " opt passes {name}: {} rounds, {} gas{}",
+        " opt passes {name}: {} rounds, {} gas, {} -> {} insts{}",
         stats.rounds,
         stats.gas_used,
+        stats.insts_before,
+        stats.insts_after,
         if stats.ran_out_of_gas { ", out of gas" } else { "" }
     );
     Ok(stats)
@@ -486,4 +492,3 @@ fn clobbers(op: Op) -> MemoryRanges {
         effects.writes
     }
 }
-

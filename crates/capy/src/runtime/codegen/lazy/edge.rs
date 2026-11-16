@@ -25,8 +25,8 @@ use onlineasm::asmkit::Span;
 use onlineasm::{Label, PatchHandle, VReg, onlineasm};
 
 use super::super::addr::CodeOffset;
-use super::super::masm::{Masm, RuntimeExtern};
 use super::super::import::ImportKey;
+use super::super::masm::{Masm, RuntimeExtern};
 use super::super::template::{SiteOperand, emit_site_slow_call, tmp};
 use super::{CellHeader, CellState};
 use crate::runtime::code_memory::code_memory;

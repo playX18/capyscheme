@@ -69,7 +69,7 @@ use crate::runtime::codegen::jit::config::opt;
 use crate::runtime::codegen::opt::ir::frame_state::{FrameState, FrameStateData};
 use crate::runtime::codegen::opt::ir::func::{Block, DomTree, Func, Value, ValueDef};
 use crate::runtime::codegen::opt::ir::inst::{Inst, MemoryRanges, Op, Repr};
-use crate::runtime::codegen::opt::ir::types::CodeRef;
+use crate::runtime::codegen::opt::ir::types::{CodeRef, Type};
 use cranelift_entity::EntityRef as _;
 
 /// Moves allowed in one run. Each step moves at least one instruction, so this
@@ -113,6 +113,14 @@ fn pure_hoistable(op: Op) -> bool {
         && effects.writes.is_empty()
         && effects.reads.is_empty()
         && effects.causes.is_empty()
+}
+
+fn untags(func: &Func, inst: Inst) -> bool {
+    matches!(func.insts[inst].op, Op::Unbox(_))
+        && func
+            .args(inst)
+            .first()
+            .is_some_and(|&v| func.value_type(v) == Type::Any)
 }
 
 fn guard_hoistable(op: Op) -> bool {
@@ -218,6 +226,7 @@ impl Scan<'_> {
             && data.frame.is_none()
             && data.result.is_some()
             && pure_hoistable(data.op)
+            && !untags(self.func, def)
             && self
                 .func
                 .args(def)
@@ -327,11 +336,6 @@ fn plan(
     let mut prefix_clean = true;
     for &block in &lp.blocks {
         let is_header = block == header;
-        // A non-header block may host a hoisted guard only when it runs on
-        // every path through the loop (it dominates every latch and every
-        // block with an edge leaving the loop), and every block on the way to
-        // it is neutral. Otherwise a first iteration that skips it (and exits)
-        // would deopt into a state that never existed.
         let always = !is_header
             && terminals
                 .iter()
@@ -349,7 +353,7 @@ fn plan(
             };
             let movable = data.result.is_some()
                 && operands_ok
-                && (pure_hoistable(op)
+                && ((pure_hoistable(op) && !untags(func, inst))
                     || (is_load(op) && !clobber.overlaps(op.effects().reads))
                     || (guard_here
                         && guard_hoistable(op)

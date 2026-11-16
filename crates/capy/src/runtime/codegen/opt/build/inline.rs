@@ -1,15 +1,4 @@
 //! Inlining
-//!
-//! The callee is built as a function of its own (so its profile, its exit
-//! profile and its constants are its own) and then spliced into the caller's
-//! function. The call keeps its place in the frame states: every frame state
-//! of the callee gets the call-site frame of the caller as its parent, so a
-//! deopt inside the body rebuilds the callee's interpreter frame on top of
-//! the caller's, as the interpreter would have left them.
-//!
-//! The guard is a closure check plus a code-block check, so a closure of the
-//! same code with other free variables takes the inlined path too. A failing
-//! guard deopts at the call, where baseline runs it generically.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -157,10 +146,18 @@ fn structural_refusal(
     if cx.depth >= MAX_DEPTH {
         return Err(format!("inlining depth {} is the limit", cx.depth));
     }
-    if facts.size > MAX_CALLEE_INSTRUCTIONS {
+    // A loop-free, allocation-free callee is cheap to splice and easy to
+    // deopt, so it earns headroom past the default limit. Anything with a
+    // loop, a call, or an allocation keeps the default.
+    let limit = if facts.loops == 0 && facts.calls == 0 && facts.allocs == 0 {
+        MAX_CALLEE_INSTRUCTIONS + 32
+    } else {
+        MAX_CALLEE_INSTRUCTIONS
+    };
+    if facts.size > limit {
         return Err(format!(
-            "{} instructions is over {MAX_CALLEE_INSTRUCTIONS}",
-            facts.size
+            "{facts_size} instructions is over {limit}",
+            facts_size = facts.size
         ));
     }
     if facts.size as u32 > cx.remaining.get() {
@@ -672,6 +669,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             frames: vec![None; candidate.body.frames.len()],
         };
         splice.run(at, &entry_values)?;
+
         for dep in &candidate.body.deps {
             if !self
                 .func
@@ -682,6 +680,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 self.func.deps.push(*dep);
             }
         }
+
         // The callee's inline instance allocations assumed the class
         // descriptors. The installer registers the caller's unit with them.
         for dep in &candidate.body.class_deps {
@@ -689,9 +688,24 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 .func
                 .class_deps
                 .iter()
-                .any(|mine| mine.class == dep.class)
+                .any(|mine| mine.class == dep.class && mine.subtree == dep.subtree)
             {
                 self.func.class_deps.push(*dep);
+            }
+        }
+
+        // A cold generic call in the callee is cold in the caller too.
+        self.func.generic_cold |= candidate.body.generic_cold;
+
+        // The callee's devirtualized generic calls read the same method sets.
+        for dep in &candidate.body.generic_deps {
+            if !self
+                .func
+                .generic_deps
+                .iter()
+                .any(|mine| mine.generic == dep.generic)
+            {
+                self.func.generic_deps.push(*dep);
             }
         }
         Ok(())
@@ -1070,7 +1084,13 @@ impl<'a, 'gc> Splice<'a, 'gc> {
                     for &extra in extras.iter().rev() {
                         chain = self
                             .dest
-                            .push_inst(block, Op::AllocPair, &[extra, chain], Some(Type::Pair), None)
+                            .push_inst(
+                                block,
+                                Op::AllocPair,
+                                &[extra, chain],
+                                Some(Type::Pair),
+                                None,
+                            )
                             .expect("an allocation has a result");
                     }
                 }

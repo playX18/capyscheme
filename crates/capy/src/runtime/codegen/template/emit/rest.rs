@@ -7,8 +7,8 @@ use crate::runtime::codegen::masm::{Cmp, Masm};
 use crate::runtime::codegen::template::{
     SlowPath, TemplateContext, operand_register, operand_register_in, tmp,
 };
-use crate::runtime::sabi::regs;
 use crate::runtime::objectmodel::Value;
+use crate::runtime::sabi::regs;
 use crate::runtime::vm::exceptions::RaiseKind;
 
 pub fn op_rest_ref<C: TemplateContext>(masm: &mut Masm, context: &mut C) {

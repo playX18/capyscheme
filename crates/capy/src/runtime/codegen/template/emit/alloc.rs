@@ -14,8 +14,8 @@ use crate::runtime::codegen::masm::{Masm, RuntimeExtern};
 use crate::runtime::codegen::template::{
     OpArg, OpContinue, OpResult, OpTarget, OperationCall, TemplateContext, operand_register, tmp,
 };
-use crate::runtime::sabi::{self, builtin_class_ids, regs};
 use crate::runtime::objectmodel::Value;
+use crate::runtime::sabi::{self, builtin_class_ids, regs};
 
 pub fn op_cons<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     let gc = GcCodegen::new();

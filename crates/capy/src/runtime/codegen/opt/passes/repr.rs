@@ -459,15 +459,6 @@ fn select_params(func: &mut Func, work: &mut usize) -> bool {
         let tagged = tagged_uses(func, &cx);
         for &(block, _, param) in &order {
             let t = cx.ty[&param];
-            // An int64 parameter whose value is needed as a Scheme word would
-            // need a `box.int64` at the use. That box can allocate, so keep
-            // the parameter tagged when the use runs inside its loop. When
-            // every tagged use is outside the loop the box runs at most once
-            // per loop exit, so the raw loop-carried value is still a win
-            // (an accumulator returned after the loop, say). The range
-            // analysis keeps the old exemption: when every value fits `i32`
-            // the box is a pure tag. Int32 and Double box without allocating,
-            // so they keep the old rule.
             let tagged_use = tagged.contains_key(&param);
             let i64_fits = t == Ty::I64 && range_analysis.fits_i32(block, param);
             // A loop-carried i64 whose tagged uses are all outside the loop.
@@ -480,13 +471,26 @@ fn select_params(func: &mut Func, work: &mut usize) -> bool {
                             .get(&param)
                             .is_some_and(|uses| uses.iter().all(|&use_block| !lp.member[use_block]))
                     });
+
+            let int_fits = t == Ty::Int && range_analysis.fits_i32(block, param);
+            let int_exit_only = t == Ty::Int
+                && loops
+                    .iter()
+                    .find(|lp| lp.header == block)
+                    .is_some_and(|lp| {
+                        tagged
+                            .get(&param)
+                            .is_some_and(|uses| uses.iter().all(|&use_block| !lp.member[use_block]))
+                    });
             let force = matches!(t, Ty::Int | Ty::Dbl | Ty::I64)
                 && tagged_use
                 && match t {
                     Ty::I64 => !i64_fits && !i64_exit_only,
+                    Ty::Int => !int_fits && !int_exit_only,
                     _ => !cx.guard.contains_key(&param),
                 }
                 && !cx.forced.contains_key(&param);
+
             if force {
                 cx.forced.insert(param, ());
                 forced_any = true;

@@ -233,6 +233,21 @@ fn access(func: &Func, subst: &Subst, inst: Inst) -> Option<(Slot, Option<Value>
             },
             Some(args[2]),
         ),
+
+        Op::LoadBytevectorU8 => (
+            Slot::Element {
+                vector: obj(args[0]),
+                index: index_key(func, subst, args[1]),
+            },
+            None,
+        ),
+        Op::StoreBytevectorU8 => (
+            Slot::Element {
+                vector: obj(args[0]),
+                index: index_key(func, subst, args[1]),
+            },
+            Some(args[2]),
+        ),
         _ => return None,
     };
     Some(slot)

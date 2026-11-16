@@ -304,8 +304,8 @@ fn patch_headers(
                         sym.address() as usize
                     }
                     HeaderTarget::Label(label) => {
-                        let off = label_offset(finished, label, "RpHeader mv return address")?
-                            as usize;
+                        let off =
+                            label_offset(finished, label, "RpHeader mv return address")? as usize;
                         relocs.push(DataReloc {
                             at,
                             target: DataTarget::Image(off),
@@ -539,7 +539,8 @@ impl EhFrame {
             return Ok(None);
         }
 
-        let (bytes, _fde_offsets) = Self::build_offsets(rx, regions, cfg!(target_vendor = "apple"))?;
+        let (bytes, _fde_offsets) =
+            Self::build_offsets(rx, regions, cfg!(target_vendor = "apple"))?;
         // SAFETY: the pointers stay valid until `drop` deregisters them with
         // the exact registered pointer. Concurrent registration races the
         // exit-time static deregistration in `_dl_fini`, so the JIT exit

@@ -12,10 +12,10 @@ use onlineasm::onlineasm;
 use crate::bytecode::def::{OpCallPrimitive2, OpCallPrimitive3};
 use crate::runtime::codegen::masm::Masm;
 use crate::runtime::codegen::template::{PrimSlowId, TemplateContext, ftmp, tmp};
+use crate::runtime::objectmodel::Value;
 use crate::runtime::prims::def::Primitive;
 use crate::runtime::prims::memory::Elem;
 use crate::runtime::sabi::{self, builtin_class_ids};
-use crate::runtime::objectmodel::Value;
 
 #[derive(Clone, Copy)]
 enum Space {

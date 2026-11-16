@@ -740,11 +740,9 @@ fn constant_value<'gc>(
         Constant::Int64(value) => rebox_i64(ctx, value),
         Constant::Double(bits) => Value::from_f64(f64::from_bits(bits)),
         Constant::Bits(bits) => Value::from_raw_i64(bits as i64),
-        Constant::Table(index) => {
-            owner
-                .ref_value(index as usize)
-                .unwrap_or_else(|| fatal(exit, "a constant names a missing table slot"))
-        }
+        Constant::Table(index) => owner
+            .ref_value(index as usize)
+            .unwrap_or_else(|| fatal(exit, "a constant names a missing table slot")),
         Constant::Block { .. } => fatal(
             exit,
             "a raw block address is not a Scheme value and has no deopt rematerialization",

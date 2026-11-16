@@ -6,8 +6,7 @@ use super::schedule::{self, Schedule};
 use super::{
     AllocLayout, CallTarget, DeoptExit, FloatOp, FrameValue, GuardKind, IntOp, LBlock, LEdge,
     LirFunc, LirInst, LirRematDesc, LirTerm, NumberStoreKind, ReturnedKind, SafePoint, Test, VReg,
-    VRepr,
-    WideShiftOp,
+    VRepr, WideShiftOp,
 };
 use crate::runtime::codegen::jit::config::opt;
 use crate::runtime::codegen::opt::ir::frame_state::FrameState;
@@ -137,7 +136,28 @@ impl<'a> Lowerer<'a> {
             }
             self.out.blocks[self.cur].term = Some(lir_term);
         }
+        self.out.param_homes = self.param_homes();
         Ok(self.out)
+    }
+
+    fn param_homes(&self) -> Vec<Option<u32>> {
+        let func = self.func;
+        if func.rest.is_some() || func.rest_reg.is_some() || !func.case_clauses.is_empty() {
+            return Vec::new();
+        }
+        let params = &self.out.blocks[self.out.entry].params;
+        if params.len() < func.entry_regs.len() {
+            return Vec::new();
+        }
+        let regs = &func.entry_regs;
+        if regs
+            .iter()
+            .enumerate()
+            .any(|(i, r)| *r == 0 || regs[..i].contains(r))
+        {
+            return Vec::new();
+        }
+        regs.iter().map(|&r| Some(r)).collect()
     }
 
     fn push(&mut self, inst: LirInst) {
@@ -382,6 +402,11 @@ impl<'a> Lowerer<'a> {
         let frame = frame.ok_or("a call has no frame state")?;
         let values = self.frame_values(frame)?;
         Ok(self.out.new_safepoint(frame, values))
+    }
+
+    fn safepoint_without_values(&mut self, frame: Option<FrameState>) -> Result<SafePoint, String> {
+        let frame = frame.ok_or("a call has no frame state")?;
+        Ok(self.out.new_safepoint(frame, Vec::new()))
     }
 
     /// A fresh register for the result of `inst`, in the representation its
@@ -962,9 +987,19 @@ impl<'a> Lowerer<'a> {
                 });
             }
             Op::ReturnedValue(index) => {
-                let dst = self.define(inst)?;
-                let kind = ReturnedKind::Value;
-                self.push(LirInst::LoadReturned { dst, index, kind });
+                let in_rv = index == 0 && self.first_value_in_rv(args[0]);
+                if in_rv {
+                    // The return point leaves the first value in `RV` on
+                    // every path that reaches the continuation, so it is the
+                    // call's own `rv` and costs no load.
+                    let src = self.reg(args[0])?;
+                    let dst = self.define(inst)?;
+                    self.push(LirInst::Move { dst, src });
+                } else {
+                    let dst = self.define(inst)?;
+                    let kind = ReturnedKind::Value;
+                    self.push(LirInst::LoadReturned { dst, index, kind });
+                }
             }
             Op::ReturnedAddr(index) => {
                 let dst = self.define(inst)?;
@@ -1370,7 +1405,7 @@ impl<'a> Lowerer<'a> {
                 self.emit_call(inst, target, ReturnValues::Ignore)?
             }
             Op::Safepoint => {
-                let safepoint = self.safepoint(frame)?;
+                let safepoint = self.safepoint_without_values(frame)?;
                 self.push(LirInst::Poll { safepoint });
             }
         }
@@ -1429,6 +1464,19 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn first_value_in_rv(&self, call: Value) -> bool {
+        let ValueDef::Inst(inst) = self.func.value_def(call) else {
+            return false;
+        };
+        match self.func.insts[inst].op {
+            Op::CallKnown(_, ReturnValues::Take(count) | ReturnValues::TakeRest(count))
+            | Op::CallGeneric(ReturnValues::Take(count) | ReturnValues::TakeRest(count)) => {
+                count >= 1 && self.func.insts[inst].result.is_some()
+            }
+            _ => false,
+        }
+    }
+
     fn emit_call(
         &mut self,
         inst: Inst,
@@ -1474,7 +1522,13 @@ impl<'a> Lowerer<'a> {
         } else {
             None
         };
-        let safepoint = self.safepoint(frame)?;
+
+        let safepoint =
+            if exit.is_none() && matches!(target, CallTarget::Known(_) | CallTarget::Generic) {
+                self.safepoint_without_values(frame)?
+            } else {
+                self.safepoint(frame)?
+            };
         self.push(LirInst::Call {
             target,
             args,

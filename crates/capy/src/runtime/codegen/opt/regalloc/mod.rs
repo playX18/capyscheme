@@ -1,7 +1,8 @@
 //! Register allocation for the Tier 2 LIR.
 //!
-//! - [`linear_scan`]: Wimmer–Franz linear scan, the default.
-//! - [`greedy`]: whole-function greedy allocation based on LLVM/WebKit Greedy algorithm.
+//! - [`greedy`]: whole-function greedy allocation based on the LLVM/WebKit
+//!   Greedy algorithm, the default.
+//! - [`linear_scan`]: Wimmer-Franz linear scan, kept as the alternative.
 //!
 //!
 //! [`allocate`] rewrites the function (copies, split edges, livemasks) and
@@ -31,8 +32,8 @@ use cranelift_entity::{PrimaryMap, SecondaryMap};
 use crate::runtime::codegen::jit::config::{RegAllocKind, opt};
 use crate::runtime::codegen::opt::ir::inst::{Constant, RematKind};
 use crate::runtime::codegen::opt::lir::{
-    Clobbers, Constraint, DeoptExit, LBlock, LirFunc, LirInst, PhysRole, RegClass, Role, SafePoint,
-    VReg,
+    Clobbers, Constraint, DeoptExit, LBlock, LirFunc, LirInst, PhysRole, RegClass, ReturnedKind,
+    Role, SafePoint, VReg,
 };
 use crate::utils::flags;
 
@@ -55,6 +56,8 @@ pub struct RegFile {
     pub fprs: Vec<PhysReg>,
     /// The return value register ([`PhysRole::Rv`]).
     pub rv: PhysReg,
+    /// Accumulator for arg/value count.
+    pub ac: PhysReg,
     /// The helper argument registers ([`PhysRole::OpArg`]).
     pub op_args: Vec<PhysReg>,
     /// Registers that an out-of-line slow path destroys
@@ -128,7 +131,8 @@ pub struct Scratch {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Loc {
     Reg(PhysReg),
-    /// A spill slot, numbered from 0. The emitter maps slots to frame words.
+    /// A spill slot, numbered from 0, or a home slot (see [`home_slot`]).
+    /// Use [`slot_word`] to map either to its frame word.
     Slot(u32),
 }
 
@@ -136,9 +140,32 @@ impl Display for Loc {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Loc::Reg(r) => write!(f, "{r}"),
-            Loc::Slot(s) => write!(f, "[s{s}]"),
+            Loc::Slot(s) => match home_word(*s) {
+                Some(w) => write!(f, "[fp{w}]"),
+                None => write!(f, "[s{s}]"),
+            },
         }
     }
+}
+
+const HOME_BASE: u32 = 1 << 30;
+
+/// The home slot of frame word `word`, the incoming word of an entry
+/// parameter that is used as that parameter's spill slot.
+pub(crate) fn home_slot(word: u32) -> u32 {
+    debug_assert!(word < HOME_BASE);
+    HOME_BASE | word
+}
+
+/// The frame word of a home slot, `None` for a numbered spill slot.
+pub(crate) fn home_word(slot: u32) -> Option<u32> {
+    (slot >= HOME_BASE).then(|| slot & !HOME_BASE)
+}
+
+/// The frame word `fp[w]` that slot `slot` occupies, for a frame of
+/// `frame_size` bytecode words.
+pub(crate) fn slot_word(slot: u32, frame_size: u32) -> u32 {
+    home_word(slot).unwrap_or(frame_size + slot)
 }
 
 /// A move of one value. Slot-to-slot moves are possible, and the emitter
@@ -152,6 +179,30 @@ pub struct Move {
     /// `Allocation::consts[i]` in `dst` instead of reading `src`. The slot
     /// still holds the value, so the move keeps its meaning for the checkers.
     pub konst: Option<u32>,
+    /// A reload of an untagged int: the emitter reads the tagged source from
+    /// `Untag::from` and untags it into `dst` instead of reading `src`. The
+    /// raw value is never stored to `src`, so nothing else may read that slot.
+    pub untag: Option<Untag>,
+}
+
+/// The recipe of a rematerialized untag (`UntagInt` or `UntagInt64`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Untag {
+    /// Where the tagged source is: a home slot, or a spill slot that holds
+    /// the source at the reload. Moves of one group may rewrite it to the
+    /// scratch register when they break a cycle.
+    pub from: Loc,
+    /// The tagged vreg that is untagged.
+    pub src: VReg,
+    /// The raw vreg the reload defines.
+    pub dst: VReg,
+}
+
+impl Move {
+    /// The location the move reads: what must not be overwritten before it.
+    pub(crate) fn reads(&self) -> Loc {
+        self.untag.map_or(self.src, |u| u.from)
+    }
 }
 
 impl Display for Move {
@@ -159,6 +210,11 @@ impl Display for Move {
         if let Some(i) = self.konst {
             return write!(f, "{} <- #const{i}", self.dst);
         }
+
+        if let Some(u) = self.untag {
+            return write!(f, "{} <- untag {}", self.dst, u.from);
+        }
+
         write!(f, "{} <- {}", self.dst, self.src)
     }
 }
@@ -193,7 +249,7 @@ impl Display for DeoptLoc {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             DeoptLoc::Reg(r) => write!(f, "{r}"),
-            DeoptLoc::Slot(s) => write!(f, "[s{s}]"),
+            DeoptLoc::Slot(s) => write!(f, "{}", Loc::Slot(*s)),
             DeoptLoc::Const(c) => write!(f, "const {c}"),
             DeoptLoc::UnboxedDouble(l) => write!(f, "f64 {l}"),
             DeoptLoc::UnboxedI32(l) => write!(f, "i32 {l}"),
@@ -239,6 +295,10 @@ pub struct Allocation {
     pub polls: SecondaryMap<SafePoint, Vec<stackmap::PollSave>>,
     /// The representative of the affinity group of each coalesced vreg.
     pub group: SecondaryMap<VReg, Option<VReg>>,
+    /// The entry parameters whose spill slot is their incoming frame word,
+    /// with that word. The entry defines them in place, which counts as the
+    /// spill store.
+    pub homes: Vec<(VReg, u32)>,
 }
 
 impl Allocation {
@@ -416,6 +476,7 @@ fn complete(
         remat,
         polls,
         group: asg.groups.clone(),
+        homes: asg.homes.clone(),
     })
 }
 
@@ -432,8 +493,16 @@ pub fn check(
             let key = match piece.loc {
                 Loc::Reg(r) => (0, r.0 as u32),
                 Loc::Slot(s) => {
-                    if s >= alloc.spill_slots {
-                        return Err(format!("{v} uses slot {s} beyond {}", alloc.spill_slots));
+                    match home_word(s) {
+                        Some(w) => {
+                            if !alloc.homes.iter().any(|&(hv, hw)| hv == v && hw == w) {
+                                return Err(format!("{v} uses the home fp{w}, which is not its"));
+                            }
+                        }
+                        None if s >= alloc.spill_slots => {
+                            return Err(format!("{v} uses slot {s} beyond {}", alloc.spill_slots));
+                        }
+                        None => {}
                     }
                     (1, s)
                 }
@@ -456,7 +525,7 @@ pub fn check(
             } else if lo < cur.1 {
                 let loc = match key {
                     (0, r) => format!("p{r}"),
-                    (_, s) => format!("[s{s}]"),
+                    (_, s) => Loc::Slot(s).to_string(),
                 };
                 return Err(format!("{} and {} share {loc} at {lo}", cur.2, v));
             } else {
@@ -465,6 +534,7 @@ pub fn check(
         }
     }
     check_coalescing(func, num, alloc)?;
+    check_untags(func, alloc)?;
 
     let in_pool = |r: PhysReg| regs.gprs.contains(&r) || regs.fprs.contains(&r);
     for &b in &alloc.order {
@@ -474,7 +544,7 @@ pub fn check(
             let g = base + k as u32;
             let ops = intervals::inst_ops(func, inst);
             check_ops(alloc, regs, g, &ops)?;
-            check_clobbers(func, alloc, regs, inst, g, &ops, &in_pool)?;
+            check_clobbers(func, alloc, regs, &data.insts, k, g, &ops, &in_pool)?;
         }
         if let Some(term) = &data.term {
             let g = alloc.index(b, data.insts.len() as u32);
@@ -494,7 +564,10 @@ pub fn check(
             let Some(mask) = &func.safepoints[sp].livemask else {
                 return Err(format!("{sp} has no livemask"));
             };
-            let has = |s: u32| (mask.words[s as usize / 64] >> (s % 64)) & 1 == 1;
+            let has = |s: u32| match home_word(s) {
+                Some(w) => mask.homes.contains(&w),
+                None => (mask.words[s as usize / 64] >> (s % 64)) & 1 == 1,
+            };
             for v in func.vregs.keys() {
                 if func.class(v) != RegClass::Gpr || !func.is_gc_root(v) {
                     continue;
@@ -614,6 +687,54 @@ pub fn check(
     flowcheck::check(func, num, alloc, regs)
 }
 
+fn check_untags(func: &LirFunc, alloc: &Allocation) -> Result<(), String> {
+    let mut untag_of: SecondaryMap<VReg, Option<VReg>> = SecondaryMap::new();
+    for (_, data) in func.blocks.iter() {
+        for inst in &data.insts {
+            if let LirInst::UntagInt { dst, src } | LirInst::UntagInt64 { dst, src } = inst {
+                untag_of[*dst] = Some(*src);
+            }
+        }
+    }
+    for (g, moves) in alloc.moves.iter().enumerate() {
+        let g = g as u32;
+        for m in moves {
+            let Some(u) = m.untag else { continue };
+            if !matches!(m.dst, Loc::Reg(_)) || m.class != RegClass::Gpr {
+                return Err(format!("the untag reload before {g} is not into a GPR"));
+            }
+            if untag_of[u.dst] != Some(u.src) {
+                return Err(format!(
+                    "the reload of {} before {g} is not an untag of {}",
+                    u.dst, u.src
+                ));
+            }
+            let holds = match u.from {
+                Loc::Reg(_) => true,
+                Loc::Slot(s) => match home_word(s) {
+                    Some(w) => alloc.homes.iter().any(|&(v, hw)| v == u.src && hw == w),
+                    None => {
+                        let before = pos::pre(g).saturating_sub(1);
+                        alloc.pieces[u.src].iter().any(|p| {
+                            p.loc == u.from
+                                && p.ranges.iter().any(|&(lo, hi)| {
+                                    [before, pos::pre(g)].iter().any(|&q| lo < q && q < hi)
+                                })
+                        })
+                    }
+                },
+            };
+            if !holds {
+                return Err(format!(
+                    "the untag reload of {} before {g} reads {}, which does not hold {}",
+                    u.dst, u.from, u.src
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Whether the parallel move at instruction `at` carries a value from `from`
 /// to `to`.
 fn reaches(alloc: &Allocation, at: usize, from: Loc, to: Loc) -> bool {
@@ -654,6 +775,16 @@ fn check_ops(
         let loc = alloc
             .loc_at(op.vreg, pos)
             .ok_or_else(|| format!("{} has no location at {pos}", op.vreg))?;
+        // A late use is still read when the defs are written, so it must keep
+        // its location through the Late point; the overlap check above then
+        // keeps every def out of it.
+        if op.late && alloc.loc_at(op.vreg, pos::late(g)) != Some(loc) {
+            return Err(format!(
+                "late use {} leaves {loc} before {}",
+                op.vreg,
+                pos::late(g)
+            ));
+        }
         if op.slot && !matches!(loc, Loc::Slot(_)) {
             return Err(format!("frame value {} is not in a slot at {pos}", op.vreg));
         }
@@ -707,11 +838,13 @@ fn check_clobbers(
     func: &LirFunc,
     alloc: &Allocation,
     regs: &RegFile,
-    inst: &LirInst,
+    insts: &[LirInst],
+    k: usize,
     g: u32,
     ops: &[intervals::OpInfo],
     in_pool: &dyn Fn(PhysReg) -> bool,
 ) -> Result<(), String> {
+    let inst = &insts[k];
     let rv_def = ops
         .iter()
         .find(|o| o.role == Role::Def && o.constraint == Constraint::Fixed(PhysRole::Rv))
@@ -778,6 +911,31 @@ fn check_clobbers(
             }
         }
         Clobbers::None => {}
+    }
+
+    if let LirInst::LoadReturned {
+        dst,
+        kind: ReturnedKind::Count,
+        ..
+    } = inst
+    {
+        let (from, to) = intervals::count_window(insts, k, g - k as u32);
+        for v in func.vregs.keys() {
+            if v == *dst {
+                continue;
+            }
+            for piece in &alloc.pieces[v] {
+                let covers = piece.ranges.iter().any(|&(lo, hi)| lo < to && from < hi);
+                if !covers {
+                    continue;
+                }
+                if let Loc::Reg(r) = piece.loc {
+                    if r == regs.ac {
+                        return Err(format!("{v} is in {r} across the count read at {g}"));
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }

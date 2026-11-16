@@ -158,36 +158,20 @@ impl Display for LirInst {
                 rhs,
                 exit,
             } => write!(f, "{dst} = int64.{op} {lhs}, {rhs} [{exit}]"),
-            LirInst::Int64Wrapping {
-                op,
-                dst,
-                lhs,
-                rhs,
-            } => write!(f, "{dst} = int64.{op}.wrap {lhs}, {rhs}"),
+            LirInst::Int64Wrapping { op, dst, lhs, rhs } => {
+                write!(f, "{dst} = int64.{op}.wrap {lhs}, {rhs}")
+            }
             LirInst::BoxInt64 { dst, src } => {
                 write!(f, "{dst} = box.int64 {src}")
             }
             LirInst::UnboxBigInt64 { dst, obj, exit } => {
                 write!(f, "{dst} = unbox.bigint64 {obj} [{exit}]")
             }
-            LirInst::IntCmp {
-                cmp,
-                dst,
-                lhs,
-                rhs,
-            } => write!(f, "{dst} = icmp.{cmp} {lhs}, {rhs}"),
-            LirInst::FloatArith {
-                op,
-                dst,
-                lhs,
-                rhs,
-            } => write!(f, "{dst} = f64.{op} {lhs}, {rhs}"),
-            LirInst::FloatCmp {
-                cmp,
-                dst,
-                lhs,
-                rhs,
-            } => write!(f, "{dst} = fcmp.{cmp} {lhs}, {rhs}"),
+            LirInst::IntCmp { cmp, dst, lhs, rhs } => write!(f, "{dst} = icmp.{cmp} {lhs}, {rhs}"),
+            LirInst::FloatArith { op, dst, lhs, rhs } => write!(f, "{dst} = f64.{op} {lhs}, {rhs}"),
+            LirInst::FloatCmp { cmp, dst, lhs, rhs } => {
+                write!(f, "{dst} = fcmp.{cmp} {lhs}, {rhs}")
+            }
             LirInst::LoadFlonum { dst, obj } => write!(f, "{dst} = load.flonum {obj}"),
             LirInst::StoreFlonum { obj, src } => write!(f, "store.flonum {obj}, {src}"),
             LirInst::BoxDouble { dst, src } => write!(f, "{dst} = box.double {src}"),
@@ -275,7 +259,11 @@ impl Display for LirInst {
                 f,
                 "({dst_lo}, {dst_hi}) = {op}.wide ({src_lo}, {src_hi}), {amount}"
             ),
-            LirInst::WideExtend { dst_lo, dst_hi, src } => {
+            LirInst::WideExtend {
+                dst_lo,
+                dst_hi,
+                src,
+            } => {
                 write!(f, "({dst_lo}, {dst_hi}) = extend.wide {src}")
             }
             LirInst::WideSplit {
@@ -289,7 +277,9 @@ impl Display for LirInst {
                 if *high { "high" } else { "low" }
             ),
             LirInst::BoxInt128 {
-                dst, src_lo, src_hi,
+                dst,
+                src_lo,
+                src_hi,
             } => write!(f, "{dst} = box.int128 ({src_lo}, {src_hi})"),
             LirInst::LoadFree {
                 dst,
@@ -304,11 +294,9 @@ impl Display for LirInst {
             LirInst::LoadCell { dst, cell } => write!(f, "{dst} = cell.ref {cell}"),
             LirInst::StoreCell { cell, src } => write!(f, "cell.set {cell}, {src}"),
             LirInst::WriteBarrier { obj, value } => write!(f, "write-barrier {obj}, {value}"),
-            LirInst::LoadElement {
-                dst,
-                vector,
-                index,
-            } => write!(f, "{dst} = element {vector}[{index}]"),
+            LirInst::LoadElement { dst, vector, index } => {
+                write!(f, "{dst} = element {vector}[{index}]")
+            }
             LirInst::StoreElement { vector, index, src } => {
                 write!(f, "store.element {vector}[{index}], {src}")
             }
@@ -326,10 +314,20 @@ impl Display for LirInst {
             LirInst::StoreByte { base, index, src } => {
                 write!(f, "store.byte {base}[{index}], {src}")
             }
-            LirInst::SlotGet { dst, obj, meta, exit } => {
+            LirInst::SlotGet {
+                dst,
+                obj,
+                meta,
+                exit,
+            } => {
                 write!(f, "{dst} = slot.get {obj} @{meta:#x} else {exit}")
             }
-            LirInst::SlotPut { obj, src, meta, exit } => {
+            LirInst::SlotPut {
+                obj,
+                src,
+                meta,
+                exit,
+            } => {
                 write!(f, "slot.put {obj}, {src} @{meta:#x} else {exit}")
             }
             LirInst::Call {
@@ -404,7 +402,11 @@ impl Display for LirTerm {
                 write_vregs(f, values)?;
                 f.write_str(")")
             }
-            LirTerm::TailCall { target, args, checked } => {
+            LirTerm::TailCall {
+                target,
+                args,
+                checked,
+            } => {
                 write!(f, "tailcall {target}(")?;
                 write_vregs(f, args)?;
                 write!(f, "){}", if *checked { " checked" } else { "" })
@@ -414,4 +416,3 @@ impl Display for LirTerm {
         }
     }
 }
-

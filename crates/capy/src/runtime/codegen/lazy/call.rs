@@ -192,13 +192,7 @@ impl CallSite {
         let mut masm = cx.masm();
         let start = masm.label();
         masm.bind(start);
-        emit_plain_stub(
-            &mut masm,
-            link,
-            self.ip,
-            cx.cell_index(),
-            !self.tail,
-        );
+        emit_plain_stub(&mut masm, link, self.ip, cx.cell_index(), !self.tail);
         let name = format!("call_site:{:#x}:{}", self.link, self.pc);
         match cx.install(masm, &name, start) {
             // A miss in the stub re-enters the cell: the site can still grow.
@@ -270,7 +264,8 @@ fn usable_generic<'gc>(link: &'gc CallLinkInfo) -> Option<GenericCacheEntry<'gc>
     if entry.epoch & 1 != 0 || entry.epoch != entry.generic.epoch() {
         return None;
     }
-    let methods = entry.methods;
+
+    let methods = entry.methods?;
     if methods.is_empty() {
         return None;
     }
@@ -294,6 +289,14 @@ fn fill_generic_hint<'gc>(
     // SAFETY: the frame is the live call frame and the arguments are its
     // `[2..]` slots.
     let args = unsafe { std::slice::from_raw_parts(frame.add(2), argc) };
+
+    if !generic.flags().simple() {
+        let epoch = generic.epoch();
+        if let Some(emf) = GenericDescriptor::cached_emf(generic, args) {
+            slow::fill_generic_emf(mutator, link, buffer, generic, args, epoch, emf);
+        }
+        return;
+    }
     let epoch = generic.epoch();
     let methods = match GenericDescriptor::cached_for_args(generic, args) {
         Some(methods) => methods,

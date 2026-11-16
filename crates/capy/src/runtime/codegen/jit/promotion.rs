@@ -8,8 +8,8 @@ use super::super::masm::Masm;
 use super::super::template_image::runs_template;
 use super::super::unit::Tier;
 use super::compile::{
-    claim_compile, compile_allowed, compile_claimed, compiler_for, finish_optimized, install,
-    log_tier_up_request, poison,
+    MAX_COLD_RETRIES, claim_compile, compile_allowed, compile_claimed, compiler_for,
+    finish_optimized, install, log_tier_up_request, poison,
 };
 use super::config::{TierSet, opt, tiers};
 use super::registry::NEXT_ID;
@@ -205,7 +205,11 @@ fn request_optimized<'gc, P: HotnessPolicy>(
         return Installed;
     }
     let heat = code_block.hot_count.load(Relaxed);
-    let threshold = u32::try_from(opt().threshold).unwrap_or(u32::MAX);
+    // Cold-retirement backoff.
+    let backoff = code_block.cold_retries.load(Relaxed).min(MAX_COLD_RETRIES);
+    let threshold = u32::try_from(opt().threshold)
+        .unwrap_or(u32::MAX)
+        .saturating_mul(1 << backoff);
     if heat < threshold || code_block.kind != CodeBlockKind::Bytecode || !runs_template(ctx) {
         return Installed;
     }

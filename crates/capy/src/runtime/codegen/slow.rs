@@ -10,6 +10,7 @@ use crate::runtime::interp::markers;
 use crate::runtime::interp::slow;
 use crate::runtime::interp::stack::{self, Ip, Slot};
 use crate::runtime::objectmodel::{Closure, CodeBuffer, ReturnCode, Value};
+use crate::runtime::vm::exceptions::RaiseKind;
 use crate::runtime::{MutationContext, ThreadContext};
 use crate::utils::flags;
 use std::cell::Cell;
@@ -359,11 +360,14 @@ pub(crate) unsafe extern "C" fn capy_prim_n(th: MutatorPointer) -> *const u8 {
 
 pub(crate) unsafe extern "C" fn capy_prim_error(th: MutatorPointer) -> *const u8 {
     unsafe {
-        let (mutator, fp, ip, kind) = fault(th);
+        let (mutator, fp, ip, status) = fault(th);
         let clo = Closure::from_value(*fp.add(1));
+        // The status is `RaiseKind::status`: the kind code plus one, so that
+        // an `AssertionViolation` (code 0) is not read as success.
+        let kind = RaiseKind::from_status(status as usize).expect("invalid prim error status");
         stage_control(
             th,
-            slow::control_raise_kind(mutator, fp, Some(clo), ip, kind as usize),
+            slow::control_raise_kind(mutator, fp, Some(clo), ip, kind.code()),
         )
     }
 }

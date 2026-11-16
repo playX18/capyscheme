@@ -28,8 +28,6 @@ pub const MD: PhysReg = PhysReg(13);
 /// `stubs::arg_regs5` (rsi, rdx, rcx, r8). `a0` carries `TC` and is not here.
 pub const OP_ARGS: [PhysReg; 4] = [PhysReg(6), PhysReg(2), PhysReg(1), PhysReg(8)];
 
-/// The caller-saved registers of the pool, which an out-of-line helper may
-/// destroy: rax, rcx, rdx and r8, followed by every pool FPR.
 pub const SLOW_CLOBBERS: [PhysReg; 11] = [
     PhysReg(0),
     PhysReg(1),
@@ -44,10 +42,6 @@ pub const SLOW_CLOBBERS: [PhysReg; 11] = [
     PhysReg(FPR_BASE + 6),
 ];
 
-/// The extra caller-saved registers that join the pool:
-/// `xmm9` to `xmm15`. They are slow-path clobbers only while they are
-/// allocatable. Not used on Windows, where xmm6-15 are callee-saved and
-/// `scheme_entry` saves no FP registers.
 const POOL_EXTRA_SLOW_CLOBBERS: [PhysReg; 7] = [
     PhysReg(FPR_BASE + 9),
     PhysReg(FPR_BASE + 10),
@@ -59,8 +53,7 @@ const POOL_EXTRA_SLOW_CLOBBERS: [PhysReg; 7] = [
 ];
 
 /// The assembler's scratch registers: r11 and xmm7 (`ft7`). They are never
-/// allocated. [`vreg`] returns `None` for them, because the portable table
-/// has no spelling for r11.
+/// allocated.
 pub const SCRATCH: Scratch = Scratch {
     gpr: PhysReg(11),
     fpr: PhysReg(FPR_BASE + 7),
@@ -83,6 +76,7 @@ pub fn reg_file() -> (RegFile, Scratch) {
         gprs,
         fprs,
         rv: RV,
+        ac: AC,
         op_args: OP_ARGS.to_vec(),
         slow_clobbers,
         callee_saved: vec![CONSTANT_POINTER, MD],
@@ -90,12 +84,10 @@ pub fn reg_file() -> (RegFile, Scratch) {
     (regs, SCRATCH)
 }
 
-/// The onlineasm register that spells `reg`. It is `None` for the scratch
-/// registers and for any id the table does not name.
-///
-/// Each hardware register is spelled with one portable name, for example
-/// rsi is `t1` (`csr5` also names it). The choice follows the table order in
-/// offlineasm-ir `X86_VREG_GPR` and `arg_regs5`.
+pub(crate) fn fits_immediate(value: i64) -> bool {
+    value > i64::from(i32::MIN) && value <= i64::from(i32::MAX)
+}
+
 pub fn vreg(reg: PhysReg) -> Option<VReg> {
     Some(match reg.0 {
         // General-purpose registers.

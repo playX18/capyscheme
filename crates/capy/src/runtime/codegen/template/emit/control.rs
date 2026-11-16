@@ -17,8 +17,8 @@ use crate::runtime::codegen::template::{
 use crate::runtime::interp::profile::{
     ARITH_FIX_FLON, ARITH_FIXNUMS, ARITH_FLON_FIX, ARITH_FLON_FLON,
 };
-use crate::runtime::sabi::{builtin_class_ids, regs};
 use crate::runtime::objectmodel::Value;
+use crate::runtime::sabi::{builtin_class_ids, regs};
 
 pub fn op_jump<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     context.jump(masm, OpJump::OPERAND_TARGET);
@@ -356,7 +356,12 @@ pub fn op_loop_hint<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     // the yield poll plus, when the JIT is on, the heat bump.
     let (yield_slow, hot_slow) = (masm.label(), masm.label());
     masm.yieldpoint_check(tmp::T0, yield_slow, true);
-    masm.maybe_hot_check_step(tmp::T1, tmp::T2, hot_slow, crate::utils::flags::jit_loop_heat() as i64);
+    masm.maybe_hot_check_step(
+        tmp::T1,
+        tmp::T2,
+        hot_slow,
+        crate::utils::flags::jit_loop_heat() as i64,
+    );
     context.next(masm);
     context.slow_control(masm, yield_slow, SlowPath::YieldLoop);
     if context.profiling() {

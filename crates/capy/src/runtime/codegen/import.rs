@@ -1,14 +1,5 @@
 //! The import table: every absolute value generated code needs but cannot
 //! know when it is assembled.
-//!
-//! Code never holds such a value in an instruction. It names it with an
-//! [`ImportKey`], [`Masm::import`](super::masm::Masm::import) reserves an
-//! 8-byte slot for it in the image, and code loads the slot PC-relative. The
-//! slots are filled once, before the image is published, by the resolver
-//! `Emission::link` is given (and, for the few values that only exist at
-//! install, by the driver afterwards). A key holds names and offsets, never
-//! an address, so an image and its keys can be stored and loaded at another
-//! base: only the resolver turns a key into a number.
 
 use mmtk::util::metadata::side_metadata::global_side_metadata_vm_base_address;
 
@@ -67,7 +58,9 @@ impl RuntimeSym {
             Self::OptEntries => std::ptr::addr_of!(OPT_ENTRIES) as u64,
             Self::FastAllocs => std::ptr::addr_of!(super::gc::FAST_ALLOCS) as u64,
             Self::UnlogBase => global_side_metadata_vm_base_address().as_usize() as u64,
-            Self::OpCount { width, byte } => super::stubs::op_count_addr(width as usize, byte) as u64,
+            Self::OpCount { width, byte } => {
+                super::stubs::op_count_addr(width as usize, byte) as u64
+            }
         }
     }
 }

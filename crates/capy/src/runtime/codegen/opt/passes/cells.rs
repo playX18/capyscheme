@@ -1,11 +1,4 @@
 //! Local cell elimination.
-//!
-//! Assignment conversion boxes every mutated lexical variable in a
-//! `make-variable` cell, and the bytecode lowers its reads and writes to
-//! `LoadCell` and to a `Helper::VariableSet` call. When the cell cannot be
-//! observed by anything else, the box is pure overhead: the loads become SSA
-//! values, the writes become redefinitions, and a loop that carries the cell
-//! carries the value instead.
 
 use std::collections::{HashMap, HashSet};
 
@@ -178,6 +171,10 @@ fn analyze(func: &Func, candidate: &Candidate) -> Option<Plan> {
         None => bail!("escape"),
     };
 
+    if reentrant_write(func, &live, &uses) {
+        bail!("reentrant write");
+    }
+
     // The value dataflow. Seeds come from the OSR edges into a header whose
     // cell parameter is a member: that edge carries the cell from the
     // baseline frame.
@@ -279,6 +276,60 @@ fn analyze(func: &Func, candidate: &Candidate) -> Option<Plan> {
         out,
         frames,
     })
+}
+
+/// Whether the cell is written and read after a call that can capture a
+/// continuation.
+fn reentrant_write(func: &Func, live: &SecondaryMap<Block, bool>, uses: &Uses) -> bool {
+    if uses.stores.is_empty() || uses.loads.is_empty() {
+        return false;
+    }
+    let mut pos: HashMap<Inst, (Block, usize)> = HashMap::new();
+    for block in func.reverse_postorder() {
+        if !live[block] {
+            continue;
+        }
+        for (i, &inst) in func.blocks[block].insts.iter().enumerate() {
+            pos.insert(inst, (block, i));
+        }
+    }
+    let mine: HashSet<Inst> = uses
+        .stores
+        .iter()
+        .chain(uses.loads.iter())
+        .copied()
+        .collect();
+    let sites = |set: &[Inst]| -> Vec<(Block, usize)> {
+        set.iter().filter_map(|i| pos.get(i).copied()).collect()
+    };
+    let stores = sites(&uses.stores);
+    let loads = sites(&uses.loads);
+    let calls: Vec<(Block, usize)> = pos
+        .iter()
+        .filter(|(inst, _)| {
+            !mine.contains(inst)
+                && matches!(
+                    func.insts[**inst].op,
+                    Op::CallKnown(..) | Op::CallGeneric(_) | Op::CallOp(_)
+                )
+        })
+        .map(|(_, p)| *p)
+        .collect();
+    for (cb, ci) in calls {
+        // Blocks reachable from the call's block through at least one edge.
+        let mut seen: HashSet<Block> = HashSet::new();
+        let mut work = func.successors(cb);
+        while let Some(b) = work.pop() {
+            if seen.insert(b) {
+                work.extend(func.successors(b));
+            }
+        }
+        let after = |&(b, i): &(Block, usize)| seen.contains(&b) || (b == cb && i > ci);
+        if stores.iter().any(after) && loads.iter().any(after) {
+            return true;
+        }
+    }
+    false
 }
 
 fn used_values(func: &Func) -> HashSet<Value> {
@@ -657,8 +708,7 @@ fn record_frame_version(
 
 fn term_frame(term: &Terminator) -> Option<FrameState> {
     match term {
-        Terminator::TailCall { frame, .. }
-        | Terminator::Deopt { frame } => Some(*frame),
+        Terminator::TailCall { frame, .. } | Terminator::Deopt { frame } => Some(*frame),
         _ => None,
     }
 }

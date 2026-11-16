@@ -13,6 +13,7 @@ impl Masm {
             block: None,
             externs: Vec::new(),
             pool_words: std::collections::HashMap::new(),
+            near_imports: false,
         }
     }
 
@@ -486,11 +487,22 @@ impl Masm {
     }
 
     /// `dst = the value of import `key``: one PC-relative load.
+    /// Lets [`load_import`](Self::load_import) use the AArch64 literal form
+    /// for the rest of this image. Only for an image that stays well under
+    /// 1 MiB; one that does not fails at `finish`.
+    pub fn set_near_imports(&mut self, on: bool) {
+        self.near_imports = on;
+    }
+
     pub fn load_import(&mut self, dst: VReg, key: ImportKey) {
         let label = self.import(key);
-        // The page-pair form: the owner slot sits at the image start, and the
-        // literal form cannot be fixed up for a backward reference.
-        let at = self.asm.mem_label_far(label);
+        // Import slots sit at the image start. A small image reaches them with
+        // one literal load; any other uses the page pair, which reaches ±4 GiB.
+        let at = if self.near_imports {
+            self.asm.mem_label(label)
+        } else {
+            self.asm.mem_label_far(label)
+        };
         onlineasm!(self.asm;
             loadq {dst}, {at};
         );

@@ -16,8 +16,8 @@ use crate::runtime::interp::stack::Slot;
 use crate::runtime::interp::template_interp::{
     InterpreterTemplateContext, MAP_ENTER_SLOT, MAP_TABLE_SLOTS,
 };
-use crate::runtime::sabi;
 use crate::runtime::objectmodel::NativeReturn;
+use crate::runtime::sabi;
 use crate::runtime::{Engine, MutationContext};
 
 /// Proves the template consts are reachable from the generator. Decoding
@@ -165,11 +165,19 @@ fn install_markers(image: &LoadedImage) {
     // Compiled code decodes every return address's header for a multiple-values
     // return, with no test for the runtime's own markers: each must carry a
     // full header whose mv target is itself.
-    for name in ["interp_return", "scheme_exit", "underflow", "subr_ret", "raise_ret"] {
+    for name in [
+        "interp_return",
+        "scheme_exit",
+        "underflow",
+        "subr_ret",
+        "raise_ret",
+    ] {
         let ra = addr(name) as sabi::Ra;
         // SAFETY: `ra` is the return address of a marker header the image just emitted.
         debug_assert!(
-            unsafe { !sabi::is_entry_compact(ra) && sabi::rp_header(ra).mv_return_address == ra as usize },
+            unsafe {
+                !sabi::is_entry_compact(ra) && sabi::rp_header(ra).mv_return_address == ra as usize
+            },
             "template: marker {name} has no self mv target"
         );
     }

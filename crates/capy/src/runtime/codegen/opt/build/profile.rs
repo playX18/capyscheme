@@ -3,11 +3,12 @@ use crate::heap::Gc;
 use crate::runtime::codegen::jit::context::DecodedInstruction;
 use crate::runtime::codegen::template::ArithShape;
 use crate::runtime::codegen::template::metadata_kind;
+use crate::runtime::interp::profile::ValueShape;
 use crate::runtime::interp::profile::{
     ARITH_RHS_SHIFT, ARITH_WIDE_RATIONAL, NUMBER_BIGNUM, NUMBER_COMPLEX, NUMBER_FIXNUM,
     NUMBER_FLONUM, NUMBER_KIND_MASK, NUMBER_NON_NUMBER, NUMBER_RATNUM,
 };
-use crate::runtime::interp::profile::{CALL_IC_CASES, CallLinkInfo, LINK_MEGA, LINK_POLY};
+use crate::runtime::interp::profile::{CALL_IC_CASES, CallLinkInfo, GenericCacheEntry, LINK_MEGA};
 use crate::runtime::objectmodel::{CodeBlock, CodeBuffer, Value as SchemeValue};
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
@@ -91,6 +92,15 @@ pub fn profile_words(buffer: &CodeBuffer<'_>, pc: usize) -> Vec<(ProfileKind, u3
         .collect()
 }
 
+pub fn return_shape(buffer: &CodeBuffer<'_>, pc: usize) -> ValueShape {
+    profile_words(buffer, pc)
+        .into_iter()
+        .find_map(|(kind, word)| {
+            (kind == ProfileKind::Value).then(|| ValueShape::from_profile(word))
+        })
+        .unwrap_or(ValueShape::Never)
+}
+
 /// One callee of a call site
 #[derive(Clone, Copy)]
 pub struct CallTarget<'gc> {
@@ -102,10 +112,11 @@ pub struct CallTarget<'gc> {
 #[derive(Clone)]
 pub enum CallShape<'gc> {
     /// [`LINK_MONO`](crate::runtime::interp::profile::LINK_MONO): the one
-    /// callee, `None` when the site never called a procedure.
+    /// callee recorded (by the interpreter or the call IC stub), `None` when
+    /// the site never called a procedure.
     Mono(Option<CallTarget<'gc>>),
-    /// [`LINK_POLY`]: the callees the call IC stub enters directly, ordered
-    /// by how often they were entered (hottest first).
+    /// Two or more callees: the ones the site recorded, ordered by how often
+    /// they were entered (hottest first).
     Poly(Vec<CallTarget<'gc>>),
     /// [`LINK_MEGA`]: more callees than the stub holds.
     Mega,
@@ -133,40 +144,66 @@ pub fn call_shape<'gc>(buffer: &CodeBuffer<'gc>, pc: usize) -> Option<CallShape<
     let link = unsafe { &*(addr as *const CallLinkInfo) };
     let site_hits = link.hits.load(Relaxed);
     Some(match link.polymorphic.load(Relaxed) {
-        LINK_POLY => {
-            let mut targets: Vec<CallTarget<'gc>> = link.cases[..CALL_IC_CASES]
-                .iter()
-                .enumerate()
-                .filter_map(|(index, case)| {
-                    let callee = case.get()?;
-                    let hits = if index == 0 && link.case_hits[0].load(Relaxed) == 0 {
-                        site_hits
-                    } else {
-                        link.case_hits[index].load(Relaxed)
-                    };
-                    Some(CallTarget { callee, hits })
-                })
-                .collect();
-
-            if let Some(callee) = link.callee.get()
-                && !targets.iter().any(|target| {
-                    SchemeValue::from(target.callee).bits() == SchemeValue::from(callee).bits()
-                })
-            {
-                targets.push(CallTarget {
-                    callee,
-                    hits: site_hits,
-                });
-            }
-            targets.sort_by(|a, b| b.hits.cmp(&a.hits));
-            CallShape::Poly(targets)
-        }
         LINK_MEGA => CallShape::Mega,
-        _ => CallShape::Mono(link.callee.get().map(|callee| CallTarget {
+        // Read all recorded callees.
+        _ => {
+            let mut targets = observed_targets(link, site_hits);
+            match targets.len() {
+                0 => CallShape::Mono(None),
+                1 => CallShape::Mono(targets.pop()),
+                _ => CallShape::Poly(targets),
+            }
+        }
+    })
+}
+
+/// Cached EMF entry.
+pub fn generic_emf_at<'gc>(buffer: &CodeBuffer<'gc>, pc: usize) -> Option<GenericCacheEntry<'gc>> {
+    if buffer.metadata().is_null() {
+        return None;
+    }
+    let insn = decode(buffer, pc);
+    if !matches!(
+        insn.op,
+        OpcodeId::OpCall | OpcodeId::OpTailCall | OpcodeId::OpCallSelf | OpcodeId::OpTailCallSelf
+    ) {
+        return None;
+    }
+    let addr = insn.metadata_addr(metadata_kind(insn.op), 0);
+    // SAFETY: as in `call_shape`, this site's link lives in the metadata
+    // area, which never moves.
+    let link = unsafe { &*(addr as *const CallLinkInfo) };
+    link.read_generic().filter(|entry| entry.emf.is_some())
+}
+
+/// Observed targets.
+fn observed_targets<'gc>(link: &CallLinkInfo, site_hits: u32) -> Vec<CallTarget<'gc>> {
+    let mut targets: Vec<CallTarget<'gc>> = link.cases[..CALL_IC_CASES]
+        .iter()
+        .enumerate()
+        .filter_map(|(index, case)| {
+            let callee = case.get()?;
+            let hits = if index == 0 && link.case_hits[0].load(Relaxed) == 0 {
+                site_hits
+            } else {
+                link.case_hits[index].load(Relaxed)
+            };
+            Some(CallTarget { callee, hits })
+        })
+        .collect();
+
+    if let Some(callee) = link.callee.get()
+        && !targets.iter().any(|target| {
+            SchemeValue::from(target.callee).bits() == SchemeValue::from(callee).bits()
+        })
+    {
+        targets.push(CallTarget {
             callee,
             hits: site_hits,
-        })),
-    })
+        });
+    }
+    targets.sort_by(|a, b| b.hits.cmp(&a.hits));
+    targets
 }
 
 /// How Tier 2 lowers one arithmetic or comparison site, from its profile.

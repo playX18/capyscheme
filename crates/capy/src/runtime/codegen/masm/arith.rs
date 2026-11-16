@@ -329,5 +329,4 @@ impl Masm {
             orq {dst}, {dst}, {no};
         );
     }
-
 }

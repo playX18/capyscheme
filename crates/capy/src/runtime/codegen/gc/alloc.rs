@@ -1,6 +1,5 @@
 //! Allocation: the LAB bump, and `capy_op_alloc` when it fails.
 
-
 use onlineasm::{Label, VReg, onlineasm};
 
 use super::{GcCodegen, alloc_stats};

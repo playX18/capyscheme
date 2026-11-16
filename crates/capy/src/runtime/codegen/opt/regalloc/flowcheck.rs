@@ -40,6 +40,10 @@ pub(crate) fn check(
         }
     }
 
+    for &(p, word) in &alloc.homes {
+        seed.insert(Loc::Slot(super::home_slot(word)), alloc.canon(p));
+    }
+
     let mut outs: SecondaryMap<LBlock, Option<State>> = SecondaryMap::new();
     let entry_in = |outs: &SecondaryMap<LBlock, Option<State>>, b: LBlock| -> Option<State> {
         let mut acc: Option<State> = if b == func.entry {
@@ -123,8 +127,24 @@ fn simulate(
     let data = &func.blocks[b];
     let base = num.base[b];
 
-    let apply_moves = |state: &mut State, g: u32| {
+    let apply_moves = |state: &mut State, g: u32| -> Result<(), String> {
         for m in &alloc.moves[g as usize] {
+            // An untag reload reads the tagged source's slot, not `src`, and
+            // defines the raw vreg there.
+            if let Some(u) = m.untag {
+                if state.get(&u.from) == Some(&alloc.canon(u.src)) {
+                    state.insert(m.dst, alloc.canon(u.dst));
+                } else {
+                    state.remove(&m.dst);
+                    if report {
+                        return Err(format!(
+                            "{b}: the untag reload of {} reads {}, which does not hold {}",
+                            u.dst, u.from, u.src
+                        ));
+                    }
+                }
+                continue;
+            }
             match state.get(&m.src).copied() {
                 Some(v) => {
                     state.insert(m.dst, v);
@@ -134,6 +154,7 @@ fn simulate(
                 }
             }
         }
+        Ok(())
     };
 
     let check_uses = |state: &State, g: u32, ops: &[intervals::OpInfo]| -> Result<(), String> {
@@ -166,7 +187,7 @@ fn simulate(
 
     for (k, inst) in data.insts.iter().enumerate() {
         let g = base + k as u32;
-        apply_moves(&mut state, g);
+        apply_moves(&mut state, g)?;
         let ops = intervals::inst_ops(func, inst);
         check_uses(&state, g, &ops)?;
 
@@ -200,7 +221,7 @@ fn simulate(
 
     if let Some(term) = &data.term {
         let g = base + data.insts.len() as u32;
-        apply_moves(&mut state, g);
+        apply_moves(&mut state, g)?;
 
         // The arguments of an edge are consumed by the edge moves, which run
         // before the terminator: their delivery is checked at the target

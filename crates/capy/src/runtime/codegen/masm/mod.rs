@@ -241,6 +241,10 @@ pub struct Masm {
     externs: Vec<ExternalName>,
     /// 64-bit constants already embedded as data islands, keyed by bits.
     pool_words: std::collections::HashMap<u64, Label>,
+    /// Whether [`Masm::load_import`] may use the one-instruction AArch64
+    /// literal load (±1 MiB) instead of the page pair. Set by an emitter
+    /// whose image is known to stay small (Tier 2); cleared by `finish`.
+    near_imports: bool,
 }
 
 impl Masm {
@@ -258,6 +262,7 @@ impl Masm {
         // failed build left behind so they cannot leak into the next image.
         self.externs.clear();
         self.pool_words.clear();
+        self.near_imports = false;
         let finished = result?;
         Ok(UnloadedImage {
             finished,

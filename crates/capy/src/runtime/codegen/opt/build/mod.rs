@@ -10,8 +10,9 @@ mod object;
 pub mod profile;
 mod records;
 
+use crate::runtime::interp::profile::ValueShape;
 use cranelift_entity::{EntityList, EntityRef};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::mem::{offset_of, size_of};
 
 use crate::bytecode::def::{
@@ -43,15 +44,6 @@ use liveness::Liveness;
 type Regs = Vec<Option<Value>>;
 
 /// Lowers `code_block`'s bytecode to SSA, with no speculation.
-///
-/// `code_block` must be rooted by the caller. `mutation` is the mutation
-/// scope the caller runs in: the builder reads the buffer's constants and
-/// the GC references in its call links, which stay valid while no collection
-/// runs. A collection cannot run while the scope has no yieldpoint or native
-/// transition, and this function has neither.
-///
-/// Honours `CAPY_OPT_DUMP=build` (written to `CAPY_JIT_DUMP_DIR`, else
-/// stderr) and runs the verifier when `CAPY_OPT_VERIFY` is set.
 pub fn build<'gc>(
     mutation: MutationContext<'gc>,
     code_block: Gc<'gc, CodeBlock<'gc>>,
@@ -70,7 +62,11 @@ pub fn build<'gc>(
         Some(closure)
             if SchemeValue::from(crate::runtime::objectmodel::proc::Closure::code_block(
                 closure,
-            )) == root_value =>
+            )) == root_value
+                && code_block
+                    .watch_invalidations
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    == 0 =>
         {
             (0..closure.nfree)
                 .map(|index| crate::runtime::objectmodel::proc::Closure::free_get(closure, index))
@@ -111,7 +107,8 @@ pub fn build<'gc>(
 }
 
 fn prune_checks(func: &mut Func) {
-    let no_deps = func.deps.is_empty() && func.class_deps.is_empty();
+    let no_deps =
+        func.deps.is_empty() && func.class_deps.is_empty() && func.generic_deps.is_empty();
     let osr_checks = std::mem::take(&mut func.osr_checks);
     let cell_checks = std::mem::take(&mut func.cell_checks);
     let mut dead = HashSet::new();
@@ -168,13 +165,26 @@ fn dump(func: &Func, label: &str) {
     }
 }
 
-/// The code block the builder names: the root procedure.
 fn root() -> CodeRef {
     CodeRef::new(0)
 }
 
-/// The word of an environment record that holds slot `index`. Slot 0 follows
-/// the length word.
+fn bytecode_returns_one_value(code: &[u8]) -> bool {
+    let mut pc = 0;
+    while pc < code.len() {
+        let Some((ins, _, len)) = Instruction::decode_slice(code, pc) else {
+            return false;
+        };
+        pc += len;
+        match ins {
+            Instruction::OpReturnValues(op) if op.count.0 != 1 => return false,
+            Instruction::OpTailCall(_) => return false,
+            _ => {}
+        }
+    }
+    true
+}
+
 fn env_slot_word(index: u32) -> u32 {
     (offset_of!(EnvRecord<'static>, slots) / size_of::<usize>()) as u32 + index
 }
@@ -249,6 +259,15 @@ enum ResultSite {
         base: u32,
         continues: bool,
     },
+    /// A call followed by `return_point_forward` whose entry takes several
+    /// values (`values`).
+    Taken {
+        first_value: u32,
+        mv_pc: usize,
+        base: u32,
+        values: ReturnValues,
+        wants_list: bool,
+    },
 }
 
 /// One row of a `case-lambda` clause table.
@@ -298,12 +317,21 @@ fn case_rows(buffer: &CodeBuffer<'_>) -> Option<Vec<CaseRow>> {
 }
 
 /// Whether a call passing `argc` arguments can jump straight to `code_block`'s
-/// compiled entry: a fixed-arity block of that arity, or a multi-entry block
-/// whose dispatch first selects a fixed clause of that arity. A variadic
-/// clause, or a call no clause takes, keeps the generic protocol.
+/// compiled entry: a fixed-arity block of that arity, a rest-args block whose
+/// required count `argc` meets (its entry checks the lower bound itself and
+/// collects the rest, exactly as the generic protocol would), or a
+/// multi-entry block whose dispatch first selects a fixed clause of that
+/// arity. Anything else keeps the generic protocol.
 fn direct_arity_matches(code_block: &CodeBlock<'_>, argc: u32) -> bool {
     if !code_block.arity.is_multi() {
-        return !code_block.arity.is_variadic() && code_block.arity.fixed_arity() == argc as usize;
+        if !code_block.arity.is_variadic() {
+            return code_block.arity.fixed_arity() == argc as usize;
+        }
+        let code = code_block.buffer.code();
+        let Some((Instruction::OpEnterRest(op), _, _)) = Instruction::decode_slice(code, 0) else {
+            return false;
+        };
+        return argc as usize >= op.required.0 as usize;
     }
     let code = code_block.buffer.code();
     let Some((Instruction::OpEnterCase(op), _, _)) = Instruction::decode_slice(code, 0) else {
@@ -369,6 +397,9 @@ struct Builder<'s, 'gc> {
     /// the `return_point_values_rest` entry that follows: the extra count,
     /// and the list of the extras when the entry's `values_rest` wants one.
     mv_rest: Option<(Value, Option<Value>)>,
+    /// Whether each code block this build called directly returns exactly one
+    /// value on every path (see [`returns_one_value`]).
+    single_valued: HashMap<CodeRef, bool>,
     /// The list of the extras, between the rest entry and its `values_rest`.
     rest_list: Option<Value>,
     /// A `CheckNotInvalid` owed to the instructions that last returned
@@ -738,6 +769,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             pending_mv: None,
             mv_taken: None,
             mv_rest: None,
+            single_valued: HashMap::new(),
             rest_list: None,
             check_owed: Fire::No,
             mv_only,
@@ -1943,6 +1975,50 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                     continues,
                 });
             }
+            ResultSite::Taken {
+                first_value,
+                mv_pc,
+                base,
+                values,
+                wants_list,
+            } => {
+                // `value` is the call node: the values are in its callee frame.
+                let (count, rest) = match values {
+                    ReturnValues::Take(count) => (count, false),
+                    ReturnValues::TakeRest(count) => (count, true),
+                    _ => return Err("a taken call site has no value count".to_string()),
+                };
+                let frame = self.frame(next, next)?;
+                let mut first = None;
+                for i in 0..count {
+                    let read = self.value_op(Op::ReturnedValue(i), &[value], Type::Any, None);
+                    self.set(first_value + i, read)?;
+                    first.get_or_insert(read);
+                }
+                if rest {
+                    let extra =
+                        self.value_op(Op::ReturnedCount(count), &[value], Type::Int32, None);
+                    let list = wants_list.then(|| {
+                        let from =
+                            self.value_op(Op::ReturnedAddr(count), &[value], Type::Int64, None);
+                        self.value_op(
+                            Op::CallOp(Helper::ValuesRest.helper_ref()),
+                            &[from, extra],
+                            Type::Any,
+                            Some(frame),
+                        )
+                    });
+                    self.mv_rest = Some((extra, list));
+                }
+                self.pending_return = Some(next);
+                self.pending_mv = Some(PendingMv {
+                    mv_pc,
+                    base,
+                    result: first.unwrap_or(value),
+                    continues: true,
+                });
+                self.mv_taken = Some((mv_pc, count));
+            }
         }
         Ok(())
     }
@@ -1963,14 +2039,14 @@ impl<'s, 'gc> Builder<'s, 'gc> {
     ) -> Result<Flow, String> {
         let next = pc + len;
         calls::site(self_call);
-        let (dst, values) = match Instruction::decode_slice(self.code, next) {
-            Some((Instruction::OpReturnPoint(point), _, _)) => {
+        let (dst, values, point_len) = match Instruction::decode_slice(self.code, next) {
+            Some((Instruction::OpReturnPoint(point), _, point_len)) => {
                 let values = if point.mv.0 == MV_ERROR {
                     ReturnValues::Error
                 } else {
                     ReturnValues::Ignore
                 };
-                (point.dst.0, values)
+                (point.dst.0, values, point_len)
             }
             Some((Instruction::OpReturnPointForward(forward), _, forward_len)) => {
                 return self.lower_forward_call(
@@ -2079,7 +2155,34 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         let result = self.value_op(op, &operands, Type::Any, Some(frame));
         self.set(dst, result)?;
         self.pending_return = Some(next);
+        self.speculate_return(next, next + point_len, result)?;
         Ok(Flow::Next)
+    }
+
+    /// Speculates on what the return point before `after` saw returned.
+    fn speculate_return(&mut self, point: usize, after: usize, value: Value) -> Result<(), String> {
+        let shape = profile::return_shape(self.buffer, point);
+        if matches!(
+            shape,
+            ValueShape::Never | ValueShape::Bool | ValueShape::Number | ValueShape::Mixed
+        ) || (self.blocked)(after)
+        {
+            return Ok(());
+        }
+        let frame = self.frame(after, after)?;
+        match shape {
+            ValueShape::Fixnum => {
+                self.value_op(Op::CheckInt64, &[value], Type::Int64, Some(frame));
+            }
+            ValueShape::Flonum => {
+                self.value_op(Op::CheckDouble, &[value], Type::Double, Some(frame));
+            }
+            ValueShape::Class(class) => {
+                self.check_class(value, ClassRef::from_class_id(class.bits()), frame);
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     /// A call followed by `return_point_forward` and a multiple-value entry
@@ -2154,8 +2257,21 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         if self.param_regs[point_block].is_some() {
             return Err(self.unsupported(ins, "return point has several predecessors"));
         }
-        // The specialized paths below return exactly one value, which an
-        // entry taking another count rejects, so they leave it to the call.
+
+        if !self_call && taking && shape.nvals >= 1 {
+            let site = ResultSite::Taken {
+                first_value,
+                mv_pc,
+                base,
+                values: mode,
+                wants_list,
+            };
+            if let Some(flow) =
+                self.try_generic_call(pc, next, callee_reg, first_arg, argc, mode, site)?
+            {
+                return Ok(flow);
+            }
+        }
         if !self_call && !taking {
             let site = ResultSite::Forward {
                 first_value,
@@ -2256,24 +2372,50 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 return Ok(Flow::Next);
             }
         }
+
         let mut operands = vec![self.reg(callee_reg)?];
         operands.extend(self.regs(first_arg..first_arg + argc)?);
-        // The call's frame is the entry's: the registers live there are the
-        // ones live after the call. Its exit hands the callee frame's values
-        // over (`AC` counts them).
-        let frame = self.frame(mv_pc, next)?;
-        self.func.frames[frame].returned = Some(ReturnedValues { base, count: None });
-        // A callee the profile or a folded global names directly goes through
-        // `CheckCode`, which deopts before the call when the runtime value is
-        // another closure. The forward return point is the same one a generic
-        // call would use; only the entry protocol differs.
+
         let direct = if self_call {
             None
         } else {
             self.direct_callee(operands[0], argc)
                 .or_else(|| self.direct_profile_callee(pc, operands[0], argc))
         };
+
         calls::call(self_call || direct.is_some());
+
+        let known = if self_call {
+            Some(root())
+        } else {
+            direct.map(|(code, _)| code)
+        };
+
+        if taking
+            && shape.nvals == 1
+            && !wants_list
+            && let Some(code) = known
+            && self.returns_one_value(code)
+        {
+            let frame = self.frame(next, next)?;
+            let op = Op::CallKnown(code, ReturnValues::Error);
+            if let Some((_, checked)) = direct {
+                operands[0] = checked;
+            }
+            let result = self.value_op(op, &operands, Type::Any, Some(frame));
+            let site = ResultSite::Taken {
+                first_value,
+                mv_pc,
+                base,
+                values: mode,
+                wants_list: false,
+            };
+            self.finish_taken_value(site, next, result, None)?;
+            return Ok(Flow::Next);
+        }
+
+        let frame = self.frame(mv_pc, next)?;
+        self.func.frames[frame].returned = Some(ReturnedValues { base, count: None });
         let op = if self_call {
             Op::CallKnown(root(), mode)
         } else if let Some((code, checked)) = direct {
@@ -2283,6 +2425,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             Op::CallGeneric(mode)
         };
         let result = self.value_op(op, &operands, Type::Any, Some(frame));
+
         if taking {
             // The values are in the callee frame, read before anything else
             // can reuse it; the entry finds them in `r[base + 2..]`.
@@ -2388,20 +2531,43 @@ impl<'s, 'gc> Builder<'s, 'gc> {
     fn code_ref_value(&mut self, value: SchemeValue<'gc>) -> CodeRef {
         // The code block this unit compiles for is `CodeRef` 0; naming it
         // directly lets a self call enter this unit's entry with a plain
-        // jump (see `enter_known`).
-        if let Some(&closure) = self.inline.chain.first() {
-            let root_block = crate::runtime::objectmodel::proc::Closure::code_block(
-                crate::runtime::objectmodel::proc::Closure::from_value(closure),
-            );
-            if SchemeValue::from(root_block) == value {
-                return root();
-            }
+        // jump (see `enter_known`). The inline chain holds code blocks, not
+        // closures, and its last entry is the block this builder lowers: the
+        // root at depth 0, the callee in a nested build (whose `CodeRef` 0
+        // the splice maps to the callee's own entry).
+        if self.inline.chain.last() == Some(&value) {
+            return root();
         }
         let source = CodeSource::Heap(value);
         if let Some((code, _)) = self.func.codes.iter().find(|(_, s)| **s == source) {
             return code;
         }
         self.func.codes.push(source)
+    }
+
+    /// Whether the code block `code` returns exactly one value on every
+    /// path, so a call to it needs no value-count exit. Decided once per code
+    /// block from its bytecode ([`bytecode_returns_one_value`]).
+    fn returns_one_value(&mut self, code: CodeRef) -> bool {
+        if let Some(&known) = self.single_valued.get(&code) {
+            return known;
+        }
+        let single = match self.func.codes.get(code).copied() {
+            Some(CodeSource::Root) => bytecode_returns_one_value(self.code),
+            Some(CodeSource::Pool(index)) => {
+                let value = self.buffer.constant(index as usize);
+                Self::heap_returns_one_value(value)
+            }
+            Some(CodeSource::Heap(value)) => Self::heap_returns_one_value(value),
+            None => false,
+        };
+        self.single_valued.insert(code, single);
+        single
+    }
+
+    fn heap_returns_one_value(value: SchemeValue<'gc>) -> bool {
+        value.is::<CodeBlock<'gc>>()
+            && bytecode_returns_one_value(value.downcast::<CodeBlock<'gc>>().buffer.code())
     }
 
     /// The direct-call target for `callee`, when it is a constant folded
@@ -2452,8 +2618,8 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         callee: Value,
         argc: u32,
     ) -> Option<(CodeRef, Value)> {
-        let code_block = match profile::call_shape(self.buffer, pc)? {
-            profile::CallShape::Mono(Some(target)) => target.callee,
+        let code_block = match profile::call_shape(self.buffer, pc) {
+            Some(profile::CallShape::Mono(Some(target))) => target.callee,
             _ => return None,
         };
         if code_block.kind != crate::runtime::objectmodel::proc::CodeBlockKind::Bytecode
@@ -3638,6 +3804,12 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             if set.is_invalid() {
                 return None;
             }
+        }
+        // A cell written this often will change again mid-compile (refusing
+        // the install) or right after it (invalidating the unit and leaving
+        // a watchpoint firing on every later write), so keep live loads.
+        if variable_ref.is_hot() {
+            return None;
         }
         Some(current)
     }

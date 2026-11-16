@@ -382,10 +382,13 @@ pub struct SafePointData {
     pub regmask: Option<RegMask>,
 }
 
-/// The tagged spill slots that are live at a safepoint, one bit per slot.
+/// The tagged spill slots that are live at a safepoint, one bit per slot,
+/// and the live home slots.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LiveMask {
     pub words: Vec<u64>,
+    /// Frame words `fp[r]` of home slots that hold a live tagged value here.
+    pub homes: Vec<u32>,
 }
 
 /// The general-purpose registers that hold a tagged GC root at a safepoint,

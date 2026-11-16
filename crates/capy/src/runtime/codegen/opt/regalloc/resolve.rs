@@ -7,7 +7,7 @@ use cranelift_entity::{EntityRef, SecondaryMap};
 use super::assign::Assignment;
 use super::liveness::{Liveness, Numbering};
 use super::pos;
-use super::{Loc, Move, Scratch};
+use super::{Loc, Move, Scratch, Untag};
 use crate::runtime::codegen::opt::ir::inst::Constant;
 use crate::runtime::codegen::opt::lir::{LBlock, LirFunc, LirInst, RegClass, Role, VReg};
 
@@ -16,7 +16,12 @@ use crate::runtime::codegen::opt::lir::{LBlock, LirFunc, LirInst, RegClass, Role
 /// class. The scratch only holds one value at a time, because a cycle's
 /// chain drains before another cycle is broken.
 pub(crate) fn sequentialize(moves: Vec<Move>, scratch: Scratch) -> Vec<Move> {
-    let mut pending: Vec<Move> = moves.into_iter().filter(|m| m.src != m.dst).collect();
+    // An untag reload has a placeholder `src` (its raw value is never
+    // stored), so it is never a no-op.
+    let mut pending: Vec<Move> = moves
+        .into_iter()
+        .filter(|m| m.untag.is_some() || m.src != m.dst)
+        .collect();
 
     // One destination cannot need the same value twice, and coalesced
     // edges can name the same pair from two live-in spellings.
@@ -45,7 +50,7 @@ pub(crate) fn sequentialize(moves: Vec<Move>, scratch: Scratch) -> Vec<Move> {
             !pending
                 .iter()
                 .enumerate()
-                .any(|(j, m)| j != i && m.src == pending[i].dst)
+                .any(|(j, m)| j != i && m.reads() == pending[i].dst)
         });
         match ready {
             Some(i) => out.push(pending.remove(i)),
@@ -57,14 +62,15 @@ pub(crate) fn sequentialize(moves: Vec<Move>, scratch: Scratch) -> Vec<Move> {
                     pending
                         .iter()
                         .position(|m| {
-                            matches!(m.dst, Loc::Reg(_)) && pending.iter().any(|n| n.src == m.dst)
+                            matches!(m.dst, Loc::Reg(_))
+                                && pending.iter().any(|n| n.reads() == m.dst)
                         })
                         .unwrap_or(0)
                 };
                 let d = pending[at].dst;
                 let class = pending
                     .iter()
-                    .find(|m| m.src == d)
+                    .find(|m| m.reads() == d)
                     .map_or(pending[at].class, |m| m.class);
                 let reg = match class {
                     RegClass::Gpr => scratch.gpr,
@@ -76,10 +82,14 @@ pub(crate) fn sequentialize(moves: Vec<Move>, scratch: Scratch) -> Vec<Move> {
                     src: d,
                     dst: tmp,
                     konst: None,
+                    untag: None,
                 });
                 for m in pending.iter_mut() {
-                    if m.src == d {
-                        m.src = tmp;
+                    match m.untag.as_mut() {
+                        Some(u) if u.from == d => u.from = tmp,
+                        Some(_) => {}
+                        None if m.src == d => m.src = tmp,
+                        None => {}
                     }
                 }
             }
@@ -96,7 +106,7 @@ pub(crate) fn resolve(
     asg: &Assignment,
     scratch: Scratch,
 ) -> Result<(Vec<Vec<Move>>, Vec<Constant>), String> {
-    let mut remat = Remat::new(func);
+    let mut remat = Remat::new(func, num, asg);
     let mut groups: BTreeMap<(u32, u8), Vec<Move>> = BTreeMap::new();
 
     // Piece boundaries inside a block. A piece may have several ranges, so
@@ -143,10 +153,11 @@ pub(crate) fn resolve(
                 if src == dst {
                     continue;
                 }
-                // The slot already holds the value: no store.
+                // The slot already holds the value: no store. A raw int that
+                // is only rebuilt from its tagged source is never stored.
                 if matches!(src, Loc::Reg(_))
                     && matches!(dst, Loc::Slot(_))
-                    && asg.coherence.skip.contains(&(v, p))
+                    && (asg.coherence.skip.contains(&(v, p)) || remat.slot_free[v])
                 {
                     continue;
                 }
@@ -155,11 +166,13 @@ pub(crate) fn resolve(
                 } else {
                     (g + 1, 1)
                 };
+                let untag = remat.untag_reload(v, src, dst, p)?;
                 groups.entry(key).or_default().push(Move {
                     class: func.class(v),
                     src,
                     dst,
                     konst: remat.reload(v, src, dst),
+                    untag,
                 });
             }
         }
@@ -228,6 +241,7 @@ pub(crate) fn resolve(
                         src,
                         dst,
                         konst: remat.reload(sv, src, dst),
+                        untag: None,
                     });
                 }
             }
@@ -241,21 +255,36 @@ pub(crate) fn resolve(
     Ok((out, remat.consts))
 }
 
-/// Constant rematerialization, JSC's reload of a constant tmp: a vreg with
-/// one definition, a constant, is rebuilt from its immediate where it would
-/// be reloaded from its slot. The store stays, so the slot is still valid
-/// for operands that read it directly. Only integer immediates in a GPR
-/// qualify; the others need a scratch register or the constant table.
-struct Remat {
+/// Rematerialization at reloads.
+///
+/// Constants: a vreg with one definition,
+/// a constant, is rebuilt from its immediate where it would be reloaded from
+/// its slot. The store stays, so the slot is still valid for operands that
+/// read it directly. Only integer immediates in a GPR qualify; the others
+/// need a scratch register or the constant table.
+///
+/// Untags: a raw int defined once by `UntagInt`/`UntagInt64` of a tagged
+/// fixnum is rebuilt as `untag(load source slot)` where it would be reloaded
+/// from its own slot, when the source's slot holds the source there. If every
+/// access to the raw value's slot is such a reload, the slot is never read, so
+/// the spill stores are dropped too (`slot_free`).
+struct Remat<'a> {
     of: SecondaryMap<VReg, Option<Constant>>,
     index: std::collections::HashMap<VReg, u32>,
     consts: Vec<Constant>,
+    asg: &'a Assignment,
+    /// The tagged source of each raw int with one `UntagInt`/`UntagInt64`
+    /// definition.
+    untag_of: SecondaryMap<VReg, Option<VReg>>,
+    /// Raw ints whose slot is only ever reloaded by an untag remat.
+    slot_free: SecondaryMap<VReg, bool>,
 }
 
-impl Remat {
-    fn new(func: &LirFunc) -> Self {
+impl<'a> Remat<'a> {
+    fn new(func: &LirFunc, num: &Numbering, asg: &'a Assignment) -> Self {
         let mut of: SecondaryMap<VReg, Option<Constant>> = SecondaryMap::new();
         let mut defs: SecondaryMap<VReg, u32> = SecondaryMap::new();
+        let mut untag_of: SecondaryMap<VReg, Option<VReg>> = SecondaryMap::new();
         for (_, data) in func.blocks.iter() {
             for inst in &data.insts {
                 if let LirInst::Const { dst, value } = inst {
@@ -266,6 +295,9 @@ impl Remat {
                     {
                         of[*dst] = Some(value.clone());
                     }
+                }
+                if let LirInst::UntagInt { dst, src } | LirInst::UntagInt64 { dst, src } = inst {
+                    untag_of[*dst] = Some(*src);
                 }
                 for op in inst.operands(func) {
                     if op.role == Role::Def {
@@ -287,13 +319,117 @@ impl Remat {
         for v in func.vregs.keys() {
             if defs[v] != 1 {
                 of[v] = None;
+                untag_of[v] = None;
             }
         }
-        Self {
+        let mut remat = Self {
             of,
             index: Default::default(),
             consts: Vec::new(),
+            asg,
+            untag_of,
+            slot_free: SecondaryMap::new(),
+        };
+        remat.find_slot_free(func, num);
+        remat
+    }
+
+    fn find_slot_free(&mut self, func: &LirFunc, num: &Numbering) {
+        let asg = self.asg;
+        let mut operand_at: SecondaryMap<VReg, Vec<u32>> = SecondaryMap::new();
+        for &b in &num.order {
+            let data = &func.blocks[b];
+            let base = num.base[b];
+            for (k, inst) in data.insts.iter().enumerate() {
+                let g = base + k as u32;
+                for op in super::intervals::inst_ops(func, inst) {
+                    if self.untag_of[op.vreg].is_some() {
+                        operand_at[op.vreg].push(op_pos(op.role, g));
+                    }
+                }
+            }
+            if let Some(term) = &data.term {
+                let g = num.term[b];
+                for op in super::intervals::term_ops(func, term) {
+                    if self.untag_of[op.vreg].is_some() {
+                        operand_at[op.vreg].push(op_pos(op.role, g));
+                    }
+                }
+            }
         }
+        for v in func.vregs.keys() {
+            let Some(src) = self.untag_of[v] else {
+                continue;
+            };
+            if func.class(v) != RegClass::Gpr {
+                continue;
+            }
+            let ids = &asg.vreg_children[v];
+            let stacks: Vec<&Vec<(u32, u32)>> = ids
+                .iter()
+                .map(|&id| &asg.children[id])
+                .filter(|c| c.assign == Some(super::intervals::Assign::Stack))
+                .map(|c| &c.ranges)
+                .collect();
+            if stacks.is_empty() {
+                continue;
+            }
+            let mut free = true;
+            'ranges: for &(lo, hi) in stacks.iter().flat_map(|r| r.iter()) {
+                let b = num.block_at[pos::inst_of(lo) as usize];
+                if lo <= num.from(b)
+                    || hi > num.term_pos(b)
+                    || operand_at[v].iter().any(|&q| lo <= q && q < hi)
+                {
+                    free = false;
+                    break 'ranges;
+                }
+                // The next piece, if any, starts where this range ends.
+                let next = ids.iter().map(|&id| &asg.children[id]).find(|c| {
+                    c.ranges.iter().any(|r| r.0 == hi)
+                        && c.assign != Some(super::intervals::Assign::Stack)
+                });
+                if next.is_some() && self.source_slot(src, hi).is_none() {
+                    free = false;
+                    break 'ranges;
+                }
+            }
+            self.slot_free[v] = free;
+        }
+    }
+
+    fn source_slot(&self, src: VReg, p: u32) -> Option<Loc> {
+        let asg = self.asg;
+        let slot = asg.slot_of[src]?;
+        if super::home_word(slot).is_some() {
+            return Some(Loc::Slot(slot));
+        }
+        if asg.groups[src].is_some() {
+            return None;
+        }
+        asg.vreg_children[src]
+            .iter()
+            .map(|&id| &asg.children[id])
+            .any(|c| {
+                c.assign == Some(super::intervals::Assign::Stack)
+                    && c.ranges.iter().any(|&(lo, hi)| lo < p && p < hi)
+            })
+            .then_some(Loc::Slot(slot))
+    }
+
+    fn untag_reload(&self, v: VReg, src: Loc, dst: Loc, p: u32) -> Result<Option<Untag>, String> {
+        if !self.slot_free[v] || !matches!((src, dst), (Loc::Slot(_), Loc::Reg(_))) {
+            return Ok(None);
+        }
+        let source = self.untag_of[v].ok_or_else(|| format!("{v} is not an untag"))?;
+        let from = self
+            .source_slot(source, p)
+            .ok_or_else(|| format!("the source {source} of {v} is not in a slot at {p}"))?;
+        Ok(Some(Untag {
+            from,
+            src: source,
+            dst: v,
+        }))
     }
 
     /// The constant index when moving `v` from `src` to `dst` is a reload.
@@ -307,6 +443,15 @@ impl Remat {
             consts.push(value);
             consts.len() as u32 - 1
         }))
+    }
+}
+
+/// Where an operand of instruction `g` is read or written.
+fn op_pos(role: Role, g: u32) -> u32 {
+    if role == Role::Use {
+        pos::early(g)
+    } else {
+        pos::late(g)
     }
 }
 
@@ -325,6 +470,7 @@ mod tests {
             src,
             dst,
             konst: None,
+            untag: None,
         }
     }
 

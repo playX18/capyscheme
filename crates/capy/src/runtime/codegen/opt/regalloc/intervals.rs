@@ -9,7 +9,7 @@ use super::pos;
 use super::{PhysReg, RegFile};
 use crate::runtime::codegen::opt::lir::{
     CallTarget, Clobbers, Constraint, LBlock, LEdge, LirBlock, LirFunc, LirInst, LirTerm, PhysRole,
-    Role, VReg,
+    ReturnedKind, Role, VReg,
 };
 
 /// Where a piece lives. A `Stack` piece uses the spill slot of its vreg.
@@ -25,11 +25,11 @@ pub(crate) enum Assign {
 pub(crate) struct Child {
     pub vreg: VReg,
     pub ranges: Vec<(u32, u32)>,
-    /// `None` while the piece still has to be placed by linear scan.
+    /// `None` while the piece still has to be placed by an allocator.
     pub assign: Option<Assign>,
 }
 
-/// The input to linear scan.
+/// The input to the allocators (greedy and linear scan).
 pub(crate) struct Built {
     pub children: Vec<Child>,
     pub vreg_children: SecondaryMap<VReg, Vec<usize>>,
@@ -71,6 +71,10 @@ pub(crate) struct OpInfo {
     /// it may stay in an ABI callee-saved register across the call, which
     /// preserves it for the deopt checked after the call returns.
     pub call_safe: bool,
+    /// A use the emitter reads after it writes the results
+    /// ([`LirInst::reads_after_def`]). It is live through the Late point, so
+    /// it interferes with the instruction's defs.
+    pub late: bool,
 }
 
 fn plain_ops(ops: Vec<crate::runtime::codegen::opt::lir::Operand>) -> Vec<OpInfo> {
@@ -81,6 +85,7 @@ fn plain_ops(ops: Vec<crate::runtime::codegen::opt::lir::Operand>) -> Vec<OpInfo
             constraint: op.constraint,
             slot: false,
             call_safe: false,
+            late: false,
         })
         .collect()
 }
@@ -100,6 +105,10 @@ fn is_non_collecting_call(inst: &LirInst) -> bool {
 /// marked as slot or call-safe uses.
 pub(crate) fn inst_ops(func: &LirFunc, inst: &LirInst) -> Vec<OpInfo> {
     let mut out = plain_ops(inst.operands(func));
+
+    for op in &mut out {
+        op.late = op.role == Role::Use && inst.reads_after_def(op.vreg);
+    }
 
     let keep_in_regs = matches!(inst, LirInst::Poll { .. });
     if let (Some(sp), false) = (inst.safepoint(), keep_in_regs) {
@@ -380,6 +389,17 @@ pub(crate) fn copy_hints(
     hints
 }
 
+pub(crate) fn count_window(insts: &[LirInst], k: usize, base: u32) -> (u32, u32) {
+    let g = base + k as u32;
+    match insts[..k]
+        .iter()
+        .rposition(|i| matches!(i, LirInst::Call { .. }))
+    {
+        Some(j) => (pos::late(base + j as u32), pos::late(g) + 1),
+        None => (pos::early(g), pos::late(g) + 1),
+    }
+}
+
 /// Computes live segments and the initial pieces.
 pub(crate) fn build(
     func: &LirFunc,
@@ -484,7 +504,12 @@ pub(crate) fn build(
 
             let live_after: HashSet<VReg> = open.keys().copied().collect();
             for op in ops.iter().filter(|o| o.role == Role::Use) {
-                open.entry(op.vreg).or_insert(use_pos + 1);
+                // A late use ends after the def point, so no def of this
+                // instruction can take its register.
+                let end = if op.late { def_pos + 1 } else { use_pos + 1 };
+
+                open.entry(op.vreg).or_insert(end);
+
                 if op.call_safe {
                     call_safe[op.vreg].push(use_pos);
                 }
@@ -492,11 +517,12 @@ pub(crate) fn build(
                 // A constrained use starts at the Pre gap: the piece cannot
                 // begin between Pre and Early, where no move can run.
                 let lo = pos::pre(g);
-                let hi = if live_after.contains(&op.vreg) {
+                let hi = if op.late || live_after.contains(&op.vreg) {
                     pos::post(g)
                 } else {
                     pos::late(g)
                 };
+
                 if op.slot {
                     specials[op.vreg].push(Special {
                         lo,
@@ -514,6 +540,16 @@ pub(crate) fn build(
                 }
             }
 
+            if matches!(
+                inst,
+                LirInst::LoadReturned {
+                    kind: ReturnedKind::Count,
+                    ..
+                }
+            ) {
+                let (from, _) = count_window(&data.insts, k, base);
+                fixed.entry(regs.ac).or_default().push((from, def_pos + 1));
+            }
             match inst.clobbers() {
                 Clobbers::All => {
                     for &r in regs.gprs.iter().chain(&regs.fprs) {

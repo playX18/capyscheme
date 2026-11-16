@@ -129,18 +129,20 @@ impl OptimizingCompiler {
         }
         regalloc::dump_if_enabled(&lir, &alloc, &name);
 
-        // Install-quality budgets: a unit that outgrew the tuning target is
-        // rejected here, before anything is emitted or installed, so the
-        // block stays on baseline.
+        let instrs: usize = lir
+            .blocks
+            .values()
+            .map(|block| block.insts.len() + usize::from(block.term.is_some()))
+            .sum();
+        let spills = alloc.spill_slots_before_polls as usize;
+
+        log::debug!(
+            target: crate::heap::logging::JIT_LOG_TARGET,
+            " opt size {name}: {instrs} instructions, {spills} spill slots"
+        );
         let max_spills = flags::opt_max_spills();
         let max_instrs = flags::opt_max_unit_instrs();
         if max_spills != 0 || max_instrs != 0 {
-            let instrs: usize = lir
-                .blocks
-                .values()
-                .map(|block| block.insts.len() + usize::from(block.term.is_some()))
-                .sum();
-            let spills = alloc.spill_slots_before_polls as usize;
             let over_instrs = max_instrs != 0 && instrs > max_instrs;
             let over_spills = max_spills != 0 && spills > max_spills;
             if over_instrs || over_spills {
@@ -353,6 +355,7 @@ impl OptimizingCompiler {
             osr,
             code_slots,
             invalid,
+            generic_cold: func.generic_cold,
             entry_jump: CodeOffset(jump_at as u32),
             reheal: CodeOffset(reheal_off as u32),
         };
@@ -386,6 +389,15 @@ impl OptimizingCompiler {
                     class: dep.class,
                     id: dep.id,
                     stamp: dep.stamp,
+                    subtree: dep.subtree,
+                })
+                .collect(),
+            generic_dependencies: func
+                .generic_deps
+                .iter()
+                .map(|dep| super::unit::GenericDependency {
+                    generic: dep.generic,
+                    epoch: dep.epoch,
                 })
                 .collect(),
         }))

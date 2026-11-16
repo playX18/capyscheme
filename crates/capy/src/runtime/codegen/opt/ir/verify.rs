@@ -311,8 +311,7 @@ impl Verifier<'_> {
 
 fn term_frame(term: &Terminator) -> Option<FrameState> {
     match term {
-        Terminator::TailCall { frame, .. }
-        | Terminator::Deopt { frame } => Some(*frame),
+        Terminator::TailCall { frame, .. } | Terminator::Deopt { frame } => Some(*frame),
         _ => None,
     }
 }

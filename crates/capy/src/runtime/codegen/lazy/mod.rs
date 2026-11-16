@@ -366,7 +366,11 @@ impl CellArena {
 
     /// The address of cell `index`.
     pub(crate) fn addr_of(&self, index: usize) -> Option<Address> {
-        self.cells.lock().unwrap().get(index).map(|cell| cell.addr())
+        self.cells
+            .lock()
+            .unwrap()
+            .get(index)
+            .map(|cell| cell.addr())
     }
 
     /// Number of cells.

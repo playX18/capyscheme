@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize};
 use onlineasm::{Extern, Label, VReg, onlineasm};
 
 use super::gc::GcCodegen;
-use super::import::{ImportKey, RuntimeSym};
 use super::image::LoadedImage;
+use super::import::{ImportKey, RuntimeSym};
 use super::lazy::builder::StubBuilder;
 use super::masm::{Masm, RuntimeExtern, SymbolKind};
 use super::template::tmp;
@@ -592,6 +592,37 @@ pub(crate) fn emit_subr_call(masm: &mut Masm, path: Extern) {
     emit_control_tail(masm);
 }
 
+/// Or dispatch key class.
+fn emit_key_class(masm: &mut Masm, key: VReg, shift: i64, giveup: Label) {
+    let (t1, rv) = (tmp::T1, regs::RV);
+    let class_mask = sabi::CLASS_ID_MASK as i64;
+    let not_cell = regs::NOT_CELL_MASK;
+    let fixnum_id = crate::heap::object::builtin_class_ids::FIXNUM as i64;
+    let header_at = masm.assembler().mem(t1, sabi::HEADER_OFFSET as i32);
+    let (fixnum, done) = (masm.label(), masm.label());
+    onlineasm!(*masm.assembler();
+        bqeq {t1}, 0, {giveup};
+        btqnz {t1}, {not_cell}, {fixnum};
+        loadq {rv}, {header_at};
+        andq {rv}, {rv}, {class_mask};
+        jmp {done};
+    );
+    masm.bind(fixnum);
+    masm.branch_if_not_fixnum(t1, rv, giveup);
+    onlineasm!(*masm.assembler();
+        move {rv}, {fixnum_id};
+    );
+    masm.bind(done);
+    if shift != 0 {
+        onlineasm!(*masm.assembler();
+            lshiftq {rv}, {shift};
+        );
+    }
+    onlineasm!(*masm.assembler();
+        orq {key}, {key}, {rv};
+    );
+}
+
 /// The machine entry of a generic function closure. Entered like
 /// `subr_call` (`SFP` = the call's frame, `CP` = the closure, `AC` = the
 /// argument count).
@@ -622,10 +653,13 @@ pub(crate) fn emit_generic_call(masm: &mut Masm, subr_call: Label) {
         bqneq {ac}, 2, {subr_call};
     );
     masm.bind(arity_ok);
+    // Fixnums skip slot ladder.
+    let not_cell = regs::NOT_CELL_MASK;
     onlineasm!(*masm.assembler();
         loadq {t1}, {arg_at};
+        bqeq {t1}, 0, {subr_call};
+        btqnz {t1}, {not_cell}, {reset};
     );
-    masm.branch_if_not_cell(t1, t0, subr_call);
     onlineasm!(*masm.assembler();
         loadq {t2}, {header_at};
         andq {t2}, {t2}, {class_mask};
@@ -735,10 +769,12 @@ pub(crate) fn emit_generic_call(masm: &mut Masm, subr_call: Label) {
             bqneq {ac}, 2, {giveup};
         );
         masm.bind(mhit);
+        // Immediates go to dispatch table.
         onlineasm!(*masm.assembler();
             loadq {t1}, {arg_at};
+            bqeq {t1}, 0, {giveup};
+            btqnz {t1}, {not_cell}, {fail};
         );
-        masm.branch_if_not_cell(t1, t0, giveup);
         onlineasm!(*masm.assembler();
             loadq {t2}, {header1_at};
             andq {t2}, {t2}, {class_mask};
@@ -820,6 +856,15 @@ pub(crate) fn emit_generic_call(masm: &mut Masm, subr_call: Label) {
                 masm.label(),
                 masm.label(),
             );
+            let (eqlcheck, eqlgot, eqlloop, eqlnext, eqlnone, eqlsingle, eqlsingle_none) = (
+                masm.label(),
+                masm.label(),
+                masm.label(),
+                masm.label(),
+                masm.label(),
+                masm.label(),
+                masm.label(),
+            );
             let width_at = masm.assembler().mem(t0, dl::WIDTH as i32);
             let cap_at = masm.assembler().mem(t0, dl::ARITY_CAP as i32);
             let table_at = masm.assembler().mem(t0, dl::FIELD as i32);
@@ -834,7 +879,7 @@ pub(crate) fn emit_generic_call(masm: &mut Masm, subr_call: Label) {
             let tbody_at = masm.assembler().mem(rv, (dl::ARRAY_DATA + dl::BODY) as i32);
             let mul0 = DISPATCH_MUL[0] as i64;
             let bucket_size = dl::BUCKET_SIZE as i64;
-            let class_mask = sabi::CLASS_ID_MASK as i64;
+            let _class_mask = sabi::CLASS_ID_MASK as i64;
             onlineasm!(*masm.assembler();
                 bqeq {ac}, 1, {tstart};
                 bqneq {ac}, 2, {giveup};
@@ -853,22 +898,13 @@ pub(crate) fn emit_generic_call(masm: &mut Masm, subr_call: Label) {
                 lshiftq {t2}, 48;
                 loadq {t1}, {arg_at};
             );
-            masm.branch_if_not_cell(t1, rv, giveup);
+            emit_key_class(masm, t2, 0, giveup);
             onlineasm!(*masm.assembler();
-                loadq {rv}, {header1_at};
-                andq {rv}, {rv}, {class_mask};
-                orq {t2}, {t2}, {rv};
                 bqeq {ac}, 1, {nokey1};
                 bqeq {t3}, 1, {nokey1};
                 loadq {t1}, {arg1_at};
             );
-            masm.branch_if_not_cell(t1, rv, giveup);
-            onlineasm!(*masm.assembler();
-                loadq {rv}, {header1_at};
-                andq {rv}, {rv}, {class_mask};
-                lshiftq {rv}, 24;
-                orq {t2}, {t2}, {rv};
-            );
+            emit_key_class(masm, t2, 24, giveup);
             masm.bind(nokey1);
             onlineasm!(*masm.assembler();
                 loadq {t0}, {generic_at};
@@ -892,7 +928,7 @@ pub(crate) fn emit_generic_call(masm: &mut Masm, subr_call: Label) {
                 loadq {t3}, {key_at};
                 bqneq {t3}, {t2}, {advance};
                 loadi {t3}, {flags_at};
-                btqz {t3}, {dl::DIRECT}, {giveup};
+                btqz {t3}, {dl::DIRECT}, {eqlcheck};
                 loadq {rv}, {tbody_at};
                 jmp {thit};
             );
@@ -904,8 +940,71 @@ pub(crate) fn emit_generic_call(masm: &mut Masm, subr_call: Label) {
                 andq {t1}, {t1}, {t3};
                 jmp {probe};
             );
-            // A `NO_NEXT` closure body in `rv`: enter it as the method
-            // cache does.
+            // Eql bucket resolve.
+            masm.bind(eqlcheck);
+            let eql_at = masm
+                .assembler()
+                .mem(rv, (dl::ARRAY_DATA + dl::EQL_DIRECT) as i32);
+            let entries_len_at = masm.assembler().mem(t0, 0);
+            let entry0_word_at = masm
+                .assembler()
+                .mem(t0, (dl::ARRAY_DATA + dl::ENTRY_WORD) as i32);
+            let entry0_body_at = masm
+                .assembler()
+                .mem(t0, (dl::ARRAY_DATA + dl::ENTRY_BODY) as i32);
+            let entry_word_at = masm.assembler().mem(t0, dl::ENTRY_WORD as i32);
+            let entry_body_at = masm.assembler().mem(t0, dl::ENTRY_BODY as i32);
+            onlineasm!(*masm.assembler();
+                btqz {t3}, {dl::EQL_DIRECT_FLAG}, {giveup};
+                loadq {t0}, {eql_at};
+                loadq {t1}, {arg_at};
+                btqz {t3}, {dl::EQL_POS1_FLAG}, {eqlgot};
+                loadq {t1}, {arg1_at};
+            );
+            masm.bind(eqlgot);
+            masm.branch_if_not_fixnum(t1, rv, giveup);
+            onlineasm!(*masm.assembler();
+                btqz {t3}, {dl::EQL_MULTI_FLAG}, {eqlsingle};
+                loadq {t3}, {entries_len_at};
+                addp {t0}, {t0}, {dl::ARRAY_DATA as i64};
+            );
+            masm.bind(eqlloop);
+            onlineasm!(*masm.assembler();
+                bqeq {t3}, 0, {eqlnone};
+                loadq {t2}, {entry_word_at};
+                bqneq {t2}, {t1}, {eqlnext};
+                loadq {rv}, {entry_body_at};
+                jmp {thit};
+            );
+            masm.bind(eqlnext);
+            onlineasm!(*masm.assembler();
+                addp {t0}, {t0}, {dl::ENTRY_SIZE as i64};
+                subq {t3}, {t3}, 1;
+                jmp {eqlloop};
+            );
+            // Eql none matched.
+            masm.bind(eqlnone);
+            onlineasm!(*masm.assembler();
+                loadi {t3}, {flags_at};
+                btqz {t3}, {dl::EQL_DEFAULT_FLAG}, {giveup};
+                loadq {rv}, {tbody_at};
+                jmp {thit};
+            );
+            // Single eql entry.
+            masm.bind(eqlsingle);
+            onlineasm!(*masm.assembler();
+                loadq {t2}, {entry0_word_at};
+                bqneq {t2}, {t1}, {eqlsingle_none};
+                loadq {rv}, {entry0_body_at};
+                jmp {thit};
+            );
+            masm.bind(eqlsingle_none);
+            onlineasm!(*masm.assembler();
+                btqz {t3}, {dl::EQL_DEFAULT_FLAG}, {giveup};
+                loadq {rv}, {tbody_at};
+                jmp {thit};
+            );
+            // Enter NO_NEXT body.
             masm.bind(thit);
             onlineasm!(*masm.assembler();
                 move {t1}, {ac};

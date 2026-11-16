@@ -1,8 +1,4 @@
 //! Instructions, terminators and the effect model.
-//!
-//! Operands live in [`InstData::args`](InstData), not in [`Op`]. An `Op`
-//! carries only immediates, so a pass can rewrite operands without matching
-//! every variant.
 
 use cranelift_entity::{EntityList, entity_impl};
 

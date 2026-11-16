@@ -47,11 +47,6 @@ pub struct BlockData {
 
 /// An OSR entry: a loop header that the entry block can transfer into from
 /// a running baseline frame.
-///
-/// The entry block dispatches on its selector parameter. Selector `selector`
-/// sends control to `block`, which passes its own parameters (the registers
-/// live at the header) on to `header`. The prologue for this entry loads
-/// every entry parameter from the frame, exactly as it does for a call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OsrEntry {
     /// The OSR block. Its parameters are the header's parameters.
@@ -128,9 +123,6 @@ pub struct CaseClause {
 }
 
 /// A function in SSA form.
-///
-/// Instructions, values and frame states live in arenas. Operand lists are
-/// [`EntityList`]s in a shared pool, so the arenas stay `Copy`-friendly.
 
 pub struct Func<'gc> {
     /// `name at file:line:col` of the root procedure, for dumps and logs.
@@ -144,8 +136,6 @@ pub struct Func<'gc> {
     pub codes: PrimaryMap<CodeRef, CodeSource<'gc>>,
     pub pool: ListPool<Value>,
     /// The bytecode register of each entry parameter, in parameter order.
-    /// The entry glue loads them from `fp[reg]`. A selector parameter, when
-    /// there is one, follows them and has no register.
     pub entry_regs: Vec<u32>,
     /// The OSR entries, in selector order. Empty when no loop can be
     /// entered from a baseline frame.
@@ -153,17 +143,12 @@ pub struct Func<'gc> {
     /// The entry's selector parameter, present exactly when `osr` is not
     /// empty. It is the last parameter of the entry block.
     pub entry_selector: Option<Value>,
-    /// Set for a variadic procedure. The entry then accepts any argument
-    /// count of at least `required`, and `entry_regs` ends with `rest.reg`,
-    /// whose parameter the entry glue fills with the collected vector.
+    /// Set for a variadic procedure.
     pub rest: Option<RestInfo>,
-    /// The clauses of a multi-entry `case-lambda`, in table (source) order.
+    /// The clauses of a multi-entry `case-lambda`.
     /// Empty for an ordinary procedure.
     pub case_clauses: Vec<CaseClause>,
-    /// The shared pseudo register of every variadic clause's rest vector, one
-    /// past the bytecode frame. Set exactly when some clause has a rest.
     pub rest_reg: Option<u32>,
-
     pub heap_constants: Vec<crate::runtime::objectmodel::Value<'gc>>,
     /// The globals whose values this function folded.
     pub deps: Vec<GlobalDep<'gc>>,
@@ -171,40 +156,20 @@ pub struct Func<'gc> {
     /// emitted an inline instance allocation. A redefinition of one of them
     /// invalidates the unit.
     pub class_deps: Vec<ClassDep<'gc>>,
-    /// Whether the builder emitted `CheckNotInvalid` guards (after every
-    /// call and helper, or under the `fold_guards` policy only after
-    /// operations that can fire a watchpoint the unit depends on).
+    /// Generic deps.
+    pub generic_deps: Vec<GenericDep<'gc>>,
+    /// Cold generic flag.
+    pub generic_cold: bool,
+    /// Whether the builder emitted `CheckNotInvalid` guards
     pub checks_invalid: bool,
-    /// The `CheckNotInvalid` guards that carry the OSR entry's frame. They
-    /// stay whatever the dependencies are. Builder bookkeeping, emptied by
-    /// [`prune_checks`](crate::runtime::codegen::opt::build).
     pub osr_checks: HashSet<Inst>,
-    /// The guards that follow a write to one statically known variable and
-    /// are needed only if the unit depends on that variable. Every other
-    /// guard is needed when the unit has any dependency. Builder bookkeeping,
-    /// emptied by `prune_checks`.
     pub cell_checks: HashMap<Inst, crate::runtime::objectmodel::Value<'gc>>,
-    /// Loop headers the versioning pass already cloned. The slow (original)
-    /// loop keeps its guards, so without this mark the pass would clone it
-    /// again on every pipeline round.
     pub versioned: HashSet<Block>,
-    /// Headers of loops that [`unswitch`](crate::runtime::codegen::opt::passes::unswitch)
-    /// has split, and of its clones, so a loop is split at most once.
     pub unswitched: HashSet<Block>,
-    /// Headers of loops whose first iteration [`peel`](crate::runtime::codegen::opt::passes::peel)
-    /// has copied out, so a loop is peeled at most once.
     pub peeled: HashSet<Block>,
-    /// Headers of loops that the generic unroller has replicated.
     pub unrolled: HashSet<Block>,
-    /// Bytecode pcs of the root code block where the exit profile says the
-    /// last compile speculated too often. A speculative hoist whose loop
-    /// entry frame is at one of them is not made.
     pub spec_blocked: HashSet<u32>,
-    /// The last dominator tree, with the control-flow signature it was built
-    /// from. See [`Func::dom_tree`].
     dom_cache: RefCell<Option<DomCache>>,
-    /// A spare buffer for the signature of the current graph, so a lookup
-    /// does not allocate.
     dom_scratch: Cell<Vec<u32>>,
 }
 
@@ -223,18 +188,26 @@ pub struct GlobalDep<'gc> {
     pub value: crate::runtime::objectmodel::Value<'gc>,
 }
 
-/// An assumption that a class descriptor is the class table's current one and
-/// still has the layout the build saw. The install registers a dependent on
-/// the descriptor's redefinition watchpoint and rechecks both conditions; a
-/// later redefinition fires the set and invalidates the unit.
+/// Generic function dependency.
+#[derive(Clone, Copy, Debug)]
+pub struct GenericDep<'gc> {
+    /// Generic value.
+    pub generic: crate::runtime::objectmodel::Value<'gc>,
+    /// Epoch.
+    pub epoch: u32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClassDep<'gc> {
     /// The descriptor, rooted until the install.
     pub class: crate::runtime::objectmodel::Value<'gc>,
     /// The class id the descriptor was looked up by.
     pub id: u32,
-    /// Its layout stamp at build time.
+    /// Its layout stamp at build time, or, for a subtree dependency, its
+    /// subclass stamp (see `subtree`).
     pub stamp: u32,
+    /// Subtree flag.
+    pub subtree: bool,
 }
 
 impl<'gc> Func<'gc> {
@@ -291,6 +264,8 @@ impl<'gc> Func<'gc> {
             heap_constants: Vec::new(),
             deps: Vec::new(),
             class_deps: Vec::new(),
+            generic_deps: Vec::new(),
+            generic_cold: false,
             checks_invalid: false,
             osr_checks: HashSet::new(),
             cell_checks: HashMap::new(),
@@ -487,9 +462,10 @@ impl<'gc> Func<'gc> {
             return tree;
         }
         let tree = Rc::new(self.compute_dom_tree());
-        let stale = self
-            .dom_cache
-            .replace(Some(DomCache { sig, tree: tree.clone() }));
+        let stale = self.dom_cache.replace(Some(DomCache {
+            sig,
+            tree: tree.clone(),
+        }));
         if let Some(stale) = stale {
             self.dom_scratch.set(stale.sig);
         }

@@ -1,6 +1,6 @@
 //! Strength reduction
 //!
-//! Three rewrites:
+//! Four rewrites:
 //!
 //! 1. Multiply by a constant. A total `mul.i64` by `2^k` (or `-2^k`) becomes
 //!    `k` doublings with `add.i64`, which is one add for the common `*2`; by
@@ -16,7 +16,14 @@
 //!    zero, and when the operand's range lies inside one period
 //!    `[k*d, (k+1)*d)` the modulo is `x + (-k*d)`, a single add.
 //!
-//! 3. Induction-variable products. In a natural loop, a header parameter that
+//! 3. Constant reassociation. The total `add.i64`/`sub.i64` wrap like the
+//!    machine, so `(x + c1) + c2` is `x + (c1 + c2)` exactly, and the pair
+//!    becomes one add (or `x` itself when the constants cancel). A compare
+//!    `(x + c) cmp k` becomes `x cmp (k - c)` when `x`'s range proves that
+//!    neither the sum nor the new constant wraps. The checked adds are left
+//!    alone: they deopt on overflow, which the rewrite would move.
+//!
+//! 4. Induction-variable products. In a natural loop, a header parameter that
 //!    every back edge updates by the same constant is a counter. A
 //!    `mul.i64(counter, C)` in the loop becomes a new header parameter holding
 //!    `counter * C`, fed once on every entry and advanced by `step * C` on
@@ -52,6 +59,13 @@ enum Rep {
         delta: i64,
         op: Op,
         frame: Option<FrameState>,
+    },
+    /// The comparison keeps its operator, and its operands become `base` and a
+    /// new immediate `constant`, in the original order.
+    CompareShifted {
+        base: Value,
+        constant: i64,
+        constant_first: bool,
     },
     /// The result is `base * 2^k`, optionally negated, built by doubling
     /// with `op`.
@@ -135,13 +149,24 @@ fn classify(func: &Func, analysis: &range::Analysis<'_>, block: Block, inst: Ins
                 Some(Rep::Value(left))
             } else if int_const(func, left) == Some(0) {
                 Some(Rep::Value(right))
+            } else if data.op == Op::AddI64 {
+                let (value, outer) = constant_operand(func, left, right)?;
+                reassociate(func, value, outer)
             } else {
                 None
             }
         }
         Op::SubI64 | Op::SubI32Ovf => {
-            (int_const(func, right) == Some(0)).then_some(Rep::Value(left))
+            if int_const(func, right) == Some(0) {
+                Some(Rep::Value(left))
+            } else if data.op == Op::SubI64 {
+                let outer = int_const(func, right)?;
+                reassociate(func, left, outer.wrapping_neg())
+            } else {
+                None
+            }
         }
+        Op::CmpI64(_) => compare_shifted(func, analysis, block, left, right),
         Op::MulI64 => {
             let (value, constant) = constant_operand(func, left, right)?;
             mul_rep(ty, value, constant)
@@ -159,6 +184,61 @@ fn classify(func: &Func, analysis: &range::Analysis<'_>, block: Block, inst: Ins
         }
         _ => None,
     }
+}
+
+fn reassociate(func: &Func, value: Value, outer: i64) -> Option<Rep> {
+    let (base, inner) = offset_of(func, value)?;
+    let delta = inner.wrapping_add(outer);
+    Some(if delta == 0 {
+        Rep::Value(base)
+    } else {
+        Rep::AddConst {
+            base,
+            delta,
+            op: Op::AddI64,
+            frame: None,
+        }
+    })
+}
+
+/// `(base, c)` when `value` is `base + c` or `base - c` in the total i64 ops.
+fn offset_of(func: &Func, value: Value) -> Option<(Value, i64)> {
+    let inst = super::forward::def_inst(func, value)?;
+    let args = func.args(inst);
+    match func.insts[inst].op {
+        Op::AddI64 => constant_operand(func, args[0], args[1]),
+        Op::SubI64 => int_const(func, args[1]).map(|c| (args[0], c.wrapping_neg())),
+        _ => None,
+    }
+}
+
+/// `(x + c) cmp k` as `x cmp (k - c)`, when the range of `x` proves that
+/// `x + c` does not wrap (so the compare sees the true sum) and `k - c` is
+/// representable.
+fn compare_shifted(
+    func: &Func,
+    analysis: &range::Analysis<'_>,
+    block: Block,
+    left: Value,
+    right: Value,
+) -> Option<Rep> {
+    let (sum, constant, constant_first) = match (int_const(func, left), int_const(func, right)) {
+        (None, Some(k)) => (left, k, false),
+        (Some(k), None) => (right, k, true),
+        _ => return None,
+    };
+    let (base, offset) = offset_of(func, sum)?;
+    let (lo, hi) = analysis.range_of(block, base)?;
+    let fits = |n: i128| i64::try_from(n).is_ok();
+    if !fits(lo as i128 + offset as i128) || !fits(hi as i128 + offset as i128) {
+        return None;
+    }
+    let shifted = constant.checked_sub(offset)?;
+    Some(Rep::CompareShifted {
+        base,
+        constant: shifted,
+        constant_first,
+    })
 }
 
 /// The value and the constant when one operand of a binary op is an integer
@@ -438,6 +518,29 @@ fn apply(func: &mut Func, plan: &Plan, ty: Type, subst: &mut Subst) -> Option<bo
             move_new_insts(func, block, start, plan.inst);
             subst.add(result, value);
             Some(true)
+        }
+        Rep::CompareShifted {
+            base,
+            constant,
+            constant_first,
+        } => {
+            let block = plan.block;
+            let start = func.blocks[block].insts.len();
+            let immediate = func.push_inst(
+                block,
+                Op::Const(Constant::Int64(constant)),
+                &[],
+                Some(Type::Int64),
+                None,
+            )?;
+            move_new_insts(func, block, start, plan.inst);
+            let args = if constant_first {
+                [immediate, base]
+            } else {
+                [base, immediate]
+            };
+            func.insts[plan.inst].args = EntityList::from_slice(&args, &mut func.pool);
+            Some(false)
         }
         Rep::Double {
             base,

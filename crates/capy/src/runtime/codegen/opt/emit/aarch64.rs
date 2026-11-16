@@ -115,11 +115,16 @@ pub fn reg_file() -> (RegFile, Scratch) {
         gprs,
         fprs,
         rv: RV,
+        ac: AC,
         op_args: OP_ARGS.to_vec(),
         slow_clobbers,
         callee_saved: vec![PC, CONSTANT_POINTER, MD],
     };
     (regs, SCRATCH)
+}
+
+pub(crate) fn fits_immediate(value: i64) -> bool {
+    value.unsigned_abs() <= 4095
 }
 
 /// The onlineasm register that spells `reg`. It is `None` for the scratch

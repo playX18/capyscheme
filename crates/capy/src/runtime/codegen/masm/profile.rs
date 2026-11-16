@@ -171,6 +171,54 @@ impl Masm {
         );
     }
 
+    /// `dst = base + disp`.
+    ///
+    /// AArch64 lowers `leap` of a base plus displacement through the scratch
+    /// register and then moves the result into `dst`, so a frame push such as
+    /// `leap SFP, [SFP + n]` costs an `add` and a `mov`. An add or subtract
+    /// immediate is one instruction, in place when `dst == base`. x86-64
+    /// keeps the `lea`, which is one instruction and leaves the flags alone.
+    pub fn lea_disp(&mut self, dst: VReg, base: VReg, disp: i32) {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let magnitude = i64::from(disp).abs();
+            if disp == 0 {
+                if dst != base {
+                    onlineasm!(self.asm; move {dst}, {base};);
+                }
+            } else if disp > 0 {
+                onlineasm!(self.asm; addp {dst}, {base}, {magnitude};);
+            } else {
+                onlineasm!(self.asm; subp {dst}, {base}, {magnitude};);
+            }
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            let at = self.asm.mem(base, disp);
+            onlineasm!(self.asm; leap {dst}, {at};);
+        }
+    }
+
+    /// [`check_frame_limit_at`](Self::check_frame_limit_at) for a frame size
+    /// known at compile time: `SFP + bytes` is formed with one add immediate
+    /// instead of materializing the word count in a register first.
+    pub(crate) fn check_frame_limit_const_at(
+        &mut self,
+        bytes: i32,
+        addr: VReg,
+        limit: VReg,
+        slow: Label,
+        limit_offset: usize,
+    ) {
+        let (tc, sfp) = (regs::TC, regs::SFP);
+        let esp = self.asm.mem(tc, limit_offset as i32);
+        self.lea_disp(addr, sfp, bytes);
+        onlineasm!(self.asm;
+            loadp {limit}, {esp};
+            bqa {addr}, {limit}, {slow};
+        );
+    }
+
     /// The yieldpoint poll
     pub fn yieldpoint_check(&mut self, tmp: VReg, slow: Label, is_loop: bool) {
         let tc = regs::TC;

@@ -25,6 +25,9 @@ pub(crate) struct Assignment {
     /// `coalesce_tmps`): members of one group hold the same value wherever
     /// they are live together, so they may share a register.
     pub groups: SecondaryMap<VReg, Option<VReg>>,
+    /// The entry parameters whose spill slot is their incoming frame word
+    /// (see [`select_homes`]), with that word.
+    pub homes: Vec<(VReg, u32)>,
 }
 
 impl Assignment {
@@ -297,7 +300,12 @@ pub(crate) struct Coherence {
     pub extents: SecondaryMap<VReg, Vec<(u32, u32)>>,
 }
 
-pub(crate) fn coherence(func: &LirFunc, num: &Numbering, children: &[Child]) -> Coherence {
+pub(crate) fn coherence(
+    func: &LirFunc,
+    num: &Numbering,
+    children: &[Child],
+    homes: &SecondaryMap<VReg, bool>,
+) -> Coherence {
     use crate::runtime::codegen::opt::lir::LBlock;
     use std::collections::HashMap;
 
@@ -432,7 +440,11 @@ pub(crate) fn coherence(func: &LirFunc, num: &Numbering, children: &[Child]) -> 
         order.sort_by_key(|&b| index[b]);
         for &b in &order {
             let info = blocks.get_mut(&b).unwrap();
-            info.live_in = info.start == num.from(b) && !func.blocks[b].params.contains(&v);
+            // A home parameter is defined in its slot: the entry word already
+            // holds it, so the slot is valid from the function entry on.
+            let home_def = homes[v] && b == func.entry;
+            info.live_in =
+                info.start == num.from(b) && (home_def || !func.blocks[b].params.contains(&v));
             info.entry_valid = info.live_in;
         }
         // Forward: the slot is written on every path to the block start.
@@ -500,11 +512,76 @@ pub(crate) fn coherence(func: &LirFunc, num: &Numbering, children: &[Child]) -> 
     out
 }
 
-/// Colors the spill slots of `pieces` and returns the assignment.
-pub(crate) fn finish(func: &LirFunc, num: &Numbering, pieces: Pieces) -> Assignment {
-    let coherence = coherence(func, num, &pieces.children);
-    let (spill_slots, slot_of) = slots::assign_slots(func, num, &pieces.children, &coherence);
+pub(crate) fn select_homes(
+    func: &LirFunc,
+    grouped: &std::collections::HashSet<VReg>,
+) -> Vec<(VReg, u32)> {
+    use crate::runtime::codegen::opt::lir::{LirTerm, Role, VRepr};
+
+    if func.param_homes.iter().all(Option::is_none) {
+        return Vec::new();
+    }
+    let mut defined: SecondaryMap<VReg, bool> = SecondaryMap::new();
+    for (_, data) in func.blocks.iter() {
+        for inst in &data.insts {
+            for op in inst.operands(func) {
+                if op.role == Role::Def {
+                    defined[op.vreg] = true;
+                }
+            }
+        }
+        let Some(term) = &data.term else { continue };
+        if matches!(term, LirTerm::ReturnMany { .. }) {
+            return Vec::new();
+        }
+        for op in term.operands(func) {
+            if op.role == Role::Def {
+                defined[op.vreg] = true;
+            }
+        }
+        if term.edges().iter().any(|e| e.block == func.entry) {
+            return Vec::new();
+        }
+    }
+    let params = &func.blocks[func.entry].params;
+    let mut out: Vec<(VReg, u32)> = Vec::new();
+    for (i, &v) in params.iter().enumerate() {
+        let Some(&Some(word)) = func.param_homes.get(i) else {
+            continue;
+        };
+        if func.repr(v) != VRepr::Tagged
+            || defined[v]
+            || grouped.contains(&v)
+            || out.iter().any(|&(_, w)| w == word)
+        {
+            continue;
+        }
+        out.push((v, word));
+    }
+    out
+}
+
+/// Colors the spill slots of `pieces` and returns the assignment. `grouped`
+/// holds every vreg of a coalesced affinity group.
+pub(crate) fn finish(
+    func: &LirFunc,
+    num: &Numbering,
+    pieces: Pieces,
+    grouped: &std::collections::HashSet<VReg>,
+) -> Assignment {
+    let homes = select_homes(func, grouped);
+    let mut is_home: SecondaryMap<VReg, bool> = SecondaryMap::new();
+    for &(v, _) in &homes {
+        is_home[v] = true;
+    }
+    let coherence = coherence(func, num, &pieces.children, &is_home);
+    let (spill_slots, mut slot_of) =
+        slots::assign_slots(func, num, &pieces.children, &coherence, &is_home);
+    for &(v, word) in &homes {
+        slot_of[v] = Some(super::home_slot(word));
+    }
     Assignment {
+        homes,
         coherence,
         groups: SecondaryMap::new(),
         children: pieces.children,

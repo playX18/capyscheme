@@ -8,7 +8,7 @@ use cranelift_entity::{PrimaryMap, SecondaryMap};
 use super::assign::{Assignment, covers};
 use super::liveness::Numbering;
 use super::pos;
-use super::{DeoptLoc, Loc, PhysReg, RegFile, RematDesc};
+use super::{DeoptLoc, Loc, PhysReg, RegFile, RematDesc, home_word};
 use crate::runtime::codegen::opt::ir::inst::Constant;
 use crate::runtime::codegen::opt::lir::{
     DeoptExit, LirFunc, LirInst, LirTerm, LiveMask, RegClass, RegMask, Role, SafePoint, VReg, VRepr,
@@ -153,8 +153,20 @@ pub(crate) fn build(
     let mut masks: Vec<(SafePoint, LiveMask, RegMask)> = Vec::with_capacity(sp_at.len());
     for &(sp, g, kind) in &sp_at {
         let mut w = vec![0u64; words];
-        let set = |w: &mut Vec<u64>, s: u32| w[s as usize / 64] |= 1u64 << (s % 64);
+        let mut homes: Vec<u32> = Vec::new();
+
+        // A numbered slot is a bit of the mask; a home slot is its frame word.
+        let set = |w: &mut Vec<u64>, homes: &mut Vec<u32>, s: u32| match home_word(s) {
+            Some(word) => {
+                if !homes.contains(&word) {
+                    homes.push(word);
+                }
+            }
+            None => w[s as usize / 64] |= 1u64 << (s % 64),
+        };
+
         let mut regmask = RegMask::default();
+
         for v in func.vregs.keys() {
             if func.class(v) != crate::runtime::codegen::opt::lir::RegClass::Gpr
                 || !func.is_gc_root(v)
@@ -163,10 +175,11 @@ pub(crate) fn build(
             }
             for &id in &asg.vreg_children[v] {
                 let c = &asg.children[id];
-                if c.assign == Some(super::intervals::Assign::Stack) && covers(&c.ranges, pos::late(g))
+                if c.assign == Some(super::intervals::Assign::Stack)
+                    && covers(&c.ranges, pos::late(g))
                 {
                     if let Some(s) = asg.slot_of[v] {
-                        set(&mut w, s);
+                        set(&mut w, &mut homes, s);
                     }
                 }
             }
@@ -192,7 +205,7 @@ pub(crate) fn build(
         // The root saves of a yieldpoint are in its mask: the slow path keeps
         // them current before the yield.
         for save in polls[sp].iter().filter(|s| s.root) {
-            set(&mut w, save.slot);
+            set(&mut w, &mut homes, save.slot);
         }
 
         for vreg in func.frame_regs(&func.safepoints[sp].values) {
@@ -200,16 +213,17 @@ pub(crate) fn build(
                 continue;
             }
             match asg.loc_at(vreg, pos::early(g)) {
-                Some(Loc::Slot(s)) => set(&mut w, s),
+                Some(Loc::Slot(s)) => set(&mut w, &mut homes, s),
                 Some(Loc::Reg(_)) if polls[sp].iter().any(|s| s.vreg == vreg) => {
                     let save = polls[sp].iter().find(|s| s.vreg == vreg).unwrap();
-                    set(&mut w, save.slot)
+                    set(&mut w, &mut homes, save.slot)
                 }
                 Some(Loc::Reg(r)) if kind == Kind::RustCall && regs.call_preserved(r) => {}
                 _ => return Err(format!("frame value {vreg} of {sp} is not in a spill slot")),
             }
         }
-        masks.push((sp, LiveMask { words: w }, regmask));
+        homes.sort_unstable();
+        masks.push((sp, LiveMask { words: w, homes }, regmask));
     }
     for (sp, mask, regmask) in masks {
         func.safepoints[sp].livemask = Some(mask);
