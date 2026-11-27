@@ -95,7 +95,10 @@ impl Scope {
     /// when the scope already held it.
     fn learn(&mut self, value: Value, fact: Fact) -> Option<Undo> {
         match fact {
-            Fact::Fixnum => self.int32_known.insert(value).then_some(Undo::Fixnum(value)),
+            Fact::Fixnum => self
+                .int32_known
+                .insert(value)
+                .then_some(Undo::Fixnum(value)),
             Fact::Class(class) => match self.class_known.insert(value, class) {
                 Some(previous) if previous == class => None,
                 previous => Some(Undo::Class(value, previous)),
@@ -689,7 +692,13 @@ mod tests {
         let r = block(&mut func);
         let s = block(&mut func);
 
-        let t0 = push(&mut func, entry, Op::TestClass(ClassRef::VECTOR), &[x], Type::Bool);
+        let t0 = push(
+            &mut func,
+            entry,
+            Op::TestClass(ClassRef::VECTOR),
+            &[x],
+            Type::Bool,
+        );
         branch(&mut func, entry, t0, a, &[], z, &[]);
         ret(&mut func, z, x);
         branch(&mut func, a, c, p, &[], q, &[]);
@@ -699,11 +708,23 @@ mod tests {
         ret(&mut func, s, x);
         let fs = frame(&mut func, x);
         let as_pair = func
-            .push_inst(p, Op::CheckClass(ClassRef::PAIR), &[x], Some(Type::Pair), Some(fs))
+            .push_inst(
+                p,
+                Op::CheckClass(ClassRef::PAIR),
+                &[x],
+                Some(Type::Pair),
+                Some(fs),
+            )
             .unwrap();
         let fs = frame(&mut func, x);
         let as_vector = func
-            .push_inst(p, Op::CheckClass(ClassRef::VECTOR), &[as_pair], Some(Type::Vector), Some(fs))
+            .push_inst(
+                p,
+                Op::CheckClass(ClassRef::VECTOR),
+                &[as_pair],
+                Some(Type::Vector),
+                Some(fs),
+            )
             .unwrap();
         ret(&mut func, p, as_vector);
         verify(&func).unwrap_or_else(|errors| panic!("{errors:?}"));
@@ -716,7 +737,13 @@ mod tests {
         };
         run(&mut func);
         verify(&func).unwrap_or_else(|errors| panic!("{errors:?}"));
-        assert!(placed(&func, pair_check), "x is a vector in p, so its pair check stays");
-        assert!(!placed(&func, vector_check), "the vector check is redundant in p");
+        assert!(
+            placed(&func, pair_check),
+            "x is a vector in p, so its pair check stays"
+        );
+        assert!(
+            !placed(&func, vector_check),
+            "the vector check is redundant in p"
+        );
     }
 }

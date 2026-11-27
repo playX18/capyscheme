@@ -78,7 +78,14 @@ pub mod eval_ops {
                 return Err(Value::undefined());
             }
             ListShape::Circular => {
-                call.wrong_argument_violation("apply", LAST_CIRCULAR, None, None, rands.len(), rands);
+                call.wrong_argument_violation(
+                    "apply",
+                    LAST_CIRCULAR,
+                    None,
+                    None,
+                    rands.len(),
+                    rands,
+                );
                 return Err(Value::undefined());
             }
         };

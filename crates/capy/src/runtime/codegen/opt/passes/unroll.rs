@@ -807,8 +807,7 @@ mod tests {
                 fields: vec![q, y],
             }],
         });
-        let map: HashMap<Value, Value> =
-            [(x, x2), (y, y2), (p, p2), (q, q2)].into_iter().collect();
+        let map: HashMap<Value, Value> = [(x, x2), (y, y2), (p, p2), (q, q2)].into_iter().collect();
         let mut cloner = FrameCloner::default();
         let cloned = cloner.clone_frame(&mut func, &map, inner);
         assert_ne!(cloned, inner);

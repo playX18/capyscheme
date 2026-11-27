@@ -3591,17 +3591,15 @@ impl<'a> Emitter<'a> {
         checked: bool,
     ) -> Result<(), String> {
         match target {
-            CallTarget::Known(code) => {
-                self.frame_call_common(
-                    Some(code),
-                    args,
-                    None,
-                    ReturnValues::Ignore,
-                    None,
-                    checked,
-                    None,
-                )
-            }
+            CallTarget::Known(code) => self.frame_call_common(
+                Some(code),
+                args,
+                None,
+                ReturnValues::Ignore,
+                None,
+                checked,
+                None,
+            ),
             CallTarget::Generic => {
                 self.frame_call_common(None, args, None, ReturnValues::Ignore, None, false, None)
             }

@@ -618,7 +618,9 @@ mod tests {
         let func = deopt_with(|_, p, _| (vec![(1, p)], Vec::new()));
         let errors = verify(&func).expect_err("p has no fields and no virtual describes it");
         assert!(
-            errors.iter().any(|e| e.contains("no virtual object describes")),
+            errors
+                .iter()
+                .any(|e| e.contains("no virtual object describes")),
             "{errors:?}"
         );
     }

@@ -123,7 +123,12 @@ fn load_base_is_object(func: &Func, inst: Inst) -> bool {
     func.args(inst).first().is_some_and(|&v| {
         matches!(
             func.value_type(v),
-            Type::Heap(_) | Type::Closure(_) | Type::Vector | Type::Cell | Type::Pair | Type::Rational
+            Type::Heap(_)
+                | Type::Closure(_)
+                | Type::Vector
+                | Type::Cell
+                | Type::Pair
+                | Type::Rational
         )
     })
 }

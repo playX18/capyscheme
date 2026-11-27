@@ -419,7 +419,11 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         // The native targets of a polymorphic site that have an inline
         // lowering: their arm is the lowering itself, with no body to splice.
         let mut natives: Vec<NativeArm> = Vec::new();
-        let native_args = if poly && matches!(expect, Expect::One | Expect::Fixed(1) | Expect::Rest { fixed: 1, .. }) {
+        let native_args = if poly
+            && matches!(
+                expect,
+                Expect::One | Expect::Fixed(1) | Expect::Rest { fixed: 1, .. }
+            ) {
             let mut args = Vec::with_capacity(argc as usize);
             for index in 0..argc {
                 args.push(self.reg(first_arg + index)?);
@@ -714,12 +718,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 // The native returns exactly one value: no extras follow it.
                 let mut edge_args = vec![value];
                 if matches!(expect, Expect::Rest { .. }) {
-                    let none = self.value_op(
-                        Op::Const(Constant::Int32(0)),
-                        &[],
-                        Type::Int32,
-                        None,
-                    );
+                    let none = self.value_op(Op::Const(Constant::Int32(0)), &[], Type::Int32, None);
                     edge_args.push(none);
                     edge_args.push(self.bits(SchemeValue::null().bits()));
                 }

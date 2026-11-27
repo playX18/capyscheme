@@ -1826,10 +1826,12 @@ impl<'a> Lowerer<'a> {
         frame.is_some_and(|frame| {
             matches!(
                 func.frames[frame].returned,
-                Some(crate::runtime::codegen::opt::ir::frame_state::ReturnedValues {
-                    count: None,
-                    ..
-                })
+                Some(
+                    crate::runtime::codegen::opt::ir::frame_state::ReturnedValues {
+                        count: None,
+                        ..
+                    }
+                )
             )
         })
     }

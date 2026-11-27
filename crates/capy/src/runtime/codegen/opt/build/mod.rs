@@ -4611,11 +4611,23 @@ mod hash_fluid_effects_tests {
     /// Mutating helpers must write; readers must not.
     #[test]
     fn writers_write_and_readers_do_not() {
-        for prim in [Primitive::HashRef2, Primitive::HashContains, Primitive::HashPlain, Primitive::FluidRef] {
+        for prim in [
+            Primitive::HashRef2,
+            Primitive::HashContains,
+            Primitive::HashPlain,
+            Primitive::FluidRef,
+        ] {
             assert!(prim_effects(prim.id() as u32).writes.is_empty(), "{prim:?}");
         }
-        for prim in [Primitive::HashPut, Primitive::HashTrySet, Primitive::FluidSet] {
-            assert!(!prim_effects(prim.id() as u32).writes.is_empty(), "{prim:?}");
+        for prim in [
+            Primitive::HashPut,
+            Primitive::HashTrySet,
+            Primitive::FluidSet,
+        ] {
+            assert!(
+                !prim_effects(prim.id() as u32).writes.is_empty(),
+                "{prim:?}"
+            );
         }
     }
 }

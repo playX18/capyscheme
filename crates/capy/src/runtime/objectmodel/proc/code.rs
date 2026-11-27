@@ -440,7 +440,14 @@ impl<'gc> CodeBuffer<'gc> {
         }
         // SAFETY: each id is below the kind's count, so it names an entry.
         unsafe {
-            bind!(OpCall, OpTailCall, OpCallSelf, OpTailCallSelf, OpApply, OpTailApply);
+            bind!(
+                OpCall,
+                OpTailCall,
+                OpCallSelf,
+                OpTailCallSelf,
+                OpApply,
+                OpTailApply
+            );
         }
     }
 

@@ -662,7 +662,10 @@ pub mod threading_ops {
                     wait::JOIN | wait::IO => Value::new(t.wait_arg as i32),
                     _ => Value::new(false),
                 };
-                (Value::new(Symbol::from_str(ctx, wait::name(t.wait_kind))), on)
+                (
+                    Value::new(Symbol::from_str(ctx, wait::name(t.wait_kind))),
+                    on,
+                )
             };
             let row = Vector::from_slice(
                 ctx,

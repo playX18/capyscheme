@@ -182,10 +182,7 @@ pub(crate) fn dump() -> String {
     let by_id: HashMap<u64, &ThreadInfo> = threads.iter().map(|t| (t.id, t)).collect();
     let holder_of: HashMap<u64, &WaitEdge> = edges.iter().map(|e| (e.waiter, e)).collect();
 
-    let blocked = threads
-        .iter()
-        .filter(|t| t.state == State::Blocked)
-        .count();
+    let blocked = threads.iter().filter(|t| t.state == State::Blocked).count();
     let mut out = String::new();
     let _ = writeln!(out, "{} threads, {blocked} blocked", threads.len());
     for t in &threads {

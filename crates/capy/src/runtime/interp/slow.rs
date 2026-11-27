@@ -2182,10 +2182,12 @@ unsafe fn apply_violation<'gc>(
 ) -> Work<'gc> {
     unsafe {
         let message: Value<'gc> = match shown {
-            Some((value, position)) => {
-                Str::new(ctx, &format!("{description}, got {value}, as argument {}", position + 1), true)
-                    .into()
-            }
+            Some((value, position)) => Str::new(
+                ctx,
+                &format!("{description}, got {value}, as argument {}", position + 1),
+                true,
+            )
+            .into(),
             None => Str::new(ctx, description, true).into(),
         };
         let who = Value::new(Symbol::from_str(ctx, "apply"));

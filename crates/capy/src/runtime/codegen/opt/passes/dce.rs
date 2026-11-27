@@ -246,7 +246,10 @@ mod tests {
         let p = defining_inst(&f.func, f.p);
         super::run(&mut f.func);
         verify(&f.func).expect("valid after");
-        assert!(placed(&f.func, a), "the field constant of a named object stays");
+        assert!(
+            placed(&f.func, a),
+            "the field constant of a named object stays"
+        );
         assert!(placed(&f.func, p), "the placeholder stays");
     }
 

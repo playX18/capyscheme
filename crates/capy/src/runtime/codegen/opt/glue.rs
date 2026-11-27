@@ -778,11 +778,7 @@ pub(crate) unsafe extern "C" fn capy_opt_string_eq(_th: *const (), a: u64, b: u6
 ///
 /// `th` is the current mutator's context, called from Tier 2 code. It
 /// allocates without collecting.
-pub(crate) unsafe extern "C" fn capy_opt_string_append(
-    th: *const (),
-    a: u64,
-    b: u64,
-) -> OptReturn {
+pub(crate) unsafe extern "C" fn capy_opt_string_append(th: *const (), a: u64, b: u64) -> OptReturn {
     // SAFETY: `th` is the mutator context the emitter passes.
     let ctx: MutationContext<'_> = unsafe { MutationContext::from_ptr(th) };
     let (Some(a), Some(b)) = (

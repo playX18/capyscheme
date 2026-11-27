@@ -551,7 +551,9 @@ pub fn primitive_effects(primitive: Primitive) -> Effects {
             reads: MemoryRanges::region(MemoryRegion::Heap),
             writes: MemoryRanges::region(MemoryRegion::Heap),
         },
-        Primitive::FluidRef => Effects::read(MemoryRegion::Runtime, SemanticEffects::FLUID).checked(),
+        Primitive::FluidRef => {
+            Effects::read(MemoryRegion::Runtime, SemanticEffects::FLUID).checked()
+        }
         Primitive::FluidSet => Effects {
             flags: EffectFlags::CONTROL_DEPENDENT
                 .union(EffectFlags::READS_MUTABLE)

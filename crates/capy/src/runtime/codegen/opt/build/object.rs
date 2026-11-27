@@ -2,10 +2,10 @@
 
 use crate::bytecode::def::{OpGetSlot, OpGetSlotMetadata, OpPutSlot, OpPutSlotMetadata};
 use crate::heap::object::ClassId;
+use crate::runtime::codegen::opt::ir::frame_state::FrameState;
 use crate::runtime::codegen::opt::ir::func::{ClassDep, ClassDepKind, Value as IrValue};
 use crate::runtime::codegen::opt::ir::inst::{Constant, MemoryRegion, Op, Terminator};
 use crate::runtime::codegen::opt::ir::types::{ClassRef, Type};
-use crate::runtime::codegen::opt::ir::frame_state::FrameState;
 use crate::runtime::interp::profile::SlotSite;
 use crate::runtime::objectmodel::Value as SchemeValue;
 use crate::runtime::objectmodel::class::{ClassCategory, OP_REF, OP_SET, class_table, ic};

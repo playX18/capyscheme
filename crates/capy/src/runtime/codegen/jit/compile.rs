@@ -373,12 +373,11 @@ fn install_optimized<'gc>(
         let current = crate::runtime::objectmodel::class::class_table(mutator).lookup(id);
 
         use crate::runtime::codegen::opt::ir::func::ClassDepKind;
-        let stamp_now = |class: &crate::runtime::objectmodel::class::ClassDescriptor| match dependency
-            .kind
-        {
-            ClassDepKind::Subtree => class.subclass_stamp(),
-            ClassDepKind::Layout | ClassDepKind::Protocol(_) => class.layout_stamp(),
-        };
+        let stamp_now =
+            |class: &crate::runtime::objectmodel::class::ClassDescriptor| match dependency.kind {
+                ClassDepKind::Subtree => class.subclass_stamp(),
+                ClassDepKind::Layout | ClassDepKind::Protocol(_) => class.layout_stamp(),
+            };
         // A protocol assumption has no stamp: decide it again under the
         // current set, which a change replaces before any later fill reads it.
         let holds = |class| match dependency.kind {

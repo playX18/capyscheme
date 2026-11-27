@@ -86,8 +86,7 @@ pub(crate) fn break_assumption<'gc>(image: Gc<'gc, CodeImage<'gc>>) -> bool {
     let Some(opt) = unit.opt.as_ref() else {
         return false;
     };
-    opt.invalid.swap(ASSUMPTION_BROKEN, AcqRel) != ASSUMPTION_BROKEN
-        && !opt.lazy_returns.is_empty()
+    opt.invalid.swap(ASSUMPTION_BROKEN, AcqRel) != ASSUMPTION_BROKEN && !opt.lazy_returns.is_empty()
 }
 
 /// Replace `fp[0]` by the shadow return address when it returns into a

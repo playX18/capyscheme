@@ -2,11 +2,11 @@
 
 use crate::heap::Gc;
 use crate::heap::object::{ClassId, builtin_class_ids};
-use crate::runtime::codegen::opt::ir::func::{ClassDep, ClassDepKind};
 use crate::runtime::codegen::opt::ir::frame_state::FrameState;
 use crate::runtime::codegen::opt::ir::func::GenericDep;
 use crate::runtime::codegen::opt::ir::func::Value as IrValue;
 use crate::runtime::codegen::opt::ir::func::ValueDef;
+use crate::runtime::codegen::opt::ir::func::{ClassDep, ClassDepKind};
 use crate::runtime::codegen::opt::ir::inst::{
     Cmp, Constant, Helper, MemoryRegion, Op, ReturnValues, Terminator,
 };
@@ -131,9 +131,9 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 pc, next, callee, block, generic, first_arg, argc, values, site,
             );
         }
-        if let Some(flow) =
-            self.sole_method_call(pc, next, callee, block, generic, first_arg, argc, values, site)?
-        {
+        if let Some(flow) = self.sole_method_call(
+            pc, next, callee, block, generic, first_arg, argc, values, site,
+        )? {
             return Ok(Some(flow));
         }
         let argc_usize = argc as usize;
@@ -756,11 +756,10 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         }
         let body_block = closure_block(body);
         let body = self.value_const(body);
-        let result =
-            {
-                let frame = self.site_call_frame(site, next)?;
-                self.call_body_led(body, body_block, &checked, argc, values, frame, Some(lead))?
-            };
+        let result = {
+            let frame = self.site_call_frame(site, next)?;
+            self.call_body_led(body, body_block, &checked, argc, values, frame, Some(lead))?
+        };
         self.finish_result(site, next, result)?;
         Ok(Some(Flow::Next))
     }

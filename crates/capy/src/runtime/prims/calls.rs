@@ -6,8 +6,8 @@ use crate::heap::Gc;
 use crate::heap::barrier;
 use crate::heap::object::builtin_class_ids;
 use crate::runtime::MutationContext;
-use crate::runtime::interp::slow;
 use crate::runtime::fluids::Fluid;
+use crate::runtime::interp::slow;
 use crate::runtime::objectmodel::{
     ByteVector, ClassTagged, HashTable, HashTableType, Pair, Str, Tuple, Value, Vector, WeakTable,
 };
@@ -1308,14 +1308,20 @@ fn wrong_argument_type<'gc>(
     args: &[Value<'gc>],
 ) -> ! {
     let found = args[pos];
-    let message = format!("expected {expected}, but found, got {found}, as argument {}", pos + 1);
+    let message = format!(
+        "expected {expected}, but found, got {found}, as argument {}",
+        pos + 1
+    );
     // Like the procedures' `wrong_argument_violation`: one irritant, the list of all
     // arguments, and none for a single argument.
     let list;
     let irritants: &[Value<'gc>] = if args.len() < 2 {
         &[]
     } else {
-        list = [args.iter().rev().fold(Value::null(), |tail, &arg| Value::cons(ctx, arg, tail))];
+        list = [args
+            .iter()
+            .rev()
+            .fold(Value::null(), |tail, &arg| Value::cons(ctx, arg, tail))];
         &list
     };
     crate::runtime::vm::thunk_raise(
@@ -1344,7 +1350,11 @@ fn hash_table_arg<'gc>(
 }
 
 #[inline(always)]
-fn fluid_arg<'gc>(ctx: MutationContext<'gc>, who: &str, args: &[Value<'gc>]) -> Gc<'gc, Fluid<'gc>> {
+fn fluid_arg<'gc>(
+    ctx: MutationContext<'gc>,
+    who: &str,
+    args: &[Value<'gc>],
+) -> Gc<'gc, Fluid<'gc>> {
     let fluid = args[0];
     if fluid.is::<Fluid>() {
         fluid.downcast::<Fluid>()
@@ -1380,11 +1390,7 @@ pub(crate) unsafe fn prim_hash_plain<'gc>(
 }
 
 #[inline(always)]
-fn lookup<'gc>(
-    ctx: MutationContext<'gc>,
-    who: &str,
-    args: &[Value<'gc>],
-) -> Option<Value<'gc>> {
+fn lookup<'gc>(ctx: MutationContext<'gc>, who: &str, args: &[Value<'gc>]) -> Option<Value<'gc>> {
     let table = args[0];
     let key = args[1];
     if table.is::<WeakTable>() {
@@ -1422,7 +1428,9 @@ pub(crate) unsafe fn prim_hash_contains<'gc>(
     a: Value<'gc>,
     b: Value<'gc>,
 ) -> PrimResult<'gc> {
-    Ok(Value::new(lookup(ctx, "core-hash-contains?", &[a, b]).is_some()))
+    Ok(Value::new(
+        lookup(ctx, "core-hash-contains?", &[a, b]).is_some(),
+    ))
 }
 
 #[inline(always)]
@@ -1469,7 +1477,10 @@ pub(crate) unsafe fn prim_hash_try_set<'gc>(
 }
 
 #[inline(always)]
-pub(crate) unsafe fn prim_fluid_ref<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>) -> PrimResult<'gc> {
+pub(crate) unsafe fn prim_fluid_ref<'gc>(
+    ctx: MutationContext<'gc>,
+    a: Value<'gc>,
+) -> PrimResult<'gc> {
     let fluid = fluid_arg(ctx, "fluid-ref", &[a]);
     Ok(fluid.get(ctx))
 }

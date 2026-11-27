@@ -439,7 +439,11 @@ impl<'gc> Str<'gc> {
     /// A fresh mutable string holding the characters of `a` then `b`. Two
     /// narrow strings are joined byte for byte; anything else goes through
     /// UTF-8.
-    pub fn concat2(mc: impl Into<Mutation<'gc>>, a: Gc<'gc, Self>, b: Gc<'gc, Self>) -> Gc<'gc, Self> {
+    pub fn concat2(
+        mc: impl Into<Mutation<'gc>>,
+        a: Gc<'gc, Self>,
+        b: Gc<'gc, Self>,
+    ) -> Gc<'gc, Self> {
         let mc = mc.into();
         let len = a.length + b.length;
         if len == 0 {

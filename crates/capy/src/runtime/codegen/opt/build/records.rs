@@ -7,8 +7,8 @@ use crate::runtime::codegen::opt::ir::func::ValueDef;
 use crate::runtime::codegen::opt::ir::inst::{Cmp, Constant, MemoryRegion, Op, Terminator};
 use crate::runtime::codegen::opt::ir::types::{ClassRef, Type};
 use crate::runtime::objectmodel::proc::Closure;
-use crate::runtime::record::Rtd;
 use crate::runtime::objectmodel::{CodeBlock, Value as SchemeValue};
+use crate::runtime::record::Rtd;
 use crate::runtime::record_ops::{
     self, RECORD_KIND_ACCESSOR, RECORD_KIND_CONSTRUCTOR, RECORD_KIND_MUTATOR, RECORD_KIND_PREDICATE,
 };

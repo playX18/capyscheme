@@ -486,7 +486,11 @@ impl<'a> Analysis<'a> {
                 state
             }
             Op::CheckBound { len, raw: is_raw } => {
-                let index = if is_raw { raw(memo, 0) } else { state_of(memo, 0) };
+                let index = if is_raw {
+                    raw(memo, 0)
+                } else {
+                    state_of(memo, 0)
+                };
                 let top = len as i64 - 1;
                 match index {
                     State::Bottom => State::Bottom,

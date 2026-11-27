@@ -1594,11 +1594,16 @@ mod helper_tests {
         ] {
             let effects = Op::CallOp(helper.helper_ref()).effects();
             assert!(!effects.flags.contains(EffectFlags::MAY_CALL), "{helper:?}");
-            assert!(!effects.flags.contains(EffectFlags::EXITS_SIDEWAYS), "{helper:?}");
+            assert!(
+                !effects.flags.contains(EffectFlags::EXITS_SIDEWAYS),
+                "{helper:?}"
+            );
             // A failing operand deopts, so the call cannot be dropped.
             assert!(!effects.effect_free(), "{helper:?}");
             assert!(
-                !effects.writes.overlaps(MemoryRanges::region(MemoryRegion::Variables)),
+                !effects
+                    .writes
+                    .overlaps(MemoryRanges::region(MemoryRegion::Variables)),
                 "{helper:?}"
             );
         }
@@ -1612,7 +1617,10 @@ mod helper_tests {
         }
         for helper in [Helper::ListRef, Helper::StringEq, Helper::CharWhitespace] {
             let effects = Op::CallOp(helper.helper_ref()).effects();
-            assert!(!effects.flags.contains(EffectFlags::ALLOCATES), "{helper:?}");
+            assert!(
+                !effects.flags.contains(EffectFlags::ALLOCATES),
+                "{helper:?}"
+            );
             assert!(effects.writes.is_empty(), "{helper:?}");
         }
     }

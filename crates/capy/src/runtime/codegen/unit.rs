@@ -218,7 +218,9 @@ impl OptInfo {
         else {
             return false;
         };
-        self.lazy_returns.iter().any(|&(_, shadow)| shadow == offset)
+        self.lazy_returns
+            .iter()
+            .any(|&(_, shadow)| shadow == offset)
     }
 }
 
