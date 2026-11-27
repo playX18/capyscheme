@@ -87,7 +87,8 @@ PKGS="core std common closer-mop r7rs-drafts capy-pkg"
 
 build_static() {
   local sub=$1 out=$2; shift 2
-  CAPY_LIB_DIR=$out "$cargo_bin" rustc --target-dir "$TARGET_ROOT/$sub" --profile "$PROFILE" \
+  # The note is parsed below, so cargo must not colour it (CI sets CARGO_TERM_COLOR=always).
+  CAPY_LIB_DIR=$out "$cargo_bin" rustc --color never --target-dir "$TARGET_ROOT/$sub" --profile "$PROFILE" \
     --target "$TARGET" -p capy-static --lib "$@" -- --print native-static-libs 2>&1 \
     | tee /dev/stderr | sed -n 's/^note: native-static-libs: //p' \
     | sed 's/-lcapy //g; s/ -lcapy$//' | tail -1 > "$out/$LIBCAPY_STATIC_LIBS"

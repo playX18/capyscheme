@@ -3198,6 +3198,17 @@ fn spawn_direct(
     command.stdout(Stdio::from(out_child));
     command.stderr(Stdio::from(err_child));
 
+    // The child's PATH: the last `#:env` entry for it wins, as in `Command`.
+    let mut child_path = crate::utils::flags::var_os("PATH");
+    for entry in env {
+        match entry.split_once('=') {
+            Some(("PATH", value)) => child_path = Some(value.into()),
+            None if entry == "PATH" => child_path = None,
+            _ => {}
+        }
+    }
+    check_program(program, child_path.as_deref(), cwd)?;
+
     let mut child = command.spawn()?;
     // The pipes the child writes to are closed in this process once `command` is dropped, so a
     // reader sees the end of the stream when the child has exited.
@@ -3217,6 +3228,59 @@ fn spawn_direct(
             err_parent.map(IntoRawFd::into_raw_fd),
         ],
     ))
+}
+
+fn check_program(
+    program: &str,
+    path: Option<&std::ffi::OsStr>,
+    cwd: Option<&str>,
+) -> std::io::Result<()> {
+    use std::io::Error;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+
+    // Some(true) for a regular file this process may execute, Some(false) for
+    // one it may not, None when `candidate` is not a regular file.
+    let runnable = |candidate: &Path| -> Option<bool> {
+        if !candidate.is_file() {
+            return None;
+        }
+        let bytes = std::ffi::CString::new(candidate.as_os_str().as_bytes()).ok()?;
+        // SAFETY: FFI: access(2) reads a NUL-terminated path.
+        Some(unsafe { libc::access(bytes.as_ptr(), libc::X_OK) } == 0)
+    };
+    let in_cwd = |name: &Path| match cwd {
+        Some(dir) if name.is_relative() => Path::new(dir).join(name),
+        _ => name.to_path_buf(),
+    };
+
+    if program.contains('/') {
+        return match runnable(&in_cwd(Path::new(program))) {
+            Some(true) => Ok(()),
+            Some(false) => Err(Error::from_raw_os_error(libc::EACCES)),
+            None => Err(Error::from_raw_os_error(libc::ENOENT)),
+        };
+    }
+    let path = path.map_or(&b"/bin:/usr/bin"[..], |p| p.as_bytes());
+    let mut denied = false;
+    for dir in path.split(|&b| b == b':') {
+        // An empty entry is the current directory.
+        let dir = if dir.is_empty() {
+            Path::new(".")
+        } else {
+            Path::new(std::ffi::OsStr::from_bytes(dir))
+        };
+        match runnable(&in_cwd(&dir.join(program))) {
+            Some(true) => return Ok(()),
+            Some(false) => denied = true,
+            None => {}
+        }
+    }
+    Err(Error::from_raw_os_error(if denied {
+        libc::EACCES
+    } else {
+        libc::ENOENT
+    }))
 }
 
 /// Wait on a child process

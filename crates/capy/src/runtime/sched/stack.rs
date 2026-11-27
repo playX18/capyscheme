@@ -177,6 +177,7 @@ extern "C" fn on_fault(sig: libc::c_int, info: *mut libc::siginfo_t, uctx: *mut 
     {
         overflow_abort(addr);
     }
+    report_fault(sig, addr, uctx);
     let idx = if sig == libc::SIGBUS { 1 } else { 0 };
     // SAFETY: initialised by `install_guard_handler` before this handler was
     // registered.
@@ -196,6 +197,36 @@ extern "C" fn on_fault(sig: libc::c_int, info: *mut libc::siginfo_t, uctx: *mut 
         let f: extern "C" fn(libc::c_int) = unsafe { std::mem::transmute(handler) };
         f(sig);
     }
+}
+
+/// Describe a fault that is not a guard-page hit on stderr before the previous
+/// handler (or the default action) ends the process, so a crash in CI leaves
+/// more than "Segmentation fault". Only the first fault is described: the
+/// report allocates and takes locks, so a fault inside it must not recurse.
+///
+/// The report is not async-signal-safe. The process is dying anyway, and a
+/// deadlock here is no worse than the silent crash it replaces.
+fn report_fault(sig: libc::c_int, addr: usize, uctx: *mut libc::c_void) {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static REPORTED: AtomicBool = AtomicBool::new(false);
+    if REPORTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let name = if sig == libc::SIGBUS {
+        "SIGBUS"
+    } else {
+        "SIGSEGV"
+    };
+    let mut err = std::io::stderr().lock();
+    let _ = write!(err, "capy: fatal {name} at address {addr:#x}");
+    if let Some(regs) = crate::runtime::profile::capture::interrupted_regs(uctx) {
+        let _ = write!(err, ", pc {:#x}, sfp {:#x}", regs.rip, regs.sfp);
+    }
+    let thread = std::thread::current();
+    let _ = writeln!(err, " (thread {:?})", thread.name().unwrap_or("<unnamed>"));
+    let _ = writeln!(err, "{:?}", backtrace::Backtrace::new());
+    let _ = err.flush();
 }
 
 /// Write a fixed message with raw `write(2)` and abort. Nothing here

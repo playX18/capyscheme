@@ -5,17 +5,6 @@
 
 (test-begin "capy thread interrupts")
 
-(define (wait-until pred)
-  (let loop ([n 2000])
-    (cond
-      [(pred) #t]
-      [(zero? n) #f]
-      [else
-        (let spin ([m 200])
-          (when (> m 0)
-            (spin (- m 1))))
-        (loop (- n 1))])))
-
 (test-equal "same-thread interrupt runs immediately"
   (let ([seen '()])
     (thread-interrupt! (current-thread)
@@ -57,40 +46,72 @@
     (reverse events))
   '(first second done))
 
+;; The cases below hand-shake with the worker instead of spinning for a fixed
+;; number of iterations: a thread cannot be interrupted before it has started,
+;; and an interrupt sent to a thread that has finished never runs.
+
 (test-equal "masked interrupts wait until unmasked"
   (let* ([started #f]
+         [sent? #f]
+         [mutex (make-mutex)]
+         [cv (make-condition-variable)]
          [events '()]
          [worker (go
                    (lambda ()
                      (call-without-interrupts
                        (lambda ()
                          (set! events (cons 'masked events))
+                         (mutex-acquire mutex)
                          (set! started #t)
+                         (condition-variable-broadcast cv)
+                         (mutex-release mutex)
+                         ;; Stay busy rather than blocked until the interrupt
+                         ;; is pending, then pass more interrupt points.
+                         (let loop () (unless sent? (loop)))
                          (let loop ([n 0])
                            (when (< n 200000)
                              (loop (+ n 1))))
                          (set! events (cons 'unmasking events))))
                      (set! events (cons 'after events))))])
-    (wait-until (lambda () started))
+    (mutex-acquire mutex)
+    (let loop ()
+      (unless started
+        (condition-variable-wait cv mutex)
+        (loop)))
+    (mutex-release mutex)
     (thread-interrupt! worker (lambda () (set! events (cons 'interrupt events))))
+    (set! sent? #t)
     (thread-join worker)
     (reverse events))
   '(masked unmasking interrupt after))
 
 (test-equal "blocked condition wait accepts interrupt"
-  (let* ([mutex (make-mutex)]
+  (let* ([release? #f]
+         [mutex (make-mutex)]
          [cv (make-condition-variable)]
          [events '()]
          [worker (go
                    (lambda ()
                      (mutex-acquire mutex)
                      (set! events (cons 'waiting events))
-                     (condition-variable-wait cv mutex)
+                     (condition-variable-broadcast cv)
+                     (let loop ()
+                       (unless release?
+                         (condition-variable-wait cv mutex)
+                         (loop)))
                      (set! events (cons 'resumed events))
                      (mutex-release mutex)))])
-    (wait-until (lambda () (memq 'waiting events)))
+    ;; The worker holds the mutex from 'waiting until it blocks, so once this
+    ;; thread sees 'waiting with the mutex held, the worker is in the wait.
+    (mutex-acquire mutex)
+    (let loop ()
+      (unless (memq 'waiting events)
+        (condition-variable-wait cv mutex)
+        (loop)))
     (thread-interrupt! worker (lambda () (set! events (cons 'interrupt events))))
+    (set! release? #t)
     (condition-variable-broadcast cv)
+    (mutex-release mutex)
     (thread-join worker)
     (reverse events))
   '(waiting interrupt resumed))

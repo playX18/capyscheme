@@ -69,7 +69,10 @@ pub fn code_memory() -> &'static CodeMemory {
 impl CodeMemory {
     pub fn new() -> Self {
         Self {
-            allocator: Mutex::new(JitAllocator::new(JitAllocatorOptions::default())),
+            allocator: Mutex::new(JitAllocator::new(JitAllocatorOptions {
+                use_dual_mapping: false,
+                ..Default::default()
+            })),
         }
     }
 
