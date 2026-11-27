@@ -185,7 +185,6 @@ pub mod syntax_ops {
     #[scheme(name = "syntax-source")]
     pub fn syntax_source(syntax: Gc<'gc, Syntax<'gc>>) -> Value<'gc> {
         let src = syntax.source;
-        
 
         if src.is::<Vector>() {
             sourcev_to_props(ctx, src)
@@ -197,7 +196,7 @@ pub mod syntax_ops {
     #[scheme(name = "syntax-sourcev")]
     pub fn syntax_sourcev(syntax: Gc<'gc, Syntax<'gc>>) -> Value<'gc> {
         let src = syntax.source;
-        
+
         if src.is_null() || src.is::<Pair>() {
             props_to_sourcev(ctx, src)
         } else {
@@ -246,7 +245,6 @@ pub mod syntax_ops {
 
     #[scheme(name = "datum-sourcev")]
     pub fn datum_sourcev_fn(obj: Value<'gc>) -> Value<'gc> {
-        
         datum_sourcev(ctx, obj)
     }
 
@@ -279,8 +277,6 @@ pub mod syntax_ops {
 
     #[scheme(name = "source-properties")]
     pub fn source_properties_of(obj: Value<'gc>) -> Value<'gc> {
-        
-
         get_source_property(ctx, obj).unwrap_or(Value::new(false))
     }
 }

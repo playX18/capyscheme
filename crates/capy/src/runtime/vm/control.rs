@@ -566,7 +566,7 @@ pub mod control_ops {
                 &[k],
             );
         }
-        
+
         k.downcast::<Closure>()[2].get()
     }
 

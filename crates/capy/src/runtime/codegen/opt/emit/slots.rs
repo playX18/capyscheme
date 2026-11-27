@@ -68,8 +68,7 @@ impl<'a> Emitter<'a> {
         self.slot_probe(o, PUT_MONO_OFF, meta, fail);
 
         let (slow, join) = (self.masm.label(), self.masm.label());
-        self.gc
-            .emit_unlogged_check(self.masm, T0, T1, T2, slow);
+        self.gc.emit_unlogged_check(self.masm, T0, T1, T2, slow);
         self.masm.bind(join);
         self.deferred.push(Deferred::Barrier {
             slow,

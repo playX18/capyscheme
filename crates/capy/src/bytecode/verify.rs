@@ -756,12 +756,12 @@ fn verify_case_table(
         if rest_base != def::CASE_NO_REST
             && (rest_base as u64 >= shape.frame_size as u64
                 || rest_cnt as u64 >= shape.frame_size as u64)
-            {
-                return fail(
-                    pc,
-                    format!("case row {row} rest registers outside the frame"),
-                );
-            }
+        {
+            return fail(
+                pc,
+                format!("case row {row} rest registers outside the frame"),
+            );
+        }
         check(pc, shape.pool[at + 2])?;
     }
     Ok(())

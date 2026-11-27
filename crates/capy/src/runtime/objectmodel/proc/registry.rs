@@ -359,15 +359,16 @@ unsafe impl<'gc> Trace for ProcedureRegistry<'gc> {
 /// Procedure name from native metadata, for profiler labels.
 fn native_closure_name<'gc>(ctx: MutationContext<'gc>, meta: Value<'gc>) -> String {
     if meta.is_pair()
-        && let Some(pair) = meta.assq(ctx.intern("name")) {
-            let value = pair.cdr();
-            if value.is::<Symbol>() {
-                return value.downcast::<Symbol>().as_str().into_owned();
-            }
-            if value.is::<Str>() {
-                return value.downcast::<Str>().to_string();
-            }
+        && let Some(pair) = meta.assq(ctx.intern("name"))
+    {
+        let value = pair.cdr();
+        if value.is::<Symbol>() {
+            return value.downcast::<Symbol>().as_str().into_owned();
         }
+        if value.is::<Str>() {
+            return value.downcast::<Str>().to_string();
+        }
+    }
     String::from("native")
 }
 

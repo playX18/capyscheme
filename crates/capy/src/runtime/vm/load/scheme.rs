@@ -45,7 +45,7 @@ pub(super) mod load_ops {
         let filename = PathBuf::from(filename.as_gc_ref().to_string());
         let in_vicinity = in_vicinity.map(|path| PathBuf::from(path.as_gc_ref().to_string()));
         let arch = arch.map(|value| value.to_string());
-        
+
         find_path_to_public(
             ctx,
             filename,
@@ -192,7 +192,7 @@ pub(super) mod load_ops {
     ) -> LoadResult<'gc> {
         let filename = PathBuf::from(filename.as_gc_ref().to_string());
         let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_gc_ref().to_string()));
-        
+
         load_thunk_candidates(ctx, filename, in_vicinity, resolve_relative)
     }
 
@@ -310,7 +310,7 @@ pub(super) mod load_ops {
     ) -> LoadResult<'gc> {
         let filename = PathBuf::from(filename.as_gc_ref().to_string());
         let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_gc_ref().to_string()));
-        
+
         load_thunk_in_vicinity::<true>(ctx, filename, in_vicinity, resolve_relative, None)
     }
 

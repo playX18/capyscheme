@@ -77,7 +77,6 @@ pub mod persistent_set_ops {
 
     #[scheme(name = "core-persistent-set->list")]
     pub fn persistent_set_to_list(set: Gc<'gc, PersistentSet<'gc>>) -> Value<'gc> {
-        
         set.fold(|acc, key, _| Value::cons(ctx, key, acc), Value::null())
     }
 

@@ -302,10 +302,11 @@ pub(crate) fn merge(mut ranges: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
     let mut out: Vec<(u32, u32)> = Vec::with_capacity(ranges.len());
     for (lo, hi) in ranges {
         if let Some(last) = out.last_mut()
-            && lo <= last.1 {
-                last.1 = last.1.max(hi);
-                continue;
-            }
+            && lo <= last.1
+        {
+            last.1 = last.1.max(hi);
+            continue;
+        }
         out.push((lo, hi));
     }
     out

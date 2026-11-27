@@ -365,9 +365,10 @@ impl<'gc> Value<'gc> {
         // Only a fresh visited set lets the fast path ignore it and restart
         // from the top on failure; every caller passes a fresh one.
         if visited.is_empty()
-            && let Some(result) = self.equal_with_fresh_visited(other) {
-                return result;
-            }
+            && let Some(result) = self.equal_with_fresh_visited(other)
+        {
+            return result;
+        }
 
         self.equal_slow(other, visited)
     }

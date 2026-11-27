@@ -419,7 +419,6 @@ pub mod list_ops {
             }
         }
 
-        
         transpose_impl(ctx, len, lists)
     }
 
@@ -441,7 +440,6 @@ pub mod list_ops {
             }
         }
 
-        
         transpose_impl(ctx, len, lists)
     }
 

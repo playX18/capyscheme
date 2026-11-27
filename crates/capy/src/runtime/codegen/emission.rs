@@ -126,10 +126,11 @@ impl Emission {
         next: Label,
     ) {
         if let Some(last) = self.fallthrough_checks.last_mut()
-            && last.0 == pc {
-                *last = (pc, op, point, next);
-                return;
-            }
+            && last.0 == pc
+        {
+            *last = (pc, op, point, next);
+            return;
+        }
         self.fallthrough_checks.push((pc, op, point, next));
     }
 
@@ -325,11 +326,10 @@ impl Emission {
             });
         }
 
-        let mut loaded =
-            image::load_with(image, resolve_slow_path, &|key| match *key {
-                ImportKey::Cell(index) => Some(cell_addrs[index as usize]),
-                _ => resolve(key),
-            })?;
+        let mut loaded = image::load_with(image, resolve_slow_path, &|key| match *key {
+            ImportKey::Cell(index) => Some(cell_addrs[index as usize]),
+            _ => resolve(key),
+        })?;
         let base = loaded.base();
 
         let cells: Box<[ErasedCell]> = self

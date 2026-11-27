@@ -788,9 +788,10 @@ impl HeuristicState {
         self.adjust_penalty(-1);
         self.runway.reset_baseline();
         if self.config.trigger == TriggerPolicy::Generational
-            && let Some(snapshot) = snapshot {
-                self.record_generational_cycle_end(cycle_kind, snapshot);
-            }
+            && let Some(snapshot) = snapshot
+        {
+            self.record_generational_cycle_end(cycle_kind, snapshot);
+        }
         if let Some(snapshot) = snapshot {
             // Post-GC free memory tells adaptive mode whether the previous
             // trigger was too early or too late.

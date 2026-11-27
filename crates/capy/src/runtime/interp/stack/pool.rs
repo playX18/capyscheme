@@ -143,13 +143,14 @@ pub(super) unsafe fn reset_scheme_stack<'gc>(ctx: MutationContext<'gc>, n: usize
                     n = floor;
                 }
                 if let Some(pool) = crate::runtime::sched::scheduler::stack_pool()
-                    && let Some((segment, base, size)) = pool.take(n) {
-                        stack.segment.set(segment);
-                        stack.scheme_stack.set(base);
-                        stack.scheme_stack_size.set(size);
-                        set_esp(tc);
-                        return;
-                    }
+                    && let Some((segment, base, size)) = pool.take(n)
+                {
+                    stack.segment.set(segment);
+                    stack.scheme_stack.set(base);
+                    stack.scheme_stack_size.set(size);
+                    set_esp(tc);
+                    return;
+                }
                 // stacks are non-moving bytevectors
                 let bytes = ByteVector::new::<false>(ctx, n * size_of::<Value>(), false);
                 stack.segment.set(bytes.into());

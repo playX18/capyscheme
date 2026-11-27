@@ -278,9 +278,7 @@ impl SpecSource for FixedSpec {
         ArithSpec {
             shape: self.shape,
             profile_cell: None,
-            link: self
-                .cell
-                .map_or(SiteLink::None, SiteLink::Resident),
+            link: self.cell.map_or(SiteLink::None, SiteLink::Resident),
         }
     }
 }
@@ -757,14 +755,15 @@ impl<T: Targets, S: SpecSource> Flow for CompiledContext<'_, T, S> {
         // placement keeps one: an inline context searches the same cases
         // instead (a dense table lists them in key order).
         if self.targets.placement() == Placement::Inline
-            && let JitIntTable::Dense { min, targets } = parsed {
-                let cases = targets
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, pc)| (min + index as i64, pc))
-                    .collect();
-                parsed = JitIntTable::Sparse { cases };
-            }
+            && let JitIntTable::Dense { min, targets } = parsed
+        {
+            let cases = targets
+                .into_iter()
+                .enumerate()
+                .map(|(index, pc)| (min + index as i64, pc))
+                .collect();
+            parsed = JitIntTable::Sparse { cases };
+        }
         let mut hits = Vec::new();
         match parsed {
             JitIntTable::Sparse { cases } if cases.len() <= 4 => {

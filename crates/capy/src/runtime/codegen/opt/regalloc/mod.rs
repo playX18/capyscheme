@@ -365,15 +365,16 @@ pub fn allocate(
         stats::record(cfg.regalloc(), &alloc, &weights, micros);
     }
     if cfg.verify
-        && let Err(err) = check(func, &num, &alloc, regs) {
-            // Without this a rejected allocation leaves no trace: the unit is
-            // simply never installed, and the reason is lost.
-            if cfg.dump.iter().any(|stage| stage == "regalloc") {
-                crate::heap::logging::ensure_max_level(log::LevelFilter::Error);
-                log::error!("allocation rejected: {err}\n{}", display(func, &alloc));
-            }
-            return Err(err);
+        && let Err(err) = check(func, &num, &alloc, regs)
+    {
+        // Without this a rejected allocation leaves no trace: the unit is
+        // simply never installed, and the reason is lost.
+        if cfg.dump.iter().any(|stage| stage == "regalloc") {
+            crate::heap::logging::ensure_max_level(log::LevelFilter::Error);
+            log::error!("allocation rejected: {err}\n{}", display(func, &alloc));
         }
+        return Err(err);
+    }
     Ok(alloc)
 }
 
@@ -576,11 +577,12 @@ pub fn check(
                         .iter()
                         .any(|&(lo, hi)| lo <= pos::late(g) && pos::late(g) < hi);
                     if let (true, Loc::Slot(s)) = (covers, piece.loc)
-                        && !has(s) {
-                            return Err(format!(
-                                "{v} is live across {sp} but missing from its livemask"
-                            ));
-                        }
+                        && !has(s)
+                    {
+                        return Err(format!(
+                            "{v} is live across {sp} but missing from its livemask"
+                        ));
+                    }
                 }
             }
 
@@ -858,9 +860,11 @@ fn check_clobbers(
                         continue;
                     }
                     if let Loc::Reg(r) = piece.loc
-                        && in_pool(r) && !(Some(v) == rv_def && r == regs.rv) {
-                            return Err(format!("{v} is in {r} across the clobber at {g}"));
-                        }
+                        && in_pool(r)
+                        && !(Some(v) == rv_def && r == regs.rv)
+                    {
+                        return Err(format!("{v} is in {r} across the clobber at {g}"));
+                    }
                 }
             }
         }
@@ -899,9 +903,10 @@ fn check_clobbers(
                         continue;
                     }
                     if let Loc::Reg(r) = piece.loc
-                        && regs.slow_clobbers.contains(&r) {
-                            return Err(format!("{v} is in slow-clobbered {r} at {g}"));
-                        }
+                        && regs.slow_clobbers.contains(&r)
+                    {
+                        return Err(format!("{v} is in slow-clobbered {r} at {g}"));
+                    }
                 }
             }
         }
@@ -925,9 +930,10 @@ fn check_clobbers(
                     continue;
                 }
                 if let Loc::Reg(r) = piece.loc
-                    && r == regs.ac {
-                        return Err(format!("{v} is in {r} across the count read at {g}"));
-                    }
+                    && r == regs.ac
+                {
+                    return Err(format!("{v} is in {r} across the count read at {g}"));
+                }
             }
         }
     }
@@ -1058,9 +1064,10 @@ fn check_coalescing(
                     continue;
                 };
                 if let LirInst::Move { src, .. } = inst
-                    && alloc.group[*src] == Some(rep) {
-                        continue;
-                    }
+                    && alloc.group[*src] == Some(rep)
+                {
+                    continue;
+                }
                 for &w in &members[&rep] {
                     if w != op.vreg && live_at(w, q) {
                         return Err(format!(

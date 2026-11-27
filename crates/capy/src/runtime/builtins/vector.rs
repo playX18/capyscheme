@@ -59,7 +59,6 @@ pub mod vector_ops {
 
     #[scheme(name = "vector-length")]
     pub fn vector_length(vec: Gc<'gc, Vector<'gc>>) -> Value<'gc> {
-        
         vec.len().into_value(ctx)
     }
     #[scheme(name = "vector?")]
@@ -224,7 +223,6 @@ pub mod vector_ops {
 
     #[scheme(name = "bytevector-length")]
     pub fn bytevector_length(bv: Gc<'gc, ByteVector>) -> Value<'gc> {
-        
         bv.len().into_value(ctx)
     }
 

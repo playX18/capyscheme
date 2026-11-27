@@ -441,18 +441,19 @@ unsafe fn deoptimize<'gc>(
             }
         }
         if let Some((base, vector)) = area_f
-            && !vector.is_null() {
-                if !vector.is::<Vector>() {
-                    fatal(exit, "the rest vector is not a vector");
-                }
-                let vector = vector.downcast::<Vector>();
-                if vector.as_slice().len() > MAX_INLINED_EXTRAS as usize {
-                    fatal(exit, "an inlined frame has too many extras");
-                }
-                for (i, &element) in vector.as_slice().iter().enumerate() {
-                    write_extra(i, base, element);
-                }
+            && !vector.is_null()
+        {
+            if !vector.is::<Vector>() {
+                fatal(exit, "the rest vector is not a vector");
             }
+            let vector = vector.downcast::<Vector>();
+            if vector.as_slice().len() > MAX_INLINED_EXTRAS as usize {
+                fatal(exit, "an inlined frame has too many extras");
+            }
+            for (i, &element) in vector.as_slice().iter().enumerate() {
+                write_extra(i, base, element);
+            }
+        }
         if let Some((base, cnt, from, vector)) = tail_f {
             let count = unsafe { *fp_f.add(cnt as usize) };
             if count.is_int32() && !vector.is_null() {

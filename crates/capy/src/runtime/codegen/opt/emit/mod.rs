@@ -703,11 +703,12 @@ impl<'a> Emitter<'a> {
         };
         let cp = self.gpr_of(arch::CP)?;
         if let Loc::Slot(s) = self.loc(callee, self.use_pos())?
-            && super::regalloc::home_word(s).is_some() {
-                let mem = self.masm.assembler().mem(SFP, callee_frame + 8);
-                onlineasm!(*self.asm(); loadq {cp}, {mem};);
-                return Ok(());
-            }
+            && super::regalloc::home_word(s).is_some()
+        {
+            let mem = self.masm.assembler().mem(SFP, callee_frame + 8);
+            onlineasm!(*self.asm(); loadq {cp}, {mem};);
+            return Ok(());
+        }
         let from = self.read(callee, cp)?;
         if from != cp {
             self.mov(cp, from);

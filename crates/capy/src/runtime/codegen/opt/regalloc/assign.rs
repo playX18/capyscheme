@@ -372,14 +372,21 @@ pub(crate) fn coherence(
             // definition (a coalesced vreg is defined more than once): the
             // slot holds the old value until it is stored again.
             if let Some(p) = prev
-                && p.1 != lo && valid && !stack {
-                    ivals.push((from, p.1));
-                    valid = false;
-                }
+                && p.1 != lo
+                && valid
+                && !stack
+            {
+                ivals.push((from, p.1));
+                valid = false;
+            }
             if let Some(p) = prev
-                && p.1 == lo && !p.2 && stack && valid {
-                    skips.push(lo);
-                }
+                && p.1 == lo
+                && !p.2
+                && stack
+                && valid
+            {
+                skips.push(lo);
+            }
             if stack {
                 if !valid {
                     valid = true;
@@ -664,9 +671,10 @@ pub(crate) fn placed_reg(pieces: &Pieces, vreg: VReg, pos: u32) -> Option<PhysRe
     for &id in &pieces.vreg_children[vreg] {
         let child = &pieces.children[id];
         if let Some(Assign::Reg(r)) = child.assign
-            && covers(&child.ranges, pos) {
-                return Some(r);
-            }
+            && covers(&child.ranges, pos)
+        {
+            return Some(r);
+        }
     }
     None
 }
@@ -680,9 +688,10 @@ pub(crate) fn placed_reg_before(pieces: &Pieces, vreg: VReg, pos: u32) -> Option
     for &id in &pieces.vreg_children[vreg] {
         let child = &pieces.children[id];
         if let Some(Assign::Reg(r)) = child.assign
-            && end_of(&child.ranges) == pos {
-                return Some(r);
-            }
+            && end_of(&child.ranges) == pos
+        {
+            return Some(r);
+        }
     }
     None
 }

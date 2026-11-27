@@ -1144,7 +1144,9 @@ fn default_initarg_array<'gc>(
 
 /// The (keyword, thunk) pairs of a flat default initarg array.
 pub(crate) fn default_initarg_pairs<'gc>(flat: &[Value<'gc>]) -> Vec<(Value<'gc>, Value<'gc>)> {
-    flat.as_chunks::<2>().0.iter()
+    flat.as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| (pair[0], pair[1]))
         .collect()
 }

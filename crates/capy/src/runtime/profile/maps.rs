@@ -407,9 +407,11 @@ pub fn symbolize_caller(ra: u64, resume: u64, closure: u64) -> String {
         return String::from("???");
     }
     if let Some((base, end)) = template_range()
-        && ra >= base && ra < end {
-            return String::from("???");
-        }
+        && ra >= base
+        && ra < end
+    {
+        return String::from("???");
+    }
     if let Some(entry) = lookup_jit(ra) {
         let offset = ra.wrapping_sub(entry.base) as u32;
         // The span table is keyed by bytecode pc.
@@ -431,12 +433,14 @@ pub fn symbolize_running(rip: u64, pcreg: u64, closure: u64) -> String {
         return sanitize(&name);
     }
     if let Some((base, end)) = template_range()
-        && rip >= base && rip < end {
-            if let Some(entry) = lookup_interp(pcreg) {
-                return sanitize(&span_label(&entry.name, &entry.table, pcreg, entry.start));
-            }
-            return String::from("???");
+        && rip >= base
+        && rip < end
+    {
+        if let Some(entry) = lookup_interp(pcreg) {
+            return sanitize(&span_label(&entry.name, &entry.table, pcreg, entry.start));
         }
+        return String::from("???");
+    }
     if let Some(entry) = lookup_jit(rip) {
         let offset = rip.wrapping_sub(entry.base) as u32;
         if let Some(pc) = reverse_lookup(&entry.reverse, entry.code_end, offset) {

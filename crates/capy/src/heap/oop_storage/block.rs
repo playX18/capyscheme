@@ -543,24 +543,24 @@ impl Block {
                     Ordering::Relaxed,
                 )
                 .is_ok()
-            {
-                let self_ptr = self as *const Block as *mut Block;
-                let mut head = deferred_updates.load(Ordering::Relaxed);
-                loop {
-                    let next = if head.is_null() { self_ptr } else { head };
-                    self.deferred_updates_next.store(next, Ordering::Relaxed);
-                    match deferred_updates.compare_exchange_weak(
-                        head,
-                        self_ptr,
-                        Ordering::Relaxed,
-                        Ordering::Relaxed,
-                    ) {
-                        Ok(_) => break,
-                        Err(fetched) => head = fetched,
-                    }
+        {
+            let self_ptr = self as *const Block as *mut Block;
+            let mut head = deferred_updates.load(Ordering::Relaxed);
+            loop {
+                let next = if head.is_null() { self_ptr } else { head };
+                self.deferred_updates_next.store(next, Ordering::Relaxed);
+                match deferred_updates.compare_exchange_weak(
+                    head,
+                    self_ptr,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(fetched) => head = fetched,
                 }
-                claimed_deferred = true;
             }
+            claimed_deferred = true;
+        }
 
         self.release_refcount.fetch_sub(1, Ordering::Relaxed);
         ReleaseTransition {

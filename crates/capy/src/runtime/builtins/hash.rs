@@ -115,9 +115,7 @@ pub mod hash_ops {
         key: Value<'gc>,
         default_value: Option<Value<'gc>>,
     ) -> Value<'gc> {
-        
-        ht
-            .get(ctx, key)
+        ht.get(ctx, key)
             .unwrap_or(default_value.unwrap_or(Value::new(false)))
     }
 
@@ -141,7 +139,6 @@ pub mod hash_ops {
 
     #[scheme(name = "core-hash-size")]
     pub fn hash_size(ht: Gc<'gc, HashTable<'gc>>) -> usize {
-        
         ht.len()
     }
 
@@ -150,15 +147,11 @@ pub mod hash_ops {
         ht: Either<Gc<'gc, HashTable<'gc>>, Gc<'gc, WeakTable<'gc>>>,
     ) -> Value<'gc> {
         match ht {
-            Either::Right(ht) => {
-                
-
-                ht.fold(
-                    ctx,
-                    |k, v, acc| Value::cons(ctx, Value::cons(ctx, k, v), acc),
-                    Value::null(),
-                )
-            }
+            Either::Right(ht) => ht.fold(
+                ctx,
+                |k, v, acc| Value::cons(ctx, Value::cons(ctx, k, v), acc),
+                Value::null(),
+            ),
 
             Either::Left(ht) => {
                 let list = ht
@@ -199,7 +192,6 @@ pub mod hash_ops {
     #[scheme(name = "hash")]
     pub fn hash(value: Value<'gc>, bound: Option<u64>) -> Value<'gc> {
         let hash = value.hash_equal() % bound.unwrap_or(u64::MAX);
-        
 
         hash.into_value(ctx)
     }
@@ -213,8 +205,6 @@ pub mod hash_ops {
         let mut hasher = simplehash::CityHasher64::new();
         value.hash(&mut hasher);
         let hash = hasher.finish_raw() % bound.unwrap_or(u64::MAX);
-
-        
 
         hash.into_value(ctx)
     }
@@ -479,13 +469,9 @@ pub mod hash_ops {
                     _ => (),
                 }
 
-                
                 ht.get(ctx, key).unwrap_or(default)
             }
-            Either::Right(ht) => {
-                
-                ht.get(ctx, key).unwrap_or(default)
-            }
+            Either::Right(ht) => ht.get(ctx, key).unwrap_or(default),
         }
     }
 
@@ -661,15 +647,11 @@ pub mod hash_ops {
                 ls
             }
 
-            Either::Right(ht) => {
-                
-
-                ht.fold(
-                    ctx,
-                    |k, v, acc| Value::cons(ctx, Value::cons(ctx, k, v), acc),
-                    Value::null(),
-                )
-            }
+            Either::Right(ht) => ht.fold(
+                ctx,
+                |k, v, acc| Value::cons(ctx, Value::cons(ctx, k, v), acc),
+                Value::null(),
+            ),
         }
     }
 

@@ -619,7 +619,9 @@ pub(crate) fn initargs_with_default_initargs<'gc>(
 
     let defaults = default_initarg_pairs(class.default_initargs());
     let supplied = initargs
-        .as_chunks::<2>().0.iter()
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| initarg_key(pair[0]))
         .collect::<SmallVec<[Value<'gc>; 8]>>();
     let missing = defaults

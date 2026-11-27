@@ -185,7 +185,7 @@ impl OptConfig {
             .filter(|stage| !stage.is_empty())
             .map(str::to_string)
             .collect();
-        
+
         OptConfig {
             threshold: flags::jit_opt_threshold(),
             version: flags::opt_version(),

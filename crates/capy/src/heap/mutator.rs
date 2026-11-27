@@ -288,7 +288,10 @@ fn stress_collect_if_due() {
         return;
     }
     static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    if !COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed).is_multiple_of(interval) {
+    if !COUNT
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        .is_multiple_of(interval)
+    {
         return;
     }
     // `user_collect_garbage` runs in native code.

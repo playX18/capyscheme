@@ -291,10 +291,11 @@ impl<'a> Remat<'a> {
                     && matches!(
                         value,
                         Constant::Int32(_) | Constant::Int64(_) | Constant::Bits(_)
-                    ) && func.class(*dst) == RegClass::Gpr
-                    {
-                        of[*dst] = Some(*value);
-                    }
+                    )
+                    && func.class(*dst) == RegClass::Gpr
+                {
+                    of[*dst] = Some(*value);
+                }
                 if let LirInst::UntagInt { dst, src } | LirInst::UntagInt64 { dst, src } = inst {
                     untag_of[*dst] = Some(*src);
                 }

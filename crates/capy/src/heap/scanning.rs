@@ -159,7 +159,7 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
             let set = gc.constraints.read();
             set.execute_vmref_convergence(worker, &mut tracer_context)
         };
-        
+
         weak_dirty || constraint_dirty
     }
 

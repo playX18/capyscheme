@@ -722,19 +722,19 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             ("u64sll/wraparound", &[_, n]) => {
                 let n = u64_count(self, n)?;
                 Native::U64Shift(ShiftKind::Shl, n)
-            },
+            }
             ("u64srl", &[_, n]) => {
                 let n = u64_count(self, n)?;
                 Native::U64Shift(ShiftKind::Shr, n)
-            },
+            }
             ("u64rotr", &[_, n]) => {
                 let n = u64_count(self, n)?;
                 Native::U64Shift(ShiftKind::Rotr, n)
-            },
+            }
             ("u64rotl", &[_, n]) => {
                 let n = u64_count(self, n)?;
                 Native::U64Shift(ShiftKind::Rotr, (64 - n) % 64)
-            },
+            }
             ("u64->flonum", &[_]) => Native::U64ToFlonum,
             // A right shift of a non-negative word is the logical one.
             ("bitwise-arithmetic-shift-right", &[_, n]) if lane => match self.fixnum_constant(n) {
@@ -758,10 +758,8 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             ("fxxor", &[_, _]) => Native::FxBit(BitOp::Xor),
             ("bitwise-not", &[_]) => Native::Not,
             ("bitwise-arithmetic-shift-left", &[_, n]) => {
-                {
-                    let n = self.fixnum_constant(n).filter(|n| (0..63).contains(n))?;
-                    Native::Shl(n as u8)
-                }
+                let n = self.fixnum_constant(n).filter(|n| (0..63).contains(n))?;
+                Native::Shl(n as u8)
             }
             ("bitwise-arithmetic-shift-right", &[_, n]) => match self.fixnum_constant(n) {
                 Some(n) if n >= 0 => Native::Sar(n.min(63) as u8),
@@ -776,46 +774,36 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             ("fx-/wraparound", &[_, _]) => Native::Wrap(Op::SubI32),
             ("fx*/wraparound", &[_, _]) => Native::Wrap(Op::MulI32),
             ("fxsll/wraparound", &[_, n]) => {
-                {
-                    let n = self
+                let n = self
                     .fixnum_constant(n)
                     .filter(|n| (0..FIXNUM_WIDTH).contains(n))?;
-                    Native::Shift32(ShiftKind::Shl, n as u8)
-                }
+                Native::Shift32(ShiftKind::Shl, n as u8)
             }
             ("fxsrl", &[_, n]) => {
-                {
-                    let n = self
+                let n = self
                     .fixnum_constant(n)
                     .filter(|n| (0..FIXNUM_WIDTH).contains(n))?;
-                    Native::Shift32(ShiftKind::Shr, n as u8)
-                }
+                Native::Shift32(ShiftKind::Shr, n as u8)
             }
             ("fxrotr32", &[_, n]) => {
-                {
-                    let n = self
+                let n = self
                     .fixnum_constant(n)
                     .filter(|n| (0..FIXNUM_WIDTH).contains(n))?;
-                    Native::Shift32(ShiftKind::Rotr, n as u8)
-                }
+                Native::Shift32(ShiftKind::Rotr, n as u8)
             }
             ("fxrotl32", &[_, n]) => {
-                {
-                    let n = self
+                let n = self
                     .fixnum_constant(n)
                     .filter(|n| (0..FIXNUM_WIDTH).contains(n))?;
-                    Native::Shift32(ShiftKind::Rotr, ((32 - n) % 32) as u8)
-                }
+                Native::Shift32(ShiftKind::Rotr, ((32 - n) % 32) as u8)
             }
             ("bytevector-u64-set!", &[_, _, _, endian]) => {
                 let big = self.constant_endianness(endian)?;
                 Native::Store(elem(8, false, big))
-            },
+            }
             (name, &[_, _, endian]) if bytevector_ref_elem(name, false).is_some() => {
-                {
-                    let big = self.constant_endianness(endian)?;
-                    Native::Load(bytevector_ref_elem(name, big).unwrap())
-                }
+                let big = self.constant_endianness(endian)?;
+                Native::Load(bytevector_ref_elem(name, big).unwrap())
             }
             // The numeric natives, reached through a first-class use such as
             // `(sort xs <)`: the operand-dispatching lowering of an
@@ -832,7 +820,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             (name, args) => {
                 let text = self.text_shape(name, args)?;
                 Native::Text(text)
-            },
+            }
         };
         if blocked && !self.guard_free(&shape, args) {
             return None;

@@ -170,7 +170,7 @@ pub mod variable_ops {
     #[scheme(name = "make-variable")]
     pub fn make_variable(value: Option<Value<'gc>>) -> Gc<'gc, Variable<'gc>> {
         let value = value.unwrap_or(Value::undefined());
-        
+
         Variable::new(ctx, value)
     }
 

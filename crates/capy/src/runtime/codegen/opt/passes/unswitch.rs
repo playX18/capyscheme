@@ -97,9 +97,10 @@ fn plan(func: &Func, lp: &Loop) -> Option<(Block, Value)> {
         }
         // A constant condition is the business of `simplify`.
         if let ValueDef::Inst(def) = func.value_def(*cond)
-            && matches!(func.insts[def].op, Op::Const(_)) {
-                continue;
-            }
+            && matches!(func.insts[def].op, Op::Const(_))
+        {
+            continue;
+        }
         if invariant(func, lp, &inst_block, *cond) {
             return Some((block, *cond));
         }

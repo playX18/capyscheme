@@ -307,7 +307,7 @@ pub mod ffi_ops {
     #[scheme(name = "scm->pointer")]
     pub fn value_to_pointer(v: Value<'gc>) -> Gc<'gc, Pointer<'gc>> {
         let p = Pointer::new(v.bits() as *mut std::ffi::c_void);
-        
+
         ctx.allocate_with(p, pointer_header_word())
     }
 

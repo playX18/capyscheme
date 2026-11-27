@@ -618,9 +618,7 @@ fn scalar_rest(code: &[u8], frame_size: usize, required: u32, cnt: u32) -> Optio
     while let Some((ins, _, len)) = Instruction::decode_slice(code, pc) {
         match ins {
             Instruction::OpRestList(op) if op.cnt.0 == cnt => return None,
-            Instruction::OpRestRef(op) if op.cnt.0 == cnt => {
-                count = count.max(op.index.0 + 1)
-            }
+            Instruction::OpRestRef(op) if op.cnt.0 == cnt => count = count.max(op.index.0 + 1),
             _ => {}
         }
         pc += len;
@@ -721,9 +719,10 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 // deopts before it (see `lower_forward_call`), so neither the
                 // forward nor the entry is reached.
                 if blocked(entry)
-                    && let Some(index) = live.block_at(block.start) {
-                        mv_only.insert(index);
-                    }
+                    && let Some(index) = live.block_at(block.start)
+                {
+                    mv_only.insert(index);
+                }
             }
         }
         let order = reverse_postorder(&live, &mv_only);
@@ -1327,12 +1326,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             // The entry's argument count check and frame room check are the
             // entry glue's job. The count is kept for self tail calls.
             Instruction::OpEnter(op) => {
-                if pc == 0
-                    || self
-                        .case_ranges
-                        .iter()
-                        .any(|(start, _, _)| *start == pc)
-                {
+                if pc == 0 || self.case_ranges.iter().any(|(start, _, _)| *start == pc) {
                     self.argc = Some(op.argc.0);
                 }
                 Ok(Flow::Next)
@@ -1390,10 +1384,11 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 if self.fold {
                     let cell = self.buffer.constant(op.constant.0 as usize);
                     if let Some(current) = self.foldable_value(cell)
-                        && let Some(value) = self.folded_value(cell, current) {
-                            self.set(op.dst.0, value)?;
-                            return Ok(Flow::Next);
-                        }
+                        && let Some(value) = self.folded_value(cell, current)
+                    {
+                        self.set(op.dst.0, value)?;
+                        return Ok(Flow::Next);
+                    }
                 }
                 let cell = self.konst(Constant::Pool {
                     code: root(),
@@ -2973,9 +2968,10 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                     | Op::Box(Repr::Int32)
                     | Op::Box(Repr::Double)
                     | Op::Const(Constant::Bits(_))
-            ) {
-                return;
-            }
+            )
+        {
+            return;
+        }
         self.effect_op(Op::WriteBarrier, &[obj, value], None);
     }
 
@@ -3172,7 +3168,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         let default = target(word(table)?)?;
         let count = word(table + 1)?;
         let mut cases = Vec::new();
-        
+
         let density = if switch_table_is_dense(count) {
             let span = switch_table_len(count);
             let min = word(table + 2)? as i32;
@@ -4054,9 +4050,10 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         // A fired set is replaced by a fresh one (`Variable::fire_watch`), so
         // this one is invalid only while that fire runs.
         if let Some(set) = variable_ref.watch.get()
-            && set.is_invalid() {
-                return None;
-            }
+            && set.is_invalid()
+        {
+            return None;
+        }
         // A cell written this often will change again mid-compile (refusing
         // the install) or right after it (invalidating the unit and leaving
         // a watchpoint firing on every later write), so keep live loads.

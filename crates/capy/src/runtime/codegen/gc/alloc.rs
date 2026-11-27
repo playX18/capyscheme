@@ -122,10 +122,11 @@ impl GcCodegen {
         // the bump path, as the runtime's allocation sends it to the large
         // object space.
         if let AllocSize::Bytes(bytes) = size
-            && bytes >= self.info.los_threshold {
-                onlineasm!(*masm.assembler(); jmp {slow};);
-                return;
-            }
+            && bytes >= self.info.los_threshold
+        {
+            onlineasm!(*masm.assembler(); jmp {slow};);
+            return;
+        }
         if let AllocSize::Words { count, base } = size {
             onlineasm!(*masm.assembler();
                 move {end}, {count};

@@ -104,7 +104,6 @@ mod arith_operations {
     /// Return the sign of flonum as 0 (positive) or 1 (negative)
     #[scheme(name = "float-sign")]
     pub fn float_sign(x: f64) -> i32 {
-        
         if x.is_sign_negative() { 1 } else { 0 }
     }
 
@@ -174,19 +173,16 @@ mod arith_operations {
 
     #[scheme(name = "bits->flonum")]
     pub fn bits_to_flonum(s: u64) -> f64 {
-        
         f64::from_bits(s)
     }
 
     #[scheme(name = "flonum->bits")]
     pub fn flonum_to_bits(x: f64) -> u64 {
-        
         x.to_bits()
     }
 
     #[scheme(name = "abs")]
     pub fn abs(x: Number<'gc>) -> Number<'gc> {
-        
         x.abs(ctx)
     }
 
@@ -217,7 +213,6 @@ mod arith_operations {
 
     #[scheme(name = "odd?")]
     pub fn is_odd(x: Number<'gc>) -> bool {
-        
         match x {
             Number::Fixnum(i) => i % 2 != 0,
             Number::BigInt(b) => b.is_odd(),
@@ -227,7 +222,6 @@ mod arith_operations {
 
     #[scheme(name = "even?")]
     pub fn is_even(x: Number<'gc>) -> bool {
-        
         match x {
             Number::Fixnum(i) => i % 2 == 0,
             Number::BigInt(b) => !b.is_odd(),
@@ -398,8 +392,6 @@ mod arith_operations {
 
     #[scheme(name = "inexact")]
     pub fn inexact(x: Number<'gc>) -> Number<'gc> {
-        
-
         x.to_inexact(ctx)
     }
 
@@ -743,14 +735,11 @@ mod arith_operations {
 
     #[scheme(name = "expt")]
     pub fn expt(x: Number<'gc>, y: Number<'gc>) -> Number<'gc> {
-        
-
         Number::expt(ctx, x, y)
     }
 
     #[scheme(name = "exp")]
     pub fn exp(x: Number<'gc>) -> Number<'gc> {
-        
         Number::exp(ctx, x)
     }
 
@@ -786,19 +775,16 @@ mod arith_operations {
 
     #[scheme(name = "sin")]
     pub fn sin(x: Number<'gc>) -> Number<'gc> {
-        
         Number::sin(ctx, x)
     }
 
     #[scheme(name = "cos")]
     pub fn cos(x: Number<'gc>) -> Number<'gc> {
-        
         Number::cos(ctx, x)
     }
 
     #[scheme(name = "tan")]
     pub fn tan(x: Number<'gc>) -> Number<'gc> {
-        
         Number::tan(ctx, x)
     }
 
@@ -852,13 +838,11 @@ mod arith_operations {
 
     #[scheme(name = "sqrt")]
     pub fn sqrt(x: Number<'gc>) -> Number<'gc> {
-        
         Number::sqrt(ctx, x)
     }
 
     #[scheme(name = "magnitude")]
     pub fn magnitude(x: Number<'gc>) -> Number<'gc> {
-        
         Number::magnitude(ctx, x)
     }
 
@@ -894,19 +878,16 @@ mod arith_operations {
 
     #[scheme(name = "inverse")]
     pub fn inverse(x: Number<'gc>) -> Number<'gc> {
-        
         Number::inverse(ctx, x)
     }
 
     #[scheme(name = "asin")]
     pub fn asin(x: Number<'gc>) -> Number<'gc> {
-        
         Number::asin(ctx, x)
     }
 
     #[scheme(name = "acos")]
     pub fn acos(x: Number<'gc>) -> Number<'gc> {
-        
         Number::acos(ctx, x)
     }
 
@@ -1480,7 +1461,6 @@ mod arith_operations {
 
     #[scheme(name = "lognot")]
     pub fn lognot(w: ExactInteger<'gc>) -> ExactInteger<'gc> {
-        
         ExactInteger::bitnot(ctx, w)
     }
 
@@ -1589,7 +1569,7 @@ mod arith_operations {
         } else {
             imag
         };
-        
+
         Number::rectangular(real, ctx, imag)
     }
 
@@ -1647,7 +1627,6 @@ mod arith_operations {
 
     #[scheme(name = "angle")]
     pub fn angle(z: Number<'gc>) -> Number<'gc> {
-        
         z.angle(ctx)
     }
 
@@ -2397,25 +2376,21 @@ mod arith_operations {
 
     #[scheme(name = "bitwise-bit-count")]
     pub fn bitwise_bit_count(x: ExactInteger<'gc>) -> i32 {
-        
         x.bit_count(ctx)
     }
 
     #[scheme(name = "bitwise-length")]
     pub fn bitwise_bit_length(x: ExactInteger<'gc>) -> u32 {
-        
         x.bit_length(ctx)
     }
 
     #[scheme(name = "bitwise-first-bit-set")]
     pub fn bitwise_first_bit_set(x: ExactInteger<'gc>) -> i32 {
-        
         ExactInteger::first_bit_set(ctx, x)
     }
 
     #[scheme(name = "bitwise-not")]
     pub fn bitwise_not(x: ExactInteger<'gc>) -> ExactInteger<'gc> {
-        
         ExactInteger::bitnot(ctx, x)
     }
 
@@ -3405,19 +3380,16 @@ mod arith_operations {
 
     #[scheme(name = "flsqrt")]
     pub fn fl_sqrt(x: f64) -> f64 {
-        
         x.sqrt()
     }
 
     #[scheme(name = "flabs")]
     pub fn fl_abs(x: f64) -> f64 {
-        
         x.abs()
     }
 
     #[scheme(name = "flatan")]
     pub fn fl_atan(x: f64, y: Option<f64>) -> f64 {
-        
         match y {
             Some(y) => x.atan2(y),
             None => x.atan(),
@@ -3426,19 +3398,16 @@ mod arith_operations {
 
     #[scheme(name = "flacos")]
     pub fn fl_acos(x: f64) -> f64 {
-        
         x.acos()
     }
 
     #[scheme(name = "flasin")]
     pub fn fl_asin(x: f64) -> f64 {
-        
         x.asin()
     }
 
     #[scheme(name = "fllog")]
     pub fn fl_log(x: f64, y: Option<f64>) -> f64 {
-        
         match y {
             Some(base) => x.log(base),
             None => x.ln(),
@@ -3447,62 +3416,53 @@ mod arith_operations {
 
     #[scheme(name = "fltan")]
     pub fn fl_tan(x: f64) -> f64 {
-        
         x.tan()
     }
 
     #[scheme(name = "flcos")]
     pub fn fl_cos(x: f64) -> f64 {
-        
         x.cos()
     }
 
     #[scheme(name = "flsin")]
     pub fn fl_sin(x: f64) -> f64 {
-        
         x.sin()
     }
 
     #[scheme(name = "flexpt")]
     pub fn fl_expt(x: f64, y: f64) -> f64 {
-        
         x.powf(y)
     }
 
     #[scheme(name = "flexp")]
     pub fn fl_exp(x: f64) -> f64 {
-        
         x.exp()
     }
 
     #[scheme(name = "flround")]
     pub fn fl_round(x: f64) -> f64 {
-        
         x.round()
     }
 
     #[scheme(name = "fltruncate")]
     pub fn fl_truncate(x: f64) -> f64 {
-        
         x.trunc()
     }
 
     #[scheme(name = "flceiling")]
     pub fn fl_ceiling(x: f64) -> f64 {
-        
         x.ceil()
     }
 
     #[scheme(name = "flfloor")]
     pub fn fl_floor(x: f64) -> f64 {
-        
         x.floor()
     }
 
     #[scheme(name = "fldenominator")]
     pub fn fl_denominator(x: f64) -> Number<'gc> {
         let n = Number::Flonum(x).to_exact(ctx);
-        
+
         if let Number::Rational(r) = n {
             r.denominator.to_inexact(ctx)
         } else {
@@ -3513,7 +3473,7 @@ mod arith_operations {
     #[scheme(name = "flnumerator")]
     pub fn fl_numerator(x: f64) -> Number<'gc> {
         let n = Number::Flonum(x).to_exact(ctx);
-        
+
         if let Number::Rational(r) = n {
             r.numerator.to_inexact(ctx)
         } else {

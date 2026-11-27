@@ -53,8 +53,6 @@ pub mod debug_ops {
     #[scheme(name = "print-stacktrace")]
     pub fn print_stacktrace(_args: &'gc [Value<'gc>]) -> () {
         print_stacktraces_impl(ctx);
-
-        
     }
 
     /// Compile the procedure `proc` with the baseline JIT now.
@@ -198,7 +196,6 @@ pub mod debug_ops {
     /// frames, innermost first.
     #[scheme(name = "shadow-stack")]
     pub fn shadow_stack() -> Value<'gc> {
-        
         backtrace_frames(ctx)
             .into_iter()
             .rev()

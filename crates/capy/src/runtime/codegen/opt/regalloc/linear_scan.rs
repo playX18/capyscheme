@@ -152,23 +152,26 @@ fn scan_class(
         for &i in &inactive {
             if let Some(Assign::Reg(r)) = pieces.children[i].assign
                 && let Some(k) = reg_index(r)
-                    && let Some(p) = next_intersection(&pieces.children[i].ranges, &ranges, s) {
-                        free[k] = free[k].min(p);
-                    }
+                && let Some(p) = next_intersection(&pieces.children[i].ranges, &ranges, s)
+            {
+                free[k] = free[k].min(p);
+            }
         }
         for (k, r) in pool.iter().enumerate() {
             if let Some(f) = built.fixed.get(r)
-                && let Some(p) = next_intersection(f, &ranges, s) {
-                    free[k] = free[k].min(p);
-                }
+                && let Some(p) = next_intersection(f, &ranges, s)
+            {
+                free[k] = free[k].min(p);
+            }
         }
         let free_static = free.clone();
         for &a in &active {
             if let Some(Assign::Reg(r)) = pieces.children[a].assign
-                && let Some(k) = reg_index(r) {
-                    free[k] = 0;
-                    holder[k] = Some(a);
-                }
+                && let Some(k) = reg_index(r)
+            {
+                free[k] = 0;
+                holder[k] = Some(a);
+            }
         }
 
         let vreg = pieces.children[cur].vreg;
@@ -184,9 +187,10 @@ fn scan_class(
         let mut candidates: Vec<usize> = Vec::new();
         if let Some(r) = placed_reg_before(pieces, vreg, s)
             && let Some(k) = reg_index(r)
-                && allowed(r) {
-                    candidates.push(k);
-                }
+            && allowed(r)
+        {
+            candidates.push(k);
+        }
         for hint in &built.hints[vreg] {
             if !covers(&ranges, hint.pos) {
                 continue;
@@ -226,11 +230,12 @@ fn scan_class(
                     // a move at the Pre gap of that instruction.
                     let p = pos::gap_floor(bf);
                     if p > s
-                        && let Some(id) = pieces.split(cur, p) {
-                            pieces.children[cur].assign = Some(Assign::Reg(pool[k]));
-                            assigned = true;
-                            unhandled.push(Reverse((pieces.children[id].ranges[0].0, id)));
-                        }
+                        && let Some(id) = pieces.split(cur, p)
+                    {
+                        pieces.children[cur].assign = Some(Assign::Reg(pool[k]));
+                        assigned = true;
+                        unhandled.push(Reverse((pieces.children[id].ranges[0].0, id)));
+                    }
                 }
             }
         }

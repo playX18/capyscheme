@@ -303,9 +303,10 @@ fn process(
             // `Box(Int64)` is a bignum outside the fixnum range, which
             // `CheckInt64` must reject, so it cannot be forwarded as is.
             if repr != Repr::Int64
-                && let Some(raw) = boxed_from(func, scope, source, Op::Box(repr)) {
-                    return remove(scope, inst, result, raw);
-                }
+                && let Some(raw) = boxed_from(func, scope, source, Op::Box(repr))
+            {
+                return remove(scope, inst, result, raw);
+            }
             // A check and an unbox of one representation share a key.
             let key = (Op::Unbox(repr), canonical, None);
             if let Some(&prev) = scope.avail.get(&key) {

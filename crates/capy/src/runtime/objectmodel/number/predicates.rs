@@ -94,9 +94,7 @@ impl<'gc> Number<'gc> {
     pub fn is_rational(&self) -> bool {
         match self {
             Self::Rational(_) | Self::Fixnum(_) | Self::BigInt(_) => true,
-            Self::Flonum(fl) => {
-                !(fl.is_infinite() || fl.is_nan())
-            }
+            Self::Flonum(fl) => !(fl.is_infinite() || fl.is_nan()),
             _ => false,
         }
     }

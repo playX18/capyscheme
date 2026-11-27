@@ -206,10 +206,11 @@ fn fold_known_branches(func: &mut Func) -> bool {
                     then,
                     otherwise,
                 }) = &func.blocks[block].term
-                    && let Some(&taken) = known.get(cond) {
-                        let edge = if taken { *then } else { *otherwise };
-                        rewrites.push((block, Terminator::Jump(edge)));
-                    }
+                    && let Some(&taken) = known.get(cond)
+                {
+                    let edge = if taken { *then } else { *otherwise };
+                    rewrites.push((block, Terminator::Jump(edge)));
+                }
                 stack.push(Visit::Exit(block));
                 for &child in &children[block] {
                     stack.push(Visit::Enter(child));

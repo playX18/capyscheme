@@ -52,10 +52,11 @@ pub fn schedule(func: &Func<'_>) -> Schedule {
             def_block[inst] = Some(block);
             let data = &func.insts[inst];
             if let Some(result) = data.result
-                && is_floating(data.op) {
-                    is_floating_value[result] = true;
-                    floating.push(result);
-                }
+                && is_floating(data.op)
+            {
+                is_floating_value[result] = true;
+                floating.push(result);
+            }
         }
     }
 

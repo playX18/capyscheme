@@ -151,8 +151,7 @@ pub(crate) fn build(
         }
     }
     // A constant is rebuilt from its immediate when it has one definition.
-    let const_of =
-        |v: VReg| -> Option<Constant> { if defs[v] == 1 { konst[v] } else { None } };
+    let const_of = |v: VReg| -> Option<Constant> { if defs[v] == 1 { konst[v] } else { None } };
 
     let words = (asg.spill_slots as usize).div_ceil(64).max(1);
     let mut masks: Vec<(SafePoint, LiveMask, RegMask)> = Vec::with_capacity(sp_at.len());
@@ -182,9 +181,10 @@ pub(crate) fn build(
                 let c = &asg.children[id];
                 if c.assign == Some(super::intervals::Assign::Stack)
                     && covers(&c.ranges, pos::late(g))
-                    && let Some(s) = asg.slot_of[v] {
-                        set(&mut w, &mut homes, s);
-                    }
+                    && let Some(s) = asg.slot_of[v]
+                {
+                    set(&mut w, &mut homes, s);
+                }
             }
 
             match kind {
@@ -196,9 +196,10 @@ pub(crate) fn build(
 
                 Kind::RustCall => {
                     if let Some(Loc::Reg(r)) = asg.loc_at(v, pos::early(g))
-                        && regs.call_preserved(r) {
-                            regmask.set(r.0);
-                        }
+                        && regs.call_preserved(r)
+                    {
+                        regmask.set(r.0);
+                    }
                 }
 
                 Kind::FrameCall => {}
@@ -282,9 +283,10 @@ impl ExitLocs<'_> {
             return Ok(DeoptLoc::Const(c));
         }
         if repr == VRepr::Tagged
-            && let Some(c) = (self.const_of)(vreg) {
-                return Ok(DeoptLoc::Const(c));
-            }
+            && let Some(c) = (self.const_of)(vreg)
+        {
+            return Ok(DeoptLoc::Const(c));
+        }
         let loc = self
             .asg
             .loc_at(vreg, self.pos)

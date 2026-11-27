@@ -307,9 +307,10 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         }
         let mut cell = self.func.args(inst)[0];
         if let ValueDef::Inst(check) = self.func.value_def(cell)
-            && matches!(self.func.insts[check].op, Op::CheckClass(_)) {
-                cell = self.func.args(check)[0];
-            }
+            && matches!(self.func.insts[check].op, Op::CheckClass(_))
+        {
+            cell = self.func.args(check)[0];
+        }
         let variable = self.pool_constant(cell)?;
         Some(format!("global {}", self.variable_label(variable)))
     }
@@ -441,18 +442,18 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 if natives.iter().any(|arm| arm.value == value) {
                     continue;
                 }
-                if target.callee.is_native() && target.hits >= MIN_TARGET_HITS
-                    && let Some(shape) = self.native_arm_shape(target.callee, args) {
-                        natives.push(NativeArm {
-                            value,
-                            shape,
-                            hits: target.hits,
-                            label: crate::runtime::objectmodel::proc::procedure_label(
-                                target.callee,
-                            ),
-                        });
-                        continue;
-                    }
+                if target.callee.is_native()
+                    && target.hits >= MIN_TARGET_HITS
+                    && let Some(shape) = self.native_arm_shape(target.callee, args)
+                {
+                    natives.push(NativeArm {
+                        value,
+                        shape,
+                        hits: target.hits,
+                        label: crate::runtime::objectmodel::proc::procedure_label(target.callee),
+                    });
+                    continue;
+                }
             }
             let callee_value = SchemeValue::from(target.callee);
             let buffer = target.callee.buffer;

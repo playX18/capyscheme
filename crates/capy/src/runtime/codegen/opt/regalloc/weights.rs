@@ -206,10 +206,11 @@ fn record(
 ) {
     for op in operands.into_iter().rev() {
         if op.role == Role::Use
-            && let Some(i) = frame.iter().position(|&v| v == op.vreg) {
-                frame.swap_remove(i);
-                continue;
-            }
+            && let Some(i) = frame.iter().position(|&v| v == op.vreg)
+        {
+            frame.swap_remove(i);
+            continue;
+        }
         let at = if op.role == Role::Def { late } else { early };
         accesses[op.vreg].push((at, w));
         if !matches!(op.constraint, Constraint::Fixed(_)) {

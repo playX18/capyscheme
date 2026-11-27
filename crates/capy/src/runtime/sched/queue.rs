@@ -526,9 +526,10 @@ impl Shared {
             return self.pop_global().or_else(|| self.pop_local(w, false));
         }
         if rng.tick.is_multiple_of(GLOBAL_CHECK_INTERVAL)
-            && let Some(task) = self.pop_global() {
-                return Some(task);
-            }
+            && let Some(task) = self.pop_global()
+        {
+            return Some(task);
+        }
         let worst = rng.tick.is_multiple_of(STARVATION_INTERVAL);
         if let Some(task) = self.pop_local(w, worst) {
             return Some(task);

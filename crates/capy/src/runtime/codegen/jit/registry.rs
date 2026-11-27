@@ -215,9 +215,10 @@ fn unit_of<'gc>(code_block: Gc<'gc, CodeBlock<'gc>>) -> Option<&'gc CodeUnit> {
         // Acquire pairs with the Release in `install_optimized`, after which
         // the owner slot is set.
         if let Some(owner) = code_block.optimized.load(Acquire)
-            && let Some(unit) = CodeUnit::of_image(owner) {
-                return Some(unit);
-            }
+            && let Some(unit) = CodeUnit::of_image(owner)
+        {
+            return Some(unit);
+        }
     }
     CodeUnit::of(&code_block)
 }

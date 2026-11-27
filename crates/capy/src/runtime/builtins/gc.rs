@@ -48,8 +48,6 @@ pub mod gc {
 
         let ephemeron = Ephemeron { key, value };
 
-        
-
         Value::from(ctx.allocate_with(ephemeron, ephemeron_header_word()))
     }
 
@@ -111,7 +109,7 @@ pub mod gc {
         let Some(snapshot) = runtime_stats_snapshot(Some(&ctx.state().stats)) else {
             return Value::new(false);
         };
-        
+
         Value::from(Str::new(ctx, snapshot.to_string(), true))
     }
 
