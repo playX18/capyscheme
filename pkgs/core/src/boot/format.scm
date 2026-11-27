@@ -1,0 +1,239 @@
+; Copyright 1998 Lars T Hansen.
+; 2002-09-28 / lth
+;
+; (format <port> <format-string> <arg> ...)
+;
+; <port> can be: an output port
+;                #t, denoting (current-output-port)
+;                #f, denoting an output string (that is returned)
+;
+; The following formatting characters are valid:
+;   ~a   - write as with 'display'
+;   ~b   - write bytevector elements (decimal)
+;   ~B   - write bytevector elements (hexadecimal)
+;   ~c   - write character as with 'write-char'
+;   ~f   - write number as with 'display', though see below
+;   ~x   - write integer in base 16
+;   ~o   - write integer in base 8
+;   ~s   - write as with 'write', compatible with Chez Scheme
+;   ~w   - write as with 'write'
+;   ~?   - next two args are another format string and a list of
+;          arguments, respectively; recursively invoke format on
+;          those arguments.
+;   ~%   - newline
+;   ~~   - write a ~
+;
+; ~a and ~w admit a field width specifier
+;   - an integer n formats the datum left-justified in a field that
+;     is at least n characters wide, inserting spaces on the right
+;     if necessary
+;   - an integer n followed by @ formats the datum right-justified,
+;     ditto.
+;
+; ~f admits a formatting specifier
+;   - integers w and d, comma separated, that format the datum
+;     left justified in a field at least w characters wide rounded
+;     to d decimal places.  w is optional in which case no leading
+;     spaces are printed; ,d is optional in which case the number
+;     is formatted as with number->string and an attempt is made to
+;     fit it in the field (FIXME: should probably round it to fit,
+;     if that's possible.)
+(|#%require| (boot prim) (boot control) (boot records) (boot conditions) (boot violations) (boot raise) (boot exceptions) (boot expand) (boot interpreter) (boot enums) (boot sys) (boot osdep) (boot ports-core) (boot transcoder) (boot binary-ports) (boot textual-ports) (boot custom-ports) (boot file-ports) (boot console-ports) (boot port-api) (boot print) (boot str2num))
+(|#%provide| all-defined)
+
+
+(define %format-fast-on? (%format-fast-enabled?))
+
+
+(define (format-fixed-flonum x digits)
+  (let* ([scale (expt 10 digits)]
+         [scaled (round (* (abs (inexact->exact x)) scale))]
+         [int-part (quotient scaled scale)]
+         [frac (number->string (remainder scaled scale))]
+         [frac-text (string-append (make-string (- digits (string-length frac)) #\0) frac)])
+    (string-append
+      (if (< x 0) "-" "")
+      (number->string int-part)
+      (if (= digits 0) "" (string-append "." frac-text)))))
+
+(define ($format port-spec format-string . args)
+  (let ((port (cond ((output-port? port-spec)
+                     port-spec)
+               ((eq? port-spec #t)
+                 (current-output-port))
+               ((eq? port-spec #f)
+                 (open-output-string))
+               (else
+                 (error "format: not a port: " port-spec))))
+        (n (string-length format-string)))
+
+    (define (format-justified width side obj p)
+      (let ((x (let ((s (open-output-string)))
+                (p obj s)
+                (get-output-string s))))
+        (if (< (string-length x) width)
+          (let ((padding (make-string (- width (string-length x)) #\space)))
+            (if (eq? side 'left)
+              (begin (display x port)
+                (display padding port))
+              (begin (display padding port)
+                (display x port))))
+          (display x port))))
+
+    (define (next-arg args)
+      (if (null? args)
+        (error 'format "too few arguments for format string" format-string)
+        (car args)))
+
+    (define (format-error)
+      (error "format: error in specifier: " format-string))
+
+    (define (convert-width cs)
+      (string->number (list->string (reverse cs))))
+
+    (define (get-field-width i)
+      (let loop ((cs '()) (i i))
+        (if (= i n)
+          (format-error)
+          (let ((c (string-ref format-string i)))
+            (cond ((char-numeric? c)
+                   (loop (cons c cs) (+ i 1)))
+              ((memq c '(#\a #\w #\, #\f))
+                (values (convert-width cs) 'left c (+ i 1)))
+              ((char=? c #\@)
+                (if (= (+ i 1) n)
+                  (format-error)
+                  (let ((c (string-ref format-string (+ i 1))))
+                    (cond ((char=? c #\a)
+                           (values (convert-width cs) 'right c (+ i 2)))
+                      ((char=? c #\w)
+                        (values (convert-width cs) 'right c (+ i 2)))
+                      (else
+                        (format-error))))))
+              (else
+                (format-error)))))))
+
+    (define (format-loop i args)
+      (cond ((= i n))
+        ((char=? (string-ref format-string i) #\~)
+          (if (= (+ i 1) n)
+            (error 'format "dangling ~ at end of format string" format-string))
+          (let ((c (string-ref format-string (+ i 1))))
+            (cond
+              ((char=? c #\!)
+                (flush-output-port port)
+                (format-loop (+ i 2) args))
+              ((char=? c #\~)
+                (write-char #\~ port)
+                (format-loop (+ i 2) args))
+              ((char=? c #\%)
+                (newline port)
+                (format-loop (+ i 2) args))
+              ((char=? c #\?)
+                (apply format port (next-arg args) (next-arg (cdr args)))
+                (format-loop (+ i 2) (cdr (if (null? args) args (cdr args)))))
+              ((char=? c #\a)
+                (display (next-arg args) port)
+                (format-loop (+ i 2) (cdr args)))
+              ((or (char=? c #\b)
+                  (char=? c #\B))
+                (let ((bv (next-arg args))
+                      (radix (if (char=? c #\b) 10 16)))
+                  (if (not (bytevector? bv))
+                    (error "format: not a bytevector: " bv))
+                  (do ((k 0 (+ k 1)))
+                    ((= k (bytevector-length bv)))
+                    (if (> k 0)
+                      (write-char #\space port))
+                    (display (number->string (bytevector-ref bv k) radix)
+                      port)))
+                (format-loop (+ i 2) (cdr args)))
+              ((char=? c #\c)
+                (write-char (next-arg args) port)
+                (format-loop (+ i 2) (cdr args)))
+              ((char=? c #\f)
+                (display (exact->inexact (next-arg args)) port)
+                (format-loop (+ i 2) (cdr args)))
+              ((char=? c #\x)
+                (if (not (integer? (next-arg args)))
+                  (error 'format "not an integer: " (next-arg args)))
+                (display (number->string (next-arg args) 16) port)
+                (format-loop (+ i 2) (cdr args)))
+              ((char=? c #\o)
+                (if (not (integer? (next-arg args)))
+                  (error 'format "not an integer: " (next-arg args)))
+                (display (number->string (next-arg args) 8) port)
+                (format-loop (+ i 2) (cdr args)))
+              ((or (char=? c #\w) (char=? c #\s))
+                (write (next-arg args) port)
+                (format-loop (+ i 2) (cdr args)))
+              ((char=? c #\,)
+                (receive (width side spec i)
+                  (get-field-width (+ i 2))
+                  (case spec
+                    ((#\f)
+                      (display (format-fixed-flonum (next-arg args) width) port)
+                      (format-loop i (cdr args)))
+                    (else
+                      (format-error)))))
+              ((char-numeric? c)
+                (receive (width side spec i)
+                  (get-field-width (+ i 1))
+                  (case spec
+                    ((#\a)
+                      (format-justified width side (next-arg args) display)
+                      (format-loop i (cdr args)))
+                    ((#\w)
+                      (format-justified width side (next-arg args) write)
+                      (format-loop i (cdr args)))
+                    ((#\,)
+                      (receive (width2 side2 spec2 i2)
+                        (get-field-width i)
+                        (case spec2
+                          ((#\f)
+                            (format-justified width 'right
+                              (format-fixed-flonum (next-arg args)
+                                width2)
+                              display)
+                            (format-loop i2 (cdr args)))
+                          (else
+                            (format-error)))))
+                    (else
+                      (format-error)))))
+              (else
+                (format-error)))))
+        (else
+          ;; write the whole run of literal text up to the next directive
+          (let ((j (let scan ((k i))
+                     (if (or (= k n) (char=? (string-ref format-string k) #\~))
+                       k
+                       (scan (+ k 1))))))
+            (put-string port format-string i (- j i))
+            (format-loop j args)))))
+
+    (format-loop 0 args)
+    (if (not port-spec)
+      (get-output-string port)
+      (unspecified))))
+
+(define (format arg1 . args)
+  (cond
+    [(and (not (null? args)) (port? arg1))
+      (unless (and (output-port? arg1) (textual-port? arg1))
+        (error 'format "not a textual output port" arg1))
+      (apply $format arg1 args)]
+    [(boolean? arg1) (apply $format arg1 args)]
+    [else
+     (or (and %format-fast-on? (%format-fast arg1 args))
+         (apply $format #f (cons arg1 args)))]))
+
+(define (printf cntl . args)
+  (apply format (current-output-port) cntl args))
+(define (fprintf port cntl . args)
+  (unless (and (output-port? port) (textual-port? port))
+    (error 'fprintf "not a textual output port" port))
+  (apply format port cntl args))
+
+($set-format-hook! format)
+
+; eof

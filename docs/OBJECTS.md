@@ -1,4 +1,4 @@
-# Objects, Classes and Inline Caches
+# Objects, classes and inline caches
 
 This file covers how Scheme values look in memory, how classes and their
 instances work, and how inline caches keep slot access and generic dispatch
@@ -13,15 +13,15 @@ pointer to a heap object.
 
 Immediates:
 
-- **Fixnums:** 32-bit signed integers, tagged with `NUMBER_TAG`
+- Fixnums are 32-bit signed integers, tagged with `NUMBER_TAG`
   (`0xfffe000000000000`).
-- **Flonums:** doubles with `1 << 49` added to their bits. This keeps them
+- Flonums are doubles with `1 << 49` added to their bits. This keeps them
   apart from fixnums and pointers. NaN payloads are canonicalized when a
   flonum is made.
-- **Characters:** the Unicode scalar shifted left by 16 bits, tagged `0x82`.
-- **Specials:** `#t`, `#f`, `()`, undefined, void, unspecified, EOF, and the
+- Characters are the Unicode scalar shifted left by 16 bits, tagged `0x82`.
+- Specials are `#t`, `#f`, `()`, undefined, void, unspecified, EOF, and the
   broken weak pointer. They differ in the low bits under `OTHER_TAG`.
-- **Internal sentinels:** empty and deleted, used by hash tables.
+- Internal sentinels are empty and deleted. Hash tables use them.
 
 ```text
  pointer    0000 xxxx xxxx xxxx   (no tag bits set)
@@ -43,10 +43,10 @@ The object layout, from low to high address:
 - payload: the address a `Value` points at
 
 The class id selects a `ClassDescriptor` in the class table
-(`runtime/class/`). Built-in ids (pair, vector, string, closure, module,
+(`runtime/objectmodel/class/`). Built-in ids (pair, vector, string, closure, module,
 port, thread, and others) are constants in `builtin_class_ids`.
 
-Object representations live in `runtime/value/`:
+Object representations live in `runtime/objectmodel/`:
 
 | Kind | File |
 |------|------|
@@ -65,13 +65,6 @@ A `Closure` (`value/proc/closure.rs`) holds a machine entry pointer, its
 `CodeBlock`, a metadata slot, and an inline array of free variables. A
 reified continuation is a closure of another kind.
 
-A closure holds:
-
-- the entry pointer
-- the code block
-- a metadata slot
-- the free variables
-
 A `CodeBlock` (`value/proc/code.rs`) holds:
 
 - the `CodeBuffer` with the bytecode
@@ -89,8 +82,8 @@ JIT images come from executable memory (`runtime/code_memory.rs`).
 An instance of a Scheme class (`SchemeInstance`) points at its
 `ClassDescriptor` and at a separate slots array.
 
-The slots array is a `SlotStorage`: a layout stamp followed by the slot
-values.
+The slots array is a `SlotStorage`, which holds a layout stamp followed by
+the slot values.
 
 ### Redefinition
 

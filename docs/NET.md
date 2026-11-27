@@ -1,7 +1,7 @@
 # Networking
 
-`(capy net)` provides TCP, UDP and Unix-domain sockets. All the procedures are non-blocking 
-and will yield a coroutine if result is not awailable straight away. 
+`(capy net)` provides TCP, UDP and Unix-domain sockets. All the procedures are non-blocking. If the result is not available
+immediately, the procedure yields the coroutine.
 
 ## TCP
 
@@ -41,10 +41,10 @@ The main procedures:
 | `(conn-read c n)` | Read at most `n` bytes into a new bytevector, or `eof`. |
 | `(conn-write-all c bv [start end])` | Write everything or raise. |
 | `(conn-close c)`, `(conn-closed? c)` | Close. |
-| `(conn-local-address c)`, `(conn-remote-address c)` | `net-address` records,`address->string` formats them. |
+| `(conn-local-address c)`, `(conn-remote-address c)` | `net-address` records. `address->string` formats them. |
 | `(conn-set-nodelay! c on?)`, `(conn-set-keepalive! c on?)` | TCP socket options. |
 | `(conn-set-rcvbuf! c n)`, `(conn-set-sndbuf! c n)` | Socket buffer sizes. |
-| `(conn-shutdown c how)` | Half-close: `how` is `'read`, `'write` or `'both`. |
+| `(conn-shutdown c how)` | Half-close. `how` is `'read`, `'write` or `'both`. |
 | `(conn->binary-input-port c)`, `(conn->binary-output-port c)` | Standard Scheme binary ports over a connection. |
 
 `conn-read!` returns as soon as some bytes are available. It does not fill the
@@ -80,7 +80,7 @@ until it is changed.
 (listener-close listener)
 ```
 
-`#:timeout` on `tcp-connect` and `unix-connect` works the same way
+`#:timeout` on `tcp-connect` and `unix-connect` works the same way.
 
 ## UDP
 

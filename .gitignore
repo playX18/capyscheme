@@ -15,3 +15,8 @@ dist
 .fmt-tmp
 /benchmarks/clos/build
 stage-pkg
+pkgs/std/io-tmp1
+pkgs/std/io-tmp2
+pkgs/std/tmp-catch-out
+pkgs/*/target
+pkgs/target

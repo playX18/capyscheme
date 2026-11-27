@@ -1,0 +1,67 @@
+(import (scheme base)
+  (scheme read)
+  (srfi 64)
+  (capy))
+
+(test-begin "boot source spans")
+
+(define (alist-ref alist key)
+  (let ((entry (assq key alist)))
+    (and entry (cdr entry))))
+
+(let* ((stx (read-syntax (open-input-string "(a b)")))
+       (src (syntax-sourcev stx)))
+  (test-assert "reader source is a rich vector"
+    (and (vector? src) (>= (vector-length src) 5)))
+  (test-equal "reader source keeps legacy file slot" (vector-ref src 0) "*bytevector*")
+  (test-equal "reader source keeps legacy line slot" (vector-ref src 1) 1)
+  (test-equal "reader source keeps legacy column slot" (vector-ref src 2) 0)
+  (test-equal "reader source records end line" (vector-ref src 3) 1)
+  (test-equal "reader source records end column" (vector-ref src 4) 5))
+
+(let* ((src (vector "legacy.scm" 7 2))
+       (stx (datum->syntax #f 'x src))
+       (roundtrip (syntax-sourcev stx)))
+  (test-assert "legacy source vector is accepted"
+    (and (vector? roundtrip) (= (vector-length roundtrip) 3)))
+  (test-equal "legacy source line is preserved" (vector-ref roundtrip 1) 7)
+  (test-equal "legacy source column is preserved" (vector-ref roundtrip 2) 2))
+
+(let* ((src (vector "rich.scm" 2 1 2 8 #f #f 'read '()))
+       (stx (datum->syntax #f 'x src))
+       (roundtrip (syntax-sourcev stx))
+       (props (syntax-source stx)))
+  (test-equal "rich source vector is preserved" roundtrip src)
+  (test-equal "syntax-source exposes end line" (alist-ref props 'end-line) 2)
+  (test-equal "syntax-source exposes end column" (alist-ref props 'end-column) 8)
+  (test-equal "syntax-source omits empty related spans" (assq 'related-spans props) #f))
+
+;; Byte offsets are UTF-8 offsets into the text, while columns count code points.
+(let* ((text "(a \x3bb;\n  (b \x1f600; c))")
+       (stx (read-syntax (open-input-string text)))
+       (src (syntax-sourcev stx))
+       (items (syntax-expression stx))
+       (lam (syntax-sourcev (cadr items)))
+       (inner (caddr items))
+       (inner-src (syntax-sourcev inner))
+       (c-src (syntax-sourcev (caddr (syntax-expression inner)))))
+  (test-equal "start byte of the form" (vector-ref src 5) 0)
+  (test-equal "end byte of the form counts multibyte characters" (vector-ref src 6) 19)
+  (test-equal "start byte of a multibyte identifier" (vector-ref lam 5) 3)
+  (test-equal "end byte of a multibyte identifier" (vector-ref lam 6) 5)
+  (test-equal "inner form line" (vector-ref inner-src 1) 2)
+  (test-equal "inner form column is in code points" (vector-ref inner-src 2) 2)
+  (test-equal "inner form start byte" (vector-ref inner-src 5) 8)
+  (test-equal "inner form end byte" (vector-ref inner-src 6) 18)
+  (test-equal "start byte after an astral character" (vector-ref c-src 5) 16)
+  (test-equal "end byte after an astral character" (vector-ref c-src 6) 17)
+  (test-equal "end column of the form in code points" (vector-ref src 4) 10))
+
+;; Offsets keep counting across the data read from one port.
+(let* ((port (open-input-string "\xe9; x"))
+       (a (read-syntax port))
+       (b (read-syntax port)))
+  (test-equal "first datum bytes" (list (vector-ref (syntax-sourcev a) 5) (vector-ref (syntax-sourcev a) 6)) '(0 2))
+  (test-equal "second datum bytes" (list (vector-ref (syntax-sourcev b) 5) (vector-ref (syntax-sourcev b) 6)) '(3 4)))
+
+(test-end "boot source spans")

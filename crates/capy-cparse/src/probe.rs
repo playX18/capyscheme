@@ -33,11 +33,18 @@ impl Target {
 }
 
 /// Finds a C compiler by trying `cc`, `clang`, then `gcc`.
+///
+/// `$CC` comes first when it is set and non-empty, so that a build picks the compiler the rest of
+/// the environment uses.
 pub fn find_cc() -> Option<String> {
-    ["cc", "clang", "gcc"]
-        .iter()
+    // The compiler the user named, read once per probe: a cache of bindings is keyed by the
+    // compiler's identity, so a changed $CC is a different binding.
+    #[allow(clippy::disallowed_methods)]
+    let from_env = std::env::var("CC").ok().filter(|c| !c.trim().is_empty());
+    from_env
+        .into_iter()
+        .chain(["cc", "clang", "gcc"].iter().map(|c| c.to_string()))
         .find(|c| run(c, &["--version"]).is_ok())
-        .map(|c| c.to_string())
 }
 
 fn run(cc: &str, args: &[&str]) -> Result<(String, String), String> {
@@ -62,7 +69,11 @@ fn run(cc: &str, args: &[&str]) -> Result<(String, String), String> {
 pub fn probe(cc: Option<&str>, std: Option<&str>) -> Result<Target, String> {
     let cc = match cc {
         Some(c) => c.to_string(),
-        None => find_cc().ok_or("no C compiler found (pass one explicitly)")?,
+        None => find_cc().ok_or(
+            "no C compiler found: tried cc, clang and gcc. Install one, set $CC (or pass the \
+             compiler to c-include), or use a checked-in binding instead of c-include, which \
+             needs the compiler to read the header",
+        )?,
     };
     let std_flag = std.map(|s| format!("-std={s}"));
     let mut base: Vec<&str> = vec!["-E", "-x", "c"];

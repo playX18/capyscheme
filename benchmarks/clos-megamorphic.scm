@@ -1,5 +1,5 @@
 ;; Generic dispatch cost against the number of receiver classes.
-;;   capy -L lib -s benchmarks/clos-megamorphic.scm
+;;   capy -L pkgs/std/src -s benchmarks/clos-megamorphic.scm
 
 (import (rnrs) (srfi 1) (scheme time) (capy))
 

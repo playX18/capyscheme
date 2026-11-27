@@ -12,6 +12,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -20,7 +21,50 @@ import matplotlib.pyplot as plt
 ROOT = Path(__file__).resolve().parent.parent
 SUITE = Path(__file__).resolve().parent / "r7rs-benchmarks"
 CHEZ_LIBRARIES = Path(__file__).resolve().parent / "chez-libraries"
-RESULT_RE = re.compile(r"^\+!CSVLINE!\+[^,]+,([^,]+),([\d.]+)$", re.MULTILINE)
+RESULT_RE = re.compile(r"^\+!CSVLINE!\+[^,]+,([^,]+),([\d.]+)(?:,([\d.]+))?$", re.MULTILINE)
+
+
+def patch_common_timing(text):
+    """Emit the raw (current-second) delta alongside the jiffy timing on CSV lines.
+
+    The harness concatenates src/common.scm into every generated benchmark
+    program (both the Capy path and the upstream ./bench path share this
+    file), so patching it here covers Capy and Chez alike. The precise
+    (unrounded) (- t1 t0) is used rather than the rounded secs2 shown to
+    humans, so sub-millisecond runs still report a nonzero value. It is
+    wrapped in inexact so implementations with exact rationals (e.g. Chez's
+    shim, whose fractional time is an exact ratio) still print decimals.
+    """
+    old = '               (display secs)\n               (newline)'
+    new = '               (display secs)\n               (display ",")\n               (display (inexact (- t1 t0)))\n               (newline)'
+    if text.count(old) != 1:
+        raise ValueError("common.scm CSV emission not found exactly once")
+    return text.replace(old, new)
+
+
+def patch_chez_time_shim(text):
+    """Give Chez's (scheme time) shim fractional (current-second) precision.
+
+    Uses Chez's native (current-time)/(time-second)/(time-nanosecond), read
+    once per call. Previously current-second returned whole integer seconds,
+    which made the (current-second) delta useless; current-jiffy is fixed
+    alongside it since it was defined in terms of current-second.
+    """
+    old_second = "  (define (current-second)\n    (time-second (current-time)))"
+    new_second = (
+        "  (define (current-second)\n"
+        "    (let ((t (current-time)))\n"
+        "      (+ (time-second t) (/ (time-nanosecond t) 1000000000))))"
+    )
+    old_jiffy = "  (define (current-jiffy)\n    (+ (current-second) (/ (time-nanosecond (current-time)) 1000000000)))"
+    new_jiffy = (
+        "  (define (current-jiffy)\n"
+        "    (let ((t (current-time)))\n"
+        "      (+ (time-second t) (/ (time-nanosecond t) 1000000000))))"
+    )
+    if text.count(old_second) != 1 or text.count(old_jiffy) != 1:
+        raise ValueError("chez time.sls shim does not match the expected shape")
+    return text.replace(old_second, new_second).replace(old_jiffy, new_jiffy)
 IMPLEMENTATIONS = {
     "capy": ("capy",),
     "chez": ("chez",),
@@ -83,13 +127,18 @@ def run_upstream(implementation, suite, source, timeout):
 
 
 def elapsed_seconds(result, implementation, source):
+    """Return (jiffy_seconds, current_second_seconds_or_None) from the CSV line."""
     output = result.stdout + result.stderr
     if result.returncode:
         raise RuntimeError(f"{implementation} {source.stem} failed:\n{output}")
     matches = RESULT_RE.findall(output)
     if not matches:
         raise RuntimeError(f"{implementation} {source.stem} produced no timing:\n{output}")
-    return float(matches[-1][1])
+    _, jiffy_seconds, current_second_seconds = matches[-1]
+    return (
+        float(jiffy_seconds),
+        float(current_second_seconds) if current_second_seconds else None,
+    )
 
 
 def write_plot(samples, output):
@@ -97,7 +146,7 @@ def write_plot(samples, output):
     benchmarks = sorted(
         {benchmark for implementation_samples in samples.values() for benchmark in implementation_samples},
         key=lambda benchmark: min(
-            statistics.mean(implementation_samples[benchmark])
+            statistics.mean(sample[0] for sample in implementation_samples[benchmark])
             for implementation_samples in samples.values()
             if benchmark in implementation_samples
         ),
@@ -114,9 +163,10 @@ def write_plot(samples, output):
             times = samples[implementation].get(benchmark)
             if not times:
                 continue
+            jiffies = [sample[0] for sample in times]
             positions.append(position + index * bar_height)
-            means.append(statistics.mean(times))
-            deviations.append(statistics.stdev(times) if len(times) > 1 else 0)
+            means.append(statistics.mean(jiffies))
+            deviations.append(statistics.stdev(jiffies) if len(jiffies) > 1 else 0)
         axis.barh(positions, means, bar_height, xerr=deviations, capsize=2, label=implementation)
 
     axis.set_yticks(
@@ -161,13 +211,21 @@ def write_report(samples, failures, specs, output, plot):
     rows = []
     for implementation, implementation_samples in sorted(samples.items()):
         for benchmark, times in sorted(implementation_samples.items()):
-            deviation = statistics.stdev(times) if len(times) > 1 else 0
+            jiffies = [sample[0] for sample in times]
+            current_seconds = [sample[1] for sample in times if sample[1] is not None]
+            walls = [sample[2] for sample in times]
+            deviation = statistics.stdev(jiffies) if len(jiffies) > 1 else 0
+            current_second_mean = (
+                f"{statistics.mean(current_seconds):.6f}" if current_seconds else "n/a"
+            )
             rows.append(
                 "<tr>"
                 f"<td>{html.escape(implementation)}</td>"
                 f"<td>{html.escape(benchmark)}</td>"
-                f"<td>{statistics.mean(times):.6f}</td>"
+                f"<td>{statistics.mean(jiffies):.6f}</td>"
                 f"<td>{deviation:.6f}</td>"
+                f"<td>{current_second_mean}</td>"
+                f"<td>{statistics.mean(walls):.6f}</td>"
                 f"<td>{len(times)}</td>"
                 "</tr>"
             )
@@ -193,7 +251,8 @@ def write_report(samples, failures, specs, output, plot):
         "<h1>R7RS benchmark report</h1><h2>Machine</h2><table>"
         f"{spec_rows}</table><h2>Plot</h2><img src=\"{html.escape(plot_link)}\" alt=\"R7RS benchmark plot\">"
         "<h2>Results</h2><table><tr><th>Implementation</th><th>Benchmark</th>"
-        "<th>Mean seconds</th><th>Std. dev. seconds</th><th>Runs</th></tr>"
+        "<th>Mean jiffy seconds</th><th>Std. dev. seconds</th>"
+        "<th>Mean (current-second) seconds</th><th>Mean wall seconds</th><th>Runs</th></tr>"
         f"{''.join(rows)}</table>"
         + (
             "<h2>Failures</h2><table><tr><th>Implementation</th><th>Benchmark</th><th>Error</th></tr>"
@@ -220,6 +279,17 @@ def main():
 
     if args.self_test:
         assert RESULT_RE.search("+!CSVLINE!+capy,fib:40:5,1.234567")
+        match = RESULT_RE.search("+!CSVLINE!+capy,fib:40:5,1.234567,1.234500")
+        assert match and match.groups() == ("fib:40:5", "1.234567", "1.234500")
+        patched = patch_common_timing(
+            '               (display secs)\n               (newline)'
+        )
+        assert "(display (inexact (- t1 t0)))" in patched
+        chez_shim = patch_chez_time_shim(
+            "  (define (current-second)\n    (time-second (current-time)))"
+            "\n  (define (current-jiffy)\n    (+ (current-second) (/ (time-nanosecond (current-time)) 1000000000)))"
+        )
+        assert "(time-second t)" in chez_shim and "(time-nanosecond t)" in chez_shim
         return
     if args.runs < 1 or args.timeout < 1:
         parser.error("--runs and --timeout must be positive")
@@ -242,12 +312,18 @@ def main():
     with tempfile.TemporaryDirectory(prefix="r7rs-benchmarks-") as directory:
         suite = Path(directory) / "suite"
         shutil.copytree(SUITE, suite, ignore=shutil.ignore_patterns("results.*", "all.csv", "out"))
+        # cat, tail and slatex write their results here; the upstream tree does not ship it
+        (suite / "outputs").mkdir(exist_ok=True)
         if "chez" in implementations:
             shutil.copytree(CHEZ_LIBRARIES, suite / "chez-libraries")
             bench = suite / "bench"
             bench.write_text(
                 bench.read_text().replace("/home/nex/scheme/chez", str(suite / "chez-libraries"))
             )
+            shim = suite / "chez-libraries" / "scheme" / "time.sls"
+            shim.write_text(patch_chez_time_shim(shim.read_text()))
+        common = suite / "src" / "common.scm"
+        common.write_text(patch_common_timing(common.read_text()))
         for source in benchmark_sources(suite, args.benchmark):
             print(f"{source.stem}:", flush=True)
             for implementation in implementations:
@@ -257,24 +333,30 @@ def main():
                 for run in range(args.runs):
                     print(f"    run {run + 1}/{args.runs}...", end="", flush=True)
                     try:
+                        wall_start = time.monotonic()
                         result = (
                             run_capy(args.capy, suite, source, args.timeout)
                             if implementation == "capy"
                             else run_upstream(implementation, suite, source, args.timeout)
                         )
-                        seconds = elapsed_seconds(result, implementation, source)
+                        wall_seconds = time.monotonic() - wall_start
+                        jiffy_seconds, current_second_seconds = elapsed_seconds(result, implementation, source)
                     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
                         print(f" FAILED: {error}", file=sys.stderr)
                         lines = [line.strip() for line in str(error).splitlines() if line.strip()]
                         summary = next((line for line in lines if line.startswith("Exception:")), lines[0])
                         failures.append((implementation, source.stem, summary))
                         break
-                    times.append(seconds)
-                    print(f" {seconds:.6f}s")
+                    times.append((jiffy_seconds, current_second_seconds, wall_seconds))
+                    if current_second_seconds is None:
+                        print(f" {jiffy_seconds:.6f}s (wall {wall_seconds:.6f}s)")
+                    else:
+                        print(f" {jiffy_seconds:.6f}s (current-second {current_second_seconds:.6f}s, wall {wall_seconds:.6f}s)")
                 if times:
                     samples[implementation][source.stem] = times
-                    deviation = statistics.stdev(times) if len(times) > 1 else 0
-                    print(f"    mean {statistics.mean(times):.6f}s (std {deviation:.6f}s)")
+                    jiffies = [sample[0] for sample in times]
+                    deviation = statistics.stdev(jiffies) if len(jiffies) > 1 else 0
+                    print(f"    mean {statistics.mean(jiffies):.6f}s (std {deviation:.6f}s)")
 
     samples = {implementation: times for implementation, times in samples.items() if times}
     if not samples:
@@ -284,12 +366,21 @@ def main():
     args.csv.parent.mkdir(parents=True, exist_ok=True)
     with args.csv.open("w", newline="") as file:
         writer = csv.writer(file)
-        writer.writerow(["implementation", "benchmark", "run", "seconds"])
+        writer.writerow(
+            ["implementation", "benchmark", "run", "seconds", "seconds_current_second", "seconds_wall"]
+        )
         for implementation, implementation_samples in samples.items():
             for benchmark, times in implementation_samples.items():
                 writer.writerows(
-                    (implementation, benchmark, run + 1, f"{seconds:.6f}")
-                    for run, seconds in enumerate(times)
+                    (
+                        implementation,
+                        benchmark,
+                        run + 1,
+                        f"{jiffy_seconds:.6f}",
+                        f"{current_second_seconds:.6f}" if current_second_seconds is not None else "",
+                        f"{wall_seconds:.6f}",
+                    )
+                    for run, (jiffy_seconds, current_second_seconds, wall_seconds) in enumerate(times)
                 )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)

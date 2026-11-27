@@ -1,7 +1,7 @@
 # Bytecode
 
-Compiled Scheme code is bytecode. It is run by two engines: Rust or template interpreter. Template interpreter
-in addition can also trigger Baseline JIT compilation of hot code blocks.
+Compiled Scheme code is bytecode. Two engines run it: the Rust interpreter and the template interpreter. The template interpreter
+also triggers baseline JIT compilation of hot code blocks.
 
 ## Instruction format
 
@@ -34,9 +34,7 @@ caches, and call link info. An instruction names its slot with a
 
 ### Compatibility
 
-While our bytecode is not stable, we try to keep it somewhat stable. All opcodes should get `last_opcode + 1` IDs, and not 
-override existing ones. The FASL files also additionally keep `format_hash()` of opcode set. This allows us to quickly distinguish
-invalid files built with incompatible Capy versions.
+The bytecode is not stable, but changes should be small. A new opcode gets the ID `last_opcode + 1` and never reuses an existing ID. FASL files also store the `format_hash()` of the opcode set, so the loader can reject files built by an incompatible Capy version.
 
 ### Instruction groups
 
@@ -55,7 +53,7 @@ invalid files built with incompatible Capy versions.
   (`jump_if_null`, `jump_if_pair`, `jump_if_fixnum`, `jump_if_eq`,
   `jump_if_less`, and others, each with a `not` form), `switch_fixnum`,
   `switch_char`, `switch_symbol`, `loop_hint`, `call`, `tail_call`,
-  `call_self`, `tail_call_self`, `return`, `return_values`, `raise`.
+  `apply`, `tail_apply`, `call_self`, `tail_call_self`, `return`, `return_values`, `raise`.
 - **Rest arguments:** `rest_ref`, `rest_len`, `rest_null`, `rest_pair`,
   `rest_list`, `values_rest`.
 - **Primitives:** `call_primitive0` to `call_primitive3` and
@@ -72,10 +70,85 @@ invalid files built with incompatible Capy versions.
   bytecode position.
 
 
+## Encoding (for the Scheme assembler)
+
+### One instruction
+
+```text
+ instruction = header operand* [metadata-id]
+ narrow      header = [opcode:1]                       operand width 1
+ wide16      header = [0x00][opcode:2]                 operand width 2
+ wide32      header = [0x01][opcode:4]                 operand width 4
+```
+
+- `0x00` (`WIDE16_PREFIX`) and `0x01` (`WIDE32_PREFIX`) are not opcodes. Opcode numbers start at
+  2 (`first-opcode`) and follow the order of `bytecode_list!` in `def.rs` (`preserve_order`).
+  A narrow header holds the opcode as its single byte, so only opcodes 2..=255 can be
+  narrow. Wide headers take any number.
+- The operands follow the header in the order the opcode declares them, each in the width of
+  the header. There is one width per instruction. Every operand, including the metadata id,
+  is encoded in it.
+- An opcode with a `metadata` block has one more operand after the declared ones, the
+  *metadata id*, an unsigned operand. It is the index of the instruction's record among the
+  records of the same opcode in the code block: the n-th instruction of that opcode (in
+  code order, counting from 0) has id n. Instructions of other opcodes do not count.
+- An unsigned operand (`Register`, `Constant`, `Count`, `PrimitiveId`, `PoolReference`, the
+  metadata id) is its value truncated to the width. Narrow holds 0..=255, wide16 0..=65535, wide32
+  0..=4294967295. A signed operand (`Immediate`, and the `i32` jump offsets) is its two's
+  complement truncated to the width: narrow holds -128..=127, wide16 -32768..=32767, wide32 the
+  whole `i32` range. `isa-operand-kinds` gives each operand kind its type, `u32` or `i32`.
+- Instruction length is `header-length + width * operand-count`, where header length is 1, 3 or
+  5 for narrow, wide16, wide32, and `operand-count` includes the metadata id.
+
+### Choosing the width
+
+The width of an instruction is the smallest of narrow, wide16, wide32 for which the opcode fits
+the header (narrow needs `2 <= opcode <= 255`) and every operand, including the metadata id,
+fits. Without jumps that is all: the width follows from the operand values.
+
+Instructions with a jump offset (`relative-start` operands: `jump`, `jump-if-*`, `get-slot`,
+`put-slot`) need the final layout, which in turn depends on their widths. `link` solves it by
+fixpoint loop:
+
+1. Every instruction gets its *seed* width: as above, where a label operand counts as the value 0
+   (it fits any width).
+2. Repeat:
+   1. Lay out the stream with the current widths. Each instruction has the offset of the byte
+      after the previous one. A label is bound to the offset of the next instruction (a label
+      emits no bytes).
+   2. Walk the instructions in order. For each instruction with a label operand, resolve the label
+      with the offsets of this pass and find the smallest width that fits the opcode and all
+      operands, now with the resolved offsets. If that width is *larger* than the current
+      width, set the instruction's width to it and mark the pass as changed. Widths never
+      shrink. Offsets within the pass are not updated while walking.
+   3. Stop when the pass changed nothing.
+3. Emit with the final widths and the final label offsets.
+
+The offset stored for a jump is `label-offset - instruction-offset` (`relative_start`): signed, in
+bytes, measured from the *first byte of the instruction*, which for a wide instruction is its
+prefix byte, not from the end of the instruction. 
+
+### Pool words and `metadata-counts`
+
+The aux pool (`pool` in a program image) is a vector of `u32` words. It is filled by the lowering,
+not the encoder, and some words are jump displacements that are only known after the layout:
+
+- `switch-fixnum`, `switch-char`: `table` is the word index of the table in the pool. Sparse:
+  `[default disp][count][key:i32 disp]*count`, keys sorted ascending. Dense (when the keys cluster,
+  see `dense_span_for_keys`): `[default disp][span | 0x80000000][min:i32][disp]*span`, indexed by
+  `key - min`.
+- `switch-symbol`: `[default disp][count][mask_lo][mask_hi]([key_lo][key_hi][disp])*count`.
+- `enter-case`: `[count]([min][max][disp][frame][rest_base][rest_cnt])*count`, with
+  `CASE_NO_REST` (`0xFFFFFFFF`) for a clause without a rest argument.
+- Every `disp` in a table is `target-label-offset - offset` of the switch (or enter-case)
+  instruction, as a `u32` holding an `i32`. The table word is written after the layout.
+- A liveness mask word index (`mask` operands of `return-point`, `loop-hint`) refers to a
+  mask stored in the pool, masks deduplicate by content.
+
+
 ## Frames and calls
 
-Procedures run on a Scheme stack, not on the C stack. A frame is a run of
-slots:
+Procedures run on a Scheme stack with the following layout:
 
 ```text
  fp[0]     return address
@@ -86,19 +159,18 @@ slots:
 There is no saved frame pointer. A register in bytecode is a slot of the
 current frame, so `r0` is the return address and `r1` is the closure.
 
-The compiler allocates registers by linear scan, one interval per CFG
-variable (`compiler/bytecode/lower.rs`).
+The compiler allocates registers by Linear Scan Register Allocator (`core/compiler/bytecode/lower.scm`, `regalloc.scm`).
 
 ### Non-tail call
 
 A `call` builds the callee frame right above the live registers of the
-caller. It writes the callee and its arguments straight into the new frame.
+caller. It writes the callee and its arguments into the new frame.
 
 `base` is above the highest register that is live after the call. The slot
 `r[base-1]` is reserved and holds no live value. It is in no liveness mask.
 
 Every `call` is followed by a `return_point` or `return_point_forward` whose
-`frame` equals `base`. A single returned value goes straight to the `dst`
+`frame` equals `base`. A single returned value goes to the `dst`
 register of the return point.
 
 ### Tail call
@@ -114,12 +186,12 @@ into a rest area of the frame. The `rest_*` instructions read that area.
 
 ### Thread state
 
-The per-thread `Tc` (`runtime/thread.rs`) holds what machine code needs:
-the stack bounds, `fp` and `sp`, the allocation cursor and limit, the
-stack-overflow limit `esp`, and the yieldpoint flag. Generated code reaches
-it through the `TC` register at offsets computed in `runtime/sabi.rs`.
+The per-thread `ThreadContext` holds execution state read by interpreter and JIT.
+That is the stack bounds, `fp` and `sp`, the allocation cursor and limit, the
+stack-overflow limit `esp`, and the yieldpoint flag. Generated code pins `TC` register for fast-access
+to that context,
 
-The slower per-thread `State` holds the rest: the dynamic state, continuation
+The slower per-thread `State` holds the rest. That is the dynamic state, continuation
 marks and winders, the nest level, and the root stack that keeps values alive
 across native calls.
 
@@ -140,7 +212,7 @@ pointer and reads its arguments through `Call` (`api/call.rs`). See
 ## Return-address ABI
 
 `fp[0]` of every frame is a machine address. An `RpHeader` sits just before
-it (`runtime/sabi.rs`):
+it:
 
 - owner link: the code object that owns the address
 - mv address: where to return for other than one value
@@ -149,56 +221,25 @@ it (`runtime/sabi.rs`):
 
 `fp[0]` points at the return address that follows the header.
 
-The compact header packs size, mask, and mode into one word. The stack
-walker and the collector read these headers to find live slots and to keep
-code alive. No side tables are needed.
+There is also compact form which packs size, mask, and mode into one machine word. 
 
-Interpreted frames share one return address, the `interpreter_return` glue.
-Its size and mask come from the bytecode `return_point` whose position is
-saved in `fp[-1]`. That is the reserved slot from the call diagram. JIT
-frames use their own return addresses with real headers.
+Stack-walker uses these headers to find live values for GC or to produce backtraces.
+
+Interpreter frames use single return address (`interpreter_return` glue), which computes size and mask
+from `return_point` in bytecode whose position is in `fp[-1]` (which is a reserved slot!).
+
 
 ## Continuations
 
 Stacks and continuations follow the segmented stack model of Chez Scheme
 (Hieb, Dybvig, Bruggeman, 1990). Capturing a continuation splits the stack
-at the current frame:
+at the current frame.
 
-Frames A, B and C sit on the stack, with C at `fp`. After the capture, A and
+Say frames A, B and C sit on the stack, with C at `fp`. After the capture, A and
 B belong to the captured continuation and C continues on a new segment.
 
 A one-shot continuation resumes in place. A multi-shot continuation is
-copied back when it is reinstated. Continuation marks are kept as an
-attachment list and restored when a frame underflows. The code is in
-`runtime/interp/stack.rs` and `runtime/vm/control.rs`.
-
-## The verifier
-
-`bytecode/verify.rs` runs when the FASL reader loads a code block:
-```rust
-verify::verify(&CodeShape { code, pool, nconsts, frame_size, metadata_counts })
-```
-
-The verifier checks that:
-
-- The code block decodes as instructions with no gaps. The first one is an
-  entry instruction.
-- The last instruction does not fall through. It is `jump`, `return`,
-  `return_values`, `tail_call`, `tail_call_self`, or `raise`.
-- Every register is below `frame_size`, and `frame_size` is below `1 << 16`,
-  the size of a stack segment. Frame sizes in entries and return points do
-  not exceed the one of the block.
-- Every constant index, primitive id, runtime procedure id, and metadata id
-  is in range. Metadata counts are bounded by the code length, so a corrupt
-  file cannot ask for a huge metadata area.
-- Every jump and switch target starts an instruction that is not an entry
-  and not a return point. Return points expect state that only a call or a
-  return sets up.
-- A return point directly follows a call. A multiple-value entry follows
-  `return_point_forward`, which has the same frame size as that entry. The
-  `mv` operand is `MV_ERROR` or `MV_IGNORE`.
-- Liveness masks of return points lie inside the aux pool and do not name a
-  register at or above `base - 1`.
+copied back when it is reinstated.
 
 ## Engines
 
@@ -208,30 +249,25 @@ x86-64 and AArch64 outside Windows, and `rust` elsewhere.
 
 ### Rust interpreter
 
-`runtime/interp/rust_interp.rs` has one handler per opcode and width,
-reached through a dispatch table. It is the portable fallback. The template
-interpreter also bails out to it for work it does not handle. It uses the
-shared stack (`interp/stack.rs`) and the slow paths in `interp/slow.rs`.
+Rust interpreter uses `become` and `rust-preserve-none` calling convention to achieve indirect dispatched interpreter. It is slower
+than template interpreter, but still remains competitive to other *interpreted* Scheme implementations, and is enough to execute Capy
+on unsupported platforms.
 
 ### Template interpreter
 
-`runtime/codegen/template_image.rs` generates one machine code image per
-process. The image holds a handler per opcode and width, an opcode map, glue,
-and stubs. The handlers come from the same per-instruction templates as the
-JIT (`codegen/template/`). Here the template context decodes operands from
-the bytecode at run time. 
+Template interpreter is generated at startup of a Scheme VM. Each instruction handler is carefully
+converted to efficient machine code, and some of inline-caches can even generate more code at runtime 
+to e.g perform calls efficiently. 
 
-The image also holds a bail handler per opcode and width. It saves state,
-records the program counter, and finishes the activation in the Rust
-interpreter.
+There is also a "bail handler" per each opcode which allows any JIT code to leave into Rust interpreter,
+which is useful for debugging or adding new opcodes into Rust interpreter first, and then extending it to JIT 
+and template interpreter. 
 
-Closures created under this engine carry the interpreter entry as their
-machine entry. A call between interpreted procedures is a plain machine call
-that uses the return-address ABI.
+Calls between template interpreter frames are regular `jmp [closure.code]` as they share the same calling convention.
 
 ### Baseline JIT
 
-`runtime/codegen/jit/` reuses the same templates with another context:
+Baseline JIT uses the same code as tempalte interpreter, except with different compilation context:
 
 | | Template interpreter | Baseline JIT |
 |---|---|---|
@@ -248,10 +284,7 @@ that uses the return-address ABI.
 2. The request installs finished code if there is any. Otherwise it submits
    a compile job when the block is hot. A bit per block allows one
    submission. The mutator never blocks.
-3. Workers (`CAPY_JIT_WORKERS`, default 1) compile from the code buffer. A
-   global root keeps the buffer alive until the job ends. Workers never
-   touch the movable code block.
+3. Workers (`CAPY_JIT_WORKERS`, default 1) compile from the code buffer. 
 4. A mutator installs the result at its next `enter` or loop slow path. It
-   jumps in through a resume table that maps `pc` to a machine address. If
-   a job panics, that one procedure stays interpreted.
+   jumps in through a resume table that maps `pc` to a machine address.
 

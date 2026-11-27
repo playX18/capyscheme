@@ -45,6 +45,9 @@ pub(crate) struct DeclInfo {
     /// Parameters (with names) of the function declarator attached directly to the name.
     params: Option<Vec<Param>>,
     variadic: bool,
+    /// `Some(c)` when the declarator itself adds pointer levels: `c` says whether the outermost
+    /// one is `const` (`T *const p`). `None` leaves the object's constness to the specifiers.
+    top_const: Option<bool>,
 }
 
 /// Qualifiers and annotations that never affect the type.
@@ -1080,13 +1083,14 @@ impl Parser {
     ) -> PR<(Option<Rc<str>>, Type, DeclInfo)> {
         let mut ty = base;
         let mut scratch = Attrs::default();
+        let mut top_const = None;
         self.attributes(&mut scratch);
         loop {
             if self.eat(Punct::Star) {
-                self.pointer_quals(&mut scratch);
+                top_const = Some(self.pointer_quals(&mut scratch));
                 ty = ty.ptr();
             } else if self.eat(Punct::Caret) {
-                self.pointer_quals(&mut scratch);
+                top_const = Some(self.pointer_quals(&mut scratch));
                 ty = Type::Void.ptr();
             } else {
                 break;
@@ -1101,12 +1105,16 @@ impl Parser {
             let outer = self.suffixes(ty, &mut dummy)?;
             let end = self.pos;
             self.pos = open + 1;
-            let r = self.declarator(outer, abstract_ok)?;
+            let mut r = self.declarator(outer, abstract_ok)?;
             self.expect(Punct::RParen)?;
             self.pos = end;
+            r.2.top_const = r.2.top_const.or(top_const);
             return Ok(r);
         }
-        let mut info = DeclInfo::default();
+        let mut info = DeclInfo {
+            top_const,
+            ..DeclInfo::default()
+        };
         let name = if self.tok().kind == Kind::Ident
             && !is_ignorable(self.word())
             && !matches!(self.word(), Some(Word::Asm | Word::Attribute))
@@ -1539,20 +1547,27 @@ impl Parser {
                 }
                 self.u.decls.push(Decl::Func(f));
             } else {
+                // `const char *p` is a mutable pointer to const; `char *const p` and
+                // `const T p` are const objects.
+                let is_const = info.top_const.unwrap_or(specs.is_const);
                 let mut init = None;
                 if self.eat(Punct::Assign) {
                     if self.at(Punct::LBrace) {
                         self.skip_balanced();
                     } else {
                         let e = self.parse_assign()?;
-                        init = self.u.eval(&e).ok();
+                        init = self.u.eval(&e).and_then(|v| self.u.convert(v, &ty)).ok();
                     }
                 }
+                let ident = match &init {
+                    Some(v) if is_const && self.global() => Ident::Const(ty.clone(), v.clone()),
+                    _ => Ident::Var(ty.clone()),
+                };
                 self.u
                     .scopes
                     .last_mut()
                     .unwrap()
-                    .insert(name.clone(), Ident::Var(ty.clone()));
+                    .insert(name.clone(), ident);
                 self.u.decls.push(Decl::Var(VarDecl {
                     name,
                     ty,
@@ -1563,7 +1578,7 @@ impl Parser {
                     },
                     asm_label: label,
                     init,
-                    is_const: specs.is_const,
+                    is_const,
                     attrs,
                     loc: nloc,
                 }));

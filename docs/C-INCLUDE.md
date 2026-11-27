@@ -46,8 +46,23 @@ A function-pointer parameter takes a Scheme procedure, valid only for that call.
 If C keeps the pointer (a signal handler, say), build the callback with
 `make-TYPENAME` (see Typedefs).
 
-**Constants and enums.** Object-like macros with a fixed value and enumerators
-become constants. Each enum `NAME` also gets:
+**Constants and enums.** Object-like macros with a fixed value, enumerators, and
+`const` or `constexpr` objects with a constant initializer become constants. Many
+headers declare flags as objects instead of macros; webgpu.h, for one, has
+
+```c
+static const WGPUBufferUsage WGPUBufferUsage_Vertex = 0x0000000000000020;
+```
+
+and `WGPUBufferUsage_Vertex` is `32` in Scheme. The parser evaluates the
+initializer as C does: casts, shifts, `|` and other operators over literals,
+enumerators, `sizeof`, macros and earlier constant objects, with the result
+converted to the declared type (so `static const uint32_t X = -1;` is
+`4294967295`). Integer, floating, enum and pointer types are supported; a null
+pointer constant becomes a null pointer and a `char` array initialized with a
+string becomes the string. An initializer that is not a constant expression, or
+one in braces, makes no constant: a `static` object is then skipped and reported,
+since it has no symbol to bind. Each enum `NAME` also gets:
 
 | Name | Meaning |
 | --- | --- |
@@ -78,11 +93,14 @@ accessors, but `make-NAME` takes no values.
 - `_Bool` fields read as 0 or 1. Convert with `bool->boolean` / `boolean->bool`.
 
 **Globals.** `NAME` (read, scalars only), `NAME-set!` (scalar, non-`const`) and
-`NAME-address` (thunk). Arrays and structs get only `NAME-address`.
+`NAME-address` (thunk). Arrays and structs get only `NAME-address`. A `const`
+global whose value is known from its initializer is a constant instead (see
+above). `const char *p` is a variable pointer to constant characters and gets
+`p-set!`; `char *const p` is constant.
 
 **Function-like macros.** Expression macros become procedures with C semantics (best effort).
 
-**Static inline functions.** C shim is compiled for such functions, and they are dynamically loaded.
+**Static inline functions.** Capy compiles a C shim for such functions and loads it dynamically.
 
 ## Output parameters
 
@@ -98,7 +116,7 @@ a raise. `c-out-ref` reads from it.
 
 `(c-include-report)` returns `(HEADER KIND NAME WHY)` entries for the most recent
 generation in this process. A cache hit generates nothing, so the report is then
-empty. Skipped declarations and parse errors are also printed to stderr.
+empty. Capy also prints skipped declarations and parse errors to stderr.
 
 | Kind | Meaning |
 | --- | --- |
@@ -108,11 +126,23 @@ empty. Skipped declarations and parse errors are also printed to stderr.
 | `shim-failed` | shim did not compile |
 | `parse-errors` | parser errors |
 
-## Cache
+## Generated libraries and the output directory
 
-Generation runs the C parser (and compiler, for shims), so results are cached.
-`(c-cache-directory)` is the first of: `CAPY_FFI_CACHE`,
-`$XDG_CACHE_HOME/capy/ffi`, `$HOME/.cache/capy/ffi`.
+Generation runs the C parser (and the C compiler, for shims), so Capy keeps the results. The generated
+library, `(capy c gen <hash>-<os>-<arch> <header> ...)`, is written as a source file into
+`(compile-output-directory)`, which is where the code being compiled puts what it generates. It is an ordinary library of the package that includes the header:
+
+- `capy build` compiles the package with `target/<profile>/build/<package>/out`. The
+  libraries it generates are compiled like the others and listed in `target/<profile>/capy.libmap`.
+- `capy-rt --compile-output-directory DIR` sets it for one compilation. Outside a package it is
+  `$XDG_CACHE_HOME/capy/out`, else `$HOME/.cache/capy/out`.
+- For `std`, the toolchain build (`./bootstrap.sh`) compiles with `stage-N/std/out`, and the generated libraries of
+  `(capy net sys)` are compiled to `stage-N/std/fasl` and listed in the libmap.
+
+The includer records the headers the parser read as compile-time dependencies: editing one compiles the including library again, and nothing
+else unless the interface changes. Only files are tracked. What the parser asked of the
+environment (`pkg-config` output, the variables below) is part of the key of the generated
+library, not of the dependencies of the includer.
 
 The key covers OS, architecture, header name, effective
 options, and the variables `CC`, `CAPY_CC`, `SDKROOT`, `CPATH`,
@@ -120,23 +150,9 @@ options, and the variables `CC`, `CAPY_CC`, `SDKROOT`, `CPATH`,
 records the mtime and size of every file the parser read, so editing a header
 regenerates.
 
-A hit stats those files and loads the generated library, with no parser or
-compiler involved. The cache directory is recorded at expansion time, so a
-compiled program uses the cache that existed then. `c-use-cache-directory!`
-adds a directory to the load path by hand.
-
-A failed shim build is stored and retried only when the compiler, key variables
-or shim source change. To force a retry, delete the request's file under
-`requests/` in the cache directory.
-
-To ship a warm cache, run the program once with `CAPY_FFI_CACHE` set to the
-directory to ship, on a machine matching the target's headers and compiler.
-
 ## The C parser
 
-Capy ships with DIY C23 parser which does only the necessary steps for binding generation. We do not use libclang
-due to its big size and requirement of adding another dependency to build process. Note that parser and preprocessor
-might be buggy, but so far they handle macOS and glibc headers with mostly no problems.
+Capy ships its own C23 parser, which does only what binding generation needs. It does not use libclang, because libclang is large and would add a dependency to the build. The parser and preprocessor may have bugs, but they handle macOS and glibc headers with few problems.
 
 ## Finding libraries
 
@@ -149,7 +165,7 @@ The generated library opens the process itself, then each `#:link` name:
 `#:frameworks` opens binaries under `/System/Library/Frameworks` and compiles
 shims with `-framework NAME`.
 
-## Example: libc sockets
+## Example with libc sockets
 
 Use one `c-include` per header:
 
@@ -166,11 +182,11 @@ Use one `c-include` per header:
 ```
 
 - A struct with a typedef is named by the typedef (`in6_addr_t`, not `in6_addr`).
-- Byte order and string terminators are yours to handle, there is no `htons`.
+- Byte order and string terminators are yours to handle. There is no `htons`.
 - `sin_len` and `sun_len` exist only on BSDs such as macOS.
 - Wrap `getaddrinfo` results with `(make-pointer address)` and walk `addrinfo-ai_next`.
 
-See `lib/capy/net/sys.scm` for a larger example.
+See `pkgs/std/src/capy/net/sys.scm` for a larger example.
 
 ## Limitations
 

@@ -16,10 +16,15 @@ enum CliKind {
 const MANUAL_FLAG_ROWS: &[(&str, &str, CliKind)] =
     &[("--debug", "CAPY_FASL_DEBUG", CliKind::Value)];
 
-const COMPILER_ENTRY_ARG: &str = "--capy-compiler-entrypoint";
+const COMPILER_ENTRY_NAME: &str = "enter-compiler";
+/// `capy-rt --compile ...` is `capyc ...`.
+const COMPILER_ENTRY_ARG: &str = "--compile";
 
 /// Magic at the start of a FASL image
-const FASL_MAGIC: &[u8; 8] = b"CAPYFSL\0";
+const FASL_MAGIC: &[u8; 8] = b"CAPYFSL\x03";
+/// The flags byte follows the magic and the compression byte; this bit marks a static bundle.
+const FASL_FLAGS_OFFSET: usize = FASL_MAGIC.len() + 1;
+const FASL_FLAG_STATIC_BUNDLE: u8 = 1;
 
 /// How much of a file is inspected to tell a static bundle from anything else.
 const BUNDLE_HEAD_BYTES: u64 = 4096;
@@ -59,6 +64,13 @@ pub fn run_cli(default_entry: &'static str) -> i32 {
 
     if let Some(bundle) = raw_args.get(1).and_then(|path| read_static_bundle(path)) {
         return Scm::run_static(&bundle, &raw_args[1..]);
+    }
+
+    // `capy [options] -s bundle args...` runs a bundle like `capy bundle args...`: a bundle
+    // carries its own boot records, so it cannot run inside a booted image.
+    let compiling = select_entrypoint(raw_args.clone(), default_entry).0 == COMPILER_ENTRY_NAME;
+    if !compiling && let Some((index, bundle)) = script_bundle(&raw_args) {
+        return Scm::run_static(&bundle, &raw_args[index..]);
     }
 
     if raw_args
@@ -121,6 +133,19 @@ pub fn run_cli(default_entry: &'static str) -> i32 {
     code.get()
 }
 
+/// The script of `-s` or `--script` when it is a static bundle: the index of its
+/// path in `args`, and its contents.
+fn script_bundle(args: &[OsString]) -> Option<(usize, Vec<u8>)> {
+    for (index, arg) in args.iter().enumerate().skip(1) {
+        let Some(arg) = arg.to_str() else { continue };
+        if arg == "-s" || arg == "--script" {
+            let path = args.get(index + 1)?;
+            return read_static_bundle(path).map(|bundle| (index + 1, bundle));
+        }
+    }
+    None
+}
+
 /// The contents of `path` if it is a static bundle
 fn read_static_bundle(path: &OsStr) -> Option<Vec<u8>> {
     let mut head = Vec::new();
@@ -135,10 +160,18 @@ fn read_static_bundle(path: &OsStr) -> Option<Vec<u8>> {
     } else {
         &head[..]
     };
-    if !payload.starts_with(FASL_MAGIC) {
+    if !payload.starts_with(FASL_MAGIC) || !names_static_bundle(payload) {
         return None;
     }
     std::fs::read(path).ok()
+}
+
+/// Whether the header of the FASL image `payload` has the static-bundle flag, as opposed to a
+/// compiled library or program.
+fn names_static_bundle(payload: &[u8]) -> bool {
+    payload
+        .get(FASL_FLAGS_OFFSET)
+        .is_some_and(|flags| flags & FASL_FLAG_STATIC_BUNDLE != 0)
 }
 
 /// The bundle embedded in the running executable, if there is one

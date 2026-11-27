@@ -1,12 +1,12 @@
 # Heap
 
-Capy’s garbage collector lives in `crates/capy/src/heap/`. It is precise (no
+Capy's garbage collector lives in `crates/capy/src/heap/`. It is precise (no
 conservative native-stack scan) and driven by MMTk via the `MemoryManager`
 binding in `heap/mm.rs`.
 
-If you are writing mutator code (runtime, VM, natives), you almost always want
+If you are writing mutator code (runtime, VM, natives), you want
 `runtime::MutationContext`. Do not pass `Mutation` around at call sites. There is no
-public `Heap` capability type. 
+public `Heap` capability type.
 
 ## MutationContext
 
@@ -50,7 +50,7 @@ depending on plan). `ctx.alloc_in(space, T)` selects:
 The default-space fast path bumps a per-thread TLAB
 (`heap/lab.rs`). Slow paths flush and refill it around MMTk calls.
 
-Allocation uses `at_safepoint: false`: it may **schedule** a collection but
+Allocation uses `at_safepoint: false`. It may schedule a collection but
 must not block, collect, or run yieldpoints inline. Safe `#[scheme]` leaves
 and interpreter and JIT alloc sites rely on this. The mutator pauses only at
 yieldpoints, while `InNative`, or inside a nested Scheme call. When a GC is
@@ -85,7 +85,7 @@ a safepoint, nest, or `call_in_native`, put it in a root slot and reload with
 | Nest / SNI locals | `Frame` (`sni::LocalFrame`) | OopStorage `sni_locals` |
 | Process-long / cross-callback | `heap::Global`, SNI `Global` | Global registry / OopStorage `sni_globals` |
 
-`State::root_stack` is a Rust-side structure: generated code does not address
+`State::root_stack` is a Rust-side structure. Generated code does not address
 `State` fields. Machine-visible per-thread fields live in `Tc` (offsets in
 `runtime/sabi.rs`, checked with `offset_of!`), so changing `State` does not
 change any ABI that the interpreter or JIT depends on.
@@ -111,7 +111,7 @@ does the same as a macro.
 
 ### OopStorage
 
-`heap/oop_storage/` is a port of HotSpot’s `OopStorage`: off-heap blocks of
+`heap/oop_storage/` is a port of HotSpot's `OopStorage`: off-heap blocks of
 precise `Value` slots. Clients allocate a slot, store a value, and keep an
 `OopHandle` (`*mut Value`). GC walks allocated slots as
 `ObjectSlot` roots from `scan_vm_specific_roots`. Unused or released slots are
@@ -126,13 +126,13 @@ empty (`Value::empty()`).
 
 `Global<R>` is a reference-counted, process-long root in a
 global registry scanned as a VM root. Dropping the last `Global` unregisters
-it. Access the value with `fetch(ctx)`. (SNI’s `Global` is different: no
+it. Access the value with `fetch(ctx)`. (SNI's `Global` is different: no
 `Drop`, so you must call `delete`.)
 
 ## Safepoints and stack scanning
 
 Scheme frames live on the Scheme stack in `Tc`, not on the native stack. At
-a yieldpoint the engine's state is already in the frame: live values are
+a yieldpoint the engine's state is already in the frame, and live values are
 stack slots. The collector traces `Tc` and walks the stack frame by frame.
 Each return address has an `RpHeader` (`runtime/sabi.rs`) giving the frame
 size and a mask of live slots. For bytecode frames the mask comes from
@@ -146,7 +146,7 @@ slow path then calls the `yieldpoint_block` thunk (`runtime/vm/thunks/gc.rs`).
 
 Native code outside Scheme safepoints should poll `take_yieldpoint()` and
 call `Mutator::yieldpoint` / `Thread::yieldpoint` when a GC request is
-pending. 
+pending.
 
 When `nest_level > 0`, Scheme may GC at yieldpoints. Nesting is how native
 code re-enters Scheme (`runtime::sni`, or unsafe `call_scheme`). Safe
@@ -155,8 +155,8 @@ code re-enters Scheme (`runtime::sni`, or unsafe `call_scheme`). Safe
 
 ## InNative
 
-`ctx.call_in_native(|| …)` transitions the thread to `InNative`: blocking FFI,
-no Scheme, and no GC safepoints. Prepare anything that
+`ctx.call_in_native(|| …)` transitions the thread to `InNative`. Use it for blocking FFI.
+No Scheme runs and no GC safepoints are taken. Prepare anything that
 needs `MutationContext` before entering. The closure must not capture unrooted GC
 handles. Root values you need after return and reload with `.get()`.
 
@@ -165,7 +165,7 @@ handles. Root values you need after return and reload with `.get()`.
 Interior mutation of GC objects goes through `Gc::write` / `Write` /
 `Gc::unlock` so the barrier for the live plan runs.
 `field!` projects a field out of `&Write<T>`. `unlock!` combines projection
-with `Unlock`. 
+with `Unlock`.
 
 Barrier kinds by plan:
 
@@ -191,15 +191,15 @@ dispatch.
 
 Three core options:
 
-- Trigger: when a collection starts, by default `predictive` heuristic
-- Heap sizing: how heap resizes after a GC cycle, by default `free-target`
-- Pacing of mutators: whether mutators are paced to allow concurrent marking to finish. By default is off.
+- Trigger: when a collection starts. The default is the `predictive` heuristic.
+- Heap sizing: how the heap resizes after a GC cycle. The default is `free-target`.
+- Pacing of mutators: whether the collector paces mutators so concurrent marking can finish. The default is off.
 
 ### Defaults
 
 - Plan: `ConcurrentImmix`, unless `MMTK_PLAN` is set to any other plan.
 - Max heap: `--gc-max-heap` if set. Otherwise MMTk's default, which is half of
-  physical memory. 
+  physical memory.
 - Initial heap: available memory / 32, clamped to [32 MiB, max / 4].
   `--gc-init-heap=0` forces heap to be at max size.
 - The first five cycles (`--gc-learning-steps`) trigger at 50% free space.
@@ -224,33 +224,33 @@ Three core options:
 
 ### Triggers
 
-- **predictive**: starts when the predicted allocation during the expected GC
+- `predictive`: starts when the predicted allocation during the expected GC
   time exceeds usable free space. It uses GC-time history, the mean and spread of
   the allocation rate, and short spikes. Ported from Shenandoah. Its parameters
   are adjusted after each cycle from the free space that cycle left.
-- **generational**: predictive for young cycles. An old cycle starts when old
+- `generational`: predictive for young cycles. An old cycle starts when old
   usage grows past a threshold.
-- **runway**: starts when free space would run out before a worst-case GC
+- `runway`: starts when free space would run out before a worst-case GC
   finishes (ZGC's director rule). Allocation is sampled every 100 ms. The first
   three cycles use fixed points, at 10%, 20% and 30% of the heap allocated.
-- **goal**: starts marking so that it finishes as the heap reaches
+- `goal`: starts marking so that it finishes as the heap reaches
   `live × 2` (growth 100%). Ported from Go's pacer.
-- **proportional**: starts after allocating `live / 3`, bounded to [8 MiB, half
+- `proportional`: starts after allocating `live / 3`, bounded to [8 MiB, half
   the heap]. It also has a 30 s guaranteed interval.
-- **floor / eager / deferred**: min-free and interval only / every evaluation /
+- `floor` / `eager` / `deferred`: min-free and interval only / every evaluation /
   the plan alone.
 
 ### Sizing
 
 Sizing sets the heap limit:
 
-- **free-target**: after each collection, the target is `used / (1 − 75%)`. The
+- `free-target`: after each collection, the target is `used / (1 − 75%)`. The
   heap grows at once, and shrinks only after three cycles under half its size.
   With the default, the heap settles at about four times live data.
-- **banded**: after full-heap pauses, keeps used memory between 1.2× and 1.65×
+- `banded`: after full-heap pauses, keeps used memory between 1.2× and 1.65×
   live.
-- **overhead**: after full-heap pauses, adjusts the size toward 15% GC CPU.
-- **balanced**: after every collection, sizes headroom from the allocation rate
+- `overhead`: after full-heap pauses, adjusts the size toward 15% GC CPU.
+- `balanced`: after every collection, sizes headroom from the allocation rate
   and the collection speed (MemBalancer).
 
 ### Pacing
@@ -291,7 +291,7 @@ heavy allocation.
 
 ## Marking constraints
 
-Pluggable roots and outgrowths live in `heap/constraints/`. 
+Pluggable roots and outgrowths (objects found reachable only during marking) live in `heap/constraints/`.
 Core constraints (OopStorage strong, global
 registry, weak refs, finalizers) register at GC init via
 `add_core_constraints`. Add custom ones with
@@ -305,7 +305,7 @@ Adding one panics during an active collection.
 | `SeldomGreyed` | Late tie-breaker |
 
 `GreyedByExecution` work runs during Prepare / mutator root scan.
-`GreyedByMarking` convergence runs in MMTk’s `VMRefClosure` stage (from
+`GreyedByMarking` convergence runs in MMTk's `VMRefClosure` stage (from
 `Scanning::process_weak_refs`). Parallel constraints are sharded to GC workers
 with `add_work_packets`. The set iterates until no constraint greys new work.
 
@@ -320,7 +320,7 @@ its value when the key dies. Both register for weak processing during tracing
 
 Finalizers: objects are registered with a
 `FinalizerQueue`. After marking, unreachable candidates are resurrected and
-queued, and queues are scheduled from MMTk’s `schedule_finalization` hook. 
+queued, and queues are scheduled from MMTk's `schedule_finalization` hook. 
 `make_finalizer_queue!` defines a queue type.
 
 ## Tracing
@@ -333,7 +333,7 @@ mutator thread `State` and `Tc` (the Scheme stack, `root_stack`,
 continuation marks, thread object, …), OopStorage, and the global registry.
 
 Object layout: each object has a `HeapObjectHeader` 8 bytes
-before the object reference (`OBJECT_REF_OFFSET`), carrying a class ID -
-built-in IDs under `builtin_class_ids`, dynamically registered IDs above -
-plus hash bits. `AllocationHooks` per class provide trace / weak / size
-functions. 
+before the object reference (`OBJECT_REF_OFFSET`). The header holds a class ID
+and hash bits. Built-in IDs are under `builtin_class_ids`, and dynamically
+registered IDs come above them. `AllocationHooks` per class provide trace / weak / size
+functions.

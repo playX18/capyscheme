@@ -24,9 +24,16 @@ pub type NativeCallback = Option<unsafe extern "C" fn(data: *mut c_void)>;
 pub type SniOnLoadFn =
     Option<unsafe extern "C" fn(env: *mut SniEnv, reserved: *mut c_void) -> c_int>;
 
+/// The version of the table layout and of the functions in it. An extension exports it as
+/// `SNI_ABIVersion()`; the loader refuses another value. Must equal `SNI_ABI_VERSION` in c/capy.h
+/// and in the runtime (`api/vtable.rs`).
+pub const SNI_ABI_VERSION: u32 = 1;
+
 /// Must mirror `struct SniNativeInterface` in c/capy.h exactly (order and types).
 #[repr(C)]
 pub struct SniNativeInterface {
+    pub abi_version: u32,
+    pub struct_size: u32,
     pub PushLocalFrame: Option<unsafe extern "C" fn(*mut SniEnv, c_int) -> c_int>,
     pub PopLocalFrame: Option<unsafe extern "C" fn(*mut SniEnv, ScmRef) -> ScmRef>,
     pub EnsureLocalCapacity: Option<unsafe extern "C" fn(*mut SniEnv, c_int) -> c_int>,
@@ -118,7 +125,6 @@ const _: () = {
 
 unsafe extern "C" {
     pub fn scm_new() -> *mut Scm;
-    pub fn scm_from_image(image_data: *const u8, image_size: size_t) -> *mut Scm;
     pub fn scm_run_static(
         bundle: *const u8,
         bundle_size: size_t,
@@ -127,8 +133,6 @@ unsafe extern "C" {
     ) -> c_int;
     pub fn scm_free(scm: *mut Scm);
     pub fn scm_enter(scm: *mut Scm, enter: ScmEnterFn, arg: *mut c_void) -> c_int;
-    pub fn scm_attach_current_thread(scm: *mut Scm, enter: ScmEnterFn, arg: *mut c_void) -> c_int;
-    pub fn scm_detach_current_thread(scm: *mut Scm);
     pub fn scm_fork(env: *mut SniEnv, init: ThreadFn, arg: *mut c_void) -> ScmRef;
 
     /// Flag introspection for the thin CLI (`capy --help-flags`), no VM init.

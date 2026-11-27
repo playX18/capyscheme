@@ -102,9 +102,9 @@ checksum = "23b62fc65de8e4e7f52534fb52b0f3ed04746ae267519eef2a83941e8085068b"
 
 [[package]]
 name = "asmkit-rs"
-version = "0.8.1"
+version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de772a7ffad28baa56ef2f50530a077b27825b1b36e98f70918678335dfdc68b"
+checksum = "b9ddf0d95f483b505cf76fcadfdcb2c6ed0f0792f9ff8438bc5013d9c667ce50"
 dependencies = [
  "bitflags",
  "cfgenius",
@@ -329,6 +329,7 @@ dependencies = [
  "pretty",
  "rand",
  "rustix",
+ "sha2",
  "simplehash",
  "smallvec",
  "sys-locale",
@@ -394,6 +395,14 @@ name = "capy-sni-sys"
 version = "3.1.0"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "capy-static"
+version = "3.1.0"
+dependencies = [
+ "capy",
+ "capy-cli",
 ]
 
 [[package]]
@@ -1732,9 +1741,9 @@ dependencies = [
 
 [[package]]
 name = "offlineasm-backend"
-version = "0.4.5"
+version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b222fdf667239b525d266eb7faf3d630b7218c5501baff4d596f82acc90caa4"
+checksum = "055dcc631d62d4d9d5700e6fec169d46da837b12c7194a45f591a50884b9a593"
 dependencies = [
  "offlineasm-ir",
  "proc-macro2",
@@ -1744,9 +1753,9 @@ dependencies = [
 
 [[package]]
 name = "offlineasm-ir"
-version = "0.4.5"
+version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a01855107c9dc09c9e350306a8314428fa4cc86d0547e5ab76b0e81cc7cb393"
+checksum = "8104f48c96f639edabca2fc759c3e3ad2e02680e2cb00180be057b6ad9819f4b"
 dependencies = [
  "smallvec",
 ]
@@ -1765,9 +1774,9 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "onlineasm"
-version = "0.4.5"
+version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4be3f2aec149440ea57c9789f5b4f87b176573f4cfe4fda7871d77902748154b"
+checksum = "f027a1396944b0748171d2ef36d45844bdd16c9c586a920fc30ff46cb5062538"
 dependencies = [
  "asmkit-rs",
  "offlineasm-backend",
@@ -1778,9 +1787,9 @@ dependencies = [
 
 [[package]]
 name = "onlineasm-macros"
-version = "0.4.5"
+version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d5b6e16f535ea7c855bb0aaf5772736b2d48b018a7ac90bbe69fe3b5c6824af"
+checksum = "543b7e7f7755d1366fba453db9c1035286d94ddbcdebab5961004c91636d77c6"
 dependencies = [
  "offlineasm-ir",
  "proc-macro2",

@@ -68,7 +68,8 @@ impl<'env> Emit for SchemeEmit<'_, 'env> {
     }
 
     fn leave(&mut self, v: Ref<'env>) -> Ref<'env> {
-        self.env.pop_local_frame(v)
+        // SAFETY: the frame was pushed by `enter`; `v` is returned to the caller.
+        unsafe { self.env.pop_local_frame(v) }
     }
 }
 

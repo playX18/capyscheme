@@ -3,7 +3,8 @@
 #
 #   gen-formula.sh <stable|nightly> <version> <assets-dir>
 #
-# <assets-dir> holds capyscheme-<label>-<target>.tar.gz for every target; the
+# <assets-dir> holds capyscheme-<label>-<target>.tar.gz (see `capy dist --toolchain stage-2 --format portable` in .github/workflows/build.yml: a single
+# top-level directory with bin/, lib/ and include/) for every target; the
 # sha256 of each is computed here. <version> is the tag without `v` (stable)
 # or e.g. 3.0.0-nightly.20261018 (nightly).
 set -euo pipefail
@@ -72,12 +73,13 @@ RUBY
 sed "s/@SUFFIX@/$suffix/g" <<'RUBY'
 
   def install
+    # The archive is a prefix: bin/, lib/ and include/. The runtime finds its libraries from the
+    # place of its real executable (and the executables have an rpath to ../lib), so the tree
+    # stays in libexec and wrappers in bin start the real executables.
     libexec.install Dir["*"]
-    # The runtime finds its libraries relative to the real binary, so install
-    # wrappers instead of symlinks.
-    %w[capy capyc].each do |tool|
-      real = Dir[libexec/"*"/tool].first
-      odie "#{tool} not found in archive" if real.nil?
+    %w[capy-rt capy capyc].each do |tool|
+      real = libexec/"bin"/tool
+      odie "#{tool} not found in archive" unless real.exist?
       (bin/"#{tool}@SUFFIX@").write <<~SH
         #!/bin/bash
         exec "#{real}" "$@"

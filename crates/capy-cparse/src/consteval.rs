@@ -87,6 +87,7 @@ impl Unit {
                     };
                     Int(*v, k)
                 }
+                Some(Ident::Const(_, v)) => v.clone(),
                 _ => return err(format!("'{n}' is not a constant")),
             },
             Expr::Unary(op, x) => {
@@ -325,6 +326,8 @@ impl Unit {
             }),
             (Type::Ptr(_), Ptr(p)) => Ptr(p),
             (Type::Ptr(_), Str(s)) => Str(s),
+            // `static const char NAME[] = "..."` keeps the string.
+            (Type::Array(..), Str(s)) => Str(s),
             (Type::Void, v) => v,
             _ => return err("unsupported constant conversion"),
         })
@@ -443,7 +446,9 @@ impl Unit {
             Expr::Nullptr => Type::NullPtr,
             Expr::Typed(t, _) => t.clone(),
             Expr::Ident(n) => match self.lookup(n)? {
-                Ident::Var(t) | Ident::Func(t) | Ident::Typedef(t) => t.clone(),
+                Ident::Var(t) | Ident::Func(t) | Ident::Typedef(t) | Ident::Const(t, _) => {
+                    t.clone()
+                }
                 Ident::EnumConst(_, id) => match self.enum_underlying(*id) {
                     Type::Int(k) if self.abi.int_size(k) > self.abi.int => Type::Int(k),
                     _ => Type::Int(IntKind::Int),

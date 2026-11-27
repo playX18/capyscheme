@@ -34,6 +34,11 @@ pub struct Scm {
 }
 
 impl Scm {
+    /// Creates the runtime of the process.
+    ///
+    /// # Panics
+    /// When the runtime cannot be created, which includes any second call in a process: there
+    /// is one runtime per process, also after the first one was dropped.
     pub fn new() -> Self {
         // SAFETY: ffi constructor, null checked below.
         let ptr = unsafe { sys::scm_new() };
@@ -456,7 +461,29 @@ impl<'env> Env<'env> {
         if rc == 0 { Ok(()) } else { Err(rc) }
     }
 
-    pub fn pop_local_frame(&mut self, result: Ref<'_>) -> Ref<'env> {
+    /// Pops the innermost local frame.
+    ///
+    /// Safe code cannot call it (the `unsafe` keeps a surviving copy of a [`Ref`] from being
+    /// used after its frame is gone):
+    ///
+    /// ```compile_fail
+    /// fn f(env: &mut capy_sni::Env<'_>, r: capy_sni::Ref<'_>) {
+    ///     env.pop_local_frame(r);
+    /// }
+    /// ```
+    ///
+    /// The same call compiles inside `unsafe`, so the failure above is the missing `unsafe`:
+    ///
+    /// ```no_run
+    /// fn f(env: &mut capy_sni::Env<'_>, r: capy_sni::Ref<'_>) {
+    ///     let _ = unsafe { env.pop_local_frame(r) };
+    /// }
+    /// ```
+    ///
+    /// # Safety
+    /// Every [`Ref`] created in the popped frame, including copies, is
+    /// dangling afterwards and must not be used. Prefer [`LocalFrame`].
+    pub unsafe fn pop_local_frame(&mut self, result: Ref<'_>) -> Ref<'env> {
         unsafe { Ref::from_raw(sys::sni_pop_local_frame(self.ptr, result.as_raw())) }
     }
 
@@ -464,7 +491,23 @@ impl<'env> Env<'env> {
         unsafe { Ref::from_raw(sys::sni_new_local_ref(self.ptr, obj.as_raw())) }
     }
 
-    pub fn delete_local_ref(&mut self, obj: Ref<'_>) {
+    /// Deletes a local reference.
+    ///
+    /// ```compile_fail
+    /// fn f(env: &mut capy_sni::Env<'_>, r: capy_sni::Ref<'_>) {
+    ///     env.delete_local_ref(r);
+    /// }
+    /// ```
+    ///
+    /// ```no_run
+    /// fn f(env: &mut capy_sni::Env<'_>, r: capy_sni::Ref<'_>) {
+    ///     unsafe { env.delete_local_ref(r) };
+    /// }
+    /// ```
+    ///
+    /// # Safety
+    /// `obj` and every copy of it must not be used afterwards.
+    pub unsafe fn delete_local_ref(&mut self, obj: Ref<'_>) {
         unsafe { sys::sni_delete_local_ref(self.ptr, obj.as_raw()) }
     }
 
@@ -1321,14 +1364,16 @@ impl<'a, 'env> LocalFrame<'a, 'env> {
 
     pub fn pop(mut self, result: Ref<'env>) -> Ref<'env> {
         self.active = false;
-        self.env.pop_local_frame(result)
+        // SAFETY: `pop` consumes the guard; the caller owns the frame's refs.
+        unsafe { self.env.pop_local_frame(result) }
     }
 }
 
 impl Drop for LocalFrame<'_, '_> {
     fn drop(&mut self) {
         if self.active {
-            let _ = self.env.pop_local_frame(Ref::null());
+            // SAFETY: the guard is being dropped; its refs go out of scope.
+            let _ = unsafe { self.env.pop_local_frame(Ref::null()) };
         }
     }
 }

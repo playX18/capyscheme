@@ -19,3 +19,29 @@ jobs:
     with:
       label: ci
       upload: true
+
+  lint:
+    name: rustfmt and clippy
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang libclang-dev cmake pkg-config zlib1g-dev
+      - name: Install Rust
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal -c rustfmt -c clippy
+          rustup default "$channel"
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets 2>&1 | tee clippy.log
+      - name: Summary
+        if: always()
+        run: |
+          echo "clippy warnings: $(grep -c '^warning' clippy.log || true)" >> "$GITHUB_STEP_SUMMARY"

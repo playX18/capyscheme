@@ -404,13 +404,19 @@ in CPS with `call.tail`."
 
         let module = self.scheme_attribute.module_path.resolve();
         // the first input is the `call` that `emit_tokens` inserted, not an argument of the procedure
-        let arg_tys = self.transformed_function.sig.inputs.iter().skip(1).filter_map(|arg| {
-            if let syn::FnArg::Typed(pat_type) = arg {
-                Some(pat_type.ty.clone())
-            } else {
-                None
-            }
-        });
+        let arg_tys = self
+            .transformed_function
+            .sig
+            .inputs
+            .iter()
+            .skip(1)
+            .filter_map(|arg| {
+                if let syn::FnArg::Typed(pat_type) = arg {
+                    Some(pat_type.ty.clone())
+                } else {
+                    None
+                }
+            });
         let gc_lifetime = &self.gc_lifetime;
 
         let (make, make_static) = if self.is_continuation() {
@@ -507,5 +513,79 @@ in CPS with `call.tail`."
             self.transformed_function.span() =>
             #register_name(ctx);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn expand(
+        attr: proc_macro2::TokenStream,
+        item: proc_macro2::TokenStream,
+    ) -> syn::Result<String> {
+        let input: Input = syn::parse2(attr)?;
+        let fun: syn::ItemFn = syn::parse2(item)?;
+        let mut def = handle(input, fun)?;
+        Ok(def.emit_tokens().to_string())
+    }
+
+    #[test]
+    fn the_metadata_carries_the_arity_mask_of_the_argument_tuple() {
+        let out = expand(
+            quote!(name = "add"),
+            quote!(
+                pub fn add<'gc>(a: i32, b: i32) -> i32 {
+                    a + b
+                }
+            ),
+        )
+        .unwrap();
+        // The mask comes from the argument types at the use site, not from a count the macro made.
+        assert!(out.contains("FromValues"), "{out}");
+        assert!(out.contains("ARITY"), "{out}");
+        assert!(out.contains("\"arity-mask\""), "{out}");
+        assert!(out.contains("type Args"), "{out}");
+    }
+
+    #[test]
+    fn the_arity_tuple_is_the_declared_arguments() {
+        let out = expand(
+            quote!(name = "one"),
+            quote!(
+                pub fn one<'gc>(a: i32) -> i32 {
+                    a
+                }
+            ),
+        )
+        .unwrap();
+        let args = out.split("type Args").nth(1).expect("an Args alias");
+        let tuple = args.split(';').next().unwrap();
+        assert!(!tuple.contains("NativeCall"), "{tuple}");
+        assert!(tuple.contains("i32"), "{tuple}");
+    }
+
+    #[test]
+    fn a_duplicate_name_is_an_error() {
+        let err = expand(
+            quote!(name = "a", name = "b"),
+            quote!(
+                pub fn f<'gc>() {}
+            ),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("Duplicate"), "{err}");
+    }
+
+    #[test]
+    fn a_non_string_name_is_an_error() {
+        let err = expand(
+            quote!(name = 3),
+            quote!(
+                pub fn f<'gc>() {}
+            ),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("string literal"), "{err}");
     }
 }

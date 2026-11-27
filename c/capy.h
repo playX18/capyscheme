@@ -1,7 +1,7 @@
 /* Capy Scheme Native Interface (SNI) - C ABI for libcapy.
  *
  * Values are opaque ScmRef handles rooted in local/global OopStorage.
- * Obtain a SniEnv* via scm_enter (or scm_attach_current_thread).
+ * Obtain a SniEnv* via scm_enter.
  *
  * Error channel: on type confusion or out-of-bounds access, accessor
  * functions set a pending exception (retrieve with sni_exception_occurred,
@@ -23,33 +23,38 @@ extern "C" {
 typedef struct Scm Scm;
 typedef struct SniEnv SniEnv;
 typedef struct ScmRefOpaque *ScmRef;
+/* The null reference: no object, or an error with an exception pending. */
+#ifndef SCM_REF_NULL
+#define SCM_REF_NULL ((ScmRef)0)
+#endif
+
+#define SNI_ABI_VERSION 1u
 
 typedef struct SNINativeInterface SNINativeInterface;
+typedef SNINativeInterface SniNativeInterface;
 
 struct SniEnv {
   const SNINativeInterface *functions;
   /* remaining fields are private */
 };
 
-/* Create a new Scheme runtime instance. NULL on failure. */
+/* Create the Scheme runtime of this process. A process has one: the collector, the reference
+ * storage and the scheduler are process-wide, so a second call (also after scm_free, and after
+ * scm_run_static) logs the reason and returns NULL. NULL on failure. */
 Scm *scm_new(void);
-/* Create a runtime from a previously saved boot image. NULL on failure. */
-Scm *scm_from_image(const uint8_t *image_data, size_t image_size);
 /* Run a static bundle (capyc --static) in a fresh runtime, without booting it. argv[0] is
    the program name. The bundle ends the process by calling exit, so this returns only if
    it does not, with 0, or -1 for bad arguments. */
 int scm_run_static(const uint8_t *bundle, size_t bundle_size, int argc, const char *const *argv);
-/* Destroy a runtime created by scm_new / scm_from_image. */
+/* Destroy a runtime created by scm_new. */
 void scm_free(Scm *scm);
 
 /* Entry callback run with a live env. Its return value becomes scm_enter's. */
 typedef int (*ScmEnterFn)(SniEnv *env, void *arg);
 /* Run `enter` on the runtime's main thread with a live env. */
 int scm_enter(Scm *scm, ScmEnterFn enter, void *arg);
-/* Attach the calling thread to the runtime and run `enter` with a live env. */
-int scm_attach_current_thread(Scm *scm, ScmEnterFn enter, void *arg);
-/* Detach a thread previously attached with scm_attach_current_thread. */
-void scm_detach_current_thread(Scm *scm);
+/* A foreign OS thread cannot attach to a runtime: native code that needs another thread starts
+ * a Scheme thread with scm_fork from inside an env. */
 
 /* Thread entry callback run on a new Scheme thread. */
 typedef void *(*ThreadFn)(Scm *scm, void *arg);
@@ -385,11 +390,22 @@ SniContinuation *sni_guard_k(SniEnv *env, SniContinuation *handler,
 const SNINativeInterface *sni_get_functions(SniEnv *env);
 
 /* Native extension entry: export this from a plugin .so loaded via
- * load-native-extension. Prefer SNI_OnLoad(SniEnv*, void*). Return 0 on
- * success. Legacy Rust ABI capy_register_extension is still accepted. */
+ * load-native-extension: SNI_OnLoad(SniEnv*, void*), returning 0 on success, and
+ * SNI_ABIVersion(). A library without SNI_ABIVersion is refused. */
 typedef int (*SNI_OnLoadFn)(SniEnv *env, void *reserved);
 
+/* Weak, so that an extension of several translation units links; it is exported from the
+ * extension's shared library. With -DSNI_OnLoad=NAME (static linking) it is shared by all. */
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((weak, visibility("default"))) unsigned SNI_ABIVersion(void);
+__attribute__((weak, visibility("default"))) unsigned SNI_ABIVersion(void) {
+  return SNI_ABI_VERSION;
+}
+#endif
+
 struct SNINativeInterface {
+  uint32_t abi_version;  /* SNI_ABI_VERSION of the runtime */
+  uint32_t struct_size;  /* sizeof of the table in the runtime */
   int (*PushLocalFrame)(SniEnv *env, int capacity);
   ScmRef (*PopLocalFrame)(SniEnv *env, ScmRef result);
   int (*EnsureLocalCapacity)(SniEnv *env, int capacity);

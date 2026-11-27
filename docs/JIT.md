@@ -1,14 +1,11 @@
 # JIT
 
-The JIT lives in `crates/capy/src/runtime/codegen/`. It turns a bytecode
-procedure into machine code, one image per procedure, using the same
-templates the template interpreter uses. The code is generated at run time
-with `onlineasm`. 
+The JIT lives in `crates/capy/src/runtime/codegen/`. 
 
-There are two tiers. The baseline tier is the template JIT described first. Tier 2
-(`codegen/opt/`) is the optimizing compiler, described in its own section below.
+There are two tiers. The baseline tier is the template JIT and Tier 2
+(`codegen/opt/`) is the optimizing compiler.
 Tier 2 builds an SSA form of a hot procedure, runs optimization passes over it,
-and emits code through the same `CodeUnit` and `CodeMemory` path as the baseline.
+and emits code.
 
 ## Baseline pipeline
 
@@ -42,8 +39,8 @@ type.
 ## Optimizing tier
 
 Tier 2 lives in `crates/capy/src/runtime/codegen/opt/`. `OptimizingCompiler`
-(`opt/mod.rs`) implements `TierCompiler`, so the work to publish, compile, etc
-is the same as with baseline.
+(`opt/mod.rs`) implements `TierCompiler`, so publishing and compiling work the same
+way as in baseline.
 
 ### When a procedure reaches Optimizing JIT
 
@@ -72,19 +69,16 @@ is the same as with baseline.
 3. **Constants** (`constants.rs`). The constant table and code slots of the unit.
 4. **Lower** (`lir/`). SSA becomes architecture-neutral LIR on virtual
    registers. Each value has a `VRepr` that fixes its class (GPR or FPR) and
-   whether a stack map reports it. `lir/schedule.rs` places each pure value in
+   whether a stack map has it. `lir/schedule.rs` places each pure value in
    the block with the lowest loop depth that its uses allow.
 5. **Register allocation** (`regalloc/`). One of two allocators, chosen by
    `CAPY_OPT_REGALLOC`: Wimmer–Franz linear scan with lifetime holes and
    interval splitting, or a greedy allocator based on JSC/LLVM.
 6. **Layout** (`passes/layout.rs`). Runs only with `CAPY_OPT_LAYOUT`. Without
    it, blocks stay in reverse postorder.
-7. **Install guard** (`opt/mod.rs`). A unit above `CAPY_OPT_MAX_UNIT_INSTRS`
-   instructions or `CAPY_OPT_MAX_SPILLS` spill slots is rejected before anything
-   is emitted. 
-8. **Emit** (`emit/`, `emit/x64.rs`, `emit/aarch64.rs`). Onlineasm is generated:
-   function prologue, blocks in the allocation order, then slow-paths, and deopt code. 
-9. **Deopt** (`deopt/`). A failed guard jumps to its exit. Deopt code saves
+7. **Emit** (`emit/`, `emit/x64.rs`, `emit/aarch64.rs`). Onlineasm generates the function
+   prologue, the blocks in allocation order, then the slow paths and deopt code.
+8. **Deopt** (`deopt/`). A failed guard jumps to its exit. Deopt code saves
    the registers and calls `capy_opt_deopt` (`deopt/runtime.rs`). That function
    rebuilds the baseline frames, including inlined callees and objects that
    scalar replacement removed, and returns the baseline resume address.
@@ -115,12 +109,13 @@ until the flag is set.
 | `unswitch` | `CAPY_OPT_UNSWITCH` (off) | Splits a loop on a loop-invariant branch into two clones, each with the branch folded to one arm. |
 | `strength` | always | Multiplies by powers of two become shifts or adds. Quotient, remainder and modulo by constants fold, using range facts. |
 | `unroll` | always | 2x unrolling of counted loops with a canonical `±1` counter. The original header stays as the one-iteration tail. |
-| `unroll_all` | always (see Known gaps) | Replicates small innermost loops that are not counted. |
+| `unroll_all` | `CAPY_OPT_UNROLL_ALL` (off) | Replicates small innermost loops that are not counted. |
 | `forward` | always | Store-to-load forwarding within an extended basic block. Removes write barriers on objects allocated in the same block. |
 | `bce` | always | Drops bounds checks that a dominating `index < length` test and a non-negative counter prove. |
 | `predicate` | `CAPY_OPT_PREDICATE` (off) | In a counted loop, replaces the per-iteration index checks with one test in the preheader. |
-| `sroa` | always | Whole-function escape analysis. Scalar-replaces pairs, closures, envs, vectors, tuples and instances that do not escape. Frame states name the objects, and deopt rebuilds them. |
-| `cells` | always | Local cell elimination. A `make-variable` box that cannot escape becomes SSA values. Deopt rebuilds the variable from a remat descriptor. |
+| `pea` | `CAPY_OPT_PEA` (default on) | Partial escape analysis (Stadler et al., CGO 2014). Replaces SROA and Cells passes. |
+| `sroa` | `CAPY_OPT_PEA=0` | Whole-function escape analysis. Scalar-replaces pairs, closures, envs, vectors, tuples and instances that do not escape. Frame states name the objects, and deopt rebuilds them. |
+| `cells` | `CAPY_OPT_PEA=0` | Local cell elimination. A `make-variable` box that cannot escape becomes SSA values. Deopt rebuilds the variable from a remat descriptor. |
 | `repr` | always | Typed block parameters, so a loop-carried flonum stays in an FPR. Raw frame states. |
 | `dce` | always | Dead pure instructions and unreachable blocks. Values named by a live frame state stay live. |
 
@@ -165,7 +160,7 @@ A return of any count but one decodes the header of the return address
 ## Lazy edges
 
 A lazy edge is a label that generated code jumps to when a fast path fails
-or a block has not been compiled yet. Behind it sits a cell, which holds the
+or a block has not been compiled yet. Each edge has a cell. The cell holds the
 behaviour of the edge (a `Lazy`) and the address the edge jumps through.
 
 ### The `Lazy` trait
@@ -381,8 +376,9 @@ Defaults are in `utils/flags.rs`.
   `CAPY_OPT_LAZY`: off by default. See the pass and option tables above.
 - `CAPY_OPT_LAZY_CALLS`, `CAPY_OPT_LAZY_SLOTS`, `CAPY_OPT_LAZY_RECORDS`,
   `CAPY_OPT_LAZY_GENERICS`: on by default. They apply only with `CAPY_OPT_LAZY`.
-- `CAPY_OPT_UNROLL_ALL`: parsed, but never read. See Known gaps.
-- `CAPY_OPT_VERIFY=1`: verify the IR after every pass. Always on in debug builds.
+- `CAPY_OPT_UNROLL_ALL`: replicate small non-counted innermost loops. Off by default.
+- `CAPY_OPT_VERIFY=1`: verify the IR after every pass. Always on in debug builds. The IR after
+  building and after the pipeline, and the LIR after lowering, are verified in every build.
 - `CAPY_OPT_REGALLOC=kind[,kind...]`: register allocator. LSRA or Greedy.
 - `CAPY_OPT_DUMP=stage,...`: write the IR of each named stage to
   `CAPY_JIT_DUMP_DIR`.

@@ -1,18 +1,26 @@
 # Installation
 
-To install & run CapyScheme you need GNU make to be installed.
+To build CapyScheme you need the pinned Rust nightly toolchain (`rust-toolchain.toml`; rustup installs
+it on first use) and Bash. macOS and Linux on x86-64 and aarch64 are supported; Windows is not. Build the toolchain, then install it under a prefix:
 
-After they are installed simply run:
 ```sh
-$ make install-portable
+$ ./bootstrap.sh
+$ stage-2/capy install --toolchain stage-2 --prefix $HOME/.local
 ```
 
-Or if you want to install system-wide
+To install system-wide, run:
 ```sh
-$ make PREFIX=/usr/local install
-
+$ sudo stage-2/capy install --toolchain stage-2 --prefix /usr/local
 ```
 
-After everything is installed you should add installed directory into PATH.
-If you wish to use native extensions also add `extensions/` directory under prefix
-into your LD_LIBRARY_PATH/DYLD_FALLBACK_LIBRARY_PATH.
+The prefix gets `bin/` (`capy`, `capy-rt`, `capyc`), `lib/` (libcapy and the libraries of the
+toolchain under `lib/capy/<version>`) and `include/`. Add `<prefix>/bin` to your PATH. The
+executables find their libraries from their own location, so no environment variable is needed and you can move the tree.
+
+The same tree can be packaged instead of installed:
+
+```sh
+$ stage-2/capy dist --toolchain stage-2 --format portable   # dist/capyscheme-<version>-<target>.tar.gz
+$ stage-2/capy dist --toolchain stage-2 --format deb        # needs dpkg-deb (and fakeroot, if present)
+$ stage-2/capy dist --toolchain stage-2 --format rpm        # needs rpmbuild
+```

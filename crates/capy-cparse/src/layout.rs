@@ -103,10 +103,8 @@ impl Unit {
         let mut bits: u64 = 0; // running offset in bits (structs)
         let mut size_bytes: u64 = 0; // running size for unions
         let mut max_align: u64 = 1;
-        let n = rec.fields.len();
 
-        for (i, f) in rec.fields.iter().enumerate() {
-            let flexible = i + 1 == n && matches!(f.ty, Type::Array(_, ArrLen::Incomplete));
+        for f in rec.fields.iter() {
             let Some((fsize, falign)) = self.size_align(&f.ty) else {
                 out.unsupported = Some(format!(
                     "field {} has unsupported or incomplete type",
@@ -115,7 +113,7 @@ impl Unit {
                 out.fields.push(FieldLayout::default());
                 continue;
             };
-            let _ = flexible;
+            // A trailing incomplete array has size 0 here, which is what the compiler gives it.
             let packed = rec.packed || f.packed;
             let mut align = if packed { 1 } else { falign };
             if let Some(p) = rec.pack {

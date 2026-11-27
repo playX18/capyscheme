@@ -1,6 +1,3 @@
-# Nightly prerelease: built every 24h, but only if the default branch has new
-# commits since the previous nightly. The `nightly` release/tag is replaced
-# on every run.
 name: Nightly
 
 on:
@@ -53,6 +50,134 @@ jobs:
       label: nightly
       upload: true
       ref: ${{ needs.check.outputs.sha }}
+
+  jit-stress:
+    name: JIT stress (${{ matrix.name }})
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: verify
+            env: "CAPY_JIT_THRESHOLD=1 CAPY_JIT_OPT_THRESHOLD=2 CAPY_OPT_VERIFY=1 CAPY_JIT_WORKERS=0"
+          - name: stress-deopt
+            env: "CAPY_JIT_THRESHOLD=1 CAPY_JIT_OPT_THRESHOLD=2 CAPY_OPT_VERIFY=1 CAPY_JIT_WORKERS=0 CAPY_OPT_STRESS_DEOPT=7"
+          - name: stress-lazy-deopt
+            env: "CAPY_JIT_THRESHOLD=1 CAPY_JIT_OPT_THRESHOLD=2 CAPY_OPT_VERIFY=1 CAPY_JIT_WORKERS=0 CAPY_OPT_STRESS_LAZY_DEOPT=1000"
+          - name: eager-deopt
+            env: "CAPY_JIT_THRESHOLD=1 CAPY_JIT_OPT_THRESHOLD=2 CAPY_OPT_VERIFY=1 CAPY_JIT_WORKERS=0 CAPY_OPT_LAZY_DEOPT=0"
+          - name: lsra
+            env: "CAPY_JIT_THRESHOLD=1 CAPY_JIT_OPT_THRESHOLD=2 CAPY_OPT_VERIFY=1 CAPY_JIT_WORKERS=0 CAPY_OPT_REGALLOC=lsra"
+          - name: all-passes
+            env: "CAPY_JIT_THRESHOLD=1 CAPY_JIT_OPT_THRESHOLD=2 CAPY_OPT_VERIFY=1 CAPY_JIT_WORKERS=0 CAPY_OPT_VERSION=1 CAPY_OPT_UNSWITCH=1 CAPY_OPT_SPEC_HOIST=1 CAPY_OPT_PREDICATE=1 CAPY_OPT_UNROLL_ALL=1"
+          - name: no-tier2
+            env: "CAPY_OPT_JIT=0"
+    env:
+      CARGO_TERM_COLOR: always
+      TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang libclang-dev cmake pkg-config \
+            autoconf automake libtool rsync python3 zlib1g-dev
+
+      - name: Install Rust
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --target "$TARGET"
+          rustup default "$channel"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: stress-${{ env.TARGET }}
+
+      - name: Build the toolchain
+        run: ./bootstrap.sh --target "$TARGET" -j "$(getconf _NPROCESSORS_ONLN)" --no-fhs
+
+      - name: Test (${{ matrix.name }})
+        run: (cd pkgs && env ${{ matrix.env }} ../stage-2/capy test --workspace --no-fail-fast --test-threads 2)
+
+  gc-stress:
+    name: GC stress (${{ matrix.name }})
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: semispace-suite
+            env: "MMTK_PLAN=SemiSpace CAPY_GC_STRESS=997"
+            suite: "pkgs"
+          - name: gencopy-suite
+            env: "MMTK_PLAN=GenCopy CAPY_GC_STRESS=997"
+            suite: "pkgs"
+    env:
+      TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang libclang-dev cmake pkg-config \
+            autoconf automake libtool rsync python3 zlib1g-dev
+      - name: Install Rust
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --target "$TARGET"
+          rustup default "$channel"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: gcstress-${{ env.TARGET }}
+      - name: Build the toolchain
+        run: ./bootstrap.sh --target "$TARGET" -j "$(getconf _NPROCESSORS_ONLN)" --no-fhs
+      - name: Test (${{ matrix.name }})
+        run: cd pkgs && env ${{ matrix.env }} ../stage-2/capy test --workspace --no-fail-fast --test-threads 2
+
+  tsan:
+    name: ThreadSanitizer
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang libclang-dev cmake pkg-config zlib1g-dev
+      - name: Install Rust
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --target "$TARGET" -c rust-src
+          rustup default "$channel"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: tsan-${{ env.TARGET }}
+      - name: cargo test under TSan
+        env:
+          RUSTFLAGS: -Zsanitizer=thread
+          RUSTDOCFLAGS: -Zsanitizer=thread
+          TSAN_OPTIONS: halt_on_error=1
+        run: cargo test -Zbuild-std --target "$TARGET" -p capy --lib -- --test-threads 1
 
   publish:
     name: Publish nightly

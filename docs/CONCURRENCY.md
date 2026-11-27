@@ -1,9 +1,9 @@
 # Concurrency
 
-Capy implements a concurrent thread system similar to that of Go. Capy maps M virtual threads to N underlying OS 
-threads. Preemption is automatic and happens every 10ms by default, or on I/O and any other blocking calls. 
+Capy has a thread system similar to Go's. It maps M virtual threads to N OS
+threads. Preemption is automatic. It happens every 10ms by default, and on I/O and other blocking calls.
 
-Generally speaking, most of concurrent Go code can be ported to Capy Scheme easily, see cheat sheet down below.
+Most concurrent Go code ports to Capy Scheme easily. See the cheat sheet at the end.
 
 
 ## Threads
@@ -18,13 +18,13 @@ Generally speaking, most of concurrent Go code can be ported to Capy Scheme easi
 ```
 
 `go` takes a thunk and returns a thread handle. The main program does not
-wait for threads when it exits, so join them: `thread-join` waits and
+wait for threads when it exits, so join them. `thread-join` waits and
 returns the thunk's values.
 
 If the thread raised, `thread-join` raises `&uncaught-exception`.
 `uncaught-exception-reason` gives the original condition. A thread that
-is never joined reports nothing -- its outcome is stored in the handle and
-lost with it -- so either join every `go`, use an error group (below), or
+is never joined raises nothing, because its outcome is stored in the handle and
+lost with it. Join every `go`, use an error group (below), or
 spawn inside a scope that joins for you:
 
 ```scheme
@@ -33,8 +33,148 @@ spawn inside a scope that joins for you:
 (with-thread-scope
   (go (lambda () (display "worker one\n")))
   (go (lambda () (display "worker two\n"))))
-;; both workers have finished here. The first failure either of them
-;; raised would be re-raised here as &uncaught-exception
+;; both workers have finished here
+```
+
+## Structured concurrency
+
+`with-thread-scope` runs its body, then waits for every thread started with
+`go` inside it. It does not return until they are all done, whichever way the
+body ends: normally, by an exception, or by a continuation that escapes. A scope
+that finishes returns the body's values.
+
+A scope is **fail-fast**. When a child raises, the scope:
+
+1. cancels the other children, which unwind and run their `dynamic-wind`
+   thunks,
+2. interrupts the body, if it is still running, so that a body blocked on
+   something a dead child would have provided wakes up, and
+3. raises the first child's failure as `&uncaught-exception` once everything
+   has stopped.
+
+```scheme
+(guard (e [(uncaught-exception? e)
+            (display "failed: ")
+            (display (condition-message (uncaught-exception-reason e)))
+            (newline)])
+  (with-thread-scope
+    (go (lambda ()
+          (dynamic-wind
+            (lambda () #f)
+            (lambda () (sleep 30))
+            (lambda () (display "sibling cancelled\n")))))
+    (go (lambda () (sleep 0.05) (error 'job "boom")))
+    (sleep 30)))                    ; interrupted as soon as the second child fails
+```
+
+If the body itself raises, its children are cancelled in the same way. Scopes
+nest. Cancelling a scope cancels the scopes its children opened, so a
+cancellation reaches every descendant.
+
+| Form | What it does |
+|------|--------------|
+| `(with-thread-scope body ...)` | Fail-fast scope, as above. |
+| `(with-thread-supervisor body ...)` | Waits for every child, whatever any of them does. A child's failure does not cancel its siblings. The first failure is raised at the end. |
+| `(with-thread-deadline secs body ...)` | A fail-fast scope that is cancelled after `secs` seconds. Raises `&deadline-exceeded` (see `deadline-exceeded?` and `deadline-exceeded-seconds`). |
+| `(current-thread-scope)` | The innermost scope the calling thread runs in, or `#f`. |
+| `(thread-scope-cancel!)` | Cancel the current scope: its children are stopped and the body ends. Takes an optional scope. |
+| `(go-in scope thunk)` | Start a thread that belongs to `scope`, from any thread. |
+| `(go-detached thunk)` | Start a thread that belongs to no scope. For helpers that a library owns and stops itself. |
+
+Each of these also has a procedure form taking a thunk: `call-with-thread-scope`,
+`call-with-thread-supervisor` and `call-with-thread-deadline`.
+
+```scheme
+(guard (e [(deadline-exceeded? e) 'too-slow])
+  (with-thread-deadline 0.5
+    (go (lambda () (sleep 30)))     ; cancelled when the deadline passes
+    (sleep 30)))                    ; interrupted too
+```
+
+
+## Cancelling a thread
+
+`(thread-cancel! t)` asks a thread to stop. It does not wait: join the thread to
+wait. The thread unwinds from wherever it is, including from `sleep`, a mutex
+or condition wait, a join, I/O, and a busy loop, and runs the after-thunks of
+its `dynamic-wind`s on the way out. `thread-join` on a cancelled thread raises
+`&terminated-thread-exception`.
+
+```scheme
+(define t (go (lambda ()
+                (dynamic-wind
+                  (lambda () #f)
+                  (lambda () (sleep 30))
+                  (lambda () (display "cleaned up\n"))))))
+(sleep 0.1)
+(thread-cancel! t)                  ; => #t
+(guard (e [(terminated-thread-exception? e) 'cancelled])
+  (thread-join t))                  ; prints "cleaned up", then => cancelled
+```
+
+`thread-cancel!` returns `#f` when there is nothing to cancel: the thread has
+not started, has finished, or is already being cancelled. A mutex held by a
+cancelled thread is released, and the next `mutex-acquire` of it raises
+`&abandoned-mutex-exception`.
+
+`thread-interrupt!` runs a thunk in another thread at its next blocking call or
+yield point, without stopping it. If the thunk raises, the exception is raised
+inside the target, where a `guard` there can catch it. This is how a scope wakes
+its body.
+
+
+## Looking at running threads
+
+`(import (capy threads))` shows what every thread is doing and why it is stuck.
+
+```scheme
+(import (rnrs) (capy concurrency) (capy threads))
+
+(define a (make-mutex))
+(define b (make-mutex))
+(go (lambda () (set-thread-name! "alice") (mutex-acquire a) (sleep 0.1) (mutex-acquire b)))
+(go (lambda () (set-thread-name! "bob")   (mutex-acquire b) (sleep 0.1) (mutex-acquire a)))
+(sleep 0.5)
+(dump-threads)
+```
+
+prints something like:
+
+```
+3 threads, 2 blocked
+  #1    running    [worker 0, level 0, age 512ms]
+  #2    blocked   alice on mutex 0x6000..., held by #3 (bob), for 400ms  [worker 2, level 0, parent #1, age 511ms]
+  #3    blocked   bob on mutex 0x6000..., held by #2 (alice), for 400ms  [worker 5, level 0, parent #1, age 511ms]
+deadlock among 2 threads: #2 (alice) -> #3 (bob) -> #2 (alice)
+```
+
+| Procedure | Result |
+|-----------|--------|
+| `(thread-list)` | A list of `thread-info` records, one per live thread, ordered by id. |
+| `(thread-info-id i)`, `-parent`, `-name`, `-state`, `-level`, `-base-level`, `-worker`, `-pinned`, `-age`, `-killed?` | Fields of a `thread-info`. `state` is `runnable`, `running`, `blocked` or `done`. |
+| `(thread-info-wait i)` | What a blocked thread waits for: `mutex`, `condition`, `join`, `sleep`, `io`, `park`, or `#f`. |
+| `(thread-info-wait-on i)` | The id of the thread that holds the mutex or is being joined, the fd for `io`, otherwise `#f`. |
+| `(thread-info-waiting i)` | Seconds the current wait has lasted. |
+| `(find-deadlocks)` | A list of cycles, each a list of thread ids: threads that wait for each other through mutexes and joins. Condition waits never form a cycle, since any thread may signal one. |
+| `(dump-threads [port])` | The text report above. |
+| `(print-thread-tree [port])` | Threads indented under the thread that started them. |
+| `(thread-backtrace thread [timeout])` | The thread's call stack, innermost frame first, or `#f` if it does not answer within `timeout` seconds. It interrupts the thread to read its own stack, so a blocked thread wakes briefly and goes back to waiting. |
+| `(set-thread-name! name)` | Name the calling thread for dumps. |
+| `(call-with-thread-trace path [interval] thunk)` | Run `thunk` while recording, then write a trace to `path`. |
+| `(start-thread-trace [interval])`, `(stop-thread-trace! tr)`, `(write-thread-trace tr port-or-path)` | The same in steps. |
+
+### Traces for Perfetto
+
+A trace samples every thread's state every `interval` seconds (5ms by default)
+and writes each stretch of one state as a span, in Chrome Trace Event JSON.
+Open the file at <https://ui.perfetto.dev> or in `chrome://tracing`: each thread
+is a row, and spans read `running`, `runnable`, `blocked on mutex` and so on.
+A span is only as sharp as the interval, so a state shorter than that can be
+missed.
+
+```scheme
+(call-with-thread-trace "trace.json"
+  (lambda () (run-my-program)))
 ```
 
 
@@ -55,7 +195,7 @@ the value.
 | `(channel-close ch)` | Close. Pending values can still be received. |
 | `(channel-closed? ch)`, `(channel-length ch)`, `(channel-capacity ch)` | Inspection. |
 
-Closing is the way to tell a receiver that no more values are coming. Only the
+Closing tells a receiver that no more values are coming. Only the
 sender should close:
 
 ```scheme
@@ -93,7 +233,7 @@ When several are ready, one is chosen at random.
 With no `default` and no ready case, the thread blocks until one is ready.
 Channel and value expressions are evaluated once, when the `select` is entered.
 
-Example: 
+Example:
 
 ```scheme
 (import (rnrs) (capy concurrency))
@@ -124,7 +264,7 @@ nothing ready
 
 ## Wait groups, once, locks and atomics
 
-`(capy sync)` provide Go-like synchronization functionality with almost exactly same API:
+`(capy sync)` provides Go-like synchronization with almost the same API:
 
 | Go | Capy |
 |----|------|
@@ -140,7 +280,7 @@ nothing ready
 | `make(chan struct{}, n)` as a semaphore | `(make-semaphore n)`, `semaphore-acquire!`, `semaphore-release!`, `with-semaphore` |
 | `errgroup.Group` | `(make-errgroup)`, `errgroup-go`, `errgroup-wait` |
 
-Here is a small example:
+Example:
 
 ```scheme
 (import (rnrs) (capy concurrency))
@@ -182,7 +322,7 @@ procedure that cancels it.
 | Procedure | Result |
 |-----------|--------|
 | `(with-cancel parent)` | `(values ctx cancel)`. `(cancel)` cancels with `'canceled`. |
-| `(with-timeout parent secs)` | `(values ctx cancel)`, cancelled with `'deadline-exceeded` after `secs`. |
+| `(with-timeout parent secs)` | `(values ctx cancel)`, canceled with `'deadline-exceeded` after `secs`. |
 | `(with-deadline parent t)` | Like `with-timeout`, at an absolute time in seconds (`current-second`). |
 | `(with-value parent key v)` | A context carrying `v` under `key`, compared with `equal?`. Returns one context. |
 | `(context-done ctx)` | A channel that is closed when the context is cancelled. Use it in `select`. |
@@ -264,12 +404,12 @@ Example:
 
 Output: `(1 4 9 16)`.
 
-- `pool-submit!` blocks while every worker is busy, then returns a future. 
-- `pool-future-get` can be used to wait for future.
-- `pool-future-done?` checks if future is completed.
-- `pool-shutdown!` shutdowns the pool and stops accepting new futures.
+- `pool-submit!` blocks while every worker is busy, then returns a future.
+- `pool-future-get` waits for a future.
+- `pool-future-done?` checks whether a future has completed.
+- `pool-shutdown!` shuts down the pool and stops it accepting new futures.
 
-You can also simply call `parallel-map` to automatically schedule list to be processed in parallel:
+`parallel-map` processes a list in parallel:
 
 ```scheme
 (import (rnrs) (capy concurrency))
@@ -312,5 +452,8 @@ You can also simply call `parallel-map` to automatically schedule list to be pro
 | `atomic.Int64` | `(make-atomic 0)`, `atomic-add!`, `atomic-ref`, `atomic-cas!` |
 | `errgroup.Group` | `(make-errgroup)`, `(errgroup-go g thunk)`, `(errgroup-wait g)` |
 | worker pool with a job channel | `(make-worker-pool n)`, `(pool-submit! p thunk)`, `(pool-future-get f)` |
+| `context.WithTimeout` around a group of goroutines | `(with-thread-deadline secs body ...)` |
+| `errgroup.WithContext` (cancel the rest on first error) | `(with-thread-scope body ...)` |
+| a goroutine dump (`SIGQUIT`) | `(dump-threads)` |
 | `errors.Is`, panics recovered in a goroutine | `(guard (e [pred ...]) ...)` around the thunk |
 

@@ -1,0 +1,428 @@
+(|#%require| (boot prim) (boot control) (boot records) (boot conditions) (boot violations) (boot raise) (boot exceptions) (boot expand) (boot environments))
+(|#%provide| all-defined)
+
+
+(define $unit-variable-hook #f)
+(define ($set-unit-variable-hook! proc) (set! $unit-variable-hook proc))
+
+;; The variable NAME of the library KEY has no value where the code at SRC refers to it.
+(define (raise-undefined-variable src name key)
+  (raise
+    (apply
+      condition
+      (filter
+        values
+        (list
+          (make-undefined-variable-condition name key)
+          (make-marks-condition (current-continuation-marks))
+          (make-message-condition ($boot-format #f "undefined variable: ~a" name))
+          (sourcev->source-condition src))))))
+
+(define (raise-undefined-violation src who message)
+  (raise
+    (apply
+      condition
+      (filter
+        values
+        (list
+          (make-undefined-violation)
+          (make-marks-condition (current-continuation-marks))
+          (and who (make-who-condition who))
+          (and message (make-message-condition message))
+          (sourcev->source-condition src))))))
+
+(define (interpret/free-variable key name)
+  ($unit-variable-hook key name))
+
+(define (interpret/core-variable name)
+  (let ([var (env-variable the-core-env name)])
+    (if (and var (variable-bound? var))
+      var
+      (raise-undefined-violation #f #f ($boot-format #f "undefined primitive: ~a" name)))))
+
+(define (interpret/preprocess expr env)
+  (define src (term-src expr))
+  (cond
+    [(lref? expr)
+      (let* ([address (interpret/var-address (lref-sym expr) env)]
+             [rib (car address)]
+             [offset (cdr address)])
+        (interpreted-expression src (lambda (env0)
+                                     (let loop ([rib rib] [env env0])
+                                       (if (zero? rib)
+                                         (let ([val (vector-ref (car env) offset)])
+                                           val)
+                                         (loop (- rib 1) (cdr env)))))))]
+    [(lset? expr)
+      (let* ([address (interpret/var-address (lset-sym expr) env)]
+             [rib (car address)]
+             [offset (cdr address)]
+             [val-proc (interpret/preprocess (lset-value expr) env)])
+        (interpreted-expression src (lambda (env0)
+                                     (let loop ([rib rib] [env env0])
+                                       (if (zero? rib)
+                                         (vector-set! (car env) offset (val-proc env0))
+                                         (loop (- rib 1) (cdr env)))))))]
+    [(constant? expr)
+      (interpreted-expression src (lambda (env) (constant-value expr)))]
+    [(global-ref? expr)
+      (let* ([slot (global-ref-slot expr)]
+             [name (global-ref-name expr)]
+             [address (interpret/var-address slot env)])
+        (cond
+          [(pair? address)
+            (let ([rib (car address)]
+                  [offset (cdr address)])
+              (interpreted-expression src (lambda (env0)
+                                           (let loop ([rib rib] [env env0])
+                                             (if (zero? rib)
+                                               (variable-ref (vector-ref (car env) offset))
+                                               (loop (- rib 1) (cdr env)))))))]
+          [else
+            (let ([key (global-ref-key expr)] [var #f])
+              (interpreted-expression src
+                (lambda (env0)
+                  (if (not var)
+                    (set! var (interpret/free-variable key name)))
+                  (if (variable-bound? var)
+                    (variable-ref var)
+                    (raise-undefined-variable src name key)))))]))]
+    [(global-set? expr)
+      (let* ([slot (global-set-slot expr)]
+             [val-proc (interpret/preprocess (global-set-value expr) env)]
+             [address (interpret/var-address slot env)])
+        (cond
+          [(pair? address)
+            (let ([rib (car address)]
+                  [offset (cdr address)])
+              (interpreted-expression src (lambda (env0)
+                                           (let loop ([rib rib] [env env0])
+                                             (if (zero? rib)
+                                               (variable-set! (vector-ref (car env) offset) (val-proc env0))
+                                               (loop (- rib 1) (cdr env)))))))]
+          [else
+            (let ([key (global-set-key expr)] [name (global-set-name expr)] [var #f])
+              (interpreted-expression src
+                (lambda (env0)
+                  (let ([val (val-proc env0)])
+                    (if (not var)
+                      (set! var (interpret/free-variable key name)))
+                    (variable-set! var val)))))]))]
+    [(linklet-term? expr)
+      ;; A linklet runs as a procedure over its slot variables.
+      (let* ([slots (linklet-term-slots expr)]
+             [body-proc (interpret/preprocess (linklet-term-body expr) (cons slots env))])
+        ;; Like a compiled linklet, it returns a linklet object.
+        (interpreted-expression src
+          (lambda (env0)
+            (make-linklet (linklet-term-name expr) (linklet-term-imports expr)
+              (linklet-term-exports expr)
+              (lambda args
+                (body-proc (cons (list->vector args) env0)))
+              (linklet-term-meta expr)))))]
+    [(application? expr)
+      (let* ([rator (interpret/preprocess (application-operator expr) env)]
+             [rands (map (lambda (rand) (interpret/preprocess rand env)) (application-operands expr))])
+        (interpreted-expression src
+          (lambda (env0)
+            (let ([func (rator env0)])
+              (apply func (map (lambda (rand) (rand env0)) rands))))))]
+    [(primref? expr)
+      (let* ([name (primref-prim expr)]
+             [func (interpret/core-variable name)])
+        (interpreted-expression src (lambda (env) (variable-ref func))))]
+    [(primcall? expr)
+      (let* ([rator (primcall-prim expr)]
+             [rands (map (lambda (rand) (interpret/preprocess rand env)) (primcall-args expr))]
+             [func (interpret/core-variable rator)])
+        (interpreted-expression
+          src
+          (lambda (env0)
+            (let loop ([rands rands] [vals '()])
+              (if (null? rands)
+                (apply (variable-ref func) (reverse vals))
+                (loop (cdr rands) (cons ((car rands) env0) vals)))))))]
+    [(proc? expr) (interpret/lambda expr env)]
+    [(if? expr)
+      (let* ([test-proc (interpret/preprocess (if-test expr) env)]
+             [then-proc (interpret/preprocess (if-then expr) env)]
+             [else-proc (interpret/preprocess (if-else expr) env)])
+        (interpreted-expression
+          src
+          (lambda (env0)
+            (if (test-proc env0)
+              (then-proc env0)
+              (else-proc env0)))))]
+
+    [(let*? expr)
+      (let ([lhs (let-lhs expr)]
+            [rhs (let-rhs expr)]
+            [body (let-body expr)])
+        (let loop ([vars lhs] [vals rhs] [env env])
+          (if (null? vars)
+            (interpret/preprocess body env)
+            (let* ([val-proc (interpret/preprocess (car vals) env)]
+                   [nenv (cons (list (car vars)) env)])
+              (let ([rest-proc (loop (cdr vars) (cdr vals) nenv)])
+                (interpreted-expression src
+                  (lambda (env0)
+                    (let ([val (val-proc env0)])
+                      (rest-proc (cons (vector val) env0))))))))))]
+    [(fix? expr)
+      (let* ([lhs (fix-lhs expr)]
+             [nenv (cons lhs env)]
+             [rhs-procs (map (lambda (rhs) (interpret/preprocess rhs nenv)) (fix-rhs expr))]
+             [body-proc (interpret/preprocess (fix-body expr) nenv)])
+        (interpreted-expression src
+          (lambda (env0)
+            (let* ([rib (make-vector (length lhs) 555)]
+                   [new-env (cons rib env0)])
+              (let loop ([i 0] [procs rhs-procs])
+                (if (null? procs)
+                  (body-proc new-env)
+                  (begin
+                    (vector-set! rib i ((car procs) new-env))
+                    (loop (+ i 1) (cdr procs)))))))))]
+    [(receive? expr)
+      ;; VARS is a formals list (possibly improper: the tail binds the rest values).
+      (let* ([vars (receive-vars expr)]
+             [names (interpret/listify vars)]
+             [nfixed (let count ([x vars] [n 0]) (if (pair? x) (count (cdr x) (+ n 1)) n))]
+             [rest? (not (null? (let tail ([x vars]) (if (pair? x) (tail (cdr x)) x))))]
+             [producer (interpret/preprocess (receive-producer expr) env)]
+             [consumer (interpret/preprocess (receive-consumer expr) (cons names env))])
+        (interpreted-expression src
+          (lambda (env0)
+            (call-with-values
+              (lambda () (producer env0))
+              (lambda vals
+                (let ([rib (make-vector (length names) 444)])
+                  (let loop ([i 0] [vals vals])
+                    (cond
+                      [(= i nfixed)
+                        (cond
+                          [rest? (vector-set! rib i vals)]
+                          [(not (null? vals))
+                            (assertion-violation 'receive "wrong number of values" vals)])]
+                      [(pair? vals)
+                        (vector-set! rib i (car vals))
+                        (loop (+ i 1) (cdr vals))]
+                      [else (assertion-violation 'receive "wrong number of values" vals)]))
+                  (consumer (cons rib env0))))))))]
+    [(values? expr)
+      (let ([procs (map (lambda (v) (interpret/preprocess v env)) (values-values expr))])
+        (interpreted-expression src
+          (lambda (env0)
+            (apply values (map (lambda (p) (p env0)) procs)))))]
+    [(or (letrec*? expr) (letrec? expr))
+      (let* ([lhs (let-lhs expr)]
+             [rhs (let-rhs expr)]
+             [body (let-body expr)]
+             [nenv (cons lhs env)]
+             [rhs-procs (map (lambda (rhs) (interpret/preprocess rhs nenv)) rhs)]
+             [body-proc (interpret/preprocess body nenv)])
+        (interpreted-expression src
+          (lambda (env0)
+            (let* ([rib (make-vector (length lhs) 555)]
+                   [new-env (cons rib env0)])
+              (let loop ([i 0] [procs rhs-procs])
+                (if (null? procs)
+                  (body-proc new-env)
+                  (begin
+                    (vector-set! rib i ((car procs) new-env))
+                    (loop (+ i 1) (cdr procs)))))))))]
+    [(let? expr)
+      (let* ([lhs (let-lhs expr)]
+             [rhs (map (lambda (rhs) (interpret/preprocess rhs env)) (let-rhs expr))]
+             [body (let-body expr)]
+             [nenv (cons lhs env)])
+        (let ([body-proc (interpret/preprocess body nenv)])
+          (interpreted-expression
+            src
+            (lambda (env0)
+              (let loop ([rhs rhs] [vals '()])
+                (if (null? rhs)
+                  (body-proc (cons (list->vector (reverse vals)) env0))
+                  (loop (cdr rhs) (cons ((car rhs) env0) vals))))))))]
+    [(sequence? expr)
+      (let* ([head (interpret/preprocess (sequence-head expr) env)]
+             [tail (interpret/preprocess (sequence-tail expr) env)])
+        (interpreted-expression
+          src
+          (lambda (env0)
+            (head env0)
+            (tail env0))))]
+    [(void? expr)
+      (interpreted-expression
+        src
+        (lambda (env0) (if #f #f)))]
+    [(wcm? expr)
+      (let* ([key-proc (interpret/preprocess (wcm-key expr) env)]
+             [val-proc (interpret/preprocess (wcm-mark expr) env)]
+             [body-proc (interpret/preprocess (wcm-result expr) env)])
+        (interpreted-expression
+          src
+          (lambda (env0)
+            (with-continuation-mark (key-proc env0) (val-proc env0)
+              (body-proc env0)))))]
+
+    [else (lambda (env0) (assertion-violation #f "unhandled node " expr))]))
+
+(define (interpret/listify x)
+  (cond [(pair? x) (cons (car x) (interpret/listify (cdr x)))]
+        [(null? x) x]
+        [else (list x)]))
+
+(define (interpret/lambda expr env)
+  (define (listify x)
+    (cond ((pair? x) (cons (car x) (listify (cdr x))))
+      ((null? x) x)
+      (else (list x))))
+
+  (define (fixed-args x n)
+    (if (pair? x)
+      (fixed-args (cdr x) (+ n 1))
+      n))
+  (let* ((args (proc-args expr))
+         (body (proc-body expr))
+         (meta (proc-meta expr))
+         (src (term-src expr))
+         (nenv (interpret/extend-env env (cons '&self (listify args))))
+         (exprs (interpret/preprocess body nenv)))
+    (cond ((pair? args)
+           (let ((tail0 (cdr args)))
+             (cond ((pair? tail0)
+                    (let ((tail1 (cdr tail0)))
+                      (cond ((pair? tail1)
+                             (let ((tail2 (cdr tail1)))
+                               (cond ((pair? tail2)
+                                      (let ((tail3 (cdr tail2)))
+                                        (cond ((pair? tail3)
+                                               (if (list? tail3)
+                                                 (interpret/lambda-n src meta (length args) exprs)
+                                                 (interpret/lambda-dot src meta (fixed-args args 0) exprs)))
+                                          ((null? tail3) (interpret/lambda4 src meta exprs))
+                                          (else (interpret/lambda-dot src meta (fixed-args args 0) exprs)))))
+                                 ((null? tail2) (interpret/lambda3 src meta exprs))
+                                 (else (interpret/lambda-dot src meta (fixed-args args 0) exprs)))))
+                        ((null? tail1) (interpret/lambda2 src meta exprs))
+                        (else (interpret/lambda-dot src meta (fixed-args args 0) exprs)))))
+               ((null? tail0) (interpret/lambda1 src meta exprs))
+               (else (interpret/lambda-dot src meta (fixed-args args 0) exprs)))))
+      ((null? args) (interpret/lambda0 src meta exprs))
+      (else (interpret/lambda-dot src meta (fixed-args args 0) exprs)))))
+
+(define (interpret/lambda-n src meta n body)
+  (interpreted-expression src
+    (lambda (env)
+      (letrec ([self
+                 (lambda args
+                   (if (not (= (length args) n))
+                     (assertion-violation 'lambda "wrong number of arguments" (length args))
+                     (body (cons (list->vector (cons self args)) env))))])
+        (interpreted-procedure src meta self)))))
+
+(define (interpret/lambda-dot src meta n body)
+  (interpreted-expression
+    src
+    (lambda (env)
+      (letrec ([self
+                 (lambda args
+                   (let ([v (make-vector (+ n 2) 444)]
+                         [limit (+ n 1)])
+                     (vector-set! v 0 self)
+                     (let loop ([argnum 1]
+                                [argtail args])
+                       (cond
+                         [(= argnum limit)
+                           (vector-set! v argnum argtail)
+                           (body (cons v env))]
+                         [(pair? argtail)
+                           (vector-set! v argnum (car argtail))
+                           (loop (+ argnum 1) (cdr argtail))]
+                         [else (assertion-violation 'lambda "wrong number of arguments" (length args))]))))])
+        (interpreted-procedure src meta self)))))
+
+(define (interpret/lambda0 src meta body)
+  (interpreted-expression src
+    (lambda (env)
+      (letrec ([self
+                 (lambda ()
+                   (body (cons (vector self) env)))])
+        (interpreted-procedure src meta self)))))
+
+(define (interpret/lambda1 src meta body)
+  (interpreted-expression src
+    (lambda (env)
+      (letrec ([self
+                 (lambda (arg1)
+                   (let ([env (cons (vector self arg1) env)])
+                     (body env)))])
+        (interpreted-procedure src meta self)))))
+(define (interpret/lambda2 src meta body)
+  (interpreted-expression src
+    (lambda (env)
+      (letrec ([self
+                 (lambda (arg1 arg2)
+                   (body (cons (vector self arg1 arg2) env)))])
+        (interpreted-procedure src meta self)))))
+
+(define (interpret/lambda3 src meta body)
+  (interpreted-expression src
+    (lambda (env)
+      (letrec ([self
+                 (lambda (arg1 arg2 arg3)
+                   (body (cons (vector self arg1 arg2 arg3) env)))])
+        (interpreted-procedure src meta self)))))
+
+(define (interpret/lambda4 src meta body)
+  (interpreted-expression src
+    (lambda (env)
+      (letrec ([self
+                 (lambda (arg1 arg2 arg3 arg4)
+                   (body (cons (vector self arg1 arg2 arg3 arg4) env)))])
+        (interpreted-procedure src meta self)))))
+
+(define (interpret/var-address name env)
+  (let r-loop ([env env] [i 0])
+    (if (null? env)
+      555
+      (let a-loop ([rib (car env)] [j 0])
+        (cond
+          [(null? rib) (r-loop (cdr env) (+ i 1))]
+          [(eq? (car rib) name) (cons i j)]
+          [else (a-loop (cdr rib) (+ j 1))])))))
+
+(define (interpret/extend-env env names)
+  (cons names env))
+
+(define (primitive-eval exp)
+  ((interpret/preprocess exp '()) '()))
+
+(define (interpreted-procedure src meta proc)
+  (set-procedure-property! proc 'eval-lambda meta)
+  proc)
+
+(define (interpreted-expression meta expr)
+  (set-procedure-property! expr 'eval-expr meta)
+  expr)
+
+(define (interpreted-expression? expr)
+  (if (procedure-property expr 'eval-expr)
+    #t
+    #f))
+
+(define (interpreted-expression-source expr)
+  (if (interpreted-expression? expr)
+    (procedure-property expr 'eval-expr)
+    #f))
+
+(define (interpreted-procedure? proc)
+  (if (procedure-property proc 'eval-lambda)
+    #t
+    #f))
+
+(define (interpreted-procedure-meta proc)
+  (if (interpreted-procedure? proc)
+    (procedure-property proc 'eval-lambda)
+    #f))

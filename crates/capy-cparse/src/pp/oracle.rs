@@ -12,6 +12,18 @@ pub trait FeatureOracle {
 #[derive(Default)]
 pub struct StaticOracle;
 
+const KNOWN_BUILTINS: &[&str] = &[
+    "__builtin_va_list",
+    "__builtin_va_start",
+    "__builtin_va_end",
+    "__builtin_va_arg",
+    "__builtin_va_copy",
+    "__builtin_offsetof",
+    "__builtin_types_compatible_p",
+    "__builtin_expect",
+    "__builtin_unreachable",
+];
+
 const KNOWN_ATTRS: &[&str] = &[
     "aligned",
     "always_inline",
@@ -75,16 +87,15 @@ impl FeatureOracle for StaticOracle {
                 "reproducible" | "unsequenced" => 202207,
                 _ => 0,
             },
-            Query::HasBuiltin => arg.starts_with("__builtin_") as i64,
+            Query::HasBuiltin => KNOWN_BUILTINS.contains(&arg) as i64,
             _ => 0,
         }
     }
 }
 
-/// Asks the host compiler by preprocessing a one-line probe.
-
 pub struct CompilerOracle {
     cc: String,
+    identity: String,
     args: Vec<String>,
     fallback: StaticOracle,
 }
@@ -94,6 +105,22 @@ type MemoKey = (String, Vec<String>, Query, String);
 fn memo() -> &'static Mutex<HashMap<MemoKey, i64>> {
     static MEMO: OnceLock<Mutex<HashMap<MemoKey, i64>>> = OnceLock::new();
     MEMO.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn compiler_identity(cc: &str) -> String {
+    Command::new(cc)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .and_then(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .next()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| cc.to_string())
 }
 
 impl CompilerOracle {
@@ -106,8 +133,10 @@ impl CompilerOracle {
             args.push(format!("-std={s}"));
         }
         args.push("-".into());
+        let cc: String = cc.into();
         CompilerOracle {
-            cc: cc.into(),
+            identity: compiler_identity(&cc),
+            cc,
             args,
             fallback: StaticOracle,
         }
@@ -137,7 +166,7 @@ impl CompilerOracle {
 impl FeatureOracle for CompilerOracle {
     fn query(&mut self, q: Query, arg: &str) -> i64 {
         let key = (
-            self.cc.clone(),
+            format!("{} [{}]", self.cc, self.identity),
             self.args.clone(),
             q,
             arg.trim().to_string(),

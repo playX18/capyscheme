@@ -307,7 +307,9 @@ impl Parser {
             _ => {
                 if self.fn_depth > 0 {
                     let ty = match self.u.lookup(&t.text) {
-                        Some(Ident::Var(ty)) | Some(Ident::Func(ty)) => Some(ty.clone()),
+                        Some(Ident::Var(ty))
+                        | Some(Ident::Func(ty))
+                        | Some(Ident::Const(ty, _)) => Some(ty.clone()),
                         _ => None,
                     };
                     if let Some(ty) = ty {

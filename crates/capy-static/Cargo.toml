@@ -1,0 +1,19 @@
+[package]
+name = "capy-static"
+version.workspace = true
+edition.workspace = true
+description = "The CapyScheme runtime and command line as one static library, for executables that capyc --static-native links"
+
+[lib]
+name = "capy_static"
+crate-type = ["staticlib"]
+
+[dependencies]
+capy = { path = "../capy", default-features = false }
+capy-cli = { path = "../capy-cli" }
+
+[features]
+default = ["portable", "bootstrap"]
+portable = ["capy/portable"]
+aslr = ["capy/aslr"]
+bootstrap = ["capy/bootstrap"]

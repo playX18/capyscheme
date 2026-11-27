@@ -16,8 +16,8 @@ descriptions from a header instead, see [C-INCLUDE.md](C-INCLUDE.md).
 (labs* -7)   ; => 7
 ```
 
-The symbol is looked up once. Each call checks its arguments, converts them to
-C values, calls, and converts the result back.
+The library looks up the symbol once. Each call checks its arguments, converts them to
+C values, calls the function, and converts the result back.
 
 ## Loading libraries
 
@@ -39,7 +39,7 @@ lazy? global?])` returns a library record.
 | `#:variadic?` | `#f` | the function takes `...` after the listed arguments |
 | `#:blocking?` | `#t` | see [Blocking calls](#blocking-calls) |
 
-`(foreign-library-pointer lib name)` returns a symbol's address as a pointer. Use for global variables.
+`(foreign-library-pointer lib name)` returns a symbol's address as a pointer. Use it for global variables.
 
 ## Types
 
@@ -57,7 +57,7 @@ lazy? global?])` returns a library record.
 | `(vector T N)` | array of `N` elements, at most 1 GiB in total |
 
 `sizeof` and `alignof` take these descriptions. Integer arguments are range
-checked: a value that does not fit the type raises instead of wrapping.
+checked. A value that does not fit the type raises instead of wrapping.
 
 A struct argument is a non-NULL pointer or a bytevector at least as long as the
 struct. A struct returned by value comes back as a pointer to a copy of its
@@ -71,7 +71,7 @@ program.
 
 - `#t` (default): the call runs in native mode. The collector does not wait for
   it and other threads keep running.
-- `#f`: the call runs in place. It is cheaper and right for functions that only
+- `#f`: the call runs in place. It is cheaper and fits functions that only
   compute. Do not mark a function that waits as non-blocking.
 
 ## Pointers
@@ -92,9 +92,9 @@ rejected. The collector never frees `foreign-alloc` memory.
 
 For hot paths, use the typed forms `pointer-ref/<t>` and `pointer-set!/<t>`, where
 `<t>` is one of `u8 s8 u16 s16 u32 s32 u64 s64 f32 f64`. They take the same
-`(pointer offset [value])` arguments minus the type, and are compiler primitives: the JIT
+`(pointer offset [value])` arguments minus the type, and are compiler primitives. The JIT
 inlines `u8`, `s8`, `u16`, `s16`, `s32`, `f32` and `f64` (the 64-bit and `u32` forms can need a bignum and make an out-of-line call). The bytevector accessors
-`bytevector-*-ref` and the matching `-set!` procedures are inlined the same way. 
+`bytevector-*-ref` and the matching `-set!` procedures are inlined the same way.
 
 A `'*` argument accepts a pointer, `#f` (NULL), or a bytevector made with
 `make-bytevector/nonmoving`. A movable bytevector or a string raises, because

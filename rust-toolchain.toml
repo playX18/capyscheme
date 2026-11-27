@@ -1,4 +1,6 @@
 [toolchain]
-channel = "nightly"
-# Keep this minimal: CI will always use nightly, and developers automatically
-# get the right toolchain when using rustup.
+# Pinned to the nightly the stages are built and tested with. The interpreter
+# uses `become` and the `rust-preserve-none` ABI, both unstable, so a moving
+# `nightly` can break the build overnight. Bump on purpose, after a full
+# bootstrap. Developers get this toolchain automatically through rustup.
+channel = "nightly-2026-10-27"

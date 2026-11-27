@@ -322,8 +322,6 @@ impl Preprocessor {
         Ok(toks)
     }
 
-    // ---- token input -------------------------------------------------------------------
-
     /// Next token after directive processing, without macro expansion.
     pub(crate) fn get(&mut self) -> Option<Token> {
         loop {
@@ -389,8 +387,6 @@ impl Preprocessor {
             .last()
             .is_some_and(|f| f.conds.last().is_some_and(|c| !c.active))
     }
-
-    // ---- directives --------------------------------------------------------------------
 
     fn directive(&mut self) {
         let hash_loc;
@@ -642,8 +638,6 @@ impl Preprocessor {
             Err(e) => self.diag(Severity::Error, loc, format!("#embed: {e}")),
         }
     }
-
-    // ---- includes ----------------------------------------------------------------------
 
     /// Parses `"file"` or `<file>` from directive tokens (macro-expanding if needed).
     fn header_name(&mut self, rest: &[Token]) -> Option<(String, bool)> {

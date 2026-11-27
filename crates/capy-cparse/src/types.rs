@@ -277,6 +277,9 @@ pub struct VarDecl {
 pub enum Ident {
     Typedef(Type),
     Var(Type),
+    /// A file-scope `const` (or `constexpr`) object whose initializer is a constant expression,
+    /// with the value already converted to its type. Later constant expressions may name it.
+    Const(Type, crate::consteval::ConstVal),
     EnumConst(i128, EnumId),
     Func(Type),
 }

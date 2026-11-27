@@ -81,7 +81,7 @@ def commands():
         '(load (compile-file "%s" :output-file "%s"))' % (BUILD / "clos.lisp", BUILD / f"clos-{ext}.fasl")
     )
     return {
-        "capy": ["capy", "-L", str(ROOT / "lib"), "-s", str(BUILD / "clos-capy.scm")],
+        "capy": ["capy", "-s", str(BUILD / "clos-capy.scm")],
         "gauche": ["gosh", str(BUILD / "clos-gauche.scm")],
         "guile": ["guile", "-q", str(BUILD / "clos-guile.scm")],
         "sbcl": ["sbcl", "--noinform", "--non-interactive", "--eval", lisp_driver("sbcl")],

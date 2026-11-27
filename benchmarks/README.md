@@ -11,19 +11,19 @@ git submodule update --init --recursive
 Run every benchmark against every locally detected implementation:
 
 ```sh
-make benchmark-r7rs
+python3 benchmarks/r7rs.py --capy stage-2/capy   # or an installed capy (the default is `capy` in PATH)
 ```
 
 For a quick comparison, select benchmarks and implementations explicitly:
 
 ```sh
-make benchmark-r7rs R7RS_BENCHMARKS="fib tak" R7RS_IMPLEMENTATIONS="capy guile gauche"
+python3 benchmarks/r7rs.py --capy stage-2/capy --benchmark fib --benchmark tak --implementation capy,guile,gauche
 ```
 
-Adjust the number of timed runs or the per-run timeout with `R7RS_BENCH_RUNS` and `R7RS_BENCH_TIMEOUT`:
+Adjust the number of timed runs (default 5) or the per-run timeout in seconds (default 300) with `--runs` and `--timeout`:
 
 ```sh
-make benchmark-r7rs R7RS_BENCH_RUNS=7 R7RS_BENCH_TIMEOUT=600
+python3 benchmarks/r7rs.py --capy stage-2/capy --runs 7 --timeout 600
 ```
 
 The runner supports Capy, Chez, Chibi, Chicken, Gambit, Gauche, Guile, Kawa, MIT Scheme, Petite Chez, Racket, and Sagittarius when their required commands are installed. It uses the upstream suite's implementation-specific driver for non-Capy systems. 

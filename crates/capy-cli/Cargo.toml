@@ -2,15 +2,11 @@
 name = "capy-cli"
 version.workspace = true
 edition.workspace = true
-description = "Thin CapyScheme CLI (capy / capyc) over libcapy SNI"
+description = "Thin CapyScheme runtime executable (capy-rt) over libcapy SNI"
 
 [[bin]]
-name = "capy"
+name = "capy-rt"
 path = "src/main.rs"
-
-[[bin]]
-name = "capyc"
-path = "src/capyc.rs"
 
 [dependencies]
 capy-sni = { path = "../capy-sni" }

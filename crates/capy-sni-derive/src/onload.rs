@@ -66,10 +66,24 @@ pub fn expand_onload(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let frame = frame_capacity;
+    let symbol = onload_symbol();
+    // A statically linked extension has its entry renamed and is not asked for a version, and
+    // several of them in one executable could not all define the same symbol.
+    let version = if symbol == "SNI_OnLoad" {
+        quote! {
+            #[unsafe(export_name = "SNI_ABIVersion")]
+            pub extern "C" fn SNI_ABIVersion() -> u32 {
+                ::capy_sni_sys::SNI_ABI_VERSION
+            }
+        }
+    } else {
+        quote! {}
+    };
     quote! {
         #func
+        #version
 
-        #[unsafe(no_mangle)]
+        #[unsafe(export_name = #symbol)]
         pub unsafe extern "C" fn SNI_OnLoad(
             env: *mut ::capy_sni_sys::SniEnv,
             _reserved: *mut ::core::ffi::c_void,
@@ -84,7 +98,7 @@ pub fn expand_onload(attr: TokenStream, item: TokenStream) -> TokenStream {
                     return -1;
                 }
                 let code = { #call_ts };
-                let _ = env.pop_local_frame(::capy_sni::Ref::null());
+                let _ = unsafe { env.pop_local_frame(::capy_sni::Ref::null()) };
                 code
             }));
             match outcome {
@@ -95,6 +109,15 @@ pub fn expand_onload(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             }
         }
+    }
+}
+
+fn onload_symbol() -> String {
+    // The environment of the compiler, which cargo sets for the crate being built.
+    #[allow(clippy::disallowed_methods)]
+    match std::env::var("CAPY_SNI_ONLOAD_SYMBOL") {
+        Ok(symbol) if !symbol.is_empty() => symbol,
+        _ => "SNI_OnLoad".to_string(),
     }
 }
 
@@ -117,4 +140,76 @@ fn is_result_ty(ty: &Type) -> bool {
 
 fn is_unit_ty(ty: &Type) -> bool {
     matches!(ty, Type::Tuple(t) if t.elems.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quote::quote;
+
+    fn expand(attr: TokenStream, item: TokenStream) -> String {
+        expand_onload(attr, item).to_string()
+    }
+
+    #[test]
+    fn emits_the_entry_point_and_the_version() {
+        let out = expand(quote! {}, quote! { fn init(env: &mut Env<'_>) {} });
+        assert!(out.contains("SNI_OnLoad"), "{out}");
+        assert!(out.contains("SNI_ABIVersion"), "{out}");
+        assert!(out.contains("SNI_ABI_VERSION"), "{out}");
+        assert!(
+            out.contains("catch_unwind"),
+            "a panic must not cross the C boundary: {out}"
+        );
+    }
+
+    #[test]
+    fn the_frame_attribute_sets_the_capacity() {
+        let out = expand(
+            quote! { frame = 7 },
+            quote! { fn init(env: &mut Env<'_>) {} },
+        );
+        assert!(out.contains("push_local_frame (7"), "{out}");
+    }
+
+    #[test]
+    fn the_default_frame_is_32() {
+        let out = expand(quote! {}, quote! { fn init(env: &mut Env<'_>) {} });
+        assert!(out.contains("push_local_frame (32"), "{out}");
+    }
+
+    #[test]
+    fn unknown_attribute_is_a_compile_error() {
+        let out = expand(
+            quote! { depth = 3 },
+            quote! { fn init(env: &mut Env<'_>) {} },
+        );
+        assert!(out.contains("compile_error"), "{out}");
+    }
+
+    #[test]
+    fn the_first_argument_must_be_an_env() {
+        let out = expand(quote! {}, quote! { fn init(n: i32) {} });
+        assert!(out.contains("compile_error"), "{out}");
+    }
+
+    #[test]
+    fn async_functions_are_refused() {
+        let out = expand(quote! {}, quote! { async fn init(env: &mut Env<'_>) {} });
+        assert!(out.contains("compile_error"), "{out}");
+    }
+
+    #[test]
+    fn a_result_return_turns_an_error_into_the_exit_code() {
+        let out = expand(
+            quote! {},
+            quote! { fn init(env: &mut Env<'_>) -> Result<(), i32> { Ok(()) } },
+        );
+        assert!(out.contains("Err (code)"), "{out}");
+        let bad = expand(
+            quote! {},
+            quote! { fn init(env: &mut Env<'_>) -> String { todo() } },
+        );
+        assert!(bad.contains("compile_error"), "{bad}");
+    }
 }
