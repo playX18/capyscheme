@@ -373,9 +373,10 @@ impl Unit {
                 Some(n) if &**n == name => return Some((l.offset, f.ty.clone())),
                 None => {
                     if let Type::Record(inner) = self.resolve(&f.ty)
-                        && let Some((o, t)) = self.find_field(inner, name) {
-                            return Some((l.offset + o, t));
-                        }
+                        && let Some((o, t)) = self.find_field(inner, name)
+                    {
+                        return Some((l.offset + o, t));
+                    }
                 }
                 _ => {}
             }

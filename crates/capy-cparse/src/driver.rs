@@ -85,15 +85,17 @@ fn macro_hint<E: Emit>(
     }
     if let Ok(e) = parser.expr_from_tokens(toks.clone()) {
         if m.params.is_none()
-            && let Ok(v) = parser.u.eval(&e) {
-                return b.list(vec![b.sym("const"), Ser { u: &parser.u, b }.const_val(&v)]);
-            }
+            && let Ok(v) = parser.u.eval(&e)
+        {
+            return b.list(vec![b.sym("const"), Ser { u: &parser.u, b }.const_val(&v)]);
+        }
         return b.list(vec![b.sym("expr"), Ser { u: &parser.u, b }.expr(&e)]);
     }
     if m.params.is_none()
-        && let Ok(t) = parser.type_from_tokens(toks) {
-            return b.list(vec![b.sym("type"), Ser { u: &parser.u, b }.ty(&t)]);
-        }
+        && let Ok(t) = parser.type_from_tokens(toks)
+    {
+        return b.list(vec![b.sym("type"), Ser { u: &parser.u, b }.ty(&t)]);
+    }
     b.bool(false)
 }
 

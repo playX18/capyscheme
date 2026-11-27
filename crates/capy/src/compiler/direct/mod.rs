@@ -23,7 +23,6 @@ mod analysis;
 mod emit;
 
 use crate::bytecode::def::{self as bc};
-use crate::bytecode::disasm;
 use crate::expander::core::{LinkletTerm, TermKind, TermRef};
 use crate::runtime::fasl::{CodeSpec, Compression, ConstSpec, Image, ProgramSpec, SrcRun, Writer};
 use crate::runtime::vm::thunks::make_io_error;
@@ -32,7 +31,6 @@ use crate::runtime::{
     objectmodel::{Str, Symbol, Value},
 };
 use crate::utils::flags;
-use std::path::PathBuf;
 
 /// One entry of a constant pool.
 #[derive(Clone, Copy, Debug)]

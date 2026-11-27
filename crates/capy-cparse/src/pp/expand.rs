@@ -164,12 +164,14 @@ impl Preprocessor {
         let mut i = 0;
         while i < body.len() {
             let t = &body[i];
-            if m.params.is_some() && t.is_punct(Punct::Hash)
-                && let Some(p) = body.get(i + 1).and_then(param_idx) {
-                    out.push(stringify(&args[p], t.loc));
-                    i += 2;
-                    continue;
-                }
+            if m.params.is_some()
+                && t.is_punct(Punct::Hash)
+                && let Some(p) = body.get(i + 1).and_then(param_idx)
+            {
+                out.push(stringify(&args[p], t.loc));
+                i += 2;
+                continue;
+            }
             if t.is_punct(Punct::HashHash) && i > 0 && i + 1 < body.len() {
                 let rhs = &body[i + 1];
                 let (rhs_toks, rhs_is_va) = match param_idx(rhs) {
