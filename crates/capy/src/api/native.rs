@@ -44,10 +44,13 @@ extern "C" fn sni_native_trampoline<'gc>(ctx: MutationContext<'gc>, sfp: Slot<'g
             arg_refs.push(env.make_local(v));
         }
 
+        // An exception left pending by an earlier call that did not look at it is not this
+        // call's: drop it before running the function.
+        crate::runtime::sni::exception::clear();
         let result_ref = unsafe { fn_ptr(env_ptr, call.args.len() as i32, arg_refs.as_ptr()) };
 
-        if crate::runtime::sni::exception::check() {
-            let err = crate::runtime::sni::exception::occurred().unwrap_or(Value::null());
+        // Taking the exception, not only reading it, leaves the slot empty for the next call.
+        if let Some(err) = crate::runtime::sni::exception::clear() {
             call.err(err);
             return call.finish_flagged();
         }

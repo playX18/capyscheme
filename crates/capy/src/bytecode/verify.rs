@@ -90,6 +90,7 @@ pub fn verify(shape: &CodeShape<'_>) -> Result<(), String> {
             | OpcodeId::OpReturn
             | OpcodeId::OpReturnValues
             | OpcodeId::OpTailCall
+            | OpcodeId::OpTailApply
             | OpcodeId::OpTailCallSelf
             | OpcodeId::OpRaise
     ) {
@@ -177,7 +178,10 @@ pub fn verify(shape: &CodeShape<'_>) -> Result<(), String> {
         // A return point is entered only by returning to the call before it.
         match opcode {
             OpcodeId::OpReturnPoint | OpcodeId::OpReturnPointForward
-                if !matches!(previous, Some(OpcodeId::OpCall | OpcodeId::OpCallSelf)) =>
+                if !matches!(
+                    previous,
+                    Some(OpcodeId::OpCall | OpcodeId::OpCallSelf | OpcodeId::OpApply)
+                ) =>
             {
                 return fail(pc, "return point does not follow a call");
             }
@@ -412,6 +416,30 @@ pub fn verify(shape: &CodeShape<'_>) -> Result<(), String> {
                 }
             }
             Instruction::OpTailCall(op) => {
+                if 1 + op.argc.0 as u64 >= shape.frame_size as u64 {
+                    return fail(pc, "tail call arguments outside the frame");
+                }
+            }
+            Instruction::OpApply(op) => {
+                if op.argc.0 == 0 {
+                    return fail(pc, "apply without a list argument");
+                }
+                if op.base.0 == 0 {
+                    return fail(pc, "call with base 0 has no reserved r[base-1] slot");
+                }
+                if op.base.0 as u64 + 1 + op.argc.0 as u64 >= shape.frame_size as u64 {
+                    return fail(pc, "call frame outside the frame");
+                }
+                match next.map(at) {
+                    Some(Instruction::OpReturnPoint(next)) if next.frame.0 == op.base.0 => {}
+                    Some(Instruction::OpReturnPointForward(next)) if next.frame.0 == op.base.0 => {}
+                    _ => return fail(pc, "call is not followed by its return point"),
+                }
+            }
+            Instruction::OpTailApply(op) => {
+                if op.argc.0 == 0 {
+                    return fail(pc, "apply without a list argument");
+                }
                 if 1 + op.argc.0 as u64 >= shape.frame_size as u64 {
                     return fail(pc, "tail call arguments outside the frame");
                 }
@@ -824,4 +852,146 @@ fn verify_sym_switch(
         check(pc, shape.pool[table + 4 + 3 * case + 2])?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bytecode::def::{
+        Count, Instruction, NUM_METADATA_KINDS, OpEnter, OpJump, OpMove, OpReturn, Register,
+        encode_all,
+    };
+
+    const NO_METADATA: [u32; NUM_METADATA_KINDS] = [0; NUM_METADATA_KINDS];
+
+    fn enter(frame: u32) -> Instruction {
+        Instruction::OpEnter(OpEnter {
+            argc: Count(0),
+            frame: Count(frame),
+        })
+    }
+
+    fn ret(register: u32) -> Instruction {
+        Instruction::OpReturn(OpReturn {
+            src: Register(register),
+        })
+    }
+
+    fn check(code: &[u8], frame_size: usize) -> Result<(), String> {
+        verify(&CodeShape {
+            code,
+            pool: &[],
+            nconsts: 0,
+            frame_size,
+            metadata_counts: &NO_METADATA,
+        })
+    }
+
+    #[test]
+    fn a_minimal_procedure_verifies() {
+        let code = encode_all(&[enter(3), ret(1)]);
+        assert_eq!(check(&code, 3), Ok(()));
+    }
+
+    #[test]
+    fn a_register_outside_the_frame_is_rejected() {
+        let code = encode_all(&[
+            enter(3),
+            Instruction::OpMove(OpMove {
+                dst: Register(9),
+                src: Register(1),
+            }),
+            ret(1),
+        ]);
+        let error = check(&code, 3).unwrap_err();
+        assert!(error.contains("outside frame"), "{error}");
+    }
+
+    #[test]
+    fn a_jump_to_the_middle_of_nowhere_is_rejected() {
+        // A jump 1000 bytes forward lands past the end of the code.
+        let code = encode_all(&[
+            enter(3),
+            Instruction::OpJump(OpJump { target: 1000 }),
+            ret(1),
+        ]);
+        let error = check(&code, 3).unwrap_err();
+        assert!(error.contains("not a jump target"), "{error}");
+    }
+
+    #[test]
+    fn a_jump_to_the_entry_instruction_is_rejected() {
+        // The jump sits after the entry, so a displacement back to it lands on the entry.
+        let entry_len = encode_all(&[enter(3)]).len() as i32;
+        let code = encode_all(&[enter(3), Instruction::OpJump(OpJump { target: -entry_len })]);
+        let error = check(&code, 3).unwrap_err();
+        assert!(error.contains("not a jump target"), "{error}");
+    }
+
+    #[test]
+    fn a_frame_of_64k_slots_is_rejected() {
+        let code = encode_all(&[enter(3), ret(1)]);
+        let error = check(&code, 1 << 16).unwrap_err();
+        assert!(error.contains("too large"), "{error}");
+    }
+
+    #[test]
+    fn an_entry_frame_larger_than_the_block_is_rejected() {
+        let code = encode_all(&[enter(9), ret(1)]);
+        let error = check(&code, 3).unwrap_err();
+        assert!(error.contains("exceeds"), "{error}");
+    }
+
+    #[test]
+    fn a_truncated_operand_is_rejected() {
+        let code = encode_all(&[enter(3), ret(1)]);
+        // Cut the last instruction in the middle of its operand.
+        let error = check(&code[..code.len() - 1], 3).unwrap_err();
+        assert!(
+            error.contains("undecodable") || error.contains("falls through"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_wide_prefix_at_the_end_of_the_code_is_rejected() {
+        let mut code = encode_all(&[enter(3), ret(1)]);
+        // A byte that starts a wide instruction but has nothing after it.
+        code.push(0xFF);
+        assert!(check(&code, 3).is_err());
+    }
+
+    #[test]
+    fn code_that_falls_off_the_end_is_rejected() {
+        let code = encode_all(&[
+            enter(3),
+            Instruction::OpMove(OpMove {
+                dst: Register(1),
+                src: Register(2),
+            }),
+        ]);
+        let error = check(&code, 3).unwrap_err();
+        assert!(error.contains("falls through"), "{error}");
+    }
+
+    #[test]
+    fn empty_code_is_rejected() {
+        assert!(check(&[], 3).is_err());
+    }
+
+    #[test]
+    fn a_metadata_count_larger_than_the_code_is_rejected() {
+        let code = encode_all(&[enter(3), ret(1)]);
+        let mut counts = NO_METADATA;
+        counts[0] = 1000;
+        let error = verify(&CodeShape {
+            code: &code,
+            pool: &[],
+            nconsts: 0,
+            frame_size: 3,
+            metadata_counts: &counts,
+        })
+        .unwrap_err();
+        assert!(error.contains("metadata kind"), "{error}");
+    }
 }

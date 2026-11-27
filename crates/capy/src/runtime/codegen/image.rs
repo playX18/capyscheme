@@ -17,7 +17,7 @@ use super::masm::{
     CfiRecord, HeaderTarget, HeaderWords, Livemask, PendingHeader, SymbolKind, SymbolRecord,
     TOPLINK_TO_IMAGE_START,
 };
-use crate::runtime::code_memory::{CodeMemory, code_memory};
+use crate::runtime::code_memory::{CodeMemory, UnpublishedSpan, code_memory};
 use crate::runtime::gdb_jit::{self, GdbJitRegistration, JitSymbol};
 use crate::utils::flags;
 
@@ -149,6 +149,14 @@ pub fn load_with(
         imports,
     )?;
 
+    if flags::jit_gdb() && cfg!(target_os = "macos") {
+        // The symbol file is always an ELF object, and the GDB JIT interface on macOS expects
+        // Mach-O, so the debugger would silently ignore it.
+        return Err(io::Error::other(
+            "CAPY_JIT_GDB registers ELF symbol files, which debuggers on macOS cannot load; \
+             use CAPY_PERF_MAP=1 (/tmp/perf-<pid>.map) with a sampler instead",
+        ));
+    }
     if flags::jit_gdb() && !symbols.is_empty() {
         let jit_symbols: Vec<JitSymbol> = symbols
             .iter()
@@ -217,7 +225,10 @@ impl LoadedImage {
 
     /// Write `bytes` at `offset` into the loaded code.
     pub fn patch(&mut self, offset: usize, bytes: &[u8]) -> io::Result<()> {
-        code_memory().patch(self.loaded.span_mut(), offset, bytes)
+        // SAFETY: `&mut self` on an image `load` has not published: it is patched during linking
+        // (`reloc::apply`, imports), before any code block points at it.
+        let span = unsafe { UnpublishedSpan::new(self.loaded.span_mut()) };
+        code_memory().patch(span, offset, bytes)
     }
 
     /// Write the 8-byte word `value` at `offset` (an import slot).
@@ -242,7 +253,8 @@ impl LoadedImage {
     /// No thread may execute the patched range, or patch it concurrently.
     pub fn patch_unpublished(&self, offset: usize, bytes: &[u8]) -> io::Result<()> {
         let mut span = *self.loaded.span();
-        code_memory().patch(&mut span, offset, bytes)
+        // SAFETY: the caller guarantees no thread executes the range (see above).
+        code_memory().patch(unsafe { UnpublishedSpan::new(&mut span) }, offset, bytes)
     }
 }
 
@@ -255,7 +267,10 @@ impl Drop for LoadedImage {
         drop(self.gdb.take());
         let span = *self.loaded.span();
         if let Err(err) = code_memory().release_span(span) {
+            super::jit::config::CODE_RELEASE_FAILURES
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             log::warn!(target: crate::heap::logging::JIT_LOG_TARGET, " {err}");
+            debug_assert!(false, "code memory release failed: {err}");
         }
     }
 }
@@ -352,7 +367,8 @@ fn patch_headers(
         ));
     }
     let patches: Vec<(usize, &[u8])> = blobs.iter().map(|(at, blob)| (*at, &blob[..])).collect();
-    memory.patch_many(loaded.span_mut(), &patches)?;
+    // SAFETY: `loaded` is still being linked by its caller, nothing runs it yet.
+    memory.patch_many(unsafe { UnpublishedSpan::new(loaded.span_mut()) }, &patches)?;
     Ok(relocs)
 }
 
@@ -387,7 +403,8 @@ fn fill_imports(
     }
     let patches: Vec<(usize, &[u8])> = blobs.iter().map(|(at, blob)| (*at, &blob[..])).collect();
     if !patches.is_empty() {
-        memory.patch_many(loaded.span_mut(), &patches)?;
+        // SAFETY: `loaded` is still being linked by its caller, nothing runs it yet.
+        memory.patch_many(unsafe { UnpublishedSpan::new(loaded.span_mut()) }, &patches)?;
     }
     Ok(slots)
 }
@@ -421,7 +438,8 @@ fn patch_tables(
         .iter()
         .map(|(at, blob)| (*at, blob.as_slice()))
         .collect();
-    memory.patch_many(loaded.span_mut(), &patches)?;
+    // SAFETY: `loaded` is still being linked by its caller, nothing runs it yet.
+    memory.patch_many(unsafe { UnpublishedSpan::new(loaded.span_mut()) }, &patches)?;
     Ok(relocs)
 }
 
@@ -441,8 +459,9 @@ fn publish_perf_map(symbols: &[LoadedSymbol]) {
     if !crate::utils::flags::perf_map() {
         return;
     }
-    // perf reads `/tmp/perf-PID.map` on Linux, where `temp_dir()` is `/tmp`.
-    let path = std::env::temp_dir().join(format!("perf-{}.map", std::process::id()));
+    // perf reads `/tmp/perf-PID.map` on Linux. The path is fixed because `temp_dir()` is not
+    // `/tmp` on macOS, where samplers are pointed at the file by hand.
+    let path = std::path::PathBuf::from(format!("/tmp/perf-{}.map", std::process::id()));
     let mut file = match std::fs::OpenOptions::new()
         .create(true)
         .append(true)

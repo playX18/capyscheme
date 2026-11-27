@@ -116,8 +116,33 @@ pub mod builtin_class_ids {
     pub const RTD: u32 = 75;
     /// A record constructor descriptor (`rcd`).
     pub const RCD: u32 = 76;
+    /// Root of the metaobject classes (`<metaobject>`).
+    pub const METAOBJECT: u32 = 77;
+    /// `<specializer>`, the superclass of classes and eql specializers.
+    pub const SPECIALIZER: u32 = 78;
+    /// `<eql-specializer>`.
+    pub const EQL_SPECIALIZER: u32 = 79;
+    /// `<method-combination>`.
+    pub const METHOD_COMBINATION: u32 = 80;
+    /// `<funcallable-standard-object>`.
+    pub const FUNCALLABLE_OBJECT: u32 = 81;
+    /// `<funcallable-standard-class>`.
+    pub const FUNCALLABLE_CLASS: u32 = 82;
+    /// `<standard-reader-method>`.
+    pub const READER_METHOD: u32 = 83;
+    /// `<standard-writer-method>`.
+    pub const WRITER_METHOD: u32 = 84;
+    /// `<standard-direct-slot-definition>`.
+    pub const DIRECT_SLOT_DEFINITION: u32 = 85;
+    /// `<standard-effective-slot-definition>`.
+    pub const EFFECTIVE_SLOT_DEFINITION: u32 = 86;
+    /// `<forward-referenced-class>`.
+    pub const FORWARD_REFERENCED_CLASS: u32 = 87;
 
-    pub const MAX: u32 = RCD;
+    /// An ordered collection of linklets.
+    pub const LINKLET_DIRECTORY: u32 = 88;
+
+    pub const MAX: u32 = LINKLET_DIRECTORY;
 }
 
 static NEXT_CLASS_ID: AtomicU32 = AtomicU32::new(builtin_class_ids::MAX + 1);

@@ -219,7 +219,9 @@ impl<'gc, 'a, 'b> ValueFmt<'gc, 'a, 'b> {
         } else if x.is::<Keyword>() {
             let kw = x.downcast::<Keyword>();
             write!(self.fmt, "{}", kw.symbol)
-        } else if let Some(result) = crate::runtime::objectmodel::class::print_primitive_value(self.fmt, x) {
+        } else if let Some(result) =
+            crate::runtime::objectmodel::class::print_primitive_value(self.fmt, x)
+        {
             result
         } else if x.is::<crate::runtime::record::Rtd<'gc>>() {
             let rtd = x.downcast::<crate::runtime::record::Rtd<'gc>>();

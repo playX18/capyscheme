@@ -7,6 +7,7 @@ use crate::runtime::codegen::opt::ir::func::ValueDef;
 use crate::runtime::codegen::opt::ir::inst::{Cmp, Constant, MemoryRegion, Op, Terminator};
 use crate::runtime::codegen::opt::ir::types::{ClassRef, Type};
 use crate::runtime::objectmodel::proc::Closure;
+use crate::runtime::record::Rtd;
 use crate::runtime::objectmodel::{CodeBlock, Value as SchemeValue};
 use crate::runtime::record_ops::{
     self, RECORD_KIND_ACCESSOR, RECORD_KIND_CONSTRUCTOR, RECORD_KIND_MUTATOR, RECORD_KIND_PREDICATE,
@@ -70,10 +71,13 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         argc: u32,
         site: super::ResultSite,
     ) -> Result<Option<Flow>, String> {
+        if !Self::takes_one(site) {
+            return Ok(None);
+        }
         let Some(value) = self.record_value(pc, callee_reg, first_arg, argc)? else {
             return Ok(None);
         };
-        self.finish_result(site, next, value)?;
+        self.finish_value(site, next, value)?;
         Ok(Some(Flow::Next))
     }
 
@@ -97,7 +101,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
     ) -> Result<Option<IrValue>, String> {
         let callee = self.reg(callee_reg)?;
         let Some((op, block)) = self.record_op_of_callee(callee, pc) else {
-            return Ok(None);
+            return self.native_value(pc, callee, first_arg, argc);
         };
         let arity = match op.kind {
             RECORD_KIND_ACCESSOR | RECORD_KIND_PREDICATE => 1,
@@ -372,6 +376,147 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         Ok(result)
     }
 
+    /// `(record? obj)`: a tuple whose slot 0 is a record type descriptor.
+    pub(super) fn record_p(&mut self, obj: IrValue, frame: FrameState) -> IrValue {
+        let nonempty = self.func.new_block();
+        let check = self.func.new_block();
+        let hit = self.func.new_block();
+        let miss = self.func.new_block();
+        let join = self.func.new_block();
+        let result = self.func.append_param(join, Type::Any);
+        let is_tuple = self.value_op(Op::TestClass(ClassRef::TUPLE), &[obj], Type::Bool, None);
+        self.branch_to(is_tuple, nonempty, miss);
+        self.cur = nonempty;
+        let len = self.value_op(Op::VectorLength, &[obj], Type::Int32, Some(frame));
+        let zero = self.const_i32(0);
+        let has_slot = self.value_op(Op::CmpI32(Cmp::Gt), &[len, zero], Type::Bool, None);
+        self.branch_to(has_slot, check, miss);
+        self.cur = check;
+        let first = self.value_op(
+            Op::Load {
+                field: 1,
+                region: MemoryRegion::Heap,
+            },
+            &[obj],
+            Type::Any,
+            None,
+        );
+        let is_rtd = self.value_op(Op::TestClass(ClassRef::RTD), &[first], Type::Bool, None);
+        self.branch_to(is_rtd, hit, miss);
+        self.cur = hit;
+        let yes = self.bits(SchemeValue::VALUE_TRUE as u64);
+        self.jump_with(join, &[yes]);
+        self.cur = miss;
+        let no = self.bits(SchemeValue::VALUE_FALSE as u64);
+        self.jump_with(join, &[no]);
+        self.cur = join;
+        result
+    }
+
+    /// `(record-rtd obj)`. A non-record deopts to the native call, which
+    /// raises the violation.
+    pub(super) fn record_rtd_value(&mut self, obj: IrValue, frame: FrameState) -> IrValue {
+        let tuple = self.check_class(obj, ClassRef::TUPLE, frame);
+        let len = self.value_op(Op::VectorLength, &[tuple], Type::Int32, Some(frame));
+        let zero = self.const_i32(0);
+        let has_slot = self.value_op(Op::CmpI32(Cmp::Gt), &[len, zero], Type::Bool, None);
+        self.guard_true(has_slot, frame);
+        let first = self.value_op(
+            Op::Load {
+                field: 1,
+                region: MemoryRegion::Heap,
+            },
+            &[tuple],
+            Type::Any,
+            None,
+        );
+        let is_rtd = self.value_op(Op::TestClass(ClassRef::RTD), &[first], Type::Bool, None);
+        self.guard_true(is_rtd, frame);
+        first
+    }
+
+    /// `(rtd-ancestor? parent rtd)`: `rtd` is `parent` or a descendant, read
+    /// from `rtd`'s ancestry vector at `parent`'s depth. A `parent` that is no
+    /// descriptor deopts to the native call, which raises the violation.
+    pub(super) fn rtd_ancestor_value(
+        &mut self,
+        parent: IrValue,
+        rtd: IrValue,
+        frame: FrameState,
+    ) -> IrValue {
+        let known_depth = self
+            .constant_value(parent)
+            .filter(|value| value.is::<Rtd>())
+            .map(|value| value.downcast::<Rtd>().depth() as u32);
+        let parent = if known_depth.is_some() {
+            parent
+        } else {
+            self.check_class(parent, ClassRef::RTD, frame)
+        };
+        let depth = match known_depth {
+            Some(depth) => self.const_i32(depth as i32),
+            None => {
+                let ancestry = self.value_op(
+                    Op::Load {
+                        field: 0,
+                        region: MemoryRegion::Heap,
+                    },
+                    &[parent],
+                    Type::Any,
+                    None,
+                );
+                let len = self.value_op(Op::VectorLength, &[ancestry], Type::Int32, Some(frame));
+                let one = self.const_i32(1);
+                self.value_op(Op::SubI32, &[len, one], Type::Int32, None)
+            }
+        };
+        let ancestors = self.func.new_block();
+        let in_range = self.func.new_block();
+        let hit = self.func.new_block();
+        let miss = self.func.new_block();
+        let join = self.func.new_block();
+        let result = self.func.append_param(join, Type::Any);
+        let is_rtd = self.value_op(Op::TestClass(ClassRef::RTD), &[rtd], Type::Bool, None);
+        self.branch_to(is_rtd, ancestors, miss);
+        self.cur = ancestors;
+        let ancestry = self.value_op(
+            Op::Load {
+                field: 0,
+                region: MemoryRegion::Heap,
+            },
+            &[rtd],
+            Type::Any,
+            None,
+        );
+        let len = self.value_op(Op::VectorLength, &[ancestry], Type::Int32, Some(frame));
+        let within = self.value_op(Op::CmpI32(Cmp::Gt), &[len, depth], Type::Bool, None);
+        self.branch_to(within, in_range, miss);
+        // `depth < len` here, so the indexed load is in bounds.
+        self.cur = in_range;
+        let slot = match known_depth {
+            Some(depth) => self.value_op(
+                Op::Load {
+                    field: depth + 1,
+                    region: MemoryRegion::Heap,
+                },
+                &[ancestry],
+                Type::Any,
+                None,
+            ),
+            None => self.value_op(Op::LoadElement, &[ancestry, depth], Type::Any, None),
+        };
+        let same = self.value_op(Op::EqBits, &[slot, parent], Type::Bool, None);
+        self.branch_to(same, hit, miss);
+        self.cur = hit;
+        let yes = self.bits(SchemeValue::VALUE_TRUE as u64);
+        self.jump_with(join, &[yes]);
+        self.cur = miss;
+        let no = self.bits(SchemeValue::VALUE_FALSE as u64);
+        self.jump_with(join, &[no]);
+        self.cur = join;
+        result
+    }
+
     /// Deopts before the call unless `obj.data[0]` is exactly `rtd`.
     fn guard_rtd_exact(&mut self, obj: IrValue, rtd: IrValue, frame: FrameState) {
         let actual = self.value_op(
@@ -388,7 +533,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
     }
 
     /// Ends the current block with a branch to a deopt on a false guard.
-    fn guard_true(&mut self, cond: IrValue, frame: FrameState) {
+    pub(super) fn guard_true(&mut self, cond: IrValue, frame: FrameState) {
         let cont = self.func.new_block();
         let fail = self.func.new_block();
         let then = self.func.edge(cont, &[]);

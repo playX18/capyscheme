@@ -42,4 +42,3 @@ impl<'gc> Try for ExecutionResult<'gc> {
         }
     }
 }
-

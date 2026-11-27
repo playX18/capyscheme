@@ -9,8 +9,8 @@ use libc::c_char;
 
 use crate::runtime::{
     MutationContext, Scheme,
-    sni::{sni_globals, sni_locals},
     objectmodel::Value,
+    sni::{sni_globals, sni_locals},
 };
 
 /// Opaque Scheme value handle. Points into OopStorage.
@@ -52,9 +52,12 @@ impl LocalFrameState {
         self.slots.reserve(n);
     }
 
+    /// Returns `SCM_REF_NULL` when the local-reference storage is exhausted.
     pub(crate) fn push_value<'gc>(&mut self, value: Value<'gc>) -> ScmRef {
         let storage = sni_locals();
-        let ptr = storage.allocate().expect("SNI local allocation failed");
+        let Some(ptr) = storage.allocate() else {
+            return SCM_REF_NULL;
+        };
         // SAFETY: freshly allocated empty slot.
         unsafe {
             *ptr = std::mem::transmute::<Value<'gc>, Value<'static>>(value);
@@ -126,7 +129,17 @@ impl<'gc> SniEnv<'gc> {
     }
 
     pub(crate) fn make_local<'a>(&'a mut self, value: Value<'gc>) -> ScmRef {
-        self.current_frame().push_value(value)
+        let r = self.current_frame().push_value(value);
+        if r.is_null() {
+            let condition = crate::runtime::vm::exceptions::make_assertion_violation(
+                self.ctx,
+                Some("sni"),
+                "local reference storage exhausted",
+                &[],
+            );
+            crate::runtime::sni::exception::throw(condition);
+        }
+        r
     }
 }
 
@@ -144,12 +157,21 @@ pub(crate) unsafe fn ref_value<'gc>(r: ScmRef) -> Value<'gc> {
         return Value::null();
     }
     // SAFETY: slot is a rooted OopStorage entry.
-    unsafe { std::mem::transmute::<Value<'static>, Value<'gc>>(*r) }
+    let value = unsafe { std::mem::transmute::<Value<'static>, Value<'gc>>(*r) };
+    // A deleted ref's slot holds the empty value until it is allocated again.
+    if value == Value::empty() && crate::utils::flags::sni_check() {
+        eprintln!("capy: native extension used the deleted or never-set reference {r:p}");
+        std::process::abort();
+    }
+    value
 }
 
 pub(crate) fn global_new<'gc>(value: Value<'gc>) -> ScmRef {
     let storage = sni_globals();
-    let ptr = storage.allocate().expect("SNI global allocation failed");
+    // Exhaustion yields `SCM_REF_NULL`; callers treat it as a failed call.
+    let Some(ptr) = storage.allocate() else {
+        return SCM_REF_NULL;
+    };
     // SAFETY: freshly allocated empty slot.
     unsafe {
         *ptr = std::mem::transmute::<Value<'gc>, Value<'static>>(value);

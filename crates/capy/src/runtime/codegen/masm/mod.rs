@@ -105,6 +105,14 @@ runtime_externs! {
         OptGenericSlotPut => opt::glue::capy_opt_generic_slot_put,
         OptGenericMethod => opt::glue::capy_opt_generic_method,
         OptStringSet => opt::glue::capy_opt_string_set,
+        OptListRef => opt::glue::capy_opt_list_ref,
+        OptListHead => opt::glue::capy_opt_list_head,
+        OptStringEq => opt::glue::capy_opt_string_eq,
+        OptStringAppend => opt::glue::capy_opt_string_append,
+        OptSubstring => opt::glue::capy_opt_substring,
+        OptListToVector => opt::glue::capy_opt_list_to_vector,
+        OptVectorToList => opt::glue::capy_opt_vector_to_list,
+        OptCharWhitespace => opt::glue::capy_opt_char_whitespace,
     }
     stub {
         Bail => stubs::capy_bail,

@@ -73,14 +73,22 @@ pub unsafe extern "C" fn sni_new_local_ref(env: *mut SniEnv<'static>, obj: ScmRe
     e.make_local(v)
 }
 
-/// Delete a local ref from the current frame (no-op if not found).
+/// Delete a local ref. The current frame is searched first, then the outer ones; a ref that is in
+/// none is ignored, or aborts the process when `CAPY_SNI_CHECK` is on.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sni_delete_local_ref(env: *mut SniEnv<'static>, obj: ScmRef) {
     if env.is_null() || obj.is_null() {
         return;
     }
     let e = unsafe { env_mut(env) };
-    let _ = e.current_frame().delete(obj);
+    e.current_frame();
+    let deleted = e.frames.iter_mut().rev().any(|frame| frame.delete(obj));
+    if !deleted && crate::utils::flags::sni_check() {
+        eprintln!(
+            "capy: native extension deleted the reference {obj:p}, which is not a live local ref"
+        );
+        std::process::abort();
+    }
 }
 
 /// Create a global ref for `obj`.

@@ -155,6 +155,12 @@ pub fn analyze(file: &[u8]) -> io::Result<Stats> {
     };
 
     let compressed = head.u8()? == FASL_COMPRESSION_GZIP;
+    head.u8()?; // flags
+
+    if head.u8()? == FASL_TAG_DIRECTORY {
+        let len = head.u32()? as usize;
+        head.take(len)?;
+    }
 
     let lites_start = head.pos;
     let lite_count = head.u32()? as usize;

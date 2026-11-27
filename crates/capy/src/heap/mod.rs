@@ -8,7 +8,6 @@ use finalizer::Finalizers;
 use mm::MemoryManager;
 pub(crate) use mmtk;
 use mmtk::util::Address;
-use mmtk::util::options::PlanSelector;
 use mmtk::{MMTK, MMTKBuilder};
 use parking_lot::RwLock;
 use std::sync::OnceLock;
@@ -54,6 +53,7 @@ static SHIFT: AtomicU32 = AtomicU32::new(0);
 
 impl GarbageCollector {
     fn new(mut mmtk: MMTKBuilder) -> Self {
+        plans::apply_plan_fallback(&mut mmtk);
         let mut constraint_set = constraints::MarkingConstraintSet::new();
         add_core_constraints(&mut constraint_set);
         let this = Self {
@@ -72,9 +72,6 @@ impl GarbageCollector {
         } else {
             (mmtk::memory_manager::starting_heap_address() - 4096, 3)
         };
-        if !plans::is_allowed_plan(*mmtk.options.plan) {
-            mmtk.options.plan.set(PlanSelector::StickyImmix);
-        }
 
         BASE.store(heap_base.as_usize(), std::sync::atomic::Ordering::Relaxed);
         SHIFT.store(heap_shift, std::sync::atomic::Ordering::Relaxed);
@@ -116,6 +113,8 @@ impl GarbageCollector {
     }
 }
 
+// SAFETY: the collector is process-wide state. Its mutable parts sit behind locks (`constraints`)
+// or atomics, and the MMTk instance it wraps is itself thread-safe.
 unsafe impl Send for GarbageCollector {}
 unsafe impl Sync for GarbageCollector {}
 

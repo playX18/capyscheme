@@ -1,12 +1,13 @@
 use std::{collections::HashSet, rc::Rc};
 
 use crate::{
-    compiler::cps::Map,
     expander::core::{
         GlobalSlot, LVarRef, LetStyle, ProcRef, Term, TermKind, TermRef, constant, seq_from_slice,
     },
     runtime::{MutationContext, objectmodel::Value},
 };
+
+type Map<K, V> = im::HashMap<K, V, std::hash::BuildHasherDefault<simplehash::Fnv1aHasher64>>;
 
 fn compute_ids<'gc>(t: &Term<'gc>) -> Map<LVarRef<'gc>, u32> {
     fn rec<'gc>(t: &Term<'gc>, counter: &mut u32, map: &mut Map<LVarRef<'gc>, u32>) {
@@ -615,9 +616,7 @@ impl<'a, 'gc> ComputeFreeVariables<'gc, 'a> {
                     .collect(),
             ),
 
-            TermKind::CaseLambda(clauses) => {
-                self.recurse_many_procs(clauses.iter().copied())
-            }
+            TermKind::CaseLambda(clauses) => self.recurse_many_procs(clauses.iter().copied()),
 
             TermKind::Fix(fix) => difference(
                 union(

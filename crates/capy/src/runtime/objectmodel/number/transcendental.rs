@@ -556,5 +556,4 @@ impl<'gc> Number<'gc> {
 
         Number::Flonum(libm::atan2(lhs, rhs))
     }
-
 }

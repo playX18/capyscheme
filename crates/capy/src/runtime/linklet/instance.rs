@@ -7,10 +7,6 @@ pub struct LibraryInstance<'gc> {
     pub name: Lock<Value<'gc>>,
     /// Eq-hash table of symbol -> [`Variable`] bindings.
     pub vars: Gc<'gc, HashTable<'gc>>,
-    /// Eq-hash table of symbol -> exported syntax transformer.
-    pub syntax: Gc<'gc, HashTable<'gc>>,
-    /// Arbitrary metadata attached to the instance, or `#f`.
-    pub meta: Lock<Value<'gc>>,
     /// Whether variables may be added after the instance is created.
     pub mutable: Cell<bool>,
 }
@@ -28,8 +24,6 @@ unsafe impl<'gc> Trace for LibraryInstance<'gc> {
         unsafe {
             self.name.trace(visitor);
             self.vars.trace(visitor);
-            self.syntax.trace(visitor);
-            self.meta.trace(visitor);
         }
     }
 
@@ -51,8 +45,6 @@ impl<'gc> LibraryInstance<'gc> {
             Self {
                 name: Lock::new(name),
                 vars: HashTable::new(ctx, HashTableType::Eq, 0, 0.75),
-                syntax: HashTable::new(ctx, HashTableType::Eq, 0, 0.75),
-                meta: Lock::new(Value::new(false)),
                 mutable: Cell::new(mutable),
             },
             instance_header_word(),
@@ -79,8 +71,6 @@ impl<'gc> LibraryInstance<'gc> {
             Self {
                 name: Lock::new(name),
                 vars,
-                syntax: HashTable::new(ctx, HashTableType::Eq, 0, 0.75),
-                meta: Lock::new(Value::new(false)),
                 mutable: Cell::new(mutable),
             },
             instance_header_word(),
@@ -150,15 +140,4 @@ impl<'gc> LibraryInstance<'gc> {
         let value = value.into_value(ctx);
         self.define(ctx, sym.into(), value)
     }
-
-    /// Records `transformer` as the exported syntax for `sym`.
-    pub fn set_syntax(&self, ctx: MutationContext<'gc>, sym: Value<'gc>, transformer: Value<'gc>) {
-        self.syntax.put(ctx, sym, transformer);
-    }
-
-    /// The exported syntax transformer for `sym`, if any.
-    pub fn syntax_ref(&self, ctx: MutationContext<'gc>, sym: Value<'gc>) -> Option<Value<'gc>> {
-        self.syntax.get(ctx, sym)
-    }
 }
-

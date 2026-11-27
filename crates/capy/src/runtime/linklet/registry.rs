@@ -22,7 +22,6 @@ pub struct LibraryRegistry<'gc> {
     /// owned by environments.scm.
     lazy_envs: Gc<'gc, HashTable<'gc>>,
     /// The in-progress/done load state, owned by library-manager.scm.
-    loading: Lock<Value<'gc>>,
     /// `#f` if the registry is sealed (an unknown library is an error), otherwise a
     /// procedure that loads the library of a key.
     resolver: Lock<Value<'gc>>,
@@ -45,7 +44,6 @@ unsafe impl<'gc> Trace for LibraryRegistry<'gc> {
             self.origins.trace(visitor);
             self.envs.trace(visitor);
             self.lazy_envs.trace(visitor);
-            self.loading.trace(visitor);
             self.resolver.trace(visitor);
         }
     }
@@ -63,34 +61,10 @@ unsafe impl<'gc> ClassTagged for LibraryRegistry<'gc> {
 
 type RootedRegistry = crate::Rootable!(Gc<'_, LibraryRegistry<'_>>);
 
-/// The late-binding table, see [`late_variable`].
-struct LateTable<'gc>(Gc<'gc, HashTable<'gc>>);
-
-unsafe impl<'gc> Trace for LateTable<'gc> {
-    // SAFETY: The only field is traced via `visitor`.
-    unsafe fn trace(&mut self, visitor: &mut crate::heap::Visitor) {
-        unsafe { self.0.trace(visitor) }
-    }
-
-    // SAFETY: The table is strong, so there is nothing to process.
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::heap::WeakProcessor) {
-        let _ = weak_processor;
-    }
-}
-
-type RootedLateTable = crate::Rootable!(LateTable<'_>);
-
 /// The process-wide root registry. Stored as a [`Global`](crate::heap::Global) root so the
 /// collector keeps it and everything reachable from it alive. Set once by
 /// [`init_linklets`].
 static ROOT_REGISTRY: OnceLock<crate::heap::Global<RootedRegistry>> = OnceLock::new();
-
-/// Eq-hash table of symbol -> [`Variable`] holding the bound variables of every `(boot ...)`
-/// instance registered in the root registry. A boot linklet may use a name that a later boot
-/// linklet defines without importing it; the expander compiles such a free reference to a
-/// `late-variable` lookup, answered from this table, see [`late_variable`]. The Rust runtime
-/// does not read it: it reaches Scheme through the hooks of `runtime/hooks.rs`.
-static LATE: OnceLock<crate::heap::Global<RootedLateTable>> = OnceLock::new();
 
 /// The root registry: the one the Rust runtime and the main namespace use.
 pub fn root_registry<'gc>(ctx: MutationContext<'gc>) -> Gc<'gc, LibraryRegistry<'gc>> {
@@ -98,13 +72,6 @@ pub fn root_registry<'gc>(ctx: MutationContext<'gc>) -> Gc<'gc, LibraryRegistry<
         .get()
         .expect("linklet registry is initialized at runtime startup")
         .fetch(ctx)
-}
-
-fn registry_late<'gc>(ctx: MutationContext<'gc>) -> Gc<'gc, HashTable<'gc>> {
-    LATE.get()
-        .expect("linklet registry is initialized at runtime startup")
-        .fetch(ctx)
-        .0
 }
 
 /// Whether `key` names a boot library, `(boot ...)`.
@@ -115,6 +82,29 @@ fn is_boot_key(key: Value<'_>) -> bool {
 }
 
 impl<'gc> LibraryRegistry<'gc> {
+    /// The name of every variable cell bound in an instance of this
+    /// registry, as `name in (library)`, keyed by the cell's bits. Logs use
+    /// it to name the cells they print. It walks every binding, so it is for
+    /// diagnostics only.
+    pub(crate) fn variable_names(&self) -> std::collections::HashMap<u64, String> {
+        let mut names = std::collections::HashMap::new();
+        for table in [self.instances, self.pending] {
+            for (_, item) in table.iter() {
+                if !item.is::<LibraryInstance>() {
+                    continue;
+                }
+                let inst = item.downcast::<LibraryInstance>();
+                let library = inst.name.get();
+                for (sym, var) in inst.vars.iter() {
+                    names
+                        .entry(var.bits())
+                        .or_insert_with(|| format!("{sym} in {library}"));
+                }
+            }
+        }
+        names
+    }
+
     /// Allocates an empty registry. With a `parent`, it starts out with `(#%capy)` and every
     /// `(boot ...)` instance of the parent registered, these being immutable core instances
     /// that every registry shares. `resolver` is `#f` for a sealed registry.
@@ -132,7 +122,6 @@ impl<'gc> LibraryRegistry<'gc> {
                 origins: HashTable::new(ctx, HashTableType::Eq, 0, 0.75),
                 envs: HashTable::new(ctx, HashTableType::Equal, 0, 0.75),
                 lazy_envs: HashTable::new(ctx, HashTableType::Equal, 0, 0.75),
-                loading: Lock::new(Value::new(false)),
                 resolver: Lock::new(resolver),
             },
             registry_header_word(),
@@ -140,12 +129,12 @@ impl<'gc> LibraryRegistry<'gc> {
 
         if let Some(parent) = parent {
             let capy = ctx.globals().capy_instance();
-            registry_register(ctx, reg, capy.name(), capy);
+            registry_register_new(ctx, reg, capy.name(), capy);
             for key in parent.instances.keys().collect::<Vec<_>>() {
                 if is_boot_key(key)
                     && let Some(inst) = registry_lookup(ctx, parent, key)
                 {
-                    registry_register(ctx, reg, key, inst);
+                    registry_register_new(ctx, reg, key, inst);
                 }
             }
         }
@@ -165,11 +154,6 @@ impl<'gc> LibraryRegistry<'gc> {
     /// Table of library key -> `(meta . instance)` for libraries without an environment yet.
     pub fn lazy_envs(&self) -> Gc<'gc, HashTable<'gc>> {
         self.lazy_envs
-    }
-
-    /// The load state owned by library-manager.scm.
-    pub fn loading(&self) -> Value<'gc> {
-        self.loading.get()
     }
 
     /// The library resolver, `#f` when the registry is sealed.
@@ -228,6 +212,8 @@ pub fn registry_take_pending<'gc>(
 }
 
 /// Whether `inst` is the pending placeholder of its key, not a registered instance.
+///
+/// The comparison is by identity: another instance with the same name is not the placeholder.
 pub fn registry_is_pending<'gc>(
     ctx: MutationContext<'gc>,
     reg: Gc<'gc, LibraryRegistry<'gc>>,
@@ -235,33 +221,42 @@ pub fn registry_is_pending<'gc>(
 ) -> bool {
     reg.pending
         .get(ctx, inst.name())
-        .is_some_and(|pending| pending == Value::new(inst))
+        .is_some_and(|pending| Gc::ptr_eq(pending.downcast::<LibraryInstance>(), inst))
 }
 
-/// Registers `inst` as the library instance for `key`, replacing any previous entry.
+/// Why [`registry_register`] refused an instance.
+pub enum RegisterError {
+    /// An instance is registered under the key already.
+    Registered,
+    /// A different instance is the pending placeholder of the key: importers hold its variables,
+    /// so replacing it would orphan them.
+    OtherPlaceholder,
+}
+
+/// Registers `inst` as the library instance for `key`.
+///
+/// A key is registered once: it is an error when an instance is registered under it already
+/// (a library that is defined again must be unregistered first, explicitly). The one thing
+/// `inst` may replace is its own pending placeholder.
 ///
 /// Every variable of `inst` is also recorded with its origin, see [`variable_origin`].
 /// Variables are only recorded once, the first registration of a variable wins.
-/// A pending placeholder for `key` is dropped, `inst` replaces it.
 pub fn registry_register<'gc>(
     ctx: MutationContext<'gc>,
     reg: Gc<'gc, LibraryRegistry<'gc>>,
     key: Value<'gc>,
     inst: Gc<'gc, LibraryInstance<'gc>>,
-) {
-    reg.pending.remove(ctx, key);
-    reg.instances.put(ctx, key, inst);
-
-    if is_boot_key(key) && Gc::ptr_eq(reg, root_registry(ctx)) {
-        let late = registry_late(ctx);
-        for sym in inst.vars.keys().collect::<Vec<_>>() {
-            if let Some(var) = inst.variable(ctx, sym)
-                && var.is_bound()
-            {
-                late.put(ctx, sym, var);
-            }
-        }
+) -> Result<(), RegisterError> {
+    if reg.instances.get(ctx, key).is_some() {
+        return Err(RegisterError::Registered);
     }
+    if let Some(pending) = reg.pending.get(ctx, key) {
+        if !Gc::ptr_eq(pending.downcast::<LibraryInstance>(), inst) {
+            return Err(RegisterError::OtherPlaceholder);
+        }
+        reg.pending.remove(ctx, key);
+    }
+    reg.instances.put(ctx, key, inst);
 
     for sym in inst.vars.keys().collect::<Vec<_>>() {
         let Some(var) = inst.vars.get(ctx, sym) else {
@@ -271,21 +266,28 @@ pub fn registry_register<'gc>(
             reg.origins.put(ctx, var, Value::cons(ctx, key, sym));
         }
     }
+    Ok(())
 }
 
-/// The variable a late-bound reference to `sym` sees: the bound exports of the boot linklets
-/// first, then the native primitives of the `(#%capy)` instance. Unbound variables are
-/// skipped, so a name that is declared but not yet defined is not found.
-pub fn late_variable<'gc>(
+/// [`registry_register`] for a registration that cannot clash: the registry is new, or the key
+/// was checked.
+pub fn registry_register_new<'gc>(
+    ctx: MutationContext<'gc>,
+    reg: Gc<'gc, LibraryRegistry<'gc>>,
+    key: Value<'gc>,
+    inst: Gc<'gc, LibraryInstance<'gc>>,
+) {
+    if registry_register(ctx, reg, key, inst).is_err() {
+        panic!("library instance registered twice: {key}");
+    }
+}
+
+/// The bound variable of the native primitive `sym` in the `(#%capy)` instance. A name that is
+/// declared there but not defined yet (a boot file defines it later) is not found.
+pub fn capy_variable<'gc>(
     ctx: MutationContext<'gc>,
     sym: Value<'gc>,
 ) -> Option<Gc<'gc, Variable<'gc>>> {
-    if let Some(var) = registry_late(ctx).get(ctx, sym) {
-        let var = var.downcast::<Variable>();
-        if var.is_bound() {
-            return Some(var);
-        }
-    }
     ctx.globals()
         .capy_instance()
         .variable(ctx, sym)
@@ -312,7 +314,10 @@ pub fn registry_remove<'gc>(
 }
 
 /// The keys of every registered library instance, as a list.
-pub fn registry_keys<'gc>(ctx: MutationContext<'gc>, reg: Gc<'gc, LibraryRegistry<'gc>>) -> Value<'gc> {
+pub fn registry_keys<'gc>(
+    ctx: MutationContext<'gc>,
+    reg: Gc<'gc, LibraryRegistry<'gc>>,
+) -> Value<'gc> {
     let keys = reg.instances.keys().collect::<Vec<_>>();
     Value::list_from_slice(ctx, keys)
 }
@@ -378,6 +383,20 @@ pub fn instantiate_linklet<'gc>(
     Ok(slots)
 }
 
+/// The Scheme value of an effect, see `primitive-effect`.
+fn effect_value<'gc>(ctx: MutationContext<'gc>, effect: PrimitiveEffect) -> Value<'gc> {
+    match effect {
+        PrimitiveEffect::Pure => Symbol::from_str(ctx, "pure").into(),
+        PrimitiveEffect::Fresh => Symbol::from_str(ctx, "fresh").into(),
+        PrimitiveEffect::ExpanderState => Symbol::from_str(ctx, "expander-state").into(),
+        PrimitiveEffect::Mutates(index) => Value::cons(
+            ctx,
+            Symbol::from_str(ctx, "mutates").into(),
+            Value::new(index as i32),
+        ),
+    }
+}
+
 /// The names of the `(#%capy)` variables that were bound when the runtime started: the native
 /// procedures, before any boot code assigned a variable.
 static NATIVE_PRIMITIVES: OnceLock<Vec<String>> = OnceLock::new();
@@ -400,20 +419,14 @@ pub fn install_capy_primitive_instance<'gc>(ctx: MutationContext<'gc>) {
         names.sort();
         names
     });
-    registry_register(ctx, root_registry(ctx), inst.name(), inst);
+    registry_register_new(ctx, root_registry(ctx), inst.name(), inst);
 }
 
-/// Creates the root library registry and the late-binding table. Called once from
+/// Creates the root library registry. Called once from
 /// [`crate::runtime::init`].
 pub fn init_linklets<'gc>(mc: MutationContext<'gc>) {
     let root = LibraryRegistry::new(mc, Value::new(false), None, Value::new(false));
     let _ = ROOT_REGISTRY.set(crate::heap::Global::new(root));
-    let _ = LATE.set(crate::heap::Global::new(LateTable(HashTable::new(
-        mc,
-        HashTableType::Eq,
-        0,
-        0.75,
-    ))));
     linklet_ops::register(mc);
 }
 
@@ -483,19 +496,6 @@ pub mod linklet_ops {
         inst.name()
     }
 
-    #[scheme(name = "instance-meta")]
-    pub fn instance_meta(inst: Gc<'gc, LibraryInstance<'gc>>) -> Value<'gc> {
-        inst.meta.get()
-    }
-
-    #[scheme(name = "set-instance-meta!")]
-    pub fn set_instance_meta(inst: Gc<'gc, LibraryInstance<'gc>>, meta: Value<'gc>) -> Value<'gc> {
-        barrier::field!(Gc::write(ctx, inst), LibraryInstance, meta)
-            .unlock()
-            .set(meta);
-        Value::undefined()
-    }
-
     #[scheme(name = "instance-variable")]
     pub fn instance_variable(inst: Gc<'gc, LibraryInstance<'gc>>, sym: Value<'gc>) -> Value<'gc> {
         inst.variable(ctx, sym)
@@ -547,30 +547,9 @@ pub mod linklet_ops {
         Value::undefined()
     }
 
-    #[scheme(name = "instance-syntax-ref")]
-    pub fn instance_syntax_ref(inst: Gc<'gc, LibraryInstance<'gc>>, sym: Value<'gc>) -> Value<'gc> {
-        inst.syntax_ref(ctx, sym).unwrap_or(Value::new(false))
-    }
-
-    #[scheme(name = "instance-syntax-set!")]
-    pub fn instance_syntax_set(
-        inst: Gc<'gc, LibraryInstance<'gc>>,
-        sym: Value<'gc>,
-        value: Value<'gc>,
-    ) -> Value<'gc> {
-        inst.set_syntax(ctx, sym, value);
-        Value::undefined()
-    }
-
     #[scheme(name = "instance-symbols")]
     pub fn instance_symbols(inst: Gc<'gc, LibraryInstance<'gc>>) -> Value<'gc> {
         let syms = inst.vars.keys().collect::<Vec<_>>();
-        Value::list_from_slice(ctx, syms)
-    }
-
-    #[scheme(name = "instance-syntax-symbols")]
-    pub fn instance_syntax_symbols(inst: Gc<'gc, LibraryInstance<'gc>>) -> Value<'gc> {
-        let syms = inst.syntax.keys().collect::<Vec<_>>();
         Value::list_from_slice(ctx, syms)
     }
 
@@ -583,6 +562,21 @@ pub mod linklet_ops {
         meta: Value<'gc>,
     ) -> Gc<'gc, Linklet<'gc>> {
         Linklet::new(ctx, name, imports, exports, body, meta)
+    }
+
+    #[scheme(name = "make-linklet-directory")]
+    pub fn make_linklet_directory(linklets: &'gc [Value<'gc>]) -> Gc<'gc, LinkletDirectory<'gc>> {
+        LinkletDirectory::new(ctx, linklets)
+    }
+
+    #[scheme(name = "linklet-directory?")]
+    pub fn linklet_directory_p(value: Value<'gc>) -> bool {
+        value.is::<LinkletDirectory>()
+    }
+
+    #[scheme(name = "linklet-directory->list")]
+    pub fn linklet_directory_to_list(directory: Gc<'gc, LinkletDirectory<'gc>>) -> Value<'gc> {
+        Value::list_from_slice(ctx, directory.linklets.as_slice())
     }
 
     #[scheme(name = "linklet?")]
@@ -708,20 +702,6 @@ pub mod linklet_ops {
         reg.lazy_envs()
     }
 
-    /// The load state owned by library-manager.scm, initially `#f`.
-    #[scheme(name = "registry-loading")]
-    pub fn registry_loading(reg: Gc<'gc, LibraryRegistry<'gc>>) -> Value<'gc> {
-        reg.loading()
-    }
-
-    #[scheme(name = "set-registry-loading!")]
-    pub fn set_registry_loading(reg: Gc<'gc, LibraryRegistry<'gc>>, state: Value<'gc>) -> Value<'gc> {
-        barrier::field!(Gc::write(ctx, reg), LibraryRegistry, loading)
-            .unlock()
-            .set(state);
-        Value::undefined()
-    }
-
     /// The registry's resolver: `#f` when sealed, otherwise a procedure of a library key.
     #[scheme(name = "registry-resolver")]
     pub fn registry_resolver(reg: Gc<'gc, LibraryRegistry<'gc>>) -> Value<'gc> {
@@ -729,7 +709,10 @@ pub mod linklet_ops {
     }
 
     #[scheme(name = "set-registry-resolver!")]
-    pub fn set_registry_resolver(reg: Gc<'gc, LibraryRegistry<'gc>>, resolver: Value<'gc>) -> Value<'gc> {
+    pub fn set_registry_resolver(
+        reg: Gc<'gc, LibraryRegistry<'gc>>,
+        resolver: Value<'gc>,
+    ) -> Value<'gc> {
         barrier::field!(Gc::write(ctx, reg), LibraryRegistry, resolver)
             .unlock()
             .set(resolver);
@@ -754,7 +737,10 @@ pub mod linklet_ops {
 
     /// Removes the pending placeholder for `key` and returns it, or `#f`.
     #[scheme(name = "take-placeholder-instance!")]
-    pub fn take_placeholder_instance(reg: Gc<'gc, LibraryRegistry<'gc>>, key: Value<'gc>) -> Value<'gc> {
+    pub fn take_placeholder_instance(
+        reg: Gc<'gc, LibraryRegistry<'gc>>,
+        key: Value<'gc>,
+    ) -> Value<'gc> {
         registry_take_pending(ctx, reg, key)
             .map(Value::new)
             .unwrap_or(Value::new(false))
@@ -766,8 +752,19 @@ pub mod linklet_ops {
         key: Value<'gc>,
         inst: Gc<'gc, LibraryInstance<'gc>>,
     ) -> Value<'gc> {
-        registry_register(ctx, reg, key, inst);
-        Value::undefined()
+        match registry_register(ctx, reg, key, inst) {
+            Ok(()) => Value::undefined(),
+            Err(RegisterError::Registered) => call.raise_error(
+                "register-library-instance!",
+                "library already registered",
+                &[key],
+            ),
+            Err(RegisterError::OtherPlaceholder) => call.raise_error(
+                "register-library-instance!",
+                "another instance is the placeholder of the library",
+                &[key],
+            ),
+        }
     }
 
     #[scheme(name = "unregister-library-instance!")]
@@ -781,13 +778,45 @@ pub mod linklet_ops {
 
     /// The `(key . sym)` a variable was registered under, or `#f`.
     #[scheme(name = "variable-origin")]
-    pub fn variable_origin_scheme(reg: Gc<'gc, LibraryRegistry<'gc>>, var: Value<'gc>) -> Value<'gc> {
+    pub fn variable_origin_scheme(
+        reg: Gc<'gc, LibraryRegistry<'gc>>,
+        var: Value<'gc>,
+    ) -> Value<'gc> {
         super::variable_origin(ctx, reg, var).unwrap_or(Value::new(false))
     }
 
     #[scheme(name = "registered-library-keys")]
     pub fn registered_library_keys(reg: Gc<'gc, LibraryRegistry<'gc>>) -> Value<'gc> {
         registry_keys(ctx, reg)
+    }
+
+    /// `(primitive-effect name)`: what the shaker of the static linker may assume about the
+    /// primitive `name`, see [`PrimitiveEffect`]: `pure`, `fresh`, `(mutates . index)` or
+    /// `expander-state`. `#f` when nothing is known about it.
+    #[scheme(name = "primitive-effect")]
+    pub fn primitive_effect_of(name: Value<'gc>) -> Value<'gc> {
+        match name
+            .try_as::<Symbol>()
+            .and_then(|sym| super::primitive_effect(sym.as_str().as_ref()))
+        {
+            Some(effect) => effect_value(ctx, effect),
+            None => Value::new(false),
+        }
+    }
+
+    /// `(primitive-effects)`: every primitive with a known effect, as `(name . effect)`.
+    #[scheme(name = "primitive-effects")]
+    pub fn primitive_effects_list() -> Value<'gc> {
+        let entries = super::primitive_effects()
+            .map(|(name, effect)| {
+                Value::cons(
+                    ctx,
+                    Symbol::from_str(ctx, name).into(),
+                    effect_value(ctx, effect),
+                )
+            })
+            .collect::<Vec<Value<'gc>>>();
+        Value::list_from_slice(ctx, entries)
     }
 
     /// The names of the `(#%capy)` variables that hold a native procedure from the start.

@@ -66,7 +66,7 @@ use cranelift_entity::{EntityList, SecondaryMap};
 use super::loops::{Loop, ensure_preheader, find_loops, header_param_invariant, inst_blocks};
 use super::{PassOutcome, clobbers, is_load, writes_existing};
 use crate::runtime::codegen::jit::config::opt;
-use crate::runtime::codegen::opt::ir::frame_state::{FrameState, FrameStateData};
+use crate::runtime::codegen::opt::ir::frame_state::{FrameState, FrameStateData, VirtualObject};
 use crate::runtime::codegen::opt::ir::func::{Block, DomTree, Func, Value, ValueDef};
 use crate::runtime::codegen::opt::ir::inst::{Inst, MemoryRanges, Op, Repr};
 use crate::runtime::codegen::opt::ir::types::{CodeRef, Type};
@@ -113,6 +113,19 @@ fn pure_hoistable(op: Op) -> bool {
         && effects.writes.is_empty()
         && effects.reads.is_empty()
         && effects.causes.is_empty()
+}
+
+/// Whether the object a load reads from is statically known to be a heap object. A load whose
+/// base is `any` is usually guarded by a class test inside the loop (`test.class` then `load`);
+/// moved to the preheader it runs on values of any kind, and a dependent load of what it read
+/// (a record's type, then its ancestry) dereferences a fixnum. Only loads from typed objects move.
+fn load_base_is_object(func: &Func, inst: Inst) -> bool {
+    func.args(inst).first().is_some_and(|&v| {
+        matches!(
+            func.value_type(v),
+            Type::Heap(_) | Type::Closure(_) | Type::Vector | Type::Cell | Type::Pair | Type::Rational
+        )
+    })
 }
 
 fn untags(func: &Func, inst: Inst) -> bool {
@@ -354,7 +367,9 @@ fn plan(
             let movable = data.result.is_some()
                 && operands_ok
                 && ((pure_hoistable(op) && !untags(func, inst))
-                    || (is_load(op) && !clobber.overlaps(op.effects().reads))
+                    || (is_load(op)
+                        && load_base_is_object(func, inst)
+                        && !clobber.overlaps(op.effects().reads))
                     || (guard_here
                         && guard_hoistable(op)
                         && data
@@ -537,6 +552,19 @@ impl Hoist {
         for &(reg, v) in &data.registers {
             registers.push((reg, self.value(func, v)));
         }
+        let mut virtuals = Vec::with_capacity(data.virtuals.len());
+        for object in &data.virtuals {
+            let alias = self.value(func, object.alias);
+            let mut fields = Vec::with_capacity(object.fields.len());
+            for &field in &object.fields {
+                fields.push(self.value(func, field));
+            }
+            virtuals.push(VirtualObject {
+                alias,
+                kind: object.kind,
+                fields,
+            });
+        }
         let parent = data.parent.map(|parent| self.frame(func, parent));
         func.push_frame(FrameStateData {
             code: data.code,
@@ -548,6 +576,7 @@ impl Hoist {
             returned: data.returned,
             rest: data.rest,
             inline_site: data.inline_site,
+            virtuals,
         })
     }
 }
@@ -656,6 +685,7 @@ mod tests {
             returned: None,
             rest: None,
             inline_site: None,
+            virtuals: Vec::new(),
         });
         let inlined = func.push_frame(FrameStateData {
             code: CodeRef::new(0),
@@ -670,6 +700,7 @@ mod tests {
                 call_pc: 0,
                 caller: CodeRef::new(0),
             }),
+            virtuals: Vec::new(),
         });
         let guard = func
             .push_inst(
@@ -769,6 +800,7 @@ mod tests {
                 returned: None,
                 rest: None,
                 inline_site: None,
+                virtuals: Vec::new(),
             });
             let guard = func
                 .push_inst(

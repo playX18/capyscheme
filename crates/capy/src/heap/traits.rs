@@ -232,7 +232,11 @@ unsafe impl<T: Trace> Trace for Box<T> {
     }
 }
 
-// TODO(GC): How to trace keys of hashmap safely? Keys are traced below but may alias values.
+// Keys are traced through a cast to `*mut K`: the map is not resized or rehashed while tracing,
+// and a key never aliases a value because they are separate fields of one entry. A map keyed by
+// a `Gc` pointer hashes the address, so under a moving plan the key's bucket is stale after a
+// collection; such a map must be keyed by a stable id or rebuilt after
+// the collection. See docs/HEAP.md.
 
 unsafe impl<K: Trace, V: Trace, S> Trace for std::collections::HashMap<K, V, S> {
     unsafe fn trace(&mut self, visitor: &mut Visitor) {

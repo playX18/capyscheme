@@ -44,6 +44,8 @@ use std::collections::HashMap;
 
 use cranelift_entity::EntityRef;
 
+use super::ir::inst::{BitOp, ShiftKind};
+
 use onlineasm::{Label, VReg as MReg, onlineasm};
 
 use crate::heap::object::builtin_class_ids;
@@ -93,6 +95,14 @@ const HELPERS: &[RuntimeExtern] = &[
     RuntimeExtern::OptGenericMethod,
     RuntimeExtern::OptStringSet,
     RuntimeExtern::OptValuesRest,
+    RuntimeExtern::OptListRef,
+    RuntimeExtern::OptListHead,
+    RuntimeExtern::OptStringEq,
+    RuntimeExtern::OptStringAppend,
+    RuntimeExtern::OptSubstring,
+    RuntimeExtern::OptListToVector,
+    RuntimeExtern::OptVectorToList,
+    RuntimeExtern::OptCharWhitespace,
 ];
 
 /// The `(loop, switch)` block alignment in bytes from `CAPY_OPT_ALIGN`.
@@ -197,6 +207,8 @@ pub(crate) struct Emitted {
     /// Sorted by the instruction's position in the block order; empty when
     /// annotation is off.
     pub(crate) annotations: Vec<(Label, u32)>,
+    /// Each frame call's return address and its shadow return address.
+    pub(crate) lazy_returns: Vec<(Label, Label)>,
 }
 
 /// The register file of this host, for the allocator.
@@ -223,6 +235,7 @@ fn emit_image(masm: &mut Masm, input: Input<'_>) -> Result<Emitted, String> {
     let data = std::mem::take(&mut emitter.data);
     let osr = std::mem::take(&mut emitter.osr);
     let annotations = std::mem::take(&mut emitter.annotations);
+    let lazy_returns = std::mem::take(&mut emitter.lazy_returns);
     let entry = emitter.entry;
     let owner = emitter.owner;
     Ok(Emitted {
@@ -233,6 +246,7 @@ fn emit_image(masm: &mut Masm, input: Input<'_>) -> Result<Emitted, String> {
         relocs,
         data,
         annotations,
+        lazy_returns,
     })
 }
 
@@ -257,6 +271,18 @@ enum SlowSaves {
 }
 
 /// A slow block, emitted after the code that jumps to it.
+/// How [`Deferred::BoxBigInt`] reads its word: the sign-magnitude of a
+/// signed i64, or the magnitude of a value whose sign is known.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LimbMask {
+    /// A signed i64: the sign is its top bit.
+    Sign,
+    /// A non-negative value whose magnitude is the word.
+    Zero,
+    /// A negative value whose magnitude is the word negated (`2^64 - w`).
+    Ones,
+}
+
 enum Deferred {
     /// A deopt exit: `move SITE_TMP, id; jmp deopt_common`.
     Exit { exit: DeoptExit, label: Label },
@@ -278,6 +304,17 @@ enum Deferred {
         count: u32,
         rest: bool,
     },
+    /// The shadow return point of a call site: a copy of the site's return
+    /// header (`target` replacing the mv return address), then the same
+    /// exit as `Returned`. The lazy deopt of an invalidated unit writes the
+    /// shadow address over the frame's return address.
+    LazyReturn {
+        exit: DeoptExit,
+        shadow: Label,
+        target: HeaderTarget,
+        livemask: Livemask,
+        callee: i32,
+    },
     /// The allocation slow path. It returns to `join`.
     Alloc {
         slow: Label,
@@ -298,6 +335,8 @@ enum Deferred {
         slot: Option<u32>,
         /// Where the overflowing i64 lives on entry to the block.
         src: BoxSrc,
+        /// How the word becomes the sign and magnitude.
+        mask: LimbMask,
         bytes: usize,
         header: u64,
         saves: SlowSaves,
@@ -336,6 +375,9 @@ enum Deferred {
         /// The GPRs the poll keeps across the yield, with their frame slots.
         /// The slow path stores them before the call and reloads them after.
         saves: Vec<(MReg, u32)>,
+        /// The lazy deopt exit, taken after the yield when the unit has been
+        /// invalidated meanwhile.
+        lazy: Option<Label>,
     },
     /// A dense switch jump table: one 8-byte target address per key, from
     /// `min` up. Link patches each word with its block's loaded address.
@@ -452,6 +494,8 @@ struct Emitter<'a> {
     annotate: bool,
     /// A label bound before each LIR instruction, with its global index.
     annotations: Vec<(Label, u32)>,
+    /// Each frame call's return address and its shadow return address.
+    lazy_returns: Vec<(Label, Label)>,
 }
 
 /// The GPR temporary that holds a spilled operand or an instruction result.
@@ -514,6 +558,7 @@ impl<'a> Emitter<'a> {
             rest_reg: input.rest_reg,
             annotate: input.annotate,
             annotations: Vec::new(),
+            lazy_returns: Vec::new(),
         }
     }
 
@@ -730,6 +775,76 @@ impl<'a> Emitter<'a> {
         let label = self.masm.label();
         self.blocks.insert(b, label);
         label
+    }
+
+    /// Boxes the two-limb value `T1:T0` into `dst`: a fixnum when it fits
+    /// i32, a one-limb `BIGINT` when its magnitude fits a word, otherwise a
+    /// two-limb one. All three allocations are deferred LAB bumps whose slow
+    /// path does not collect.
+    fn box_int128_t0_t1(&mut self, dst: VReg) -> Result<(), String> {
+        let t = self.write(dst)?;
+        let wide_check = self.masm.label();
+        let one = self.masm.label();
+        let positive = self.masm.label();
+        let negative = self.masm.label();
+        let two = self.masm.label();
+        let done = self.masm.label();
+        // Sign-extending the low 32 bits gives the value back exactly when it
+        // fits i32; the high limb must then be that sign.
+        onlineasm!(*self.asm();
+            sxi2q {T3}, {T0};
+            bqneq {T3}, {T0}, {wide_check};
+            rshiftq {T3}, 63;
+            bqneq {T3}, {T1}, {wide_check};
+        );
+        self.masm.box_int32(t.reg, T0);
+        self.commit(t);
+        onlineasm!(*self.asm(); jmp {done};);
+        self.masm.bind(wide_check);
+        // One limb holds the magnitude when the value fits i64, when the
+        // high limb is zero (`2^63..2^64`), or when it is all ones with a
+        // non-zero low limb (`-2^64+1..-2^63-1`). Only the rest needs two,
+        // so the two-limb object always has a non-zero high limb.
+        onlineasm!(*self.asm();
+            move {T3}, {T0};
+            rshiftq {T3}, 63;
+            bqeq {T3}, {T1}, {one};
+            bqeq {T1}, 0, {positive};
+            bqneq {T1}, {-1i64}, {two};
+            bqeq {T0}, 0, {two};
+            jmp {negative};
+        );
+        let saves = self.slow_saves(dst, &[])?;
+        for (wide, mask) in [
+            (one, LimbMask::Sign),
+            (positive, LimbMask::Zero),
+            (negative, LimbMask::Ones),
+        ] {
+            self.deferred.push(Deferred::BoxBigInt {
+                wide,
+                done,
+                obj: t.reg,
+                slot: t.slot,
+                src: BoxSrc::Reg(T0),
+                mask,
+                bytes: sabi::OBJECT_HEADER_BYTES + 16,
+                header: header_word(builtin_class_ids::BIGINT),
+                saves: saves.clone(),
+            });
+        }
+        self.deferred.push(Deferred::BoxInt128Two {
+            wide: two,
+            done,
+            obj: t.reg,
+            slot: t.slot,
+            lo: BoxSrc::Reg(T0),
+            hi: BoxSrc::Reg(T1),
+            bytes: sabi::OBJECT_HEADER_BYTES + 24,
+            header: header_word(builtin_class_ids::BIGINT),
+            saves,
+        });
+        self.masm.bind(done);
+        Ok(())
     }
 
     fn exit_label(&mut self, exit: DeoptExit) -> Label {
@@ -1669,6 +1784,9 @@ impl<'a> Emitter<'a> {
                 FloatOp::Sub => onlineasm!(*self.asm(); subd {acc}, {acc}, %xmm8;),
                 FloatOp::Mul => onlineasm!(*self.asm(); muld {acc}, {acc}, %xmm8;),
                 FloatOp::Div => onlineasm!(*self.asm(); divd {acc}, {acc}, %xmm8;),
+                FloatOp::Min | FloatOp::Max => {
+                    unreachable!("min/max are only selected on aarch64")
+                }
             }
         }
         #[cfg(target_arch = "aarch64")]
@@ -1680,6 +1798,8 @@ impl<'a> Emitter<'a> {
                 FloatOp::Sub => onlineasm!(*self.asm(); subd {acc}, {acc}, {t2};),
                 FloatOp::Mul => onlineasm!(*self.asm(); muld {acc}, {acc}, {t2};),
                 FloatOp::Div => onlineasm!(*self.asm(); divd {acc}, {acc}, {t2};),
+                FloatOp::Min => onlineasm!(*self.asm(); dmin {acc}, {acc}, {t2};),
+                FloatOp::Max => onlineasm!(*self.asm(); dmax {acc}, {acc}, {t2};),
             }
         }
     }
@@ -1970,6 +2090,194 @@ impl<'a> Emitter<'a> {
                 }
                 self.commit(t);
             }
+            LirInst::Int32Wrapping { op, dst, lhs, rhs } => {
+                let l = self.read(*lhs, T0)?;
+                let r = self.read(*rhs, T1)?;
+                match op {
+                    IntOp::Add => onlineasm!(*self.asm(); addi {T2}, {l}, {r};),
+                    IntOp::Sub => onlineasm!(*self.asm(); subi {T2}, {l}, {r};),
+                    _ => onlineasm!(*self.asm(); muli {T2}, {l}, {r};),
+                }
+                onlineasm!(*self.asm(); sxi2q {T2}, {T2};);
+                let t = self.write(*dst)?;
+                self.mov(t.reg, T2);
+                self.commit(t);
+            }
+            LirInst::Bitwise {
+                op, dst, lhs, rhs, ..
+            } => {
+                // Sign-extended int32 operands give a sign-extended result, so
+                // both lanes use the full-word instruction.
+                let l = self.read(*lhs, T0)?;
+                let r = self.read(*rhs, T1)?;
+                let t = self.write(*dst)?;
+                match op {
+                    BitOp::And => onlineasm!(*self.asm(); andq {t.reg}, {l}, {r};),
+                    BitOp::Or => onlineasm!(*self.asm(); orq {t.reg}, {l}, {r};),
+                    BitOp::Xor => onlineasm!(*self.asm(); xorq {t.reg}, {l}, {r};),
+                }
+                self.commit(t);
+            }
+            LirInst::ShiftImm {
+                op,
+                wide,
+                amount,
+                dst,
+                src,
+            } => {
+                let s = self.read(*src, T0)?;
+                let n = i64::from(*amount);
+                self.mov(T2, s);
+                match (op, wide) {
+                    (ShiftKind::Shl, true) => onlineasm!(*self.asm(); lshiftq {T2}, {n};),
+                    (ShiftKind::Sar, true) => onlineasm!(*self.asm(); rshiftq {T2}, {n};),
+                    (ShiftKind::Shr, true) => onlineasm!(*self.asm(); urshiftq {T2}, {n};),
+                    (ShiftKind::Rotr, true) => onlineasm!(*self.asm(); rrotateq {T2}, {n};),
+                    // The 32-bit forms work on the low word (zeroing the upper
+                    // one), and the result is sign-extended back to a word.
+                    (ShiftKind::Shl, false) => {
+                        onlineasm!(*self.asm(); lshifti {T2}, {n}; sxi2q {T2}, {T2};)
+                    }
+                    (ShiftKind::Sar, false) => {
+                        onlineasm!(*self.asm(); rshifti {T2}, {n}; sxi2q {T2}, {T2};)
+                    }
+                    (ShiftKind::Shr, false) => {
+                        onlineasm!(*self.asm(); urshifti {T2}, {n}; sxi2q {T2}, {T2};)
+                    }
+                    (ShiftKind::Rotr, false) => {
+                        onlineasm!(*self.asm(); rrotatei {T2}, {n}; sxi2q {T2}, {T2};)
+                    }
+                }
+                let t = self.write(*dst)?;
+                self.mov(t.reg, T2);
+                self.commit(t);
+            }
+            LirInst::ShlOvf {
+                amount,
+                dst,
+                src,
+                exit,
+            } => {
+                // The operand is a sign-extended int32, so a shift by less
+                // than 32 cannot overflow the word; the result fits int32
+                // exactly when sign-extending its low word gives it back.
+                let s = self.read(*src, T0)?;
+                let fail = self.exit_label(*exit);
+                let n = i64::from(*amount);
+                self.mov(T2, s);
+                onlineasm!(*self.asm();
+                    lshiftq {T2}, {n};
+                    sxi2q {T3}, {T2};
+                    bqneq {T3}, {T2}, {fail};
+                );
+                let t = self.write(*dst)?;
+                self.mov(t.reg, T2);
+                self.commit(t);
+            }
+            LirInst::ShiftReg {
+                op,
+                dst,
+                src,
+                count,
+            } => {
+                // The 32-bit forms read the low five bits of the count, as
+                // the primitives' `wrapping_shr` does. onlineasm moves the
+                // count to `cl` on x86-64; T2 is not `rcx`.
+                let s = self.read(*src, T0)?;
+                let c = self.read(*count, T1)?;
+                self.mov(T2, s);
+                match op {
+                    ShiftKind::Shl => onlineasm!(*self.asm(); lshifti {T2}, {c};),
+                    ShiftKind::Sar => onlineasm!(*self.asm(); rshifti {T2}, {c};),
+                    ShiftKind::Shr => onlineasm!(*self.asm(); urshifti {T2}, {c};),
+                    ShiftKind::Rotr => onlineasm!(*self.asm(); rrotatei {T2}, {c};),
+                }
+                onlineasm!(*self.asm(); sxi2q {T2}, {T2};);
+                let t = self.write(*dst)?;
+                self.mov(t.reg, T2);
+                self.commit(t);
+            }
+            LirInst::ShlOvfReg {
+                dst,
+                src,
+                count,
+                exit,
+            } => {
+                // A count in `0..32` (unsigned, so a negative one fails too)
+                // shifts a sign-extended int32 without overflowing the word;
+                // the result fits int32 when sign-extending its low word
+                // gives it back.
+                let s = self.read(*src, T0)?;
+                let c = self.read(*count, T1)?;
+                let fail = self.exit_label(*exit);
+                self.mov(T2, s);
+                onlineasm!(*self.asm();
+                    bqaeq {c}, 32, {fail};
+                    lshiftq {T2}, {c};
+                    sxi2q {T3}, {T2};
+                    bqneq {T3}, {T2}, {fail};
+                );
+                let t = self.write(*dst)?;
+                self.mov(t.reg, T2);
+                self.commit(t);
+            }
+            LirInst::TagChar { dst, src } => {
+                let s = self.read(*src, T0)?;
+                self.mov(T2, s);
+                onlineasm!(*self.asm();
+                    lshiftq {T2}, 16;
+                    orq {T2}, {T2}, {crate::runtime::objectmodel::Value::CHAR_TAG};
+                );
+                let t = self.write(*dst)?;
+                self.mov(t.reg, T2);
+                self.commit(t);
+            }
+            LirInst::LoadBytes {
+                elem,
+                dst,
+                base,
+                index,
+            } => {
+                let b = self.read(*base, T0)?;
+                let i = self.read(*index, T1)?;
+                let mem = self.masm.assembler().mem_indexed(b, i, 1, 0);
+                match (elem.bytes, elem.signed, elem.big_endian) {
+                    (1, false, _) => onlineasm!(*self.asm(); loadb {T2}, {mem};),
+                    (1, true, _) => onlineasm!(*self.asm(); loadbsq {T2}, {mem};),
+                    (2, false, false) => onlineasm!(*self.asm(); loadh {T2}, {mem};),
+                    (2, true, false) => onlineasm!(*self.asm(); loadhsq {T2}, {mem};),
+                    // A big-endian half: swap the word, which leaves the
+                    // half in the upper 16 bits of the low word.
+                    (2, false, true) => onlineasm!(*self.asm();
+                        loadh {T2}, {mem};
+                        bswapi {T2}, {T2};
+                        urshifti {T2}, 16;
+                    ),
+                    (2, true, true) => onlineasm!(*self.asm();
+                        loadh {T2}, {mem};
+                        bswapi {T2}, {T2};
+                        rshifti {T2}, 16;
+                        sxi2q {T2}, {T2};
+                    ),
+                    // A word is the raw 64-bit pattern either way.
+                    (8, _, false) => onlineasm!(*self.asm(); loadq {T2}, {mem};),
+                    (8, _, true) => onlineasm!(*self.asm(); loadq {T2}, {mem}; bswapq {T2}, {T2};),
+                    (_, false, false) => onlineasm!(*self.asm(); loadi {T2}, {mem};),
+                    (_, true, false) => onlineasm!(*self.asm(); loadis {T2}, {mem};),
+                    (_, false, true) => onlineasm!(*self.asm();
+                        loadi {T2}, {mem};
+                        bswapi {T2}, {T2};
+                    ),
+                    (_, true, true) => onlineasm!(*self.asm();
+                        loadi {T2}, {mem};
+                        bswapi {T2}, {T2};
+                        sxi2q {T2}, {T2};
+                    ),
+                }
+                let t = self.write(*dst)?;
+                self.mov(t.reg, T2);
+                self.commit(t);
+            }
             LirInst::Int64Arith {
                 op,
                 dst,
@@ -2063,12 +2371,68 @@ impl<'a> Emitter<'a> {
                     obj: t.reg,
                     slot: t.slot,
                     src,
+                    mask: LimbMask::Sign,
                     bytes: sabi::OBJECT_HEADER_BYTES + 16,
                     header: header_word(builtin_class_ids::BIGINT),
                     saves: self.slow_saves(*dst, &[])?,
                 });
             }
-            LirInst::UnboxBigInt64 { dst, obj, exit } => {
+            LirInst::UnboxBigInt64 {
+                dst,
+                obj,
+                exit,
+                unsigned: true,
+            } => {
+                // The unsigned lane: a non-negative fixnum, or a non-negative
+                // BIGINT of at most one limb, whose word is the bit pattern.
+                let fail = self.exit_label(*exit);
+                let o = self.read(*obj, T0)?;
+                let t = self.write(*dst)?;
+                let d = t.reg;
+                if !self.stress_guard(fail) {
+                    let bigint = self.masm.label();
+                    let done = self.masm.label();
+                    self.branch_unless(Test::Fixnum, o, bigint)?;
+                    onlineasm!(*self.asm(); sxi2q {d}, {o}; bqlt {d}, 0, {fail}; jmp {done};);
+                    self.masm.bind(bigint);
+                    self.branch_unless(Test::Class(ClassRef::BIGINT), o, fail)?;
+                    let temps = [T0, T1, T2, T3];
+                    let w = *temps.iter().find(|&&r| r != o).expect("a scratch register");
+                    let c = *temps
+                        .iter()
+                        .find(|&&r| r != o && r != w && r != d)
+                        .or_else(|| temps.iter().find(|&&r| r != o && r != w))
+                        .expect("a second scratch register");
+                    let word_at = self.masm.assembler().mem(o, 0);
+                    let limb_at = self.masm.assembler().mem(o, 8);
+                    let zero = self.masm.label();
+                    let have = self.masm.label();
+                    // count in the low 32 bits, `negative` at bit 32.
+                    onlineasm!(*self.asm();
+                        loadq {w}, {word_at};
+                        andq {c}, {w}, 0xffffffff;
+                        bqa {c}, 1, {fail};
+                        urshiftq {w}, 32;
+                        andq {w}, {w}, 1;
+                        bqneq {w}, 0, {fail};
+                        bqeq {c}, 0, {zero};
+                        loadq {c}, {limb_at};
+                        jmp {have};
+                    );
+                    self.masm.bind(zero);
+                    onlineasm!(*self.asm(); move {c}, 0;);
+                    self.masm.bind(have);
+                    self.mov(d, c);
+                    self.masm.bind(done);
+                }
+                self.commit(t);
+            }
+            LirInst::UnboxBigInt64 {
+                dst,
+                obj,
+                exit,
+                unsigned: false,
+            } => {
                 // A fixnum's payload is already the value; sign-extend it.
                 // Anything else must be a one-limb sign-magnitude BIGINT:
                 // guard the class and the shape, and produce the signed
@@ -2186,6 +2550,29 @@ impl<'a> Emitter<'a> {
                 onlineasm!(*self.asm(); sqrtd {t.reg}, {s};);
                 self.commit(t);
             }
+            LirInst::AbsF64 { dst, src } => {
+                let s = self.read(*src, self.fpr_temp())?;
+                let t = self.write(*dst)?;
+                onlineasm!(*self.asm(); absd {t.reg}, {s};);
+                self.commit(t);
+            }
+            LirInst::Select { dst, cond, a, b } => {
+                let c = self.read(*cond, T0)?;
+                let x = self.read(*a, T1)?;
+                let y = self.read(*b, T3)?;
+                let t = self.write(*dst)?;
+                // The result register may be the one of an operand that dies
+                // here: then the select runs in T2, which no read used.
+                let r = if t.reg == c || t.reg == x { T2 } else { t.reg };
+                if r != y {
+                    self.mov(r, y);
+                }
+                onlineasm!(*self.asm(); cmov {r}, {x}, {c};);
+                if r != t.reg {
+                    self.mov(t.reg, r);
+                }
+                self.commit(t);
+            }
             LirInst::IntCmp { cmp, dst, lhs, rhs } => {
                 let l = self.read(*lhs, T0)?;
                 let r = self.read_rhs(*rhs, T1)?;
@@ -2216,11 +2603,14 @@ impl<'a> Emitter<'a> {
                 // in the left operand's register, or in the FPR temporary when
                 // that operand is spilled.
                 let tmp = self.fpr_temp();
-                match (
+                let acc = match (
                     self.loc(*lhs, self.use_pos())?,
                     self.loc(*rhs, self.use_pos())?,
                 ) {
-                    (Loc::Slot(l), Loc::Slot(r)) => self.spilled_float_arith(*op, tmp, l, r),
+                    (Loc::Slot(l), Loc::Slot(r)) => {
+                        self.spilled_float_arith(*op, tmp, l, r);
+                        tmp
+                    }
                     (lhs_loc, rhs_loc) => {
                         let (acc, from_slot) = match lhs_loc {
                             Loc::Reg(p) => (self.fpr_of(p)?, None),
@@ -2243,19 +2633,22 @@ impl<'a> Emitter<'a> {
                             FloatOp::Sub => onlineasm!(*self.asm(); subd {acc}, {acc}, {r};),
                             FloatOp::Mul => onlineasm!(*self.asm(); muld {acc}, {acc}, {r};),
                             FloatOp::Div => onlineasm!(*self.asm(); divd {acc}, {acc}, {r};),
+                            FloatOp::Min => onlineasm!(*self.asm(); dmin {acc}, {acc}, {r};),
+                            FloatOp::Max => onlineasm!(*self.asm(); dmax {acc}, {acc}, {r};),
                         }
-                        match self.loc(*dst, self.def_pos())? {
-                            Loc::Reg(p) => {
-                                let d = self.fpr_of(p)?;
-                                if d != acc {
-                                    onlineasm!(*self.asm(); moved {d}, {acc};);
-                                }
-                            }
-                            Loc::Slot(s) => {
-                                let mem = self.slot_mem(s);
-                                onlineasm!(*self.asm(); stored {mem}, {acc};);
-                            }
+                        acc
+                    }
+                };
+                match self.loc(*dst, self.def_pos())? {
+                    Loc::Reg(p) => {
+                        let d = self.fpr_of(p)?;
+                        if d != acc {
+                            onlineasm!(*self.asm(); moved {d}, {acc};);
                         }
+                    }
+                    Loc::Slot(s) => {
+                        let mem = self.slot_mem(s);
+                        onlineasm!(*self.asm(); stored {mem}, {acc};);
                     }
                 }
             }
@@ -2683,10 +3076,6 @@ impl<'a> Emitter<'a> {
                 src_lo,
                 src_hi,
             } => {
-                // A fixnum when the value fits i32; otherwise a one-limb
-                // bignum when it fits i64; otherwise a two-limb bignum with a
-                // normalized high limb. Both allocations are deferred LAB
-                // bumps whose slow path does not collect.
                 let lo = self.read(*src_lo, T0)?;
                 if lo != T0 {
                     onlineasm!(*self.asm(); move {T0}, {lo};);
@@ -2695,47 +3084,16 @@ impl<'a> Emitter<'a> {
                 if hi != T1 {
                     onlineasm!(*self.asm(); move {T1}, {hi};);
                 }
-                let t = self.write(*dst)?;
-                let wide_check = self.masm.label();
-                let one = self.masm.label();
-                let two = self.masm.label();
-                let done = self.masm.label();
-                // Sign-extending the low 32 bits gives the value back exactly
-                // when it fits i32; the high limb must then be that sign.
-                onlineasm!(*self.asm();
-                    sxi2q {T3}, {T0};
-                    bqneq {T3}, {T0}, {wide_check};
-                    rshiftq {T3}, 63;
-                    bqneq {T3}, {T1}, {wide_check};
-                );
-                self.masm.box_int32(t.reg, T0);
-                self.commit(t);
-                onlineasm!(*self.asm(); jmp {done};);
-                self.masm.bind(wide_check);
-                onlineasm!(*self.asm(); move {T3}, {T0}; rshiftq {T3}, 63; bqneq {T3}, {T1}, {two}; jmp {one};);
-                let saves = self.slow_saves(*dst, &[])?;
-                self.deferred.push(Deferred::BoxBigInt {
-                    wide: one,
-                    done,
-                    obj: t.reg,
-                    slot: t.slot,
-                    src: BoxSrc::Reg(T0),
-                    bytes: sabi::OBJECT_HEADER_BYTES + 16,
-                    header: header_word(builtin_class_ids::BIGINT),
-                    saves: saves.clone(),
-                });
-                self.deferred.push(Deferred::BoxInt128Two {
-                    wide: two,
-                    done,
-                    obj: t.reg,
-                    slot: t.slot,
-                    lo: BoxSrc::Reg(T0),
-                    hi: BoxSrc::Reg(T1),
-                    bytes: sabi::OBJECT_HEADER_BYTES + 24,
-                    header: header_word(builtin_class_ids::BIGINT),
-                    saves,
-                });
-                self.masm.bind(done);
+                self.box_int128_t0_t1(*dst)?;
+            }
+            LirInst::BoxUInt64 { dst, src } => {
+                // An unsigned word is the two-limb value with a zero high limb.
+                let lo = self.read(*src, T0)?;
+                if lo != T0 {
+                    onlineasm!(*self.asm(); move {T0}, {lo};);
+                }
+                onlineasm!(*self.asm(); move {T1}, 0;);
+                self.box_int128_t0_t1(*dst)?;
             }
             LirInst::LoadFree {
                 dst,
@@ -2897,6 +3255,36 @@ impl<'a> Emitter<'a> {
                 let mem = self.masm.assembler().mem_indexed(b, i, 1, 0);
                 onlineasm!(*self.asm(); storeb {mem}, {s};);
             }
+            LirInst::StoreBytes {
+                elem,
+                base,
+                index,
+                src,
+            } => {
+                let b = self.read(*base, T0)?;
+                let i = self.read(*index, T1)?;
+                let s = self.read(*src, T2)?;
+                let mem = self.masm.assembler().mem_indexed(b, i, 1, 0);
+                // A big-endian element is swapped in a scratch copy, so the
+                // source register keeps its value.
+                let v = if elem.big_endian {
+                    self.mov(T2, s);
+                    match elem.bytes {
+                        2 => onlineasm!(*self.asm(); bswapi {T2}, {T2}; urshifti {T2}, 16;),
+                        4 => onlineasm!(*self.asm(); bswapi {T2}, {T2};),
+                        _ => onlineasm!(*self.asm(); bswapq {T2}, {T2};),
+                    }
+                    T2
+                } else {
+                    s
+                };
+                match elem.bytes {
+                    1 => onlineasm!(*self.asm(); storeb {mem}, {v};),
+                    2 => onlineasm!(*self.asm(); storeh {mem}, {v};),
+                    4 => onlineasm!(*self.asm(); storei {mem}, {v};),
+                    _ => onlineasm!(*self.asm(); storeq {mem}, {v};),
+                }
+            }
             LirInst::SlotGet {
                 dst,
                 obj,
@@ -2916,8 +3304,9 @@ impl<'a> Emitter<'a> {
                 safepoint,
                 exit,
                 values,
-            } => self.call(*target, args, *rv, Some(*safepoint), *exit, *values)?,
-            LirInst::Poll { safepoint } => self.poll(*safepoint)?,
+                lazy,
+            } => self.call(*target, args, *rv, Some(*safepoint), *exit, *values, *lazy)?,
+            LirInst::Poll { safepoint, lazy } => self.poll(*safepoint, *lazy)?,
         }
         Ok(())
     }
@@ -3159,10 +3548,13 @@ impl<'a> Emitter<'a> {
         safepoint: Option<SafePoint>,
         exit: Option<DeoptExit>,
         values: ReturnValues,
+        lazy: Option<DeoptExit>,
     ) -> Result<(), String> {
         match target {
-            CallTarget::Known(code) => self.frame_call_known(code, args, safepoint, values, exit),
-            CallTarget::Generic => self.frame_call(args, safepoint, values, exit),
+            CallTarget::Known(code) => {
+                self.frame_call_known(code, args, safepoint, values, exit, lazy)
+            }
+            CallTarget::Generic => self.frame_call(args, safepoint, values, exit, lazy),
             CallTarget::Helper(_) | CallTarget::Prim(_) | CallTarget::PrimN(_)
                 if safepoint.is_none() =>
             {
@@ -3184,8 +3576,9 @@ impl<'a> Emitter<'a> {
         safepoint: Option<SafePoint>,
         values: ReturnValues,
         exit: Option<DeoptExit>,
+        lazy: Option<DeoptExit>,
     ) -> Result<(), String> {
-        self.frame_call_common(None, args, safepoint, values, exit, false)
+        self.frame_call_common(None, args, safepoint, values, exit, false, lazy)
     }
 
     /// A tail call. `checked` marks a profile-named entry: the emitter
@@ -3199,10 +3592,18 @@ impl<'a> Emitter<'a> {
     ) -> Result<(), String> {
         match target {
             CallTarget::Known(code) => {
-                self.frame_call_common(Some(code), args, None, ReturnValues::Ignore, None, checked)
+                self.frame_call_common(
+                    Some(code),
+                    args,
+                    None,
+                    ReturnValues::Ignore,
+                    None,
+                    checked,
+                    None,
+                )
             }
             CallTarget::Generic => {
-                self.frame_call_common(None, args, None, ReturnValues::Ignore, None, false)
+                self.frame_call_common(None, args, None, ReturnValues::Ignore, None, false, None)
             }
             _ => Err("only a frame call can be a tail call".to_string()),
         }
@@ -3220,8 +3621,9 @@ impl<'a> Emitter<'a> {
         safepoint: Option<SafePoint>,
         values: ReturnValues,
         exit: Option<DeoptExit>,
+        lazy: Option<DeoptExit>,
     ) -> Result<(), String> {
-        self.frame_call_common(Some(code), args, safepoint, values, exit, false)
+        self.frame_call_common(Some(code), args, safepoint, values, exit, false, lazy)
     }
 
     fn frame_call_common(
@@ -3232,6 +3634,7 @@ impl<'a> Emitter<'a> {
         values: ReturnValues,
         exit: Option<DeoptExit>,
         checked: bool,
+        lazy: Option<DeoptExit>,
     ) -> Result<(), String> {
         let tail = safepoint.is_none();
         let callee = 8 * self.frame_words as i32;
@@ -3344,6 +3747,27 @@ impl<'a> Emitter<'a> {
             }
         };
         self.rp_header(ra, target, livemask);
+        if let Some(exit) = lazy {
+            // The shadow return point: a copy of this header, so that every
+            // stack walker reads the same frame, before a deopt to the
+            // call's return point. A return of one value or of many arrives
+            // the same way, with the callee frame at `SFP` and the count in
+            // `AC`; only a single-value point that raises on many keeps its
+            // `values_error` target, which raises before any deopt.
+            let shadow = self.masm.label();
+            let shadow_target = match target {
+                HeaderTarget::Runtime(sym) => HeaderTarget::Runtime(sym),
+                HeaderTarget::Label(_) => HeaderTarget::Label(shadow),
+            };
+            self.deferred.push(Deferred::LazyReturn {
+                exit,
+                shadow,
+                target: shadow_target,
+                livemask,
+                callee,
+            });
+            self.lazy_returns.push((ra, shadow));
+        }
         let join = self.masm.label();
         if let (ReturnValues::Take(count) | ReturnValues::TakeRest(count), Some((taken, wrong))) =
             (values, take_labels)
@@ -3471,6 +3895,15 @@ impl<'a> Emitter<'a> {
                 .ok_or("a helper argument has no register")?;
             operands.push(OpArg::Reg(self.gpr_of(reg)?));
         }
+        if helper == crate::runtime::codegen::opt::ir::inst::Helper::VariableSet.helper_ref() {
+            // The owner word names the unit, so the helper can tell a write
+            // that broke this unit's own assumption, which must deopt. The
+            // argument register after `var` and `value` holds nothing live:
+            // the call clobbers it.
+            let (_, _, _, a3, _) = stubs::arg_regs5();
+            self.label_addr(a3, self.owner);
+            operands.push(OpArg::Reg(a3));
+        }
         let result = match rv {
             Some(_) => OpResult::Reg(self.gpr_of(self.regs.rv)?),
             None => OpResult::None,
@@ -3516,8 +3949,9 @@ impl<'a> Emitter<'a> {
     }
 
     /// The yieldpoint
-    fn poll(&mut self, safepoint: SafePoint) -> Result<(), String> {
+    fn poll(&mut self, safepoint: SafePoint, lazy: Option<DeoptExit>) -> Result<(), String> {
         let livemask = self.livemask(safepoint)?;
+        let lazy = lazy.map(|exit| self.exit_label(exit));
         let mut saves = Vec::new();
         for save in &self.alloc.polls[safepoint] {
             saves.push((self.gpr_of(save.reg)?, save.slot));
@@ -3531,6 +3965,7 @@ impl<'a> Emitter<'a> {
             ra,
             livemask,
             saves,
+            lazy,
         });
         Ok(())
     }
@@ -3844,6 +4279,19 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
+    /// The exit of a return that deopts: the callee frame is at `SFP` and the
+    /// value count in `AC`. Pops the frame, keeps the count in the thread
+    /// context, and deopts to the return point, where baseline reads both.
+    fn returned_exit(&mut self, exit: DeoptExit, callee: i32) {
+        self.masm.lea_disp(SFP, SFP, -callee);
+        let ac_slot = self.masm.assembler().mem(regs::TC, sabi::TC_AC as i32);
+        onlineasm!(*self.asm(); storeq {ac_slot}, {AC};);
+        let id = exit.index() as i64;
+        onlineasm!(*self.asm(); move {T3}, {id};);
+        let common = self.deopt_common;
+        onlineasm!(*self.asm(); jmp {common};);
+    }
+
     /// The out-of-line blocks, after all the code.
     fn deferred(&mut self) -> Result<(), String> {
         let deferred = std::mem::take(&mut self.deferred);
@@ -3862,13 +4310,17 @@ impl<'a> Emitter<'a> {
                     callee,
                 } => {
                     self.masm.bind(label);
-                    self.masm.lea_disp(SFP, SFP, -callee);
-                    let ac_slot = self.masm.assembler().mem(regs::TC, sabi::TC_AC as i32);
-                    onlineasm!(*self.asm(); storeq {ac_slot}, {AC};);
-                    let id = exit.index() as i64;
-                    onlineasm!(*self.asm(); move {T3}, {id};);
-                    let common = self.deopt_common;
-                    onlineasm!(*self.asm(); jmp {common};);
+                    self.returned_exit(exit, callee);
+                }
+                Deferred::LazyReturn {
+                    exit,
+                    shadow,
+                    target,
+                    livemask,
+                    callee,
+                } => {
+                    self.rp_header(shadow, target, livemask);
+                    self.returned_exit(exit, callee);
                 }
                 Deferred::Taken {
                     label,
@@ -3907,6 +4359,7 @@ impl<'a> Emitter<'a> {
                     obj,
                     slot,
                     src,
+                    mask,
                     bytes,
                     header,
                     saves,
@@ -3937,11 +4390,14 @@ impl<'a> Emitter<'a> {
                     let (a, b) = (T0, T1);
                     let saved = self.masm.assembler().mem(onlineasm::regs::sp, 0);
                     onlineasm!(*self.asm(); loadq {a}, {saved}; addp sp, 16;);
-                    // mask = value >> 63 (arithmetic): 0 or all ones.
+                    // mask: 0 or all ones, the sign of the value.
+                    match mask {
+                        LimbMask::Sign => onlineasm!(*self.asm(); move {b}, {a}; rshiftq {b}, 63;),
+                        LimbMask::Zero => onlineasm!(*self.asm(); move {b}, 0;),
+                        LimbMask::Ones => onlineasm!(*self.asm(); move {b}, {-1i64};),
+                    }
+                    // limb = (value ^ mask) - mask, the magnitude.
                     onlineasm!(*self.asm();
-                        move {b}, {a};
-                        rshiftq {b}, 63;
-                        // limb = (value ^ mask) - mask, the magnitude.
                         xorq {a}, {a}, {b};
                         subq {a}, {a}, {b};
                     );
@@ -4062,6 +4518,7 @@ impl<'a> Emitter<'a> {
                     ra,
                     livemask,
                     saves,
+                    lazy,
                 } => {
                     self.masm.bind(slow);
                     // The yield may move objects, so the registers are kept in
@@ -4099,8 +4556,10 @@ impl<'a> Emitter<'a> {
                         storeq {rv_at}, {T1};
                     );
                     self.masm.lea_disp(SFP, SFP, callee);
-                    let (a0, _, _, _, _) = stubs::arg_regs5();
+                    let (a0, a1, _, _, _) = stubs::arg_regs5();
                     onlineasm!(*self.asm(); move {a0}, {regs::TC};);
+                    // The owner word names the unit, for the stress knob.
+                    self.label_addr(a1, self.owner);
                     let target = self.masm.declare_rust_fn(RuntimeExtern::OptYield);
                     let fprs: Vec<MReg> = self
                         .regs
@@ -4122,6 +4581,12 @@ impl<'a> Emitter<'a> {
                     for &(r, s) in &saves {
                         let mem = self.slot_mem(s);
                         onlineasm!(*self.asm(); loadq {r}, {mem};);
+                    }
+                    // Every register is back as it was at the poll. A unit
+                    // invalidated during the yield leaves here; its frames
+                    // below were patched by the same handshake.
+                    if let Some(lazy) = lazy {
+                        self.branch_invalid(lazy);
                     }
                     onlineasm!(*self.asm(); jmp {join};);
                     self.rp_header(ra, HeaderTarget::Label(ra), livemask);
@@ -4489,5 +4954,25 @@ fn negate(cmp: Cmp) -> Cmp {
         Cmp::Le => Cmp::Gt,
         Cmp::Gt => Cmp::Le,
         Cmp::Ge => Cmp::Lt,
+    }
+}
+
+#[cfg(test)]
+mod helper_table_tests {
+    use super::*;
+    use crate::runtime::codegen::opt::ir::inst::Helper;
+
+    /// `HELPERS` is indexed by `Helper`, so the last variant ends the table.
+    #[test]
+    fn helper_table_matches_the_enum() {
+        assert_eq!(HELPERS.len(), Helper::CharWhitespace as usize + 1);
+        assert_eq!(
+            HELPERS[Helper::StringEq as usize],
+            RuntimeExtern::OptStringEq
+        );
+        assert_eq!(
+            HELPERS[Helper::CharWhitespace as usize],
+            RuntimeExtern::OptCharWhitespace
+        );
     }
 }

@@ -580,6 +580,33 @@ bytecode_list! {
         OpEnterCase {
             args { table: PoolReference, frame: Count }
         }
+
+        /// `(apply f a ... lst)`, non-tail: `call` of `r[base+1]` whose last
+        /// argument, `r[base+1+argc]`, is a list spread onto the argument
+        /// area. `argc` counts that list, so it is at least 1, and the callee
+        /// receives `argc - 1 + length(lst)` arguments. Followed by a
+        /// `return-point` like `call`. A callee that is not a procedure, or a
+        /// last argument that is not a proper list, raises what the
+        /// procedure `apply` raises.
+        OpApply {
+            args {
+                argc: Count,
+                base: Register,
+            }
+            metadata {
+                link: CallLinkInfo,
+            }
+        }
+        /// `(apply f a ... lst)` in tail position: `tail-call` with the last
+        /// of the `argc` arguments in `r2..` spread. See [`OpApply`].
+        OpTailApply {
+            args {
+                argc: Count,
+            }
+            metadata {
+                link: CallLinkInfo,
+            }
+        }
     }
 }
 

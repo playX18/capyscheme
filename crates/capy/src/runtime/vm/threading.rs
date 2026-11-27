@@ -25,15 +25,16 @@ use crate::prelude::*;
 use crate::runtime::MutationContext;
 use crate::runtime::root::RootScope;
 use crate::runtime::sched::{
+    introspect::{self, wait},
     scheduler::{self, Killed, SchedContext, SchemeStart},
     sync::{self, Waiter, current_token},
 };
 
 pub use crate::runtime::objectmodel::threading::{Condition, Mutex, ThreadObject};
+use crate::runtime::objectmodel::threading::{MutexState, PendingInterruptQueue};
 pub(crate) use crate::runtime::objectmodel::threading::{
     NEXT_JOIN_KEY, condition_header_word, mutex_header_word, thread_object_header_word,
 };
-use crate::runtime::objectmodel::threading::{MutexState, PendingInterruptQueue};
 
 /// Condition variable. Its waiters are queued in the scheduler, keyed by the
 /// address of this (non-moving) object.
@@ -329,28 +330,43 @@ impl<'gc> ThreadObject<'gc> {
 
     /// Park the calling context until `thread` has finished. Returns at once if
     /// it already has. `Err(Killed)` when the caller is killed while waiting.
+    /// Interrupts that arrive during the wait run, and the wait resumes, so a
+    /// joiner can be cancelled by a scope deadline.
     pub(crate) fn join_wait<'gc_>(
         ctx: MutationContext<'gc_>,
         thread: Gc<'gc_, ThreadObject<'gc_>>,
     ) -> (MutationContext<'gc_>, Result<(), Killed>) {
         let scope = RootScope::new(ctx);
         let thread_root = scope.root(thread.into());
-        let thread: Gc<'gc_, ThreadObject<'gc_>> = thread_root.get().downcast();
-        let waiter = Waiter::current();
         let key = thread.join_key();
-        {
-            let done = thread.done.lock();
-            if *done {
-                return (ctx, Ok(()));
+        let target = thread.kill_target_id();
+        let mut ctx = ctx;
+        loop {
+            let thread: Gc<'gc_, ThreadObject<'gc_>> = thread_root.get().downcast();
+            let waiter = Waiter::current(wait::JOIN, target);
+            {
+                let done = thread.done.lock();
+                if *done {
+                    return (ctx, Ok(()));
+                }
+                sync::enqueue(key, waiter.clone());
             }
-            sync::enqueue(key, waiter.clone());
-        }
-        let (ctx, blocked) = block_until_granted(ctx, &waiter, None, false, true);
-        match blocked {
-            Ok(_) => (ctx, Ok(())),
-            Err(killed) => {
-                sync::cancel(key, &waiter);
-                (ctx, Err(killed))
+            let (next, blocked) = block_until_granted(ctx, &waiter, None, true, true);
+            ctx = next;
+            match blocked {
+                Ok(Blocked::Granted) => return (ctx, Ok(())),
+                Err(killed) => {
+                    sync::cancel(key, &waiter);
+                    return (ctx, Err(killed));
+                }
+                Ok(_) => {
+                    if !sync::cancel(key, &waiter) {
+                        // The thread finished and granted us first.
+                        return (ctx, Ok(()));
+                    }
+                    // Interrupted: run the interrupts, then wait again.
+                    crate::runtime::vm::interrupts::deliver_pending_interrupts(ctx);
+                }
             }
         }
     }
@@ -607,8 +623,98 @@ pub mod threading_ops {
 
     #[scheme(name = "%native-thread-join")]
     pub fn thread_join(thread: Gc<'gc, ThreadObject<'gc>>) -> Value<'gc> {
-        let (_ctx, joined) = ThreadObject::join_wait(ctx, thread);
+        let (ctx, joined) = ThreadObject::join_wait(ctx, thread);
         joined.unwrap_or_else(|killed| killed.unwind());
+        crate::runtime::codegen::opt::deopt::lazy::acquire_fence(ctx);
+        Value::undefined()
+    }
+
+    /// Every live thread, ordered by id, as a list of
+    /// `#(id parent name state level base worker pinned wait wait-on
+    /// waiting age killed)`:
+    ///
+    /// - `name` is a string or `#f`, `state` one of `runnable`, `running`,
+    ///   `blocked`, `done`.
+    /// - `pinned` is a worker index or `#f`.
+    /// - `wait` is `#f` or one of `mutex`, `condition`, `join`, `sleep`,
+    ///   `io`, `park`. `wait-on` is the holder's id for `mutex`, the target's
+    ///   id for `join`, the fd for `io`, and `#f` otherwise.
+    /// - `waiting` and `age` are seconds, `killed` a boolean.
+    #[scheme(name = "%thread-snapshot")]
+    pub fn thread_snapshot() -> Value<'gc> {
+        let threads = introspect::threads();
+        let edges = introspect::edges();
+        let mut out = Value::null();
+        for t in threads.iter().rev() {
+            let name = match &t.name {
+                Some(name) => Str::new(ctx, name, true).into(),
+                None => Value::new(false),
+            };
+            let (wait, wait_on) = if t.wait_kind == wait::NONE {
+                (Value::new(false), Value::new(false))
+            } else {
+                let on = match t.wait_kind {
+                    wait::MUTEX => edges
+                        .iter()
+                        .find(|e| e.waiter == t.id)
+                        .and_then(|e| e.holder)
+                        .map_or(Value::new(false), |id| Value::new(id as i32)),
+                    wait::JOIN | wait::IO => Value::new(t.wait_arg as i32),
+                    _ => Value::new(false),
+                };
+                (Value::new(Symbol::from_str(ctx, wait::name(t.wait_kind))), on)
+            };
+            let row = Vector::from_slice(
+                ctx,
+                &[
+                    Value::new(t.id as i32),
+                    Value::new(t.parent as i32),
+                    name,
+                    Value::new(Symbol::from_str(ctx, t.state.name())),
+                    Value::new(t.level as i32),
+                    Value::new(t.base as i32),
+                    Value::new(t.worker as i32),
+                    t.pinned.map_or(Value::new(false), |w| Value::new(w as i32)),
+                    wait,
+                    wait_on,
+                    Value::from_f64(t.waiting.as_secs_f64()),
+                    Value::from_f64(t.age.as_secs_f64()),
+                    Value::new(t.killed),
+                ],
+            );
+            out = Value::cons(ctx, row.into(), out);
+        }
+        out
+    }
+
+    /// Cycles of threads that wait for each other through mutexes and
+    /// joins, as a list of lists of thread ids. Empty when nothing is deadlocked.
+    #[scheme(name = "%thread-deadlocks")]
+    pub fn thread_deadlocks() -> Value<'gc> {
+        let cycles = introspect::find_cycles(&introspect::edges());
+        let mut out = Value::null();
+        for cycle in cycles.iter().rev() {
+            let mut ids = Value::null();
+            for &id in cycle.iter().rev() {
+                ids = Value::cons(ctx, Value::new(id as i32), ids);
+            }
+            out = Value::cons(ctx, ids, out);
+        }
+        out
+    }
+
+    /// A text report of every thread and any deadlock.
+    #[scheme(name = "%thread-dump")]
+    pub fn thread_dump() -> Value<'gc> {
+        Str::new(ctx, introspect::dump(), true).into()
+    }
+
+    /// Name the calling thread for dumps and snapshots. `#f` clears the name.
+    #[scheme(name = "%thread-set-name!")]
+    pub fn thread_set_name(name: Value<'gc>) -> Value<'gc> {
+        if let Some(cx) = scheduler::current() {
+            cx.set_label(name.try_as::<Str>().map(|s| s.to_string()));
+        }
         Value::undefined()
     }
 
@@ -636,6 +742,9 @@ pub mod threading_ops {
         let block = block.unwrap_or(true);
         let (ctx, acquired) = super::acquire(ctx, mutex_obj, block, true, true);
         let acquired = acquired.unwrap_or_else(|killed| killed.unwind());
+        if acquired != Acquire::Failed {
+            crate::runtime::codegen::opt::deopt::lazy::acquire_fence(ctx);
+        }
         if acquired != Acquire::Failed && block {
             crate::runtime::vm::interrupts::deliver_pending_interrupts(ctx);
         }
@@ -647,6 +756,9 @@ pub mod threading_ops {
         let block = block.unwrap_or(true);
         let (ctx, acquired) = super::acquire(ctx, mutex_obj, block, true, true);
         let acquired = acquired.unwrap_or_else(|killed| killed.unwind());
+        if acquired != Acquire::Failed {
+            crate::runtime::codegen::opt::deopt::lazy::acquire_fence(ctx);
+        }
         if acquired != Acquire::Failed && block {
             crate::runtime::vm::interrupts::deliver_pending_interrupts(ctx);
         }
@@ -765,9 +877,23 @@ pub mod threading_ops {
         });
         let (ctx, signalled) = super::wait_on_condition(ctx, condition_obj, mutex_obj, deadline);
         let signalled = signalled.unwrap_or_else(|killed| killed.unwind());
+        crate::runtime::codegen::opt::deopt::lazy::acquire_fence(ctx);
         crate::runtime::vm::interrupts::deliver_pending_interrupts(ctx);
         signalled.into()
     }
+}
+
+/// The owner of the mutex at address `key`, if some thread owns it right now.
+///
+/// Only for [`sync::wait_edges`], which calls it with the wait queue lock held.
+/// That is what makes the address valid: a waiter keeps its mutex rooted until
+/// it leaves the queue, and leaving takes that lock. The state lock is only
+/// tried, because the lock order is state first, queues second.
+pub(crate) fn mutex_owner_at(key: usize) -> Option<u64> {
+    // SAFETY: see above. Mutexes are not moved, and `key` came from `Mutex::key`.
+    let mutex = unsafe { &*(key as *const Mutex) };
+    let state = mutex.state.try_lock()?;
+    (state.owner != 0 && state.count > 0).then_some(state.owner)
 }
 
 /// How a blocking wait ended.
@@ -807,6 +933,9 @@ fn block_until_granted<'gc>(
     interruptible: bool,
     cancellable: bool,
 ) -> (MutationContext<'gc>, Result<Blocked, Killed>) {
+    // Names the wait for introspection. The park and sleep below see it set
+    // and leave it alone.
+    let _wait = scheduler::current().map(|cx| cx.waiting(waiter.kind, waiter.arg));
     loop {
         if waiter.is_granted() {
             return (ctx, Ok(Blocked::Granted));
@@ -869,7 +998,7 @@ fn acquire<'gc>(
     let mut ctx = ctx;
     loop {
         let mutex: Gc<'gc, Mutex> = mutex_root.get().downcast();
-        let waiter = Waiter::current();
+        let waiter = Waiter::current(wait::MUTEX, mutex.key() as u64);
         if mutex.acquire_or_enqueue(&waiter) {
             return (ctx, Ok(took(ctx, mutex)));
         }
@@ -909,7 +1038,7 @@ fn wait_on_condition<'gc>(
     let cond_root = scope.root(cond_obj.into());
     let mutex_root = scope.root(mutex_obj.into());
     let cond_key = cond_obj.key();
-    let waiter = Waiter::current();
+    let waiter = Waiter::current(wait::CONDITION, cond_key as u64);
     let released = mutex_obj.release_into_condition(current_token(), cond_key, &waiter);
     debug_assert!(released, "condition-wait checked ownership");
     ctx.state().thread_object.unhold(mutex_obj.into());

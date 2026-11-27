@@ -39,6 +39,7 @@ pub struct TreeSitter<'a, 'gc> {
     source_file: Value<'gc>,
     wrap_stx: bool,
     directives: Directives,
+    line_starts: Vec<u32>,
 }
 
 impl<'a, 'gc> TreeSitter<'a, 'gc> {
@@ -57,6 +58,15 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
             .parse(text, None)
             .expect("tree-sitter failed to parse input text");
 
+        let line_starts = std::iter::once(0)
+            .chain(
+                text.bytes()
+                    .enumerate()
+                    .filter(|&(_, byte)| byte == b'\n')
+                    .map(|(i, _)| i as u32 + 1),
+            )
+            .collect();
+
         Self {
             wrap_stx,
             ctx,
@@ -64,6 +74,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
             tree,
             source_file,
             directives: Directives::empty(),
+            line_starts,
         }
     }
 
@@ -101,6 +112,14 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
         );
     }
 
+    fn byte_offset(&self, (line, column): (u32, u32)) -> Value<'gc> {
+        self.line_starts
+            .get((line as usize).wrapping_sub(1))
+            .map_or(Value::new(false), |start| {
+                Value::new((start + column) as i32)
+            })
+    }
+
     pub fn annotate_span(&self, expression: Value<'gc>, start: (u32, u32), end: (u32, u32)) {
         if expression.is_immediate() || expression.is_number() {
             return;
@@ -120,6 +139,8 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
             start.1 as i32,
             end.0 as i32,
             end.1 as i32,
+            self.byte_offset(start),
+            self.byte_offset(end),
         );
     }
 
@@ -132,8 +153,22 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
         node.kind() == "symbol" && self.text_of(node) == symbol
     }
 
-    fn is_intertoken(kind: &str) -> bool {
-        matches!(kind, "comment" | "block_comment" | "sexp_comment")
+    /// Comments, and the directives the reader knows. A known directive is
+    /// atmosphere like the Scheme reader treats it; an unknown one is not
+    /// skipped and reaches [`Self::parse_node`], which rejects it.
+    fn is_intertoken(&self, node: &Node) -> bool {
+        match node.kind() {
+            "comment" | "block_comment" | "sexp_comment" => true,
+            "directive" => Self::is_known_directive(self.text_of(node)),
+            _ => false,
+        }
+    }
+
+    fn is_known_directive(text: &str) -> bool {
+        matches!(
+            text.strip_prefix("#!"),
+            Some("fold-case" | "no-fold-case" | "r6rs" | "r7rs" | "nobacktrace")
+        )
     }
 
     fn abbrev_name(prefix: &str) -> Option<&'static str> {
@@ -170,7 +205,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
         let mut next = start + 1;
         while next < children.len()
             && children[next].is_named()
-            && Self::is_intertoken(children[next].kind())
+            && self.is_intertoken(&children[next])
         {
             next += 1;
         }
@@ -297,7 +332,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
         let mut result = Vec::new();
         for child in root_node.children(&mut cursor) {
-            if Self::is_intertoken(child.kind()) {
+            if self.is_intertoken(&child) {
                 continue;
             }
             result.push(self.parse_lexeme(&child)?);
@@ -396,7 +431,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                     if matches!(typ, CompoundType::List) {
                         let tail_pos = children[i + 1..]
                             .iter()
-                            .position(|next| !next.is_named() || !Self::is_intertoken(next.kind()))
+                            .position(|next| !next.is_named() || !self.is_intertoken(next))
                             .map(|pos| pos + i + 1)
                             .ok_or(LexicalError::ImproperListMissingTail { span: span.0 })?;
                         let tail = &children[tail_pos];
@@ -424,7 +459,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                 }
 
                 _ => {
-                    if child.is_named() && Self::is_intertoken(child.kind()) {
+                    if child.is_named() && self.is_intertoken(child) {
                         i += 1;
                         continue;
                     }
@@ -709,7 +744,9 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
             "ERROR" | "MISSING" => Err(LexicalError::InvalidSyntax { span: src.0 }),
 
-            "directive" => Ok(Value::null()),
+            // Known directives are skipped as atmosphere (`is_intertoken`), so
+            // any directive that arrives here is unknown.
+            "directive" => Err(LexicalError::InvalidSyntax { span: src.0 }),
             // `#n=` labels and `#n#` references need shared or cyclic
             // structure, which this reader cannot build: reject them
             // loudly rather than misreading the data.
@@ -757,8 +794,8 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                 (start.1 as i32).into(),
                 (end.0 as i32).into(),
                 (end.1 as i32).into(),
-                Value::new(false),
-                Value::new(false),
+                self.byte_offset(start),
+                self.byte_offset(end),
                 Value::from(Symbol::from_str(self.ctx, "read")),
                 Value::null(),
             ],

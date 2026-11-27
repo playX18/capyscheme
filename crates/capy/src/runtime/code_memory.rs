@@ -41,6 +41,24 @@ pub struct CodeMemory {
 unsafe impl Send for CodeMemory {}
 unsafe impl Sync for CodeMemory {}
 
+/// A code span nothing executes yet, the only kind [`CodeMemory::patch`] and
+/// [`CodeMemory::patch_many`] accept: they rewrite whole ranges, so a thread running the range
+/// would see torn instructions. Publishing the code ends the span's unpublished state.
+pub struct UnpublishedSpan<'a>(&'a mut Span);
+
+impl<'a> UnpublishedSpan<'a> {
+    /// Claim `span` as unpublished for the borrow `'a`.
+    ///
+    /// # Safety
+    ///
+    /// No thread executes any byte of the span, and none will before the borrow ends: the code
+    /// has not been handed to the interpreter, installed in a code block, or linked from any
+    /// other code.
+    pub unsafe fn new(span: &'a mut Span) -> Self {
+        Self(span)
+    }
+}
+
 static CODE_MEMORY: LazyLock<CodeMemory> = LazyLock::new(CodeMemory::new);
 
 /// The runtime-wide executable memory.
@@ -85,7 +103,10 @@ impl CodeMemory {
         Ok(span)
     }
 
-    pub fn patch(&self, span: &mut Span, offset: usize, bytes: &[u8]) -> io::Result<()> {
+    /// Rewrite `bytes` at `offset` of a span no thread executes yet. Code that may be running
+    /// goes through [`CodeMemory::patch_live_u32`].
+    pub fn patch(&self, span: UnpublishedSpan<'_>, offset: usize, bytes: &[u8]) -> io::Result<()> {
+        let span = span.0;
         validate_patch_bounds(span, offset, bytes)?;
         // SAFETY: `span` is a live allocation of this allocator, the range was
         // bounds-checked, and the caller guarantees no thread executes the
@@ -99,7 +120,13 @@ impl CodeMemory {
         Ok(())
     }
 
-    pub fn patch_many(&self, span: &mut Span, patches: &[(usize, &[u8])]) -> io::Result<()> {
+    /// [`CodeMemory::patch`] for several ranges in one write.
+    pub fn patch_many(
+        &self,
+        span: UnpublishedSpan<'_>,
+        patches: &[(usize, &[u8])],
+    ) -> io::Result<()> {
+        let span = span.0;
         for (offset, bytes) in patches {
             validate_patch_bounds(span, *offset, bytes)?;
         }

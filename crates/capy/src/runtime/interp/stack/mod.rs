@@ -36,8 +36,8 @@ use crate::heap::object::{
     AllocationHooks, ClassId, GcObject, builtin_class_ids, class_header_word,
 };
 use crate::heap::{Gc, collection::Visitor};
-use crate::runtime::sabi::{INTERPRETER_FRAME_SIZE, Ra, entry_frame_size, entry_livemask};
 use crate::runtime::objectmodel::{ByteVector, ClassTagged, Closure, Value};
+use crate::runtime::sabi::{INTERPRETER_FRAME_SIZE, Ra, entry_frame_size, entry_livemask};
 use crate::runtime::{MutationContext, ThreadContext};
 use crate::{WeakProcessor, Write};
 
@@ -86,6 +86,9 @@ pub struct StackState<'gc> {
     /// A merged opportunistic continuation object, reused by the next
     /// one-shot reification, or `#f`.
     pub cached_frame: Cell<Value<'gc>>,
+    /// A `stack overflow` was raised and the stack has not shrunk since, so a handler that
+    /// runs deep is not raised at again. Cleared by the first segment switch below half the limit.
+    pub overflow_raised: Cell<bool>,
     /// Address of the `loop_hint` the top frame is parked at, when the top
     /// frame's live registers come from its mask and not from `fp..sp`.
     pub top_ip: Cell<Ip>,
@@ -116,6 +119,7 @@ impl<'gc> StackState<'gc> {
             stack_link: Cell::new(Value::new(false)),
             stack_cache: Cell::new(std::ptr::null_mut()),
             cached_frame: Cell::new(Value::new(false)),
+            overflow_raised: Cell::new(false),
             top_ip: Cell::new(std::ptr::null()),
             activation: Cell::new(std::ptr::null_mut()),
             call_rator: Cell::new(Value::undefined()),
@@ -176,6 +180,22 @@ pub unsafe fn return_address(fp: Slot) -> Ra {
 #[inline(always)]
 pub unsafe fn set_return_address(fp: Slot, ra: Ra) {
     unsafe { CallFrame::create(fp).set_return_address(ra) }
+}
+
+/// Replaces the return address of the live frame at `fp` with one atomic
+/// word store, for a walker that may read it concurrently (the profiler).
+///
+/// # Safety
+///
+/// `fp` points at a live frame, whose slot 0 holds a return address, and
+/// `ra` has the same return header as the address it replaces.
+#[inline(always)]
+pub unsafe fn set_return_address_atomic(fp: Slot, ra: Ra) {
+    // SAFETY: slot 0 of a live frame is an aligned word.
+    unsafe {
+        std::sync::atomic::AtomicPtr::from_ptr(fp.cast::<*mut u8>())
+            .store(ra.cast_mut(), std::sync::atomic::Ordering::Release);
+    }
 }
 
 /// Returns the bytecode return point of a caller. See
@@ -455,6 +475,93 @@ pub unsafe fn visit_stack<'gc>(stack: &StackState<'gc>, visit: &mut dyn FnMut(Sl
     }
 }
 
+/// Call `visit` with every frame pointer of the activation whose top frame
+/// is `fp` whose return address `fp[0]` returns into compiled code, with that
+/// address, down to the bottom of the activation or segment. `visit` may
+/// replace the return address by one with the same header.
+unsafe fn compiled_returns_below<'gc>(mut fp: Slot<'gc>, visit: &mut dyn FnMut(Slot<'gc>, Ra)) {
+    unsafe {
+        loop {
+            let ret = return_address(fp);
+            match frame_below(fp, ret) {
+                Below::Bottom => return,
+                Below::Frame { size, mask } => {
+                    if let Mask::Header(_) = mask
+                        && crate::runtime::sabi::entry_offset(ret) != 0
+                    {
+                        visit(fp, ret);
+                    }
+                    fp = fp.sub(size);
+                }
+            }
+        }
+    }
+}
+
+/// Call `visit` with every frame of the Scheme stack of a thread, in the
+/// running activation and every outer one, whose return address `fp[0]`
+/// returns into compiled code, with that address. Frames inside continuation
+/// objects are not visited: they become live again only through a
+/// reinstatement, which visits them then ([`visit_compiled_returns_in`]).
+///
+/// # Safety
+///
+/// As [`visit_stack`]: the caller is the thread that owns `stack`, or the
+/// owner cannot run Scheme, and the registers of `stack` describe intact
+/// frames. `visit` replaces a return address only by one whose header is
+/// the same.
+pub unsafe fn visit_compiled_returns<'gc>(
+    stack: &StackState<'gc>,
+    visit: &mut dyn FnMut(Slot<'gc>, Ra),
+) {
+    unsafe {
+        let mut fp = stack.fp.get();
+        let mut activation = stack.activation.get();
+        loop {
+            if !fp.is_null() {
+                compiled_returns_below(fp, visit);
+            }
+            if activation.is_null() {
+                break;
+            }
+            let record = &*activation;
+            fp = record.fp;
+            activation = record.prev;
+        }
+    }
+}
+
+/// Call `visit` with the frames from `fp` down to `bottom` (exclusive) whose
+/// return address returns into compiled code: the frames a continuation
+/// reinstatement just made live. `fp`'s return address is `fp[0]`.
+///
+/// # Safety
+///
+/// The frames from `fp` down to `bottom` are intact and live on the
+/// current thread's stack.
+pub unsafe fn visit_compiled_returns_in<'gc>(
+    mut fp: Slot<'gc>,
+    bottom: Slot<'gc>,
+    visit: &mut dyn FnMut(Slot<'gc>, Ra),
+) {
+    unsafe {
+        while fp > bottom {
+            let ret = return_address(fp);
+            match frame_below(fp, ret) {
+                Below::Bottom => return,
+                Below::Frame { size, mask } => {
+                    if let Mask::Header(_) = mask
+                        && crate::runtime::sabi::entry_offset(ret) != 0
+                    {
+                        visit(fp, ret);
+                    }
+                    fp = fp.sub(size);
+                }
+            }
+        }
+    }
+}
+
 /// Trace the stack roots of a thread.
 ///
 /// # Safety
@@ -471,6 +578,7 @@ pub unsafe fn trace_stack<'gc>(stack: &mut StackState<'gc>, visitor: &mut Visito
         visitor.trace(stack.cached_frame.get_mut());
         visitor.trace(stack.call_rator.get_mut());
         visitor.trace(stack.call_k.get_mut());
+
         stack.stack_cache.set(std::ptr::null_mut());
         let mut activation = stack.activation.get();
         while !activation.is_null() {
@@ -482,7 +590,6 @@ pub unsafe fn trace_stack<'gc>(stack: &mut StackState<'gc>, visitor: &mut Visito
         }
     }
 }
-
 
 mod continuation;
 mod pool;

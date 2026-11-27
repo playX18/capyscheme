@@ -7,8 +7,8 @@ use crate::heap::{
     finalizer::FinalizerQueue,
     mmtk::util::{Address, ObjectReference},
 };
-pub use crate::runtime::objectmodel::ffi::{Cif, Pointer, pointer_header_word};
 pub(crate) use crate::runtime::objectmodel::ffi::cif_header_word;
+pub use crate::runtime::objectmodel::ffi::{Cif, Pointer, pointer_header_word};
 
 use crate::{
     global,
@@ -279,7 +279,6 @@ global!(
     PTRS<'gc>: Gc<'gc, WeakTable<'gc>> = (ctx) WeakTable::new(ctx, 8, 0.75);
 );
 
-
 #[scheme(path=capy)]
 pub mod ffi_ops {
     #[scheme(name = "pointer?")]
@@ -433,7 +432,10 @@ pub mod ffi_ops {
     }
 
     #[scheme(name = "set-pointer-finalizer!")]
-    pub fn set_pointer_finalizer(p: Gc<'gc, Pointer<'gc>>, finalizer: Gc<'gc, Pointer<'gc>>) -> Value<'gc> {
+    pub fn set_pointer_finalizer(
+        p: Gc<'gc, Pointer<'gc>>,
+        finalizer: Gc<'gc, Pointer<'gc>>,
+    ) -> Value<'gc> {
         if p.value().is_null() {
             return null_pointer_error(call, "set-pointer-finalizer!");
         }
@@ -743,7 +745,10 @@ pub mod ffi_ops {
 
     /// Reads a pointer-sized value at `pointer + offset` as a new pointer.
     #[scheme(name = "pointer-ref/pointer")]
-    pub fn pointer_ref_pointer(pointer: Gc<'gc, Pointer<'gc>>, offset: Option<usize>) -> Value<'gc> {
+    pub fn pointer_ref_pointer(
+        pointer: Gc<'gc, Pointer<'gc>>,
+        offset: Option<usize>,
+    ) -> Value<'gc> {
         if pointer.value().is_null() {
             return null_pointer_error(call, "pointer-ref/pointer");
         }
@@ -1069,6 +1074,17 @@ pub fn alignof<'gc>(
         }
 
         Ok(max)
+    } else if ftype.is::<Vector>() {
+        // `(vector T N)` aligns like its element type
+        let v = ftype.downcast::<Vector>();
+        if v.len() != 2 {
+            return Err(ConversionError::type_mismatch(
+                0,
+                "vector of length 2",
+                ftype,
+            ));
+        }
+        alignof(ctx, v[0].get())
     } else {
         Err(ConversionError::type_mismatch(0, "foreign type", ftype))
     }

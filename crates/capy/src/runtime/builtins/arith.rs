@@ -404,10 +404,23 @@ mod arith_operations {
     }
 
     #[scheme(name = "exact")]
-    pub fn exact(x: Number<'gc>) -> Number<'gc> {
-        let n = x.to_exact(ctx);
-
-        n
+    pub fn exact(x: Number<'gc>) -> Result<Number<'gc>, Value<'gc>> {
+        // A NaN or an infinity has no exact counterpart.
+        if let Number::Flonum(f) = x
+            && !f.is_finite()
+        {
+            let v = x.into_value(ctx);
+            call.wrong_argument_violation(
+                "exact",
+                "no exact representation",
+                Some(v),
+                Some(0),
+                1,
+                &[v],
+            );
+            return Err(Value::undefined());
+        }
+        Ok(x.to_exact(ctx))
     }
 
     #[scheme(name = "+")]
@@ -789,10 +802,26 @@ mod arith_operations {
         tan
     }
 
+    /// `(atan z)` and `(atan y x)`. The two-argument form is the angle of the
+    /// point (x, y), as in R6RS and R7RS.
     #[scheme(name = "atan")]
-    pub fn atan(_x: Number<'gc>) -> Number<'gc> {
-        let atan = Number::atan(ctx, _x);
-        atan
+    pub fn atan(y: Number<'gc>, x: Option<Number<'gc>>) -> Value<'gc> {
+        let Some(x) = x else {
+            return Number::atan(ctx, y).into_value(ctx);
+        };
+        for (pos, arg) in [(0, y), (1, x)] {
+            if !arg.is_real_valued() {
+                return call.wrong_argument_violation(
+                    "atan",
+                    "argument must be a real number",
+                    Some(arg.into_value(ctx)),
+                    Some(pos),
+                    2,
+                    &[y.into_value(ctx), x.into_value(ctx)],
+                );
+            }
+        }
+        Number::atan2(ctx, y, x).into_value(ctx)
     }
 
     #[scheme(name = "atan2")]
@@ -802,7 +831,7 @@ mod arith_operations {
                 "atan2",
                 "argument must be a real number",
                 Some(lhs.into_value(ctx)),
-                Some(1),
+                Some(0),
                 1,
                 &[lhs.into_value(ctx)],
             );
@@ -812,7 +841,7 @@ mod arith_operations {
                 "atan2",
                 "argument must be a real number",
                 Some(rhs.into_value(ctx)),
-                Some(2),
+                Some(1),
                 2,
                 &[rhs.into_value(ctx)],
             );
@@ -2111,6 +2140,192 @@ mod arith_operations {
         (res).into_value(ctx)
     }
 
+    /// `(fx+/wraparound x y)`: the sum modulo 2^32, as a signed fixnum.
+    #[scheme(name = "fx+/wraparound")]
+    pub fn fx_add_wraparound(x: i32, y: i32) -> i32 {
+        x.wrapping_add(y)
+    }
+
+    /// `(fx-/wraparound x y)`: the difference modulo 2^32.
+    #[scheme(name = "fx-/wraparound")]
+    pub fn fx_sub_wraparound(x: i32, y: i32) -> i32 {
+        x.wrapping_sub(y)
+    }
+
+    /// `(fx*/wraparound x y)`: the product modulo 2^32.
+    #[scheme(name = "fx*/wraparound")]
+    pub fn fx_mul_wraparound(x: i32, y: i32) -> i32 {
+        x.wrapping_mul(y)
+    }
+
+    /// `(fxsll/wraparound x n)`: `x` shifted left by `n` bits, `0 <= n < 32`,
+    /// keeping the low 32 bits.
+    #[scheme(name = "fxsll/wraparound")]
+    pub fn fx_sll_wraparound(x: i32, n: i32) -> Value<'gc> {
+        if !(0..32).contains(&n) {
+            let (x, n) = (x.into_value(ctx), n.into_value(ctx));
+            return call.wrong_argument_violation(
+                "fxsll/wraparound",
+                "shift count must be in [0, 32)",
+                Some(n),
+                Some(2),
+                2,
+                &[x, n],
+            );
+        }
+        Value::new(x.wrapping_shl(n as u32))
+    }
+
+    /// `(fxsrl x n)`: the logical right shift of the 32-bit pattern of `x`
+    /// by `n` bits, `0 <= n < 32`.
+    #[scheme(name = "fxsrl")]
+    pub fn fx_srl(x: i32, n: i32) -> Value<'gc> {
+        if !(0..32).contains(&n) {
+            let (x, n) = (x.into_value(ctx), n.into_value(ctx));
+            return call.wrong_argument_violation(
+                "fxsrl",
+                "shift count must be in [0, 32)",
+                Some(n),
+                Some(2),
+                2,
+                &[x, n],
+            );
+        }
+        Value::new(((x as u32) >> n) as i32)
+    }
+
+    /// `(fxrotr32 x n)`: the 32-bit pattern of `x` rotated right by `n`
+    /// bits, `0 <= n < 32`.
+    #[scheme(name = "fxrotr32")]
+    pub fn fx_rotr32(x: i32, n: i32) -> Value<'gc> {
+        if !(0..32).contains(&n) {
+            let (x, n) = (x.into_value(ctx), n.into_value(ctx));
+            return call.wrong_argument_violation(
+                "fxrotr32",
+                "shift count must be in [0, 32)",
+                Some(n),
+                Some(2),
+                2,
+                &[x, n],
+            );
+        }
+        Value::new((x as u32).rotate_right(n as u32) as i32)
+    }
+
+    /// `(u64+/wraparound x y)`: the sum of two integers in `[0, 2^64)`,
+    /// modulo 2^64.
+    #[scheme(name = "u64+/wraparound")]
+    pub fn u64_add_wraparound(x: u64, y: u64) -> u64 {
+        x.wrapping_add(y)
+    }
+
+    /// `(u64-/wraparound x y)`: the difference modulo 2^64.
+    #[scheme(name = "u64-/wraparound")]
+    pub fn u64_sub_wraparound(x: u64, y: u64) -> u64 {
+        x.wrapping_sub(y)
+    }
+
+    /// `(u64*/wraparound x y)`: the product modulo 2^64.
+    #[scheme(name = "u64*/wraparound")]
+    pub fn u64_mul_wraparound(x: u64, y: u64) -> u64 {
+        x.wrapping_mul(y)
+    }
+
+    /// `(u64sll/wraparound x n)`: `x` shifted left by `n` bits, `0 <= n <
+    /// 64`, modulo 2^64.
+    #[scheme(name = "u64sll/wraparound")]
+    pub fn u64_sll_wraparound(x: u64, n: i32) -> Value<'gc> {
+        let Some(n) = u64_count(n) else {
+            let (x, n) = (x.into_value(ctx), n.into_value(ctx));
+            return call.wrong_argument_violation(
+                "u64sll/wraparound",
+                "shift count must be in [0, 64)",
+                Some(n),
+                Some(2),
+                2,
+                &[x, n],
+            );
+        };
+        (x << n).into_value(ctx)
+    }
+
+    /// `(u64srl x n)`: `x` shifted right by `n` bits, `0 <= n < 64`.
+    #[scheme(name = "u64srl")]
+    pub fn u64_srl(x: u64, n: i32) -> Value<'gc> {
+        let Some(n) = u64_count(n) else {
+            let (x, n) = (x.into_value(ctx), n.into_value(ctx));
+            return call.wrong_argument_violation(
+                "u64srl",
+                "shift count must be in [0, 64)",
+                Some(n),
+                Some(2),
+                2,
+                &[x, n],
+            );
+        };
+        (x >> n).into_value(ctx)
+    }
+
+    /// `(u64rotl x n)`: the 64-bit pattern of `x` rotated left by `n` bits,
+    /// `0 <= n < 64`.
+    #[scheme(name = "u64rotl")]
+    pub fn u64_rotl(x: u64, n: i32) -> Value<'gc> {
+        let Some(n) = u64_count(n) else {
+            let (x, n) = (x.into_value(ctx), n.into_value(ctx));
+            return call.wrong_argument_violation(
+                "u64rotl",
+                "shift count must be in [0, 64)",
+                Some(n),
+                Some(2),
+                2,
+                &[x, n],
+            );
+        };
+        x.rotate_left(n).into_value(ctx)
+    }
+
+    /// `(u64rotr x n)`: the 64-bit pattern of `x` rotated right by `n` bits,
+    /// `0 <= n < 64`.
+    #[scheme(name = "u64rotr")]
+    pub fn u64_rotr(x: u64, n: i32) -> Value<'gc> {
+        let Some(n) = u64_count(n) else {
+            let (x, n) = (x.into_value(ctx), n.into_value(ctx));
+            return call.wrong_argument_violation(
+                "u64rotr",
+                "shift count must be in [0, 64)",
+                Some(n),
+                Some(2),
+                2,
+                &[x, n],
+            );
+        };
+        x.rotate_right(n).into_value(ctx)
+    }
+
+    /// `(u64->flonum x)`: the flonum nearest the integer `x` in `[0, 2^64)`.
+    #[scheme(name = "u64->flonum")]
+    pub fn u64_to_flonum(x: u64) -> f64 {
+        x as f64
+    }
+
+    /// `(fxrotl32 x n)`: the 32-bit pattern of `x` rotated left by `n`
+    /// bits, `0 <= n < 32`.
+    #[scheme(name = "fxrotl32")]
+    pub fn fx_rotl32(x: i32, n: i32) -> Value<'gc> {
+        if !(0..32).contains(&n) {
+            let (x, n) = (x.into_value(ctx), n.into_value(ctx));
+            return call.wrong_argument_violation(
+                "fxrotl32",
+                "shift count must be in [0, 32)",
+                Some(n),
+                Some(2),
+                2,
+                &[x, n],
+            );
+        }
+        Value::new((x as u32).rotate_left(n as u32) as i32)
+    }
+
     #[scheme(name = "fxmod")]
     pub fn fx_mod(x: i32, y: i32) -> Value<'gc> {
         if y == 0 {
@@ -3349,4 +3564,9 @@ mod arith_operations {
 
 pub(crate) fn init<'gc>(ctx: MutationContext<'gc>) {
     arith_operations::register(ctx);
+}
+
+/// A u64 shift or rotate count: `n` when it is in `[0, 64)`.
+fn u64_count(n: i32) -> Option<u32> {
+    u32::try_from(n).ok().filter(|n| *n < 64)
 }

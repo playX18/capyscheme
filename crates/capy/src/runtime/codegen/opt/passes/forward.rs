@@ -53,51 +53,106 @@ pub(super) enum IndexKey {
 /// The object `value` refers to, looking through class checks and block
 /// parameters that carry one object.
 pub(super) fn object(func: &Func, subst: &Subst, value: Value) -> Value {
-    object_at(func, subst, value, 0)
+    ObjectWalk::default().object_at(func, subst, value, 0)
 }
 
-fn object_at(func: &Func, subst: &Subst, value: Value, depth: usize) -> Value {
-    let value = subst.resolve(value);
-    if depth >= 8 {
-        return value;
+/// [`object`] with the table of incoming edge arguments built once by the caller. A pass that
+/// asks for many objects while the edges stay the same builds [`Incoming`] once instead of once
+/// per call.
+pub(super) fn object_with(func: &Func, subst: &Subst, incoming: &Incoming, value: Value) -> Value {
+    ObjectWalk {
+        shared: Some(incoming),
+        ..ObjectWalk::default()
     }
-    if let Some(inst) = def_inst(func, value) {
-        return match func.insts[inst].op {
-            Op::CheckClass(_) => object_at(func, subst, func.args(inst)[0], depth + 1),
-            _ => value,
-        };
-    }
-    let ValueDef::Param { block, index } = func.value_def(value) else {
-        return value;
-    };
-    let index = index as usize;
-    let mut unique: Option<Value> = None;
-    for (_, data) in func.blocks.iter() {
-        let Some(term) = &data.term else {
-            continue;
-        };
-        for edge in term.edges() {
-            if edge.block != block {
+    .object_at(func, subst, value, 0)
+}
+
+/// For each block, the arguments of every edge into it, from every block of the function. It is
+/// valid while no edge changes.
+pub(super) struct Incoming(HashMap<Block, Vec<Vec<Value>>>);
+
+impl Incoming {
+    pub(super) fn build(func: &Func) -> Self {
+        let mut incoming: HashMap<Block, Vec<Vec<Value>>> = HashMap::new();
+        for (_, data) in func.blocks.iter() {
+            let Some(term) = &data.term else {
                 continue;
+            };
+            for edge in term.edges() {
+                incoming
+                    .entry(edge.block)
+                    .or_default()
+                    .push(func.edge_args(&edge).to_vec());
             }
-            let Some(&arg) = func.edge_args(&edge).get(index) else {
+        }
+        Incoming(incoming)
+    }
+
+    fn of(&self, block: Block) -> &[Vec<Value>] {
+        self.0.get(&block).map(Vec::as_slice).unwrap_or(&[])
+    }
+}
+
+#[derive(Default)]
+struct ObjectWalk<'a> {
+    shared: Option<&'a Incoming>,
+    incoming: Option<Incoming>,
+    memo: HashMap<(Value, usize), Value>,
+}
+
+impl ObjectWalk<'_> {
+    fn object_at(&mut self, func: &Func, subst: &Subst, value: Value, depth: usize) -> Value {
+        let value = subst.resolve(value);
+        if depth >= 8 {
+            return value;
+        }
+        if let Some(&known) = self.memo.get(&(value, depth)) {
+            return known;
+        }
+        let object = self.walk(func, subst, value, depth);
+        self.memo.insert((value, depth), object);
+        object
+    }
+
+    fn walk(&mut self, func: &Func, subst: &Subst, value: Value, depth: usize) -> Value {
+        if let Some(inst) = def_inst(func, value) {
+            return match func.insts[inst].op {
+                Op::CheckClass(_) => self.object_at(func, subst, func.args(inst)[0], depth + 1),
+                _ => value,
+            };
+        }
+        let ValueDef::Param { block, index } = func.value_def(value) else {
+            return value;
+        };
+        let index = index as usize;
+        let incoming = match self.shared {
+            Some(shared) => shared,
+            None => self.incoming.get_or_insert_with(|| Incoming::build(func)),
+        };
+        let mut args = Vec::new();
+        for edge_args in incoming.of(block) {
+            let Some(&arg) = edge_args.get(index) else {
                 return value;
             };
+            args.push(arg);
+        }
+        let mut unique: Option<Value> = None;
+        for arg in args {
             let arg = subst.resolve(arg);
             // A self reference (a loop back edge) is the parameter's own
             // value; it adds no information.
             if arg == value {
                 continue;
             }
-            let resolved = object_at(func, subst, arg, depth + 1);
+            let resolved = self.object_at(func, subst, arg, depth + 1);
             match unique {
                 None => unique = Some(resolved),
                 Some(previous) if previous == resolved => {}
                 Some(_) => return value,
             }
         }
+        unique.unwrap_or(value)
     }
-    unique.unwrap_or(value)
 }
 
 /// The index that `value` names. An `Int32` and the tagged fixnum it was

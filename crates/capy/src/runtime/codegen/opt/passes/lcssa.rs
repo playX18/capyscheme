@@ -24,7 +24,7 @@ use super::loops::{
 };
 use super::version::{FrameCloner, LoopClone, clone_term};
 use crate::runtime::codegen::opt::ir::func::{Block, Func, Value, ValueDef};
-use crate::runtime::codegen::opt::ir::inst::{Edge, Terminator};
+use crate::runtime::codegen::opt::ir::inst::{Op, Terminator};
 
 /// The most live-out values one loop may carry through its exits.
 const MAX_LIVE_OUTS: usize = 32;
@@ -38,6 +38,13 @@ pub(super) fn form_lcssa(func: &mut Func, lp: &Loop) -> bool {
         return true;
     }
     if live_outs.len() > MAX_LIVE_OUTS {
+        return false;
+    }
+    // A remat marker has no runtime value to pass through an exit parameter;
+    // only frame states may name it.
+    if live_outs.iter().any(|&value| {
+        matches!(func.value_def(value), ValueDef::Inst(inst) if matches!(func.insts[inst].op, Op::Remat(_)))
+    }) {
         return false;
     }
     let dom = func.dom_tree();
@@ -63,9 +70,9 @@ pub(super) fn form_lcssa(func: &mut Func, lp: &Loop) -> bool {
         let Some(mut term) = func.blocks[src].term.take() else {
             continue;
         };
-        for edge in edges_mut(&mut term) {
+        term.for_each_edge_mut(|edge| {
             if lp.member[edge.block] {
-                continue;
+                return true;
             }
             let target = edge.block;
             let original = func.edge_args(edge).to_vec();
@@ -103,7 +110,9 @@ pub(super) fn form_lcssa(func: &mut Func, lp: &Loop) -> bool {
                 defs.insert((exit, value), param);
             }
             exits.insert(exit);
-        }
+
+            true
+        });
         func.blocks[src].term = Some(term);
     }
 
@@ -179,36 +188,19 @@ fn rewrite_block(func: &mut Func, block: Block, values: HashMap<Value, Value>) {
     }
 }
 
-/// Every outgoing edge of `term`, mutably.
-pub(super) fn edges_mut(term: &mut Terminator) -> Vec<&mut Edge> {
-    match term {
-        Terminator::Jump(edge) => vec![edge],
-        Terminator::Branch {
-            then, otherwise, ..
-        } => vec![then, otherwise],
-        Terminator::Switch { cases, default, .. } => cases
-            .iter_mut()
-            .map(|(_, edge)| edge)
-            .chain(std::iter::once(default))
-            .collect(),
-        Terminator::Return(_)
-        | Terminator::ReturnMany { .. }
-        | Terminator::TailCall { .. }
-        | Terminator::Deopt { .. }
-        | Terminator::Unreachable => vec![],
-    }
-}
-
 /// Appends `value` to every edge from `pred` into `block`.
 fn add_edge_arg(func: &mut Func, pred: Block, block: Block, value: Value) {
     let Some(mut term) = func.blocks[pred].term.take() else {
         return;
     };
-    for edge in edges_mut(&mut term) {
+
+    term.for_each_edge_mut(|edge| {
         if edge.block == block {
             edge.args.push(value, &mut func.pool);
         }
-    }
+        true
+    });
+
     func.blocks[pred].term = Some(term);
 }
 

@@ -144,8 +144,10 @@ impl<'gc> Dependent<'gc> {
         }
     }
 
-    /// Empty the cache this dependent names.
-    fn clear(&self, ctx: MutationContext<'gc>) {
+    /// Empty the cache this dependent names. Returns whether it broke the
+    /// assumption of an optimized unit for the first time, whose live frames
+    /// must then be evicted.
+    fn clear(&self, ctx: MutationContext<'gc>) -> bool {
         match self {
             Self::BytecodeSite {
                 buffer,
@@ -155,15 +157,24 @@ impl<'gc> Dependent<'gc> {
                 if let Some(buffer) = buffer.upgrade(ctx) {
                     clear_slot_site(buffer, *metadata_id, *op);
                 }
+                false
             }
             Self::GenericSlotCache(generic) => {
                 if let Some(generic) = generic.upgrade(ctx) {
                     GenericDescriptor::clear_slot_cache(ctx, generic);
                 }
+                false
             }
             Self::Code { block, image } => {
                 if let (Some(block), Some(image)) = (block.upgrade(ctx), image.upgrade(ctx)) {
-                    let _ = invalidate_optimized(block, image);
+                    if invalidate_optimized(block, image).is_some() {
+                        block
+                            .watch_invalidations
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    crate::runtime::codegen::opt::deopt::lazy::break_assumption(image)
+                } else {
+                    false
                 }
             }
         }
@@ -288,11 +299,18 @@ impl<'gc> WatchpointSet<'gc> {
         this.state_atomic().swap(INVALIDATED, Ordering::AcqRel);
         let dependents = this.dependents.get();
         let mut cleared = 0;
+        let mut evict = false;
         for dependent in dependents.iter() {
             if !dependent.is_dead() {
-                dependent.clear(ctx);
+                evict |= dependent.clear(ctx);
                 cleared += 1;
             }
+        }
+        // Frames still running the invalidated units leave lazily: their
+        // return addresses into them are patched now (this thread) or at
+        // the next yieldpoint (the others).
+        if evict {
+            crate::runtime::codegen::opt::deopt::lazy::evict();
         }
 
         let ic_cleared = dependents

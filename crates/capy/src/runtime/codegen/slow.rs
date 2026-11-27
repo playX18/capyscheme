@@ -230,6 +230,36 @@ pub(crate) unsafe extern "C" fn capy_call_slow(th: MutatorPointer) -> *const u8 
                 let link = &(*def::OpTailCallSelf::metadata_ptr(md, op.metadata_id)).link;
                 (fp, op.argc.0 as usize, link)
             }
+            // The template already wrote the callee frame's return address and
+            // resume pc (`call_return_point`), the return address of
+            // compiled code included.
+            OpcodeId::OpApply => {
+                let (op, _) = def::OpApply::decode_from_ptr(operands, width);
+                let frame = fp.add(op.base.0 as usize);
+                let link = &(*def::OpApply::metadata_ptr(md, op.metadata_id)).link;
+                return stage_control(
+                    th,
+                    slow::control_apply(
+                        mutator,
+                        frame,
+                        op.argc.0 as usize,
+                        Some(apply_site(link, md)),
+                    ),
+                );
+            }
+            OpcodeId::OpTailApply => {
+                let (op, _) = def::OpTailApply::decode_from_ptr(operands, width);
+                let link = &(*def::OpTailApply::metadata_ptr(md, op.metadata_id)).link;
+                return stage_control(
+                    th,
+                    slow::control_apply(
+                        mutator,
+                        fp,
+                        op.argc.0 as usize,
+                        Some(apply_site(link, md)),
+                    ),
+                );
+            }
             _ => unreachable!("capy_call_slow away from a call"),
         };
 
@@ -245,6 +275,19 @@ pub(crate) unsafe extern "C" fn capy_call_slow(th: MutatorPointer) -> *const u8 
             th,
             slow::control_enter(mutator, frame, callee, argc, Some(site)),
         )
+    }
+}
+
+/// The link of an `apply`/`tail-apply` site, with its code buffer, counting
+/// the call.
+unsafe fn apply_site(
+    link: &'static crate::runtime::interp::profile::CallLinkInfo,
+    md: *mut u8,
+) -> slow::EnterLink<'static> {
+    link.note_call(None);
+    slow::EnterLink {
+        link,
+        buffer: Value::from_gc(unsafe { CodeBuffer::md_buffer(md) }),
     }
 }
 

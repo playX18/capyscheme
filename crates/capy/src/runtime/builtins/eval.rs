@@ -4,9 +4,43 @@ pub(crate) fn init_eval<'gc>(ctx: MutationContext<'gc>) {
     eval_ops::register(ctx);
 }
 
-fn is_applicable(value: Value<'_>) -> bool {
+pub(crate) fn is_applicable(value: Value<'_>) -> bool {
     value.is::<Closure>()
 }
+
+/// What `list` is as the last argument of `apply`.
+pub(crate) enum ListShape {
+    /// A proper list of this many elements.
+    Proper(usize),
+    /// It ends in something other than `()`.
+    Improper,
+    /// It has a cycle. Printing it would not end, so the error does not show it.
+    Circular,
+}
+
+pub(crate) fn list_shape(list: Value<'_>) -> ListShape {
+    let mut count = 0usize;
+    let mut cursor = list;
+    // Floyd's cycle check: `slow` moves one pair for every two of `cursor`.
+    let mut slow = list;
+    while !cursor.is_null() {
+        if !cursor.is_pair() {
+            return ListShape::Improper;
+        }
+        count += 1;
+        cursor = cursor.cdr();
+        if count % 2 == 0 {
+            slow = slow.cdr();
+            if cursor.is_pair() && cursor == slow {
+                return ListShape::Circular;
+            }
+        }
+    }
+    ListShape::Proper(count)
+}
+
+pub(crate) const LAST_NOT_LIST: &str = "last argument must be a list";
+pub(crate) const LAST_CIRCULAR: &str = "last argument must be a list, but it is circular";
 
 #[scheme(path=capy)]
 pub mod eval_ops {
@@ -30,13 +64,12 @@ pub mod eval_ops {
         }
         let fixed = &rands[..rands.len() - 1];
         let rest = rands[rands.len() - 1];
-        let mut rest_len = 0usize;
-        let mut cursor = rest;
-        while !cursor.is_null() {
-            if !cursor.is_pair() {
+        let rest_len = match list_shape(rest) {
+            ListShape::Proper(count) => count,
+            ListShape::Improper => {
                 call.wrong_argument_violation(
                     "apply",
-                    "last argument must be a list",
+                    LAST_NOT_LIST,
                     Some(rest),
                     Some(rands.len() - 1),
                     rands.len(),
@@ -44,9 +77,11 @@ pub mod eval_ops {
                 );
                 return Err(Value::undefined());
             }
-            rest_len += 1;
-            cursor = cursor.cdr();
-        }
+            ListShape::Circular => {
+                call.wrong_argument_violation("apply", LAST_CIRCULAR, None, None, rands.len(), rands);
+                return Err(Value::undefined());
+            }
+        };
         let mut args = Vec::with_capacity(fixed.len() + rest_len);
         args.extend_from_slice(fixed);
         let mut items = rest;

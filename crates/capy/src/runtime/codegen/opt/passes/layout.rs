@@ -1,23 +1,13 @@
 //! Block layout and fallthrough ordering.
 //!
-//! Runs on the LIR after register allocation, before emission. The allocator
-//! numbers blocks in reverse postorder; this pass replaces that order with a
-//! depth-first trace that keeps a block's most frequent successor next, so
-//! the emitter's existing fallthrough checks drop the jump and let a
-//! conditional branch fall through on its hotter arm.
+//! Runs on the LIR after register allocation, before emission.
 //!
-//! No branch profile is recorded at the moment, so the only frequency source in the
-//! builder is the arithmetic profile word, which says nothing about control
-//! flow. Weights are therefore static and conservative:
+//! Weights so far are static and conservative:
 //!
 //! - the entry starts hot;
 //! - every block of a natural loop (found from DFS back edges) is scaled up;
 //! - cold blocks (weight 1) stay reachable only through the trace that needs
 //!   them, which puts them after the hot path (hot/cold splitting).
-//!
-//! Switch cases are not reordered: a dense table is indexed by key, and a
-//! sparse tree must stay sorted. Branch arms are ordered only by the static
-//! weight, a no-op when they tie.
 
 use cranelift_entity::SecondaryMap;
 

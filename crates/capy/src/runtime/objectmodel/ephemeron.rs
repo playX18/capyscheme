@@ -79,4 +79,3 @@ unsafe impl<'gc> ClassTagged for Ephemeron<'gc> {
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::EPHEMERON];
     const TYPE_NAME: &'static str = "#<ephemeron>";
 }
-

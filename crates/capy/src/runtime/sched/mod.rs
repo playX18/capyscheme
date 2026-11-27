@@ -21,6 +21,7 @@ compile_error!("capy::runtime::sched supports only Unix on x86_64 and AArch64");
 
 pub(crate) mod blocking;
 pub(crate) mod context;
+pub(crate) mod introspect;
 pub(crate) mod preempt;
 pub(crate) mod queue;
 pub(crate) mod reactor;
@@ -33,6 +34,6 @@ mod cabi;
 
 pub use preempt::preemptible;
 pub use scheduler::{
-    Builder, Config, FdWait, Interest, JoinError, JoinHandle, Killed, Scheduler, SchedContext,
+    Builder, Config, FdWait, Interest, JoinError, JoinHandle, Killed, SchedContext, Scheduler,
     VirtualThreadId, Waker, spawn,
 };

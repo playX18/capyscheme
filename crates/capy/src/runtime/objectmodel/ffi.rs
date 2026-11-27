@@ -5,7 +5,6 @@ use super::*;
 use crate::heap::mmtk::util::Address;
 use crate::heap::object::{ClassId, builtin_class_ids, class_header_word};
 
-
 /// A wrapped C pointer. This allows us to protect
 /// from accidental UBs, but we won't take away
 /// the ability to do unsafe things.

@@ -217,6 +217,68 @@ impl LirFunc {
                 self.require_repr(*rhs, VRepr::RawInt64)?;
                 self.require_repr(*dst, VRepr::RawInt64)?;
             }
+            LirInst::Int32Wrapping { dst, lhs, rhs, .. }
+            | LirInst::Bitwise {
+                wide: false,
+                dst,
+                lhs,
+                rhs,
+                ..
+            } => {
+                self.require_repr(*lhs, RawInt)?;
+                self.require_repr(*rhs, RawInt)?;
+                self.require_repr(*dst, RawInt)?;
+            }
+            LirInst::Bitwise {
+                wide: true,
+                dst,
+                lhs,
+                rhs,
+                ..
+            } => {
+                self.require_repr(*lhs, VRepr::RawInt64)?;
+                self.require_repr(*rhs, VRepr::RawInt64)?;
+                self.require_repr(*dst, VRepr::RawInt64)?;
+            }
+            LirInst::ShiftImm { wide, dst, src, .. } => {
+                let repr = if *wide { VRepr::RawInt64 } else { RawInt };
+                self.require_repr(*src, repr)?;
+                self.require_repr(*dst, repr)?;
+            }
+            LirInst::ShlOvf { dst, src, .. } => {
+                self.require_repr(*src, RawInt)?;
+                self.require_repr(*dst, RawInt)?;
+            }
+            LirInst::ShiftReg {
+                dst, src, count, ..
+            }
+            | LirInst::ShlOvfReg {
+                dst, src, count, ..
+            } => {
+                self.require_repr(*src, RawInt)?;
+                self.require_repr(*count, RawInt)?;
+                self.require_repr(*dst, RawInt)?;
+            }
+            LirInst::TagChar { dst, src } => {
+                self.require_repr(*src, RawInt)?;
+                self.require_repr(*dst, Tagged)?;
+            }
+            LirInst::LoadBytes {
+                elem,
+                dst,
+                base,
+                index,
+            } => {
+                self.require(*base, word, "a word")?;
+                self.require_repr(*index, RawInt)?;
+                let repr =
+                    if elem.result_type() == crate::runtime::codegen::opt::ir::types::Type::Int64 {
+                        VRepr::RawInt64
+                    } else {
+                        RawInt
+                    };
+                self.require_repr(*dst, repr)?;
+            }
             LirInst::BoxInt64 { dst, src } => {
                 self.require_repr(*src, VRepr::RawInt64)?;
                 self.require_repr(*dst, Tagged)?;
@@ -232,6 +294,15 @@ impl LirFunc {
             LirInst::TruncateI64ToI32 { dst, src } => {
                 self.require_repr(*src, VRepr::RawInt64)?;
                 self.require_repr(*dst, VRepr::RawInt)?;
+            }
+            LirInst::Select { dst, cond, a, b } => {
+                self.require_repr(*cond, RawBits)?;
+                let repr = self.repr(*dst);
+                if repr.class() != RegClass::Gpr {
+                    return Err(format!("select {dst} is not a general-purpose word"));
+                }
+                self.require_repr(*a, repr)?;
+                self.require_repr(*b, repr)?;
             }
             LirInst::IntCmp { cmp, dst, lhs, rhs } => {
                 // Equality also compares Scheme words bit for bit, as `eq?`
@@ -277,7 +348,7 @@ impl LirFunc {
                 self.require_repr(*src, Double)?;
                 self.require_repr(*dst, Double)?;
             }
-            LirInst::SqrtF64 { dst, src } => {
+            LirInst::SqrtF64 { dst, src } | LirInst::AbsF64 { dst, src } => {
                 self.require_repr(*src, Double)?;
                 self.require_repr(*dst, Double)?;
             }
@@ -425,6 +496,10 @@ impl LirFunc {
                 self.require_repr(*src_lo, VRepr::RawInt128)?;
                 self.require_repr(*src_hi, VRepr::RawInt64)?;
             }
+            LirInst::BoxUInt64 { dst, src } => {
+                self.require_repr(*src, VRepr::RawInt64)?;
+                self.require_repr(*dst, Tagged)?;
+            }
             LirInst::BoxInt128 {
                 dst,
                 src_lo,
@@ -460,6 +535,21 @@ impl LirFunc {
                 self.require(*base, word, "a word")?;
                 self.require_repr(*index, RawInt)?;
                 self.require_repr(*src, RawInt)?;
+            }
+            LirInst::StoreBytes {
+                elem,
+                base,
+                index,
+                src,
+            } => {
+                self.require(*base, word, "a word")?;
+                self.require_repr(*index, RawInt)?;
+                let repr = if elem.bytes == 8 {
+                    VRepr::RawInt64
+                } else {
+                    RawInt
+                };
+                self.require_repr(*src, repr)?;
             }
             LirInst::SlotGet { dst, obj, .. } => {
                 self.require_repr(*obj, Tagged)?;

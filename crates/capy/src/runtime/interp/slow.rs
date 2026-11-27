@@ -27,7 +27,7 @@ use super::profile::{
 };
 use crate::bytecode::def::{self, *};
 use crate::heap::Gc;
-use crate::heap::alloc::{Array, ArrayRef};
+use crate::heap::alloc::ArrayRef;
 use crate::heap::object::builtin_class_ids;
 use crate::runtime::MutationContext;
 #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -139,13 +139,23 @@ pub(crate) unsafe fn generic_link(ip: Ip, md: *mut u8) -> &'static CallLinkInfo 
                 let (op, _) = def::OpTailCallSelf::decode_from_ptr(operands, width);
                 &(*def::OpTailCallSelf::metadata_ptr(md, op.metadata_id)).link
             }
+            OpcodeId::OpApply => {
+                let (op, _) = def::OpApply::decode_from_ptr(operands, width);
+                &(*def::OpApply::metadata_ptr(md, op.metadata_id)).link
+            }
+            OpcodeId::OpTailApply => {
+                let (op, _) = def::OpTailApply::decode_from_ptr(operands, width);
+                &(*def::OpTailApply::metadata_ptr(md, op.metadata_id)).link
+            }
             _ => unreachable!("call site link away from a call"),
         }
     }
 }
 
-pub(crate) struct GenericCacheHit<'gc> {
-    pub(crate) methods: ArrayRef<'gc, Gc<'gc, MethodDescriptor<'gc>>>,
+/// Cached dispatch hit.
+pub(crate) enum GenericCacheHit<'gc> {
+    Methods(ArrayRef<'gc, Gc<'gc, MethodDescriptor<'gc>>>),
+    Emf(Gc<'gc, Closure<'gc>>),
 }
 
 /// The cached method chain when the call in `fp` hits `link`'s dispatch
@@ -160,7 +170,12 @@ pub(crate) unsafe fn check_generic_cache<'gc>(
     unsafe {
         let entry = link.read_generic()?;
         let generic = callee.downcast::<GenericDescriptor>();
-        if !Gc::ptr_eq(entry.generic, generic) {
+        // Check generic flags.
+        if !Gc::ptr_eq(entry.generic, generic)
+            || entry.emf.is_some() == generic.flags().simple()
+            || generic.flags().resolved_keys()
+            || generic.flags().has_eql()
+        {
             return None;
         }
         if entry.epoch != generic.epoch() || argc < entry.min_argc as usize {
@@ -178,12 +193,87 @@ pub(crate) unsafe fn check_generic_cache<'gc>(
                 return None;
             }
         }
-        let methods = entry.methods;
+        if let Some(emf) = entry.emf {
+            return Some(GenericCacheHit::Emf(emf));
+        }
+        let methods = entry.methods?;
         if methods.is_empty() {
             return None;
         }
-        Some(GenericCacheHit { methods })
+        Some(GenericCacheHit::Methods(methods))
     }
+}
+
+/// Cache EMF.
+pub(crate) fn fill_generic_emf<'gc>(
+    ctx: MutationContext<'gc>,
+    link: &CallLinkInfo,
+    buffer: Value<'gc>,
+    generic: Gc<'gc, GenericDescriptor<'gc>>,
+    args: &[Value<'gc>],
+    epoch: u32,
+    emf: Value<'gc>,
+) {
+    if !emf.is::<Closure>() || epoch & 1 != 0 {
+        return;
+    }
+    let key_len = generic.max_required_dispatch_args();
+    if key_len > 2
+        || generic.flags().simple()
+        || generic.flags().resolved_keys()
+        || generic.flags().has_eql()
+    {
+        return;
+    }
+    for method in generic.methods().iter() {
+        if method.specializers().len() > key_len || method.required_arg_count() > args.len() {
+            return;
+        }
+    }
+    let mut class_ids = [0u32; 2];
+    for (index, arg) in args.iter().take(key_len).enumerate() {
+        let Some(class_id) = GenericDescriptor::dispatch_class_id(*arg) else {
+            return;
+        };
+        class_ids[index] = class_id.bits();
+    }
+    let barrier = Gc::write(ctx, buffer.downcast::<CodeBuffer>());
+    link.fill_generic_emf(
+        barrier,
+        generic,
+        epoch,
+        &class_ids[..key_len],
+        args.len() as u32,
+        emf.downcast::<Closure>(),
+    );
+}
+
+/// Enter EMF.
+unsafe fn enter_emf<'gc>(ctx: MutationContext<'gc>, emf: Value<'gc>, argc: usize) -> Work<'gc> {
+    unsafe {
+        let stack = &ctx.tc().stack;
+        stack::reserve(ctx, argc + 1 + 8);
+        let fp = stack.fp.get();
+        std::ptr::copy(fp.add(2), fp.add(3), argc);
+        *fp.add(1) = emf;
+        *fp.add(2) = Value::new(false);
+        Work::Enter {
+            fp,
+            callee: emf,
+            argc: argc + 1,
+            site: None,
+        }
+    }
+}
+
+/// Next-method lead.
+fn next_method_lead<'gc>(
+    ctx: MutationContext<'gc>,
+    generic: Gc<'gc, GenericDescriptor<'gc>>,
+    methods: ArrayRef<'gc, Gc<'gc, MethodDescriptor<'gc>>>,
+    args: &[Value<'gc>],
+) -> Value<'gc> {
+    NextMethodDescriptor::lead(ctx, generic, methods, 0, Value::empty(), args)
 }
 
 /// Cache a dispatch the miss path computed. Skips generics the key cannot
@@ -198,7 +288,14 @@ pub(crate) fn fill_generic_cache<'gc>(
     args: &[Value<'gc>],
 ) {
     let key_len = generic.max_required_dispatch_args();
-    if key_len > 2 {
+    // Keys of a resolved generic are not the header ids this cache checks, and
+    // an eql generic's methods depend on the argument objects. A combined
+    // generic's first method is not its effective method.
+    if key_len > 2
+        || !generic.flags().simple()
+        || generic.flags().resolved_keys()
+        || generic.flags().has_eql()
+    {
         return;
     }
     // Every method must be decided by the key: nothing specialized past
@@ -1386,6 +1483,32 @@ fn enter_step<'gc>(
     }
 }
 
+/// Rewrite the frame at `fp` (a call of the generic `callee` with `argc` arguments that found no
+/// method) into a call of `(no-applicable-method callee . args)`. `None` before boot has
+/// installed that hook, when the caller raises the error itself.
+unsafe fn enter_no_applicable_method<'gc>(
+    ctx: MutationContext<'gc>,
+    callee: Value<'gc>,
+    argc: usize,
+) -> Option<Work<'gc>> {
+    let hook = ctx.try_hook(crate::runtime::hooks::Hook::NoApplicableMethod)?;
+    unsafe {
+        let stack = &ctx.tc().stack;
+        stack::reserve(ctx, argc + 1 + 8);
+        let fp = stack.fp.get();
+        // The generic goes in front of its arguments.
+        std::ptr::copy(fp.add(2), fp.add(3), argc);
+        *fp.add(2) = callee;
+        *fp.add(1) = hook;
+        Some(Work::Enter {
+            fp,
+            callee: hook,
+            argc: argc + 1,
+            site: None,
+        })
+    }
+}
+
 /// Enter a native closure. `fp[0]` is the native's return address and
 /// `fp[1]` the closure, the arguments sit above at `fp[2..]`. The native
 /// stages a follow-up call (`Continue`), raises out of frame (`Raise`, with
@@ -1529,14 +1652,101 @@ unsafe fn call_non_closure_step<'gc>(
         stack.sp.set(fp.add(2 + argc));
         if callee.is::<GenericDescriptor>() {
             let generic = callee.downcast::<GenericDescriptor>();
+            if !generic.flags().simple() {
+                if let Some(link) = site.as_ref().map(|site| site.link)
+                    && let Some(GenericCacheHit::Emf(emf)) =
+                        check_generic_cache(link, callee, fp, argc)
+                {
+                    return enter_emf(ctx, emf.into(), argc);
+                }
+
+                // The epoch is read before the lookup, so a fill made from it
+                // is refused at the next hit if a change came in between.
+                let epoch = generic.epoch();
+                // A cached effective method is entered with `#f` as its
+                // next-method argument, as the dispatch table enters a body.
+                if let Some(emf) = crate::runtime::objectmodel::class::GenericDescriptor::cached_emf(
+                    generic,
+                    std::slice::from_raw_parts(fp.add(2), argc),
+                ) {
+                    if let Some(site) = site.as_ref() {
+                        let args = std::slice::from_raw_parts(fp.add(2), argc);
+                        fill_generic_emf(ctx, site.link, site.buffer, generic, args, epoch, emf);
+                    }
+                    return enter_emf(ctx, emf, argc);
+                }
+                // Combined methods: the effective method is built by Scheme
+                // (uncached here), with the generic as its first argument.
+                let frame_args = std::slice::from_raw_parts(fp.add(2), argc);
+                let epoch = generic.epoch();
+                let condition = match crate::runtime::objectmodel::class::GenericDescriptor::applicable_methods_at(
+                    ctx, generic, frame_args, epoch,
+                ) {
+                    Ok(methods) => {
+                        let (hook, full) =
+                            crate::runtime::objectmodel::class::generic::effective_method_call(
+                                ctx, callee, epoch, &methods, frame_args,
+                            );
+                        stack::reserve(ctx, full.len() + 8);
+                        let fp = stack.fp.get();
+                        *fp.add(1) = hook;
+                        for (index, value) in full.iter().enumerate() {
+                            *fp.add(2 + index) = *value;
+                        }
+                        return Work::Enter {
+                            fp,
+                            callee: hook,
+                            argc: full.len(),
+                            site: None,
+                        };
+                    }
+                    Err(GenericDispatchError::NoApplicableMethod)
+                        if !generic.fallback().is_empty() =>
+                    {
+                        let body = generic.fallback();
+                        if body.is::<Closure>() {
+                            stack::reserve(ctx, argc + 8);
+                            let fp = stack.fp.get();
+                            *fp.add(1) = body;
+                            return Work::Enter {
+                                fp,
+                                callee: body,
+                                argc,
+                                site: None,
+                            };
+                        }
+                        thunks::non_applicable(ctx, body)
+                    }
+                    Err(GenericDispatchError::Arity) => thunks::make_assertion_violation(
+                        ctx,
+                        Value::new(false),
+                        Str::new(ctx, "not enough dispatch arguments", true).into(),
+                        &[callee],
+                    ),
+                    Err(GenericDispatchError::NoApplicableMethod) => {
+                        if let Some(work) = enter_no_applicable_method(ctx, callee, argc) {
+                            return work;
+                        }
+                        thunks::make_assertion_violation(
+                            ctx,
+                            Value::new(false),
+                            Str::new(ctx, "no applicable method", true).into(),
+                            &[callee],
+                        )
+                    }
+                };
+                ctx.state().exit_value.set(condition);
+                return Work::RaiseInFrame { fp };
+            }
             let link = site.as_ref().map(|site| site.link);
             // The caller's arguments stay on the stack and are read through a
             // slice: the stack never moves except in `reserve`, after which
             // `fp` is reloaded, so no copy is needed.
             if let Some(link) = link
-                && let Some(hit) = check_generic_cache(link, callee, fp, argc)
+                && let Some(GenericCacheHit::Methods(methods)) =
+                    check_generic_cache(link, callee, fp, argc)
             {
-                let body = hit.methods[0].body();
+                let body = methods[0].body();
                 if body.is::<Closure>() {
                     // Reserve first: nothing is held across it, and everything
                     // below only reads the reloaded frame. The shifted frame is
@@ -1544,15 +1754,16 @@ unsafe fn call_non_closure_step<'gc>(
                     stack::reserve(ctx, argc + 1 + 8);
                     let fp = stack.fp.get();
                     let frame_args = std::slice::from_raw_parts(fp.add(2), argc);
-                    let args_array = Array::from_slice(ctx, frame_args);
-                    let next = NextMethodDescriptor::new(ctx, generic, hit.methods, args_array, 0);
+                    // A `NO_NEXT` body never reads its next method, so it
+                    // gets `#f` and no descriptor is allocated.
+                    let lead = next_method_lead(ctx, generic, methods, frame_args);
                     let argc = argc + 1;
                     *fp.add(1) = body;
                     // Shift right by one first (`copy` tolerates the overlap),
                     // then plant the next method: writing it first would
                     // destroy the argument being shifted.
                     std::ptr::copy(frame_args.as_ptr(), fp.add(3), argc - 1);
-                    *fp.add(2) = next.into();
+                    *fp.add(2) = lead;
                     return Work::Enter {
                         fp,
                         callee: body,
@@ -1565,9 +1776,13 @@ unsafe fn call_non_closure_step<'gc>(
             // method chain to fill the cache, and a fallback call must not
             // fill it.
             let frame_args = std::slice::from_raw_parts(fp.add(2), argc);
-            let condition = match GenericDescriptor::next_method_chain(ctx, generic, frame_args) {
-                Ok(next) => {
-                    let body = next.body();
+            let applicable = match GenericDescriptor::applicable_methods(ctx, generic, frame_args) {
+                Ok(methods) if methods.is_empty() => Err(GenericDispatchError::NoApplicableMethod),
+                other => other,
+            };
+            let condition = match applicable {
+                Ok(methods) => {
+                    let body = methods[0].body();
                     if body.is::<Closure>() {
                         if let Some(site) = site.as_ref() {
                             fill_generic_cache(
@@ -1575,7 +1790,7 @@ unsafe fn call_non_closure_step<'gc>(
                                 site.link,
                                 site.buffer,
                                 generic,
-                                next.methods(),
+                                methods,
                                 frame_args,
                             );
                         }
@@ -1583,11 +1798,12 @@ unsafe fn call_non_closure_step<'gc>(
                         let fp = stack.fp.get();
                         // Re-read past the reserve: the stack may have moved.
                         let frame_args = std::slice::from_raw_parts(fp.add(2), argc);
+                        let lead = next_method_lead(ctx, generic, methods, frame_args);
                         let argc = argc + 1;
                         *fp.add(1) = body;
                         // Shift before planting the next method (see above).
                         std::ptr::copy(frame_args.as_ptr(), fp.add(3), argc - 1);
-                        *fp.add(2) = next.into();
+                        *fp.add(2) = lead;
                         return Work::Enter {
                             fp,
                             callee: body,
@@ -1620,12 +1836,17 @@ unsafe fn call_non_closure_step<'gc>(
                     Str::new(ctx, "not enough dispatch arguments", true).into(),
                     &[callee],
                 ),
-                Err(GenericDispatchError::NoApplicableMethod) => thunks::make_assertion_violation(
-                    ctx,
-                    Value::new(false),
-                    Str::new(ctx, "no applicable method", true).into(),
-                    &[callee],
-                ),
+                Err(GenericDispatchError::NoApplicableMethod) => {
+                    if let Some(work) = enter_no_applicable_method(ctx, callee, argc) {
+                        return work;
+                    }
+                    thunks::make_assertion_violation(
+                        ctx,
+                        Value::new(false),
+                        Str::new(ctx, "no applicable method", true).into(),
+                        &[callee],
+                    )
+                }
             };
             ctx.state().exit_value.set(condition);
             return Work::RaiseInFrame { fp };
@@ -1944,6 +2165,134 @@ pub(crate) fn control_enter<'gc>(
             site,
         },
     )
+}
+
+/// The condition-raising tail call `apply` makes for a bad argument, as the
+/// call `(assertion-violation 'apply message [irritants])` from the frame at
+/// `frame`. `rands` are the arguments of the `apply` call after the
+/// procedure. The message and irritants are the ones the procedure `apply`
+/// builds (`NativeCall::wrong_argument_violation`).
+unsafe fn apply_violation<'gc>(
+    ctx: MutationContext<'gc>,
+    frame: Slot<'gc>,
+    description: &str,
+    // The value shown in the message and its position, as `wrong_argument_violation`'s.
+    shown: Option<(Value<'gc>, usize)>,
+    rands: &[Value<'gc>],
+) -> Work<'gc> {
+    unsafe {
+        let message: Value<'gc> = match shown {
+            Some((value, position)) => {
+                Str::new(ctx, &format!("{description}, got {value}, as argument {}", position + 1), true)
+                    .into()
+            }
+            None => Str::new(ctx, description, true).into(),
+        };
+        let who = Value::new(Symbol::from_str(ctx, "apply"));
+        let mut irritants = Value::null();
+        if shown.is_none() || rands.len() >= 2 {
+            for &arg in rands.iter().rev() {
+                irritants = Value::cons(ctx, arg, irritants);
+            }
+        }
+        let hook = ctx.hook(crate::runtime::hooks::Hook::AssertionViolation);
+        // The frame holds at least the callee and one argument; the call
+        // below may need three.
+        let stack = &ctx.tc().stack;
+        stack.fp.set(frame);
+        stack.sp.set(frame.add(2 + rands.len()));
+        stack::reserve(ctx, 8);
+        let frame = stack.fp.get();
+        *frame.add(1) = hook;
+        *frame.add(2) = who;
+        *frame.add(3) = message;
+        let argc = if irritants.is_null() {
+            2
+        } else {
+            *frame.add(4) = irritants;
+            3
+        };
+        Work::Enter {
+            fp: frame,
+            callee: hook,
+            argc,
+            site: None,
+        }
+    }
+}
+
+/// `(apply f a ... lst)` at an `apply` or `tail-apply`: the callee is in
+/// `frame[1]` and the `argc` arguments at `frame[2..]`, the last of them the
+/// list. Spreads the list over the argument area in place, growing the stack
+/// first when it does not fit, and enters the callee with the new count. Does
+/// not allocate. A callee that is not a procedure, and a last argument that
+/// is not a proper list (a circular list is not), raise what the procedure
+/// `apply` raises.
+pub(crate) unsafe fn control_apply<'gc>(
+    ctx: MutationContext<'gc>,
+    frame: Slot<'gc>,
+    argc: usize,
+    site: Option<EnterLink<'gc>>,
+) -> Control<'gc> {
+    unsafe {
+        let stack = &ctx.tc().stack;
+        stack.fp.set(frame);
+        stack.sp.set(frame.add(2 + argc));
+        let work = apply_work(ctx, frame, argc, site);
+        drive(ctx, work)
+    }
+}
+
+unsafe fn apply_work<'gc>(
+    ctx: MutationContext<'gc>,
+    frame: Slot<'gc>,
+    argc: usize,
+    site: Option<EnterLink<'gc>>,
+) -> Work<'gc> {
+    unsafe {
+        let callee = *frame.add(1);
+        debug_assert!(argc >= 1);
+        if !callee.is::<Closure>() {
+            return apply_violation(
+                ctx,
+                frame,
+                "attempt to call non-procedure",
+                Some((callee, 0)),
+                &[callee],
+            );
+        }
+        let fixed = argc - 1;
+        let list = *frame.add(2 + fixed);
+        use crate::runtime::builtins::eval::{LAST_CIRCULAR, LAST_NOT_LIST, ListShape, list_shape};
+        let count = match list_shape(list) {
+            ListShape::Proper(count) => count,
+            ListShape::Improper => {
+                let rands = std::slice::from_raw_parts(frame.add(2), argc).to_vec();
+                return apply_violation(ctx, frame, LAST_NOT_LIST, Some((list, fixed)), &rands);
+            }
+            ListShape::Circular => {
+                let rands = std::slice::from_raw_parts(frame.add(2), argc).to_vec();
+                return apply_violation(ctx, frame, LAST_CIRCULAR, None, &rands);
+            }
+        };
+        let new_argc = fixed + count;
+        let mut frame = frame;
+        if count > 1 {
+            stack::reserve(ctx, new_argc + 2 + 8);
+            frame = ctx.tc().stack.fp.get();
+        }
+        let mut cursor = list;
+        for index in 0..count {
+            *frame.add(2 + fixed + index) = cursor.car();
+            cursor = cursor.cdr();
+        }
+        Work::Enter {
+            fp: frame,
+            callee,
+            argc: new_argc,
+            site,
+        }
+    }
 }
 
 /// Run the native closure `clo` with `argc` arguments in `fp[2..]`.
@@ -2347,6 +2696,16 @@ pub(crate) unsafe fn control_enter_overflow<'gc>(
         };
         tc.stack.fp.set(fp);
         tc.stack.sp.set(fp.add(2 + argc));
+        if let Some(bytes) = stack::stack_overflow_due(ctx) {
+            let condition = thunks::make_assertion_violation(
+                ctx,
+                Value::new(false),
+                Str::new(ctx, "stack overflow", true).into(),
+                &[Value::new((bytes >> 10) as i32)],
+            );
+            ctx.state().exit_value.set(condition);
+            return drive(ctx, Work::RaiseInFrame { fp });
+        }
         let fp = stack::overflow(ctx, size + 8);
         let callee = *fp.add(1);
 

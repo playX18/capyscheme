@@ -29,7 +29,7 @@ pub fn sni_globals() -> &'static OopStorage {
 }
 
 thread_local! {
-    /// Pending exception for the current mutator thread.
+    /// Pending exception of the current OS thread.
     static PENDING_EXCEPTION: RefCell<Option<OopHandle>> = const { RefCell::new(None) };
 }
 

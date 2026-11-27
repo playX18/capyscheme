@@ -8,8 +8,8 @@
 
 use std::ptr;
 
-use crate::runtime::sni::sni_globals;
 use crate::runtime::objectmodel::Value;
+use crate::runtime::sni::sni_globals;
 
 use super::call::sni_call_n;
 use super::env::{SCM_REF_NULL, ScmRef, SniEnv, env_mut, ref_value};
@@ -34,9 +34,9 @@ pub struct SniContinuation {
 
 fn alloc_result_slot() -> ScmRef {
     let storage = sni_globals();
-    let ptr = storage
-        .allocate()
-        .expect("SNI continuation result root allocation failed");
+    let Some(ptr) = storage.allocate() else {
+        return SCM_REF_NULL;
+    };
     // SAFETY: freshly allocated empty slot.
     unsafe {
         *ptr = Value::null();
@@ -102,9 +102,13 @@ pub unsafe extern "C" fn sni_cont_alloc(
     data: *mut libc::c_void,
     drop_data: Option<SniDropDataFn>,
 ) -> *mut SniContinuation {
+    let result = alloc_result_slot();
+    if result.is_null() {
+        return std::ptr::null_mut();
+    }
     let c = Box::new(SniContinuation {
         next: start,
-        result: alloc_result_slot(),
+        result,
         data,
         drop_data,
     });

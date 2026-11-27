@@ -5,7 +5,6 @@ use crate::heap::object::{ClassId, builtin_class_ids, class_header_word};
 use crate::heap::{Visitor, WeakProcessor};
 use std::sync::Arc;
 
-
 #[repr(C)]
 pub struct Poller {
     pub(crate) inner: Arc<polling::Poller>,

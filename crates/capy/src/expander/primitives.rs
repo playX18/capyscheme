@@ -7,350 +7,12 @@ use crate::heap::alloc::Array;
 use crate::heap::cell::Lock;
 use crate::runtime::MutationContext;
 use crate::runtime::objectmodel::Symbol;
+use crate::runtime::objectmodel::Value;
 use crate::runtime::prelude::*;
 use crate::runtime::variable::Variable;
-use crate::{runtime::objectmodel::Value, static_symbols};
 use std::collections::HashMap;
 
-macro_rules! prim_names {
-    ($($sname: ident =  $name: literal)*) => {
-        paste::paste! {
-            static_symbols! {
-                $(
-                    [<SYM_ $sname: upper>] = $name
-                )*
-            }
-
-            pub fn for_each_prim_name<'gc, F: FnMut(&'static str, Value<'gc>)>(ctx: MutationContext<'gc>, mut f: F) {
-                $(
-                    let name = paste::paste! {
-                        [<sym_ $sname: lower>](ctx)
-                    };
-                    f($name, name.into());
-                )*
-            }
-        }
-    };
-}
-
-prim_names!(
-    apply = "apply"
-    call_with_values = "call-with-values"
-    ccm = "current-continuation-marks"
-    set_ccm = "$set-attachments!"
-
-    values = "values"
-    eqp = "eq?"
-    eqvp = "eqv?"
-    equalp = "equal?"
-    memq = "memq"
-    memv = "memv"
-    // math
-    number_eq = "="
-    number_lt = "<"
-    number_le = "<="
-    number_gt = ">"
-    number_ge = ">="
-    plus = "+"
-    minus = "-"
-    multiply = "*"
-    div = "/"
-    quotient = "quotient"
-    remainder = "remainder"
-    modulo = "modulo"
-    exact_to_inexact = "exact->inexact"
-    inexact_to_exact = "inexact->exact"
-    // The R7RS-preferred names. Libraries re-export these (sometimes renamed
-    // to the R5RS names above), and the bindings are the same native
-    // procedures as the primitives, so a call must compile to the primitive.
-    inexact = "inexact"
-    exact = "exact"
-    expt = "expt"
-    ash = "ash"
-    //logand = "logand"
-    //logior = "logior"
-    //logxor = "logxor"
-    //lognot = "lognot"
-    logtest = "logtest"
-    logibtp = "logbit?"
-    sqrt = "sqrt"
-    abs = "abs"
-    floor = "floor"
-    ceiling = "ceiling"
-    sin = "sin"
-    cos = "cos"
-    tan = "tan"
-    asin = "asin"
-    acos = "acos"
-    atan = "atan"
-
-    // Fixnum / flonum Tier-1 (checked, ovf)
-    fx_add = "fx+"
-    fx_sub = "fx-"
-    fx_mul = "fx*"
-    fx_add_ovf = "fx+/ovf?"
-    fx_sub_ovf = "fx-/ovf?"
-    fx_mul_ovf = "fx*/ovf?"
-    fx_lt = "fx<?"
-    fx_le = "fx<=?"
-    fx_gt = "fx>?"
-    fx_ge = "fx>=?"
-    fx_eq = "fx=?"
-    fxand = "fxand"
-    fxior = "fxior"
-    fxxor = "fxxor"
-    fxnot = "fxnot"
-    fxlogand = "fxlogand"
-    fxlogior = "fxlogior"
-    fxlogxor = "fxlogxor"
-    fx_ashl = "fxarithmetic-shift-left"
-    fx_ashr = "fxarithmetic-shift-right"
-    fxzerop = "fxzero?"
-    fxpositivep = "fxpositive?"
-    fxnegativep = "fxnegative?"
-    fxoddp = "fxodd?"
-    fxevenp = "fxeven?"
-    fxmin = "fxmin"
-    fxmax = "fxmax"
-    fl_add = "fl+"
-    fl_sub = "fl-"
-    fl_mul = "fl*"
-    fl_div = "fl/"
-    fl_lt = "fl<?"
-    fl_le = "fl<=?"
-    fl_gt = "fl>?"
-    fl_ge = "fl>=?"
-    fl_eq = "fl=?"
-    flzerop = "flzero?"
-    flpositivep = "flpositive?"
-    flnegativep = "flnegative?"
-    flnanp = "flnan?"
-    flinfinitep = "flinfinite?"
-    flfinitep = "flfinite?"
-    flmin = "flmin"
-    flmax = "flmax"
-    flabs = "flabs"
-    flfloor = "flfloor"
-    flceiling = "flceiling"
-    fltruncate = "fltruncate"
-    flround = "flround"
-    flsin = "flsin"
-    flcos = "flcos"
-    fltan = "fltan"
-    flexp = "flexp"
-    fllog = "fllog"
-    flasin = "flasin"
-    flacos = "flacos"
-    flsqrt = "flsqrt"
-    flatan = "flatan"
-    // booleans
-    not = "not"
-
-    // predicates
-    fixnump = "fixnum?"
-    flonump = "flonum?"
-    pairp = "pair?"
-    nullp = "null?"
-    listp = "list?"
-    symbolp = "symbol?"
-    vectorp = "vector?"
-    stringp = "string?"
-    numberp = "number?"
-    charp = "char?"
-    booleanp = "boolean?"
-    nilp = "nil?"
-    eof_objectp = "eof-object?"
-    tuplep = "tuple?"
-    bytevectorp = "bytevector?"
-
-    symbol2string = "symbol->string"
-    string2symbol = "string->symbol"
-
-    procedurep = "procedure?"
-
-    complexp = "complex?"
-    realp = "real?"
-    rationalp = "rational?"
-    infp = "inf?"
-    nanp = "nan?"
-    integerp = "integer?"
-    exactp = "exact?"
-    inexactp = "inexact?"
-    evenp = "even?"
-    oddp = "odd?"
-    zerop = "zero?"
-    positivep = "positive?"
-    negativep = "negative?"
-    exact_integerp = "exact-integer?"
-
-    char_lt = "char<?"
-    char_le = "char<=?"
-    char_gt = "char>?"
-    char_ge = "char>=?"
-    char_equal = "char=?"
-
-    integer2char = "integer->char"
-    char2integer = "char->integer"
-
-
-    acons = "acons"
-    cons = "cons"
-    cons_star = "cons*"
-    append = "append"
-    make_syntax = "make-syntax"
-
-    list = "list"
-    vector = "vector"
-    tuple = "tuple"
-
-
-    car = "car"
-    cdr = "cdr"
-    set_car = "set-car!"
-    set_cdr = "set-cdr!"
-
-    caar = "caar"
-    cadr = "cadr"
-    cdar = "cdar"
-    cddr = "cddr"
-
-    caaar = "caaar"
-    caadr = "caadr"
-    cadar = "cadar"
-    caddr = "caddr"
-    cdaar = "cdaar"
-    cdadr = "cdadr"
-    cddar = "cddar"
-    cdddr = "cdddr"
-
-    caaaar = "caaaar"
-    caaadr = "caaadr"
-    caadar = "caadar"
-    caaddr = "caaddr"
-    cadaar = "cadaar"
-    cadadr = "cadadr"
-    caddar = "caddar"
-    cadddr = "cadddr"
-    cdaaar = "cdaaar"
-    cdaadr = "cdaadr"
-    cdadar = "cdadar"
-    cdaddr = "cdaddr"
-    cddaar = "cddaar"
-    cddadr = "cddadr"
-    cdddar = "cdddar"
-    cddddr = "cddddr"
-
-    length = "length"
-    reverse = "reverse"
-
-    make_vector = "make-vector"
-    vector_length = "vector-length"
-    vector_ref = "vector-ref"
-    vector_set = "vector-set!"
-
-    make_tuple = "make-tuple"
-    tuple_size = "tuple-size"
-    tuple_ref = "tuple-ref"
-    tuple_set = "tuple-set!"
-
-    variablep = "variable?"
-    variable_ref = "variable-ref"
-    variable_set = "variable-set!"
-    make_variable = "make-variable"
-    variable_bound = "variable-bound?"
-
-    slot_ref = "slot-ref"
-    slot_set = "slot-set!"
-
-
-
-    string_length = "string-length"
-    string_ref = "string-ref"
-    string_set = "string-set!"
-
-    bytevector_length = "bytevector-length"
-    bytevector_u8_ref = "bytevector-u8-ref"
-    bytevector_u8_set = "bytevector-u8-set!"
-    bytevector_s8_ref = "bytevector-s8-ref"
-    bytevector_s8_set = "bytevector-s8-set!"
-
-    bytevector_u16_ref = "bytevector-u16-ref"
-    bytevector_u16_set = "bytevector-u16-set!"
-    bytevector_s16_ref = "bytevector-s16-ref"
-    bytevector_s16_set = "bytevector_s16-set!"
-    bytevector_u16_native_ref = "bytevector-u16-native-ref"
-    bytevector_u16_native_set = "bytevector-u16-native-set!"
-    bytevector_s16_native_ref = "bytevector-s16-native-ref"
-    bytevector_s16_native_set = "bytevector-s16-native-set!"
-
-    bytevector_u32_ref = "bytevector-u32-ref"
-    bytevector_u32_set = "bytevector-u32-set!"
-    bytevector_s32_ref = "bytevector-s32-ref"
-    bytevector_s32_set = "bytevector-s32-set!"
-    bytevector_u32_native_ref = "bytevector-u32-native-ref"
-    bytevector_u32_native_set = "bytevector-u32-native-set!"
-    bytevector_s32_native_ref = "bytevector-s32-native-ref"
-    bytevector_s32_native_set = "bytevector-s32-native-set!"
-
-    bytevector_u64_ref = "bytevector-u64-ref"
-    bytevector_u64_set = "bytevector-u64-set!"
-    bytevector_s64_ref = "bytevector-s64-ref"
-    bytevector_s64_set = "bytevector-s64-set!"
-    bytevector_u64_native_ref = "bytevector-u64-native-ref"
-    bytevector_u64_native_set = "bytevector-u64-native-set!"
-    bytevector_s64_native_ref = "bytevector-s64-native-ref"
-    bytevector_s64_native_set = "bytevector-s64-native-set!"
-
-    bv_u8_set = "bytevector-u8-set!"
-    bv_s8_ref = "bytevector-s8-ref"
-    bv_s8_set = "bytevector-s8-set!"
-    bv_u16_ref = "bytevector-u16-native-ref"
-    bv_u16_set = "bytevector-u16-native-set!"
-    bv_s16_ref = "bytevector-s16-native-ref"
-    bv_s16_set = "bytevector-s16-native-set!"
-    bv_u32_ref = "bytevector-u32-native-ref"
-    bv_u32_set = "bytevector-u32-native-set!"
-    bv_s32_ref = "bytevector-s32-native-ref"
-    bv_s32_set = "bytevector-s32-native-set!"
-    bv_u64_ref = "bytevector-u64-native-ref"
-    bv_u64_set = "bytevector-u64-native-set!"
-    bv_s64_ref = "bytevector-s64-native-ref"
-    bv_s64_set = "bytevector-s64-native-set!"
-    bv_f32_ref = "bytevector-ieee-single-native-ref"
-    bv_f32_set = "bytevector-ieee-single-native-set!"
-    bv_f64_ref = "bytevector-ieee-double-native-ref"
-    bv_f64_set = "bytevector-ieee-double-native-set!"
-    ptr_u8_ref = "pointer-ref/u8"
-    ptr_u8_set = "pointer-set!/u8"
-    ptr_s8_ref = "pointer-ref/s8"
-    ptr_s8_set = "pointer-set!/s8"
-    ptr_u16_ref = "pointer-ref/u16"
-    ptr_u16_set = "pointer-set!/u16"
-    ptr_s16_ref = "pointer-ref/s16"
-    ptr_s16_set = "pointer-set!/s16"
-    ptr_u32_ref = "pointer-ref/u32"
-    ptr_u32_set = "pointer-set!/u32"
-    ptr_s32_ref = "pointer-ref/s32"
-    ptr_s32_set = "pointer-set!/s32"
-    ptr_u64_ref = "pointer-ref/u64"
-    ptr_u64_set = "pointer-set!/u64"
-    ptr_s64_ref = "pointer-ref/s64"
-    ptr_s64_set = "pointer-set!/s64"
-    ptr_f32_ref = "pointer-ref/f32"
-    ptr_f32_set = "pointer-set!/f32"
-    ptr_f64_ref = "pointer-ref/f64"
-    ptr_f64_set = "pointer-set!/f64"
-
-    winders = "$winders"
-
-    callcc = "call/cc"
-    call_with_current_continuation = "call-with-current-continuation"
-    call1cc = "call/1cc"
-
-    unspecified = "unspecified"
-    unspecifiedp = "unspecified?"
-    assertion_violation = "assertion-violation"
-);
+pub use super::prim_names::*;
 
 pub fn resolve_primitive_refs<'gc>(ctx: MutationContext<'gc>, x: TermRef<'gc>) -> TermRef<'gc> {
     x.post_order(ctx, |ctx, x| match &x.kind {
@@ -465,6 +127,44 @@ fn elide_unused_callcc<'gc>(
     } else {
         Some(proc.body)
     }
+}
+
+/// `(let ([t a] [k b] ...) (if (%core-hash-plain? t k) (%prim t k ...) (procedure t k ...)))`:
+/// the primitive reads tables of the built-in kinds without a call, and the procedure keeps
+/// the generic tables (Scheme handlers) and every error.
+fn guarded_hash_lookup<'gc>(
+    ctx: MutationContext<'gc>,
+    procedure: &str,
+    prim: &str,
+    args: &[TermRef<'gc>],
+    src: Value<'gc>,
+) -> TermRef<'gc> {
+    let names = ["table", "key", "default"];
+    let vars: Vec<_> = (0..args.len())
+        .map(|i| fresh_lvar(ctx, Symbol::from_str(ctx, names[i]).into()))
+        .collect();
+    let uses = || vars.iter().map(|&v| lref(ctx, v)).collect::<Vec<_>>();
+    let plain = prim_call_term(
+        ctx,
+        Symbol::from_str(ctx, "%core-hash-plain?").into(),
+        [lref(ctx, vars[0]), lref(ctx, vars[1])],
+        src,
+    );
+    let fast = prim_call_term(ctx, Symbol::from_str(ctx, prim).into(), uses(), src);
+    let procedure = ctx.allocate(Term {
+        source: Lock::new(src),
+        kind: TermKind::PrimRef(Symbol::from_str(ctx, procedure).into()),
+    });
+    let slow = call_term(ctx, procedure, uses(), src);
+    let body = Term::cond(ctx, plain, fast, slow, src);
+    let_term(
+        ctx,
+        LetStyle::Let,
+        Array::from_slice(ctx, &vars),
+        Array::from_slice(ctx, args),
+        body,
+        src,
+    )
 }
 
 primitive_expanders!(
@@ -1719,6 +1419,74 @@ primitive_expanders!(
         Some(prim_call_term(ctx, sym_string_set(ctx).into(), args, src))
     }
 
+    "core-hash-ref" ex_core_hash_ref<'gc>(ctx, args, src) {
+        let name = match args.len() {
+            2 => "%core-hash-ref/2",
+            3 => "%core-hash-ref/3",
+            _ => return None,
+        };
+        Some(guarded_hash_lookup(ctx, "core-hash-ref", name, args, src))
+    }
+
+    "core-hash-contains?" ex_core_hash_contains<'gc>(ctx, args, src) {
+        if args.len() != 2 {
+            return None;
+        }
+        Some(guarded_hash_lookup(ctx, "core-hash-contains?", "%core-hash-contains?", args, src))
+    }
+
+    "core-hash-put!" ex_core_hash_put<'gc>(ctx, args, src) {
+        if args.len() != 3 {
+            return None;
+        }
+        Some(prim_call_term(ctx, Symbol::from_str(ctx, "%core-hash-put!").into(), args, src))
+    }
+
+    "core-hash-set!" ex_core_hash_set<'gc>(ctx, args, src) {
+        // The primitive stores into the plain tables and answers #f for the rest (generic
+        // tables run Scheme handlers, bad arguments raise), which the procedure handles:
+        //   (let ([t a] [k b] [v c])
+        //     (if (%core-hash-try-set! t k v) #<unspecified> (core-hash-set! t k v)))
+        if args.len() != 3 {
+            return None;
+        }
+        let vars = [
+            fresh_lvar(ctx, Symbol::from_str(ctx, "table").into()),
+            fresh_lvar(ctx, Symbol::from_str(ctx, "key").into()),
+            fresh_lvar(ctx, Symbol::from_str(ctx, "value").into()),
+        ];
+        let uses = || [lref(ctx, vars[0]), lref(ctx, vars[1]), lref(ctx, vars[2])];
+        let attempt = prim_call_term(ctx, Symbol::from_str(ctx, "%core-hash-try-set!").into(), uses(), src);
+        let procedure = ctx.allocate(Term {
+            source: Lock::new(src),
+            kind: TermKind::PrimRef(Symbol::from_str(ctx, "core-hash-set!").into()),
+        });
+        let fallback = call_term(ctx, procedure, uses(), src);
+        let body = Term::cond(ctx, attempt, constant(ctx, Value::undefined()), fallback, src);
+        Some(let_term(
+            ctx,
+            LetStyle::Let,
+            Array::from_slice(ctx, vars),
+            Array::from_slice(ctx, args),
+            body,
+            src,
+        ))
+    }
+
+    "fluid-ref" ex_fluid_ref<'gc>(ctx, args, src) {
+        if args.len() != 1 {
+            return None;
+        }
+        Some(prim_call_term(ctx, Symbol::from_str(ctx, "%fluid-ref").into(), args, src))
+    }
+
+    "fluid-set!" ex_fluid_set<'gc>(ctx, args, src) {
+        if args.len() != 2 {
+            return None;
+        }
+        Some(prim_call_term(ctx, Symbol::from_str(ctx, "%fluid-set!").into(), args, src))
+    }
+
     "tuple-size" ex_tuple_size<'gc>(ctx, args, src) {
         if args.len() != 1 {
             return None;
@@ -1792,7 +1560,7 @@ primitive_expanders!(
 fn is_lowered_directly<'gc>(ctx: MutationContext<'gc>, name: Value<'gc>, argc: usize) -> bool {
     (name == sym_variable_ref(ctx).into() && argc == 1)
         || (name == sym_variable_set(ctx).into() && argc == 2)
-        || (name == Symbol::from_str(ctx, "late-variable").into() && argc == 1)
+        || (name == Symbol::from_str(ctx, "capy-variable").into() && argc == 1)
 }
 
 fn is_fixed_arity_call(name: SymbolRef<'_>, argc: usize) -> bool {

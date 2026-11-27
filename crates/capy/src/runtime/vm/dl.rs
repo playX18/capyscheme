@@ -6,7 +6,6 @@ use parking_lot::Mutex;
 
 use crate::prelude::*;
 use crate::runtime::prelude::*;
-use crate::runtime::vm::ExecutionResult;
 
 #[allow(dead_code)]
 pub(crate) struct DynLib {
@@ -27,6 +26,45 @@ pub(crate) struct Extension {
 
 pub(crate) static LOADED_EXTENSIONS: LazyLock<Mutex<Vec<Extension>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// The entry point of a native extension: `SNI_OnLoad(SniEnv*, void*) -> int`, 0 on success.
+pub type StaticOnLoad =
+    unsafe extern "C" fn(*mut crate::api::SniEnv<'static>, *mut libc::c_void) -> libc::c_int;
+
+/// A native extension that was linked into the executable (`capyc --static --static-native`).
+///
+/// `key` is the text the linker gives the extension: `<package-id>/<name>` for the key
+/// `(#%native <package-id> <name>)` of the libmap. `init` is its `SNI_OnLoad`, which the link
+/// gives a symbol of its own so that several extensions can be in one executable.
+#[derive(Clone, Copy)]
+pub struct StaticExtension {
+    pub key: &'static str,
+    pub init: StaticOnLoad,
+}
+
+/// The extensions linked into the executable, registered before the runtime starts. A
+/// `%load-native-extension` of a key found here runs its `init` instead of opening a library.
+static STATIC_EXTENSIONS: LazyLock<Mutex<Vec<StaticExtension>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Registers the extensions the executable was linked with. Called by the executable's `main`
+/// before the runtime is created; a key registered twice keeps its first entry.
+pub fn register_static_extensions(extensions: &[StaticExtension]) {
+    let mut table = STATIC_EXTENSIONS.lock();
+    for extension in extensions {
+        if !table.iter().any(|known| known.key == extension.key) {
+            table.push(*extension);
+        }
+    }
+}
+
+fn static_extension(key: &str) -> Option<StaticExtension> {
+    STATIC_EXTENSIONS
+        .lock()
+        .iter()
+        .find(|extension| extension.key == key)
+        .copied()
+}
 
 #[scheme(path=capy)]
 mod dl_ops {
@@ -182,8 +220,44 @@ mod dl_ops {
         ptr.into()
     }
 
-    #[scheme(name = "load-native-extension")]
+    /// Whether KEY, a string, names an extension that is linked into the executable.
+    #[scheme(name = "%static-native-extension?")]
+    pub fn static_native_extension_p(key: StringRef<'gc>) -> Value<'gc> {
+        Value::new(static_extension(&key.to_string()).is_some())
+    }
+
+    /// Loads the native extension named by PATH. A string that is the key of an extension linked
+    /// into the executable runs that extension's `SNI_OnLoad`; any other string is the file of a
+    /// shared library, opened with `dlopen`.
+    #[scheme(name = "%load-native-extension")]
     pub fn load_native_extension(path: StringRef<'gc>) -> Result<Value<'gc>, Value<'gc>> {
+        if let Some(extension) = static_extension(&path.to_string()) {
+            let name = PathBuf::from(path.to_string());
+            if LOADED_EXTENSIONS
+                .lock()
+                .iter()
+                .any(|known| known.path == name)
+            {
+                return Ok(Value::new(true));
+            }
+            let mut env = crate::api::SniEnv::new(ctx);
+            let env_ptr = env.as_ptr();
+            // SAFETY: extension OnLoad contract; the table was registered by the executable.
+            let rc = unsafe { (extension.init)(env_ptr, std::ptr::null_mut()) };
+            if rc != 0 {
+                call.raise_error(
+                    "load-native-extension",
+                    &format!("SNI_OnLoad failed with code {rc} in {path}"),
+                    &[path.into()],
+                );
+                return Err(Value::undefined());
+            }
+            LOADED_EXTENSIONS.lock().push(Extension {
+                path: name,
+                handle: Address::ZERO,
+            });
+            return Ok(Value::new(true));
+        }
         let Ok(cpath) = std::ffi::CString::new(path.to_string()) else {
             call.raise_error(
                 "load-native-extension",
@@ -212,7 +286,32 @@ mod dl_ops {
             );
             return Err(Value::undefined());
         }
-        // Prefer C SNI_OnLoad(SniEnv*, void*) -> int
+        // SAFETY: handle is valid; the name is NUL-terminated.
+        let version_symbol = unsafe { libc::dlsym(handle, c"SNI_ABIVersion".as_ptr() as _) };
+        let fail = |message: String| {
+            // SAFETY: handle came from dlopen above and nothing from it is in use.
+            unsafe { libc::dlclose(handle) };
+            call.raise_error("load-native-extension", &message, &[path.into()]);
+        };
+        if version_symbol.is_null() {
+            fail(format!(
+                "{path} does not export SNI_ABIVersion; rebuild it against the capy.h of this runtime"
+            ));
+            return Err(Value::undefined());
+        }
+        // SAFETY: the symbol is `unsigned SNI_ABIVersion(void)` by the SNI contract.
+        let version = unsafe {
+            std::mem::transmute::<*mut libc::c_void, unsafe extern "C" fn() -> u32>(version_symbol)(
+            )
+        };
+        if version != crate::api::SNI_ABI_VERSION {
+            fail(format!(
+                "{path} was built for SNI ABI version {version}, this runtime is version {}",
+                crate::api::SNI_ABI_VERSION
+            ));
+            return Err(Value::undefined());
+        }
+        // SNI_OnLoad(SniEnv*, void*) -> int
         // SAFETY: handle is valid.
         let sni_onload = unsafe { libc::dlsym(handle, c"SNI_OnLoad".as_ptr() as _) };
         if !sni_onload.is_null() {
@@ -241,42 +340,8 @@ mod dl_ops {
             return Ok(Value::new(true));
         }
 
-        // SAFETY: FFI: handle is valid, symbol name is NUL-terminated
-        let init: extern "C-unwind" fn(MutationContext<'gc>) -> ExecutionResult<'gc> = unsafe {
-            let symbol = libc::dlsym(handle, c"capy_register_extension".as_ptr() as _);
-            if symbol.is_null() {
-                let dlerror = {
-                    let err_ptr = libc::dlerror();
-                    if err_ptr.is_null() {
-                        "unknown error".to_string()
-                    } else {
-                        let cstr = std::ffi::CStr::from_ptr(err_ptr);
-                        cstr.to_string_lossy().into_owned()
-                    }
-                };
-                call.raise_error(
-                    "load-native-extension",
-                    &format!(
-                        "failed to find SNI_OnLoad or capy_register_extension in {path}: {dlerror}"
-                    ),
-                    &[path.into()],
-                );
-                return Err(Value::undefined());
-            }
-            std::mem::transmute(symbol)
-        };
-
-        let result = init(ctx);
-        match result {
-            ExecutionResult::Ok(v) => {
-                LOADED_EXTENSIONS.lock().push(Extension {
-                    path: PathBuf::from(path.to_string()),
-                    handle: Address::from_ptr(handle),
-                });
-                Ok(v)
-            }
-            ExecutionResult::Err(e) => Err(e),
-        }
+        fail(format!("{path} does not export SNI_OnLoad"));
+        Err(Value::undefined())
     }
 }
 pub(crate) fn init_dl<'gc>(ctx: MutationContext<'gc>) {

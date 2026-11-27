@@ -693,5 +693,4 @@ impl<'gc> Number<'gc> {
             den.into_number(ctx),
         ))
     }
-
 }

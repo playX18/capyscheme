@@ -14,11 +14,11 @@ use crate::heap::collection::Visitor;
 use crate::heap::mutator::Mutator;
 use crate::heap::{Trace, WeakProcessor};
 use crate::runtime::MutationContext;
+use crate::runtime::objectmodel::{Str, Value};
 use crate::runtime::root::RootScope;
 use crate::runtime::sched::scheduler::{Killed, Waker, current};
 use crate::runtime::service::{self, ServiceCtl, ServiceThread};
 use crate::runtime::thread::SchemeState;
-use crate::runtime::objectmodel::{Str, Value};
 use crate::runtime::vm::load::{ExpandedJob, SourceJob, run_expanded_job, run_source_job};
 use crate::runtime::vm::threading::ThreadObject;
 use crate::runtime::vm::thunks::make_io_error;
@@ -34,7 +34,7 @@ thread_local! {
 
 #[derive(Clone)]
 pub(crate) enum JobInput<'gc> {
-    /// Expanded Scheme handed to `%compile`.
+    /// Expanded Scheme handed to `%compile-seed`.
     Expanded(ExpandedJob<'gc>),
     /// A source file compiled by the Rust expander.
     Source(SourceJob),

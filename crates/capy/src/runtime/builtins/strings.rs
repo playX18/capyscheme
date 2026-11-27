@@ -8,8 +8,8 @@ use unicode_normalization::*;
 use crate::global;
 use crate::heap::Gc;
 use crate::prelude::*;
-use crate::runtime::prelude::*;
 use crate::runtime::builtins::vector::Endianness;
+use crate::runtime::prelude::*;
 
 pub static LOCALE: LazyLock<icu::locale::Locale> = LazyLock::new(|| {
     let locale = sys_locale::get_locale().unwrap_or_else(|| "en-US".to_string());
@@ -1695,10 +1695,19 @@ mod string_ops {
     pub fn string_titlecase(str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
         let mut result = String::new();
         let mut prev_was_delimiter = true;
+        let tm = icu::casemap::TitlecaseMapper::new();
+        let root = icu::locale::langid!("und");
+        let mut buf = [0u8; 4];
 
         for ch in str.to_string().chars() {
             if prev_was_delimiter {
-                result.extend(ch.to_uppercase());
+                // Titlecase mapping (e.g. U+01C6 -> U+01C5), not uppercase.
+                let one: &str = ch.encode_utf8(&mut buf);
+                result.push_str(&tm.titlecase_segment_to_string(
+                    one,
+                    &root,
+                    icu::casemap::options::TitlecaseOptions::default(),
+                ));
             } else {
                 result.extend(ch.to_lowercase());
             }

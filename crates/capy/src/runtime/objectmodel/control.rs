@@ -21,5 +21,3 @@ unsafe impl<'gc> ClassTagged for ContinuationMarks<'gc> {
 
     const TYPE_NAME: &'static str = "continuation-marks";
 }
-
-

@@ -94,7 +94,8 @@ extern "C" fn on_preempt(_sig: libc::c_int, _info: *mut libc::siginfo_t, _uctx: 
             .store(std::ptr::null_mut(), Ordering::SeqCst);
     }
 
-    // TODO: rewrite PC for async preempt
+    // Preemption is cooperative: this only arms the yieldpoint flag, and the thread parks at its
+    // next poll (procedure entry or loop hint). JIT code is not interrupted mid-instruction.
     STATS.armed.fetch_add(1, Ordering::Relaxed);
 }
 

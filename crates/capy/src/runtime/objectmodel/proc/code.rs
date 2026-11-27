@@ -14,7 +14,14 @@ use mmtk::util::Address;
 use std::cell::UnsafeCell;
 use std::mem::ManuallyDrop;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+
+/// A [`CodeImage`] whose code may run.
+const IMAGE_LIVE: u8 = 0;
+/// Found dead by the collector; the native part is still allocated.
+const IMAGE_RETIRED: u8 = 1;
+/// The native part is dropped.
+const IMAGE_RELEASED: u8 = 2;
 
 /// The heap owner of one piece of native code. The machine code itself lives in executable memory
 /// outside the heap (`CodeMemory`). This object holds everything native that
@@ -30,7 +37,9 @@ pub struct CodeImage<'gc> {
     /// keep the image alive while a frame runs its code (the image start word
     /// of generated code holds that address).
     owner: UnsafeCell<Value<'gc>>,
-    released: AtomicBool,
+    /// [`IMAGE_LIVE`], [`IMAGE_RETIRED`] or [`IMAGE_RELEASED`]. One byte,
+    /// like the flag it replaced, so the layout is unchanged.
+    state: AtomicU8,
     /// Number of trailing references.
     nrefs: u32,
     native: UnsafeCell<ManuallyDrop<PublishedCode>>,
@@ -123,10 +132,9 @@ impl<'gc> CodeImage<'gc> {
         let image = unsafe {
             let object = ctx.allocate_raw(size, 8, Self::header_word(), Space::Los);
             let this = object.to_address().as_mut_ref::<Self>();
-            std::ptr::addr_of_mut!(this.released).write(AtomicBool::new(false));
-            std::ptr::addr_of_mut!(this.nrefs).write(
-                u32::try_from(refs.len()).expect("too many references in a code image"),
-            );
+            std::ptr::addr_of_mut!(this.state).write(AtomicU8::new(IMAGE_LIVE));
+            std::ptr::addr_of_mut!(this.nrefs)
+                .write(u32::try_from(refs.len()).expect("too many references in a code image"));
             std::ptr::addr_of_mut!(this.native).write(UnsafeCell::new(ManuallyDrop::new(native)));
             let base = this.refs_base();
             for (index, value) in refs.iter().enumerate() {
@@ -157,19 +165,33 @@ impl<'gc> CodeImage<'gc> {
         (index < self.nrefs as usize).then(|| unsafe { *self.refs_base().add(index) })
     }
 
-    fn native(&self) -> &PublishedCode {
-        debug_assert!(
-            !self.released.load(Ordering::Relaxed),
-            "image used after release"
-        );
-        // SAFETY: the native part is dropped only when the image is dead, and
-        // a live reference to the image proves it is not.
-        unsafe { &*self.native.get() }
+    /// The native part, or `None` once the image is retired.
+    ///
+    /// A live reference to the image does not prove the native part is
+    /// still there: a weak reference (a watchpoint dependent, say) can still
+    /// reach an image that the collector found dead and its finalizer
+    /// resurrected, because resurrection keeps the weak reference intact.
+    /// [`reclaim`](crate::runtime::codegen::reclaim) retires such an image
+    /// first and drops its native part only after a later collection, so a
+    /// reader that saw it live here has passed a safepoint before the drop.
+    fn native(&self) -> Option<&PublishedCode> {
+        if self.state.load(Ordering::Acquire) != IMAGE_LIVE {
+            return None;
+        }
+        // SAFETY: the native part is dropped only after the image was
+        // retired and a collection has run since (see above).
+        Some(unsafe { &*self.native.get() })
+    }
+
+    /// Whether [`retire`](Self::retire) ran: the image is dead and its code
+    /// is about to be released.
+    pub(crate) fn is_retired(&self) -> bool {
+        self.state.load(Ordering::Acquire) != IMAGE_LIVE
     }
 
     /// The compiled procedure this image owns, if it is one.
     pub(crate) fn unit(&self) -> Option<&CodeUnit> {
-        match self.native() {
+        match self.native()? {
             PublishedCode::Unit(unit) => Some(unit),
             PublishedCode::Stub(_) => None,
         }
@@ -177,7 +199,7 @@ impl<'gc> CodeImage<'gc> {
 
     /// The call IC stub this image owns, if it is one.
     pub(crate) fn stub(&self) -> Option<&CallIcStub> {
-        match self.native() {
+        match self.native()? {
             PublishedCode::Stub(stub) => Some(stub),
             PublishedCode::Unit(_) => None,
         }
@@ -188,13 +210,27 @@ impl<'gc> CodeImage<'gc> {
         self.nrefs as usize
     }
 
+    /// Marks the image dead: [`unit`](Self::unit) and [`stub`](Self::stub)
+    /// answer `None` from now on. The native part stays until
+    /// [`release`](Self::release).
+    pub(crate) fn retire(&self) {
+        let _ = self.state.compare_exchange(
+            IMAGE_LIVE,
+            IMAGE_RETIRED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
     /// Drops the native part, once.
     ///
     /// # Safety
     ///
-    /// The collector found the image dead, and nothing refers to the code.
+    /// The collector found the image dead, nothing refers to the code, and the
+    /// image was [retired](Self::retire) before a collection that has
+    /// completed since.
     pub(crate) unsafe fn release(&self) {
-        if !self.released.swap(true, Ordering::AcqRel) {
+        if self.state.swap(IMAGE_RELEASED, Ordering::AcqRel) != IMAGE_RELEASED {
             // SAFETY: by the contract, and dropped once by the swap above.
             unsafe { ManuallyDrop::drop(&mut *self.native.get()) };
         }
@@ -404,7 +440,7 @@ impl<'gc> CodeBuffer<'gc> {
         }
         // SAFETY: each id is below the kind's count, so it names an entry.
         unsafe {
-            bind!(OpCall, OpTailCall, OpCallSelf, OpTailCallSelf);
+            bind!(OpCall, OpTailCall, OpCallSelf, OpTailCallSelf, OpApply, OpTailApply);
         }
     }
 
@@ -557,6 +593,10 @@ pub struct CodeBlock<'gc> {
     /// generated-code bump is a plain load/add/store, so lost updates
     /// under threads only delay tier-up.
     pub hot_count: AtomicU32,
+    /// Retirements of this block's optimized code because a generic call
+    /// stayed cold (see `MAX_COLD_RETRIES`). Each one doubles the heat the
+    /// next optimizing compile waits for.
+    pub cold_retries: AtomicU32,
     /// Which tier owns the current code, the install generation and the
     /// recompile count. Every commit and retire is generation-checked, so a
     /// late transition from an old unit is a no-op instead of a state
@@ -568,6 +608,11 @@ pub struct CodeBlock<'gc> {
     /// Deopt counts per pc, and the speculation bits the next compile reads.
     /// It holds no GC references, so the collector does not trace it.
     pub(crate) exits: Mutex<ExitProfile>,
+    /// Times a watchpoint on a folded variable invalidated this block's
+    /// optimized code. A block whose fold keeps firing (a per-call cell
+    /// folded through a free slot, mutated by every call) is rebuilt
+    /// without free-variable folds instead of recompiling on every call.
+    pub watch_invalidations: AtomicU32,
 }
 
 fn code_block_header_word() -> u64 {
@@ -623,9 +668,11 @@ impl<'gc> CodeBlock<'gc> {
                 baseline_entry: CodeEntry::new(),
                 machine: Lock::new(None),
                 hot_count: AtomicU32::new(0),
+                cold_retries: AtomicU32::new(0),
                 install: InstallState::new(),
                 optimized: Lock::new(None),
                 exits: Mutex::new(ExitProfile::default()),
+                watch_invalidations: AtomicU32::new(0),
             },
             code_block_header_word(),
         )
@@ -674,9 +721,11 @@ impl<'gc> CodeBlock<'gc> {
                 baseline_entry: CodeEntry::new(),
                 machine: Lock::new(None),
                 hot_count: AtomicU32::new(0),
+                cold_retries: AtomicU32::new(0),
                 install: InstallState::new(),
                 optimized: Lock::new(None),
                 exits: Mutex::new(ExitProfile::default()),
+                watch_invalidations: AtomicU32::new(0),
             },
             code_block_header_word(),
         )

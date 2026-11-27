@@ -433,6 +433,24 @@ pub fn tuple_set<'gc>(
     Value::undefined()
 }
 
+pub fn vector_length<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+    if crate::runtime::prims::calls::has_heap_class(
+        v,
+        crate::heap::object::builtin_class_ids::VECTOR,
+    ) {
+        return Value::from_i32(unsafe { crate::runtime::prims::calls::vector_len(v) } as i32);
+    }
+    thunk_raise(
+        ctx,
+        make_assertion_violation(
+            ctx,
+            Symbol::from_str(ctx, "vector-length").into(),
+            Str::new(ctx, "not a vector", true).into(),
+            &[v],
+        ),
+    )
+}
+
 pub fn bytevector_length<'gc>(ctx: MutationContext<'gc>, bv: Value<'gc>) -> Value<'gc> {
     let Some(bv) = bv.try_as::<ByteVector>() else {
         thunk_raise(

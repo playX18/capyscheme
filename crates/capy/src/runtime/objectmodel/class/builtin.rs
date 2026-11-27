@@ -1,8 +1,10 @@
+use super::combination::MethodCombination;
 use super::descriptor::ClassDescriptor;
 use super::flags::ClassCategory;
 use super::generic::{GenericDescriptor, MethodDescriptor, NextMethodDescriptor};
 use super::hooks::PrimitiveLayoutHooks;
 use super::slot::{SlotAccessorDefinition, SlotDefinitionDescriptor};
+use super::specializer::EqlSpecializer;
 use crate::heap::object::{AllocationHooksOf, ClassId, builtin_class_ids};
 
 pub const CLASS_TABLE_PAGE_BITS: u32 = 8;
@@ -58,30 +60,68 @@ pub(crate) const fn builtin_id(raw: u32) -> ClassId {
     }
 }
 
-fn builtin_direct_supers(id: ClassId) -> ([ClassId; 1], usize) {
-    let raw_super: &[u32] = match id.bits() {
-        builtin_class_ids::TOP => &[],
-        builtin_class_ids::BOTTOM => &[builtin_class_ids::TOP],
-        builtin_class_ids::OBJECT => &[builtin_class_ids::TOP],
-        builtin_class_ids::TYPE => &[builtin_class_ids::OBJECT],
-        builtin_class_ids::CLASS => &[builtin_class_ids::TYPE],
-        builtin_class_ids::NUMBER => &[builtin_class_ids::OBJECT],
-        builtin_class_ids::FIXNUM
-        | builtin_class_ids::FLONUM
-        | builtin_class_ids::BIGINT
-        | builtin_class_ids::RATIONAL
-        | builtin_class_ids::COMPLEX => &[builtin_class_ids::NUMBER],
-        _ => &[builtin_class_ids::OBJECT],
-    };
-    let mut direct_supers = [id; 1];
-    for (index, raw_id) in raw_super.iter().copied().enumerate() {
-        direct_supers[index] = builtin_id(raw_id);
+/// Raw id of the direct superclass of a builtin class, or `NO_SUPER` for `<top>`.
+const NO_SUPER: u32 = 0;
+
+/// Single direct superclass of each builtin class. Classes not listed here
+/// derive from `<object>`. Const so the CPL capacity can be checked at compile
+/// time.
+const fn builtin_direct_super_raw(id: u32) -> u32 {
+    use builtin_class_ids as ids;
+    match id {
+        ids::TOP => NO_SUPER,
+        ids::BOTTOM => ids::TOP,
+        ids::OBJECT => ids::TOP,
+        ids::TYPE => ids::OBJECT,
+        ids::CLASS => ids::SPECIALIZER,
+        ids::NUMBER => ids::OBJECT,
+        ids::FIXNUM | ids::FLONUM | ids::BIGINT | ids::RATIONAL | ids::COMPLEX => ids::NUMBER,
+        ids::METAOBJECT => ids::OBJECT,
+        ids::SPECIALIZER => ids::METAOBJECT,
+        ids::EQL_SPECIALIZER => ids::SPECIALIZER,
+        ids::FUNCALLABLE_CLASS => ids::CLASS,
+        ids::METHOD_COMBINATION | ids::FORWARD_REFERENCED_CLASS => ids::METAOBJECT,
+        ids::GENERIC | ids::METHOD | ids::SLOT_DEFINITION => ids::METAOBJECT,
+        ids::READER_METHOD | ids::WRITER_METHOD => ids::METHOD,
+        ids::DIRECT_SLOT_DEFINITION | ids::EFFECTIVE_SLOT_DEFINITION => ids::SLOT_DEFINITION,
+        _ => ids::OBJECT,
     }
-    (direct_supers, raw_super.len())
 }
 
-fn builtin_cpl(id: ClassId) -> ([ClassId; 4], usize) {
-    let mut cpl = [id; 4];
+/// Number of entries in the class precedence list of a builtin class with raw
+/// id `raw`, including the class itself.
+const fn builtin_cpl_len(mut raw: u32) -> usize {
+    let mut len = 0;
+    while raw != NO_SUPER {
+        len += 1;
+        raw = builtin_direct_super_raw(raw);
+    }
+    len
+}
+
+/// Capacity of the fixed-size CPL array returned by [`builtin_cpl`].
+const BUILTIN_CPL_CAPACITY: usize = 8;
+
+// The deepest builtin chain (e.g. `<standard-effective-slot-definition>` ->
+// `<slot-definition>` -> `<metaobject>` -> `<object>` -> `<top>`) must fit.
+const _: () = {
+    let mut index = 0;
+    while index < BUILTIN_CLASS_SPECS.len() {
+        assert!(builtin_cpl_len(BUILTIN_CLASS_SPECS[index].id.bits()) <= BUILTIN_CPL_CAPACITY);
+        index += 1;
+    }
+};
+
+fn builtin_direct_supers(id: ClassId) -> ([ClassId; 1], usize) {
+    let raw_super = builtin_direct_super_raw(id.bits());
+    if raw_super == NO_SUPER {
+        return ([id; 1], 0);
+    }
+    ([builtin_id(raw_super); 1], 1)
+}
+
+fn builtin_cpl(id: ClassId) -> ([ClassId; BUILTIN_CPL_CAPACITY], usize) {
+    let mut cpl = [id; BUILTIN_CPL_CAPACITY];
     let mut cpl_len = 0;
     let mut next = Some(id);
     while let Some(class_id) = next {
@@ -136,7 +176,9 @@ pub fn builtin_primitive_layout_hooks(id: ClassId) -> Option<PrimitiveLayoutHook
         builtin_class_ids::MUTABLE_BYTEVECTOR | builtin_class_ids::IMMUTABLE_BYTEVECTOR => {
             crate::runtime::objectmodel::ByteVector::HOOKS
         }
-        builtin_class_ids::MAPPED_BYTEVECTOR => crate::runtime::objectmodel::ByteVector::MAPPING_HOOKS,
+        builtin_class_ids::MAPPED_BYTEVECTOR => {
+            crate::runtime::objectmodel::ByteVector::MAPPING_HOOKS
+        }
         builtin_class_ids::HASHTABLE | builtin_class_ids::IMMUTABLE_HASHTABLE => {
             AllocationHooksOf::<'static, crate::runtime::objectmodel::HashTable<'static>>::HOOKS
         }
@@ -168,7 +210,13 @@ pub fn builtin_primitive_layout_hooks(id: ClassId) -> Option<PrimitiveLayoutHook
         builtin_class_ids::SOCKET => {
             AllocationHooksOf::<'static, crate::runtime::objectmodel::port::Socket>::HOOKS
         }
-        builtin_class_ids::CLASS => AllocationHooksOf::<'static, ClassDescriptor<'static>>::HOOKS,
+        // The funcallable and forward-reference metaclasses are class objects
+        // too: their headers name them, so the collector needs the class hooks.
+        builtin_class_ids::CLASS
+        | builtin_class_ids::FUNCALLABLE_CLASS
+        | builtin_class_ids::FORWARD_REFERENCED_CLASS => {
+            AllocationHooksOf::<'static, ClassDescriptor<'static>>::HOOKS
+        }
         builtin_class_ids::GENERIC => {
             AllocationHooksOf::<'static, GenericDescriptor<'static>>::HOOKS
         }
@@ -176,7 +224,16 @@ pub fn builtin_primitive_layout_hooks(id: ClassId) -> Option<PrimitiveLayoutHook
         builtin_class_ids::NEXT_METHOD => {
             AllocationHooksOf::<'static, NextMethodDescriptor<'static>>::HOOKS
         }
-        builtin_class_ids::SLOT_DEFINITION => {
+        builtin_class_ids::EQL_SPECIALIZER => {
+            AllocationHooksOf::<'static, EqlSpecializer<'static>>::HOOKS
+        }
+        builtin_class_ids::METHOD_COMBINATION => {
+            AllocationHooksOf::<'static, MethodCombination<'static>>::HOOKS
+        }
+
+        builtin_class_ids::SLOT_DEFINITION
+        | builtin_class_ids::DIRECT_SLOT_DEFINITION
+        | builtin_class_ids::EFFECTIVE_SLOT_DEFINITION => {
             AllocationHooksOf::<'static, SlotDefinitionDescriptor<'static>>::HOOKS
         }
         builtin_class_ids::SLOT_ACCESSOR => {
@@ -269,6 +326,7 @@ builtin_specs! {
     "code-buffer" => builtin_class_ids::CODE_BUFFER, Builtin;
     "code-image" => builtin_class_ids::CODE_IMAGE, Builtin;
     "linklet" => builtin_class_ids::LINKLET, Builtin;
+    "linklet-directory" => builtin_class_ids::LINKLET_DIRECTORY, Builtin;
     "instance" => builtin_class_ids::INSTANCE, Builtin;
     "library-registry" => builtin_class_ids::REGISTRY, Builtin;
     "record-type-descriptor" => builtin_class_ids::RTD, Builtin;
@@ -287,6 +345,17 @@ builtin_specs! {
     "annotation" => builtin_class_ids::ANNOTATION, Builtin;
     "continuation-marks" => builtin_class_ids::CONTINUATION_MARKS, Builtin;
     "continuation" => builtin_class_ids::CONTINUATION, Builtin;
+    "metaobject" => builtin_class_ids::METAOBJECT, Abstract;
+    "specializer" => builtin_class_ids::SPECIALIZER, Abstract;
+    "eql-specializer" => builtin_class_ids::EQL_SPECIALIZER, Builtin;
+    "method-combination" => builtin_class_ids::METHOD_COMBINATION, Builtin;
+    "funcallable-standard-object" => builtin_class_ids::FUNCALLABLE_OBJECT, Abstract;
+    "funcallable-standard-class" => builtin_class_ids::FUNCALLABLE_CLASS, Builtin;
+    "standard-reader-method" => builtin_class_ids::READER_METHOD, Builtin;
+    "standard-writer-method" => builtin_class_ids::WRITER_METHOD, Builtin;
+    "standard-direct-slot-definition" => builtin_class_ids::DIRECT_SLOT_DEFINITION, Builtin;
+    "standard-effective-slot-definition" => builtin_class_ids::EFFECTIVE_SLOT_DEFINITION, Builtin;
+    "forward-referenced-class" => builtin_class_ids::FORWARD_REFERENCED_CLASS, Builtin;
     "generic" => builtin_class_ids::GENERIC, Builtin;
     "method" => builtin_class_ids::METHOD, Builtin;
     "next-method" => builtin_class_ids::NEXT_METHOD, Builtin;

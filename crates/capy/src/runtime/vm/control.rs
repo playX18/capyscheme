@@ -5,9 +5,7 @@
 //! stack. The current marks are a list of mark frames, innermost first. Each
 //! mark frame is a bare association list of key to value.
 
-use crate::heap::{
-    Gc,
-};
+use crate::heap::Gc;
 use crate::prelude::*;
 use crate::prelude::{ClosureRef, Value};
 use crate::runtime::interp::stack;
@@ -16,8 +14,6 @@ pub(crate) use crate::runtime::objectmodel::control::continuation_marks_header_w
 use crate::runtime::sni::{self, LocalFrame};
 use crate::runtime::vm::ExecutionResult;
 use mmtk::util::Address;
-
-
 
 /// Free-var layout for `.reified-cc` / `.reified-1cc` / `.null-reified-cc`:
 /// `[0]=NativeProc`, `[1]=captured stack (a `Continuation`)`, `[2]=winders`,
@@ -290,14 +286,16 @@ pub(crate) fn null_reified_cc(_ans: &'gc [Value<'gc>]) -> () {
 /// Every capture for one of these primitives shares the function address
 /// and the metadata global, only the three free-var values
 /// (`[stack, winders, raw-marks]`) differ, so a cached capture allocates
-/// just the closure cell.
+/// just the closure cell. The metadata is lazy: hits never fetch the
+/// metadata global or take the registry lock.
 fn make_reified_closure<'gc>(
     ctx: MutationContext<'gc>,
     proc: NativeFn<'gc>,
-    meta: Value<'gc>,
+    oneshot: bool,
+    meta: impl FnOnce() -> Value<'gc>,
     captured: [Value<'gc>; 3],
 ) -> ClosureRef<'gc> {
-    ctx.make_cached_native_closure(proc, captured, meta)
+    ctx.make_reified_native_closure(proc, captured, oneshot, meta)
 }
 
 pub(crate) fn replace_or_add_mark<'gc>(
@@ -468,7 +466,8 @@ pub mod control_ops {
         let k = make_reified_closure(
             ctx,
             _raw_scm_proc_reified_cc,
-            _scheme_meta_reified_cc(ctx),
+            false,
+            || _scheme_meta_reified_cc(ctx),
             [captured, winders, marks],
         );
         call.tail(proc, &[k.into()]);
@@ -491,7 +490,8 @@ pub mod control_ops {
         let k = make_reified_closure(
             ctx,
             _raw_scm_proc_reified_1cc,
-            _scheme_meta_reified_1cc(ctx),
+            true,
+            || _scheme_meta_reified_1cc(ctx),
             [captured, winders, marks],
         );
         call.tail(proc, &[k.into()]);
@@ -500,11 +500,12 @@ pub mod control_ops {
 
     #[scheme(name = "%null-continuation")]
     pub fn null_continuation() -> Value<'gc> {
-        let k = make_reified_closure(
-            ctx,
+        // Cold path: stays on the shared map so it never disturbs the
+        // dedicated `%call/cc` slot.
+        let k = ctx.make_cached_native_closure(
             _raw_scm_proc_null_reified_cc,
-            _scheme_meta_null_reified_cc(ctx),
             [Value::new(false), Value::null(), Value::null()],
+            _scheme_meta_null_reified_cc(ctx),
         );
         k.into()
     }

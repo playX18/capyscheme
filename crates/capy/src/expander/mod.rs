@@ -13,16 +13,27 @@ use crate::{
 };
 use std::sync::OnceLock;
 
+pub mod prim_names;
+// The Rust expander and its Tree IL passes are stage-0 only: the seed emitter's front end.
+#[cfg(feature = "bootstrap")]
 pub mod assignment_elimination;
+#[cfg(feature = "bootstrap")]
+pub mod boot_knowns;
+#[cfg(feature = "bootstrap")]
 pub mod boot_linklet;
+#[cfg(feature = "bootstrap")]
 pub mod cenv;
-pub mod compile_cps;
+#[cfg(feature = "bootstrap")]
 pub mod core;
+#[cfg(feature = "bootstrap")]
 pub mod fold;
-pub mod inlining;
+#[cfg(feature = "bootstrap")]
 pub mod primitives;
+#[cfg(feature = "bootstrap")]
 pub mod recursive_bindings;
+#[cfg(feature = "bootstrap")]
 pub mod term;
+#[cfg(feature = "bootstrap")]
 pub mod well_known_procs;
 
 pub fn datum_sourcev<'gc>(ctx: MutationContext<'gc>, obj: Value<'gc>) -> Value<'gc> {
@@ -74,6 +85,8 @@ pub fn add_source<'gc>(
     column: i32,
     end_line: i32,
     end_column: i32,
+    start_byte: Value<'gc>,
+    end_byte: Value<'gc>,
 ) {
     let alist = crate::vector![
         ctx,
@@ -82,8 +95,8 @@ pub fn add_source<'gc>(
         Value::new(column),
         Value::new(end_line),
         Value::new(end_column),
-        Value::new(false),
-        Value::new(false),
+        start_byte,
+        end_byte,
         Value::from(Symbol::from_str(ctx, "read")),
         Value::null()
     ];

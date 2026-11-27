@@ -20,7 +20,8 @@ use cranelift_entity::{PrimaryMap, entity_impl};
 use crate::runtime::codegen::opt::ir::frame_state::FrameState;
 use crate::runtime::codegen::opt::ir::func::{Block, Value};
 use crate::runtime::codegen::opt::ir::inst::{
-    Cmp, Constant, HelperRef, PrimRef, RematKind, ReturnValues, SwitchDensity,
+    BitOp, BvElem, Cmp, Constant, HelperRef, PrimRef, RematKind, ReturnValues, ShiftKind,
+    SwitchDensity,
 };
 use crate::runtime::codegen::opt::ir::types::{ClassRef, CodeRef, Type};
 

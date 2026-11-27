@@ -47,6 +47,12 @@
 //!   elision on objects allocated in the same block.
 //! - [`bce`]: bounds checks proved by a dominating `index < length`
 //!   test and a non-negative counter.
+//! - [`pea`]: partial escape analysis and scalar replacement (Stadler et
+//!   al., CGO 2014) of pairs, closures, envs, vectors, tuples, instances and
+//!   cells, with Graal-style merging of virtual objects at block parameters.
+//!   It moves an allocation to the paths where the object escapes, and frame
+//!   states describe the objects that stay virtual. When it is on
+//!   (`CAPY_OPT_PEA`, the default), [`sroa`] and [`cells`] do not run.
 //! - [`sroa`]: whole-function escape analysis and scalar replacement
 //!   of non-escaping pairs, closures, envs, vectors and tuples, with remat
 //!   markers for objects that frame states reference. It runs before [`repr`] so
@@ -70,6 +76,8 @@ pub(crate) mod layout;
 pub(crate) mod lcssa;
 pub(crate) mod licm;
 pub(crate) mod loops;
+pub(crate) mod osralias;
+pub(crate) mod pea;
 pub(crate) mod peel;
 pub(crate) mod predicate;
 pub(crate) mod range;
@@ -96,6 +104,10 @@ use crate::runtime::codegen::jit::config::opt;
 use crate::utils::flags;
 
 pub(crate) const DEFAULT_GAS: usize = 400_000;
+/// The gas per instruction of the builder's output. A round of the pipeline
+/// costs about 25 per instruction, so a large function gets about eight
+/// rounds rather than the few the flat [`DEFAULT_GAS`] leaves it.
+const GAS_PER_INST: usize = 200;
 
 /// What one run of a pass did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -122,7 +134,7 @@ struct PassDef {
     run: fn(&mut Func) -> PassOutcome,
 }
 
-const PIPELINE: [PassDef; 19] = [
+const PIPELINE: [PassDef; 21] = [
     PassDef {
         name: "simplify",
         run: simplify::run,
@@ -164,6 +176,10 @@ const PIPELINE: [PassDef; 19] = [
         run: strength::run,
     },
     PassDef {
+        name: "unroll_full",
+        run: peel::run_full,
+    },
+    PassDef {
         name: "unroll",
         run: unroll::run,
     },
@@ -182,6 +198,10 @@ const PIPELINE: [PassDef; 19] = [
     PassDef {
         name: "predicate",
         run: predicate::run,
+    },
+    PassDef {
+        name: "pea",
+        run: pea::run,
     },
     PassDef {
         name: "sroa",
@@ -217,18 +237,39 @@ pub(crate) fn pass_time_report() -> String {
     out
 }
 
+/// Whether the pass is on. The passes that are off by default are skipped here instead of being
+/// entered to return at once; each still checks its own flag when it is called directly.
+fn enabled(config: &crate::runtime::codegen::jit::config::OptConfig, pass: &str) -> bool {
+    match pass {
+        "version" => config.version,
+        "unswitch" => config.unswitch,
+        "unroll_all" => config.unroll_all,
+        "unroll_full" => config.unroll_full,
+        "predicate" => config.predicate,
+        "pea" => config.pea,
+        "sroa" | "cells" => !config.pea,
+        _ => true,
+    }
+}
+
 /// Runs the pass pipeline on `func` until it reaches a fixed point or runs
 /// out of gas. `name` names the dump files.
 pub(crate) fn run(func: &mut Func, name: &str) -> Result<PipelineStats, String> {
     let config = opt();
+    // On the builder's output, before any pass folds a branch: every path
+    // the interpreter may have taken before an OSR transfer is still here.
+    osralias::compute(func);
     let timed = crate::utils::flags::jit_stats();
     let mut stats = PipelineStats::default();
     stats.insts_before = func.insts.len();
-    let mut gas = DEFAULT_GAS;
+    let mut gas = DEFAULT_GAS.max(GAS_PER_INST * func.insts.len());
     'rounds: loop {
         stats.rounds += 1;
         let mut changed = false;
         for (index, pass) in PIPELINE.iter().enumerate() {
+            if !enabled(config, pass.name) {
+                continue;
+            }
             if gas == 0 {
                 stats.ran_out_of_gas = true;
                 break 'rounds;
@@ -258,6 +299,10 @@ pub(crate) fn run(func: &mut Func, name: &str) -> Result<PipelineStats, String> 
         if !changed {
             break;
         }
+    }
+    if !config.verify {
+        verify(func)
+            .map_err(|errors| format!("pipeline produced invalid IR: {}", errors.join("; ")))?;
     }
     stats.insts_after = func.insts.len();
     log::debug!(
@@ -373,10 +418,7 @@ pub(crate) fn replace_uses(func: &mut Func, subst: &Subst) {
         }
     }
     for (_, frame) in frames.iter_mut() {
-        frame.closure = subst.resolve(frame.closure);
-        for (_, value) in frame.registers.iter_mut() {
-            *value = subst.resolve(*value);
-        }
+        frame.map_values(|value| subst.resolve(value));
     }
 }
 

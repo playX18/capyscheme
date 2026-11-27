@@ -43,7 +43,8 @@
 //!    pointer, the innermost closure, `AC`, and the bytecode ip. For a return
 //!    into a multiple-value entry the frame pointer is the callee's frame and
 //!    `AC` the value count.
-//! 5. Count the exit and invalidate the unit when its budget is spent. An exit
+//! 5. Count the exit and invalidate the unit when its budget is spent (a
+//!    lazy exit, which evicts a frame of an invalidated unit, is not counted). An exit
 //!    inside an inlined body is charged to the body's own block, so its next
 //!    compile stops speculating there, and to the root's unit budget. Frames
 //!    still running an invalidated unit exit too and must not count the same
@@ -63,6 +64,7 @@ use crate::runtime::codegen::opt::build::MAX_INLINED_EXTRAS;
 use crate::runtime::codegen::opt::ir::inst::{Constant, RematKind};
 use crate::runtime::codegen::opt::regalloc::{DeoptLoc, Loc, RematDesc};
 use crate::runtime::codegen::slow::resume_addr;
+use crate::runtime::codegen::opt::lir::GuardKind;
 use crate::runtime::codegen::unit::{CodeUnit, DeoptPoint};
 use crate::runtime::interp::markers;
 use crate::runtime::interp::stack::{self, Ip, Slot};
@@ -491,7 +493,15 @@ unsafe fn deoptimize<'gc>(
     // Frames that still run an invalidated unit exit too, and must not
     // count the same invalidation twice.
     let already_invalid = opt.invalid.load(Acquire) != 0;
-    let spent = {
+    // A lazy exit evicts a frame of a unit whose assumptions broke, and so
+    // does any exit of such a unit (a watchpoint helper reports the break as
+    // a failed call); neither says anything about the speculation at its pc.
+    let lazy = point.guard == GuardKind::Lazy
+        || opt.invalid.load(Acquire) == super::lazy::ASSUMPTION_BROKEN;
+    if lazy && crate::utils::flags::jit_stats() {
+        crate::runtime::codegen::jit::config::OPT_LAZY_DEOPTS.fetch_add(1, Relaxed);
+    }
+    let spent = !lazy && {
         // An exit inside an inlined body counts against the body's own
         // block, so its next compile stops speculating there. The unit's
         // budget is the root's.
@@ -699,6 +709,37 @@ impl<'a, 'gc> Reader<'a, 'gc> {
                 let value = unsafe { self.read(&desc.fields[0]) };
                 Value::from(Variable::new(self.ctx, value))
             }
+            RematKind::U64 => {
+                let bits = unsafe { self.read_word(&desc.fields[0]) };
+                match i32::try_from(bits) {
+                    Ok(value) => Value::from_i32(value),
+                    Err(_) => Value::from_raw(Value::from(BigInt::from_u64(self.ctx, bits)).bits()),
+                }
+            }
+        }
+    }
+
+    /// The raw 64-bit word of a raw-int64 location, for a field whose bit
+    /// pattern matters rather than its signed value.
+    ///
+    /// # Safety
+    ///
+    /// As [`Self::read`].
+    unsafe fn read_word(&mut self, loc: &DeoptLoc) -> u64 {
+        match loc {
+            DeoptLoc::UnboxedI64(at) | DeoptLoc::UnboxedI32(at) => unsafe {
+                raw_at(
+                    *at,
+                    DeoptRegClass::Gpr,
+                    self.save,
+                    self.fp as *const u64,
+                    self.frame_size,
+                )
+            }
+            .unwrap_or_else(|| fatal(self.exit, "a value lives in a register outside the pool")),
+            DeoptLoc::Const(Constant::Int64(value)) => *value as u64,
+            DeoptLoc::Const(Constant::Int32(value)) => *value as u32 as u64,
+            _ => fatal(self.exit, "a u64 remat field is not a raw word"),
         }
     }
 

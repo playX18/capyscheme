@@ -14,6 +14,7 @@ use crate::heap::object::{ClassId, GcObject, builtin_class_ids};
 use crate::heap::{Gc, Trace, Visitor};
 use crate::runtime::objectmodel::Value;
 use crate::runtime::objectmodel::class::{ClassDescriptor, GenericDescriptor, MethodDescriptor};
+use crate::runtime::objectmodel::proc::Closure;
 use crate::runtime::objectmodel::{CodeBlock, CodeBuffer, CodeImage};
 
 /// A typed GC reference stored in code buffer metadata. Zero bits mean
@@ -58,12 +59,6 @@ impl<T: ?Sized> GcCell<T> {
     }
 }
 
-/// Re-lifetimes the `'static` marker type a [`GcCell`] is declared with:
-/// metadata structs cannot carry `'gc`, so the cell is declared over
-/// `T<'static>` and hands out `T<'gc>`.
-///
-/// # Safety
-/// `To` must be `Self` with its GC lifetimes replaced by `'gc`.
 pub unsafe trait Rebind<'gc> {
     type To: 'gc;
 }
@@ -79,7 +74,8 @@ rebind!(
     CodeImage,
     ClassDescriptor,
     GenericDescriptor,
-    MethodDescriptor
+    MethodDescriptor,
+    Closure
 );
 // SAFETY: only the lifetimes differ.
 unsafe impl<'gc, T: Rebind<'gc>> Rebind<'gc> for Array<Gc<'static, T>>
@@ -696,8 +692,10 @@ pub struct CallLinkInfo {
     /// grows with the argument count.
     pub generic_dispatch: AtomicU32,
     pub generic_class_ids: [AtomicU32; 2],
-    /// The applicable method chain
+    /// Method chain.
     pub generic_methods: GcCell<Array<Gc<'static, MethodDescriptor<'static>>>>,
+    /// Effective method.
+    pub generic_emf: GcCell<Closure<'static>>,
 }
 
 /// [`CallLinkInfo::polymorphic`] while at most one code block was called
@@ -726,7 +724,10 @@ pub struct GenericCacheEntry<'gc> {
     pub key_len: u32,
     pub min_argc: u32,
     pub class_ids: [u32; 2],
-    pub methods: Gc<'gc, Array<Gc<'gc, MethodDescriptor<'gc>>>>,
+    /// Method chain.
+    pub methods: Option<Gc<'gc, Array<Gc<'gc, MethodDescriptor<'gc>>>>>,
+    /// Effective method.
+    pub emf: Option<Gc<'gc, Closure<'gc>>>,
 }
 
 impl CallLinkInfo {
@@ -736,7 +737,7 @@ impl CallLinkInfo {
     pub fn read_generic<'gc>(&self) -> Option<GenericCacheEntry<'gc>> {
         let start = self.generic_version.begin_read();
         let packed = self.generic_dispatch.load(Relaxed);
-        let (generic, methods) = (self.generic.get()?, self.generic_methods.get()?);
+        let generic = self.generic.get()?;
         let entry = GenericCacheEntry {
             generic,
             epoch: self.generic_epoch.load(Relaxed),
@@ -746,7 +747,8 @@ impl CallLinkInfo {
                 self.generic_class_ids[0].load(Relaxed),
                 self.generic_class_ids[1].load(Relaxed),
             ],
-            methods,
+            methods: self.generic_methods.get(),
+            emf: self.generic_emf.get(),
         };
         self.generic_version.validate(start).then_some(entry)
     }
@@ -774,6 +776,36 @@ impl CallLinkInfo {
             slot.store(*class_id, Relaxed);
         }
         self.generic_methods.set(barrier, Some(methods));
+        self.generic_emf.set(barrier, None);
+        self.generic_version.end_write(start);
+        true
+    }
+
+    /// Stores the effective method `emf` of a combined generic, under the
+    /// same key and epoch as [`Self::fill_generic`]. Returns whether it
+    /// stored.
+    pub fn fill_generic_emf<'gc>(
+        &self,
+        barrier: &Write<CodeBuffer<'_>>,
+        generic: Gc<'gc, GenericDescriptor<'gc>>,
+        epoch: u32,
+        class_ids: &[u32],
+        min_argc: u32,
+        emf: Gc<'gc, Closure<'gc>>,
+    ) -> bool {
+        debug_assert!(class_ids.len() <= 2);
+        let Some(start) = self.generic_version.begin_write() else {
+            return false;
+        };
+        self.generic.set(barrier, Some(generic));
+        self.generic_epoch.store(epoch, Relaxed);
+        self.generic_dispatch
+            .store(class_ids.len() as u32 | (min_argc << 2), Relaxed);
+        for (slot, class_id) in self.generic_class_ids.iter().zip(class_ids) {
+            slot.store(*class_id, Relaxed);
+        }
+        self.generic_methods.set(barrier, None);
+        self.generic_emf.set(barrier, Some(emf));
         self.generic_version.end_write(start);
         true
     }
@@ -850,6 +882,7 @@ impl Clone for CallLinkInfo {
                 AtomicU32::new(self.generic_class_ids[1].load(Relaxed)),
             ],
             generic_methods: self.generic_methods.clone(),
+            generic_emf: self.generic_emf.clone(),
         }
     }
 }
@@ -877,6 +910,7 @@ impl std::fmt::Debug for CallLinkInfo {
                 ],
             )
             .field("generic_methods", &self.generic_methods)
+            .field("generic_emf", &self.generic_emf)
             .finish()
     }
 }
@@ -898,6 +932,7 @@ impl PartialEq for CallLinkInfo {
             && self.generic_class_ids[0].load(Relaxed) == other.generic_class_ids[0].load(Relaxed)
             && self.generic_class_ids[1].load(Relaxed) == other.generic_class_ids[1].load(Relaxed)
             && self.generic_methods == other.generic_methods
+            && self.generic_emf == other.generic_emf
     }
 }
 impl Eq for CallLinkInfo {}
@@ -919,6 +954,7 @@ impl std::hash::Hash for CallLinkInfo {
         self.generic_class_ids[0].load(Relaxed).hash(state);
         self.generic_class_ids[1].load(Relaxed).hash(state);
         self.generic_methods.hash(state);
+        self.generic_emf.hash(state);
     }
 }
 
@@ -933,6 +969,7 @@ unsafe impl Trace for CallLinkInfo {
             self.stub_owner.trace(visitor);
             self.generic.trace(visitor);
             self.generic_methods.trace(visitor);
+            self.generic_emf.trace(visitor);
         }
     }
 }

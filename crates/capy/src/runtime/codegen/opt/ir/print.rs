@@ -4,7 +4,8 @@ use std::fmt::{self, Display, Formatter, Write};
 
 use super::func::{Block, Func, Value};
 use super::inst::{
-    Cmp, Constant, Edge, Op, RematKind, Repr, ReturnValues, SwitchDensity, Terminator,
+    BitOp, Cmp, Constant, Edge, Op, RematKind, Repr, ReturnValues, ShiftKind, SwitchDensity,
+    Terminator,
 };
 use super::types::{CodeSource, Type};
 
@@ -42,6 +43,7 @@ impl Display for RematKind {
                 write!(f, "instance class={class} slots={slots}")
             }
             RematKind::Variable => write!(f, "variable"),
+            RematKind::U64 => write!(f, "u64"),
         }
     }
 }
@@ -101,6 +103,23 @@ impl Display for Repr {
     }
 }
 
+fn bit_name(op: BitOp) -> &'static str {
+    match op {
+        BitOp::And => "and",
+        BitOp::Or => "or",
+        BitOp::Xor => "xor",
+    }
+}
+
+fn shift_name(kind: ShiftKind) -> &'static str {
+    match kind {
+        ShiftKind::Shl => "shl",
+        ShiftKind::Sar => "sar",
+        ShiftKind::Shr => "shr",
+        ShiftKind::Rotr => "rotr",
+    }
+}
+
 impl Display for Op {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
@@ -108,6 +127,7 @@ impl Display for Op {
             Op::CheckInt32 => write!(f, "check.int32"),
             Op::CheckInt64 => write!(f, "check.int64"),
             Op::CheckBigIntFits64 => write!(f, "check.bigint.fits64"),
+            Op::CheckU64 => write!(f, "check.u64"),
             Op::CheckDouble => write!(f, "check.double"),
             Op::CheckChar => write!(f, "check.char"),
             Op::CheckClass(class) => write!(f, "check.class {class}"),
@@ -116,12 +136,23 @@ impl Display for Op {
             Op::Box(repr) => write!(f, "box.{repr}"),
             Op::Unbox(repr) => write!(f, "unbox.{repr}"),
             Op::Int64ToInt32 => write!(f, "int64.to.int32"),
+            Op::BoxU64 => write!(f, "box.u64"),
             Op::AddI32Ovf => write!(f, "add.i32.ovf"),
             Op::SubI32Ovf => write!(f, "sub.i32.ovf"),
             Op::MulI32Ovf => write!(f, "mul.i32.ovf"),
             Op::QuotI32 => write!(f, "quot.i32"),
             Op::RemI32 => write!(f, "rem.i32"),
             Op::ModI32 => write!(f, "mod.i32"),
+            Op::AddI32 => write!(f, "add.i32"),
+            Op::SubI32 => write!(f, "sub.i32"),
+            Op::MulI32 => write!(f, "mul.i32"),
+            Op::BitI32(op) => write!(f, "{}.i32", bit_name(*op)),
+            Op::BitI64(op) => write!(f, "{}.i64", bit_name(*op)),
+            Op::ShiftI32(kind, n) => write!(f, "{}.i32 {n}", shift_name(*kind)),
+            Op::ShiftI64(kind, n) => write!(f, "{}.i64 {n}", shift_name(*kind)),
+            Op::ShlI32Ovf(n) => write!(f, "shl.i32.ovf {n}"),
+            Op::ShiftI32Var(kind) => write!(f, "{}.i32.var", shift_name(*kind)),
+            Op::ShlI32OvfVar => write!(f, "shl.i32.ovf.var"),
             Op::AddI64 => write!(f, "add.i64"),
             Op::SubI64 => write!(f, "sub.i64"),
             Op::MulI64 => write!(f, "mul.i64"),
@@ -140,7 +171,13 @@ impl Display for Op {
             Op::CeilingF64 => write!(f, "ceiling.f64"),
             Op::TruncateF64 => write!(f, "truncate.f64"),
             Op::SqrtF64 => write!(f, "sqrt.f64"),
+            Op::AbsF64 => write!(f, "abs.f64"),
+            Op::MinF64 => write!(f, "min.f64"),
+            Op::MaxF64 => write!(f, "max.f64"),
             Op::CmpI32(cmp) => write!(f, "cmp.i32.{cmp}"),
+            Op::Select => write!(f, "select"),
+            Op::CheckBound { len, raw: false } => write!(f, "check.bound[{len}]"),
+            Op::CheckBound { len, raw: true } => write!(f, "check.bound.raw[{len}]"),
             Op::CmpF64(cmp) => write!(f, "cmp.f64.{cmp}"),
             Op::EqBits => write!(f, "eq.bits"),
             Op::TestInt32 => write!(f, "test.int32"),
@@ -186,7 +223,21 @@ impl Display for Op {
             Op::LoadElement => write!(f, "load.element"),
             Op::StoreElement => write!(f, "store.element"),
             Op::LoadBytevectorU8 => write!(f, "load.bytevector.u8"),
+            Op::LoadBytevector(elem) => write!(
+                f,
+                "load.bytevector.{}{}{}",
+                if elem.signed { "s" } else { "u" },
+                elem.bytes * 8,
+                if elem.big_endian { ".be" } else { "" }
+            ),
+            Op::CharFromCode => write!(f, "char.from.code"),
             Op::StoreBytevectorU8 => write!(f, "store.bytevector.u8"),
+            Op::StoreBytevector(elem) => write!(
+                f,
+                "store.bytevector.{}{}",
+                elem.bytes * 8,
+                if elem.big_endian { ".be" } else { "" }
+            ),
             Op::SlotGet { meta } => write!(f, "slot.get @{meta:#x}"),
             Op::SlotPut { meta } => write!(f, "slot.put @{meta:#x}"),
             Op::AllocPair => write!(f, "alloc.pair"),
@@ -260,6 +311,23 @@ impl Display for Func<'_> {
                     " returned(base={} count={:?})",
                     returned.base, returned.count
                 )?;
+            }
+            if !data.virtuals.is_empty() {
+                f.write_str(" virtuals=[")?;
+                for (i, object) in data.virtuals.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{} = {} (", object.alias, object.kind)?;
+                    for (j, field) in object.fields.iter().enumerate() {
+                        if j > 0 {
+                            f.write_str(", ")?;
+                        }
+                        write!(f, "{field}")?;
+                    }
+                    f.write_str(")")?;
+                }
+                f.write_char(']')?;
             }
             writeln!(f)?;
         }

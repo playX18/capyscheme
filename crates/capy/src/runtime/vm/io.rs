@@ -1,13 +1,16 @@
 use crate::heap::Space;
 use crate::prelude::*;
-use crate::runtime::fasl::{Reader, Writer};
+use crate::runtime::fasl::{
+    Compression, Image, LoadOptions, Reader, Writer,
+    program_datum::{datum_to_program, is_program_datum},
+};
+pub use crate::runtime::objectmodel::io::Poller;
+pub(crate) use crate::runtime::objectmodel::io::poller_header_word;
 use crate::runtime::sched::blocking;
 use crate::runtime::sched::preempt::retry_eintr;
 use crate::runtime::sched::reactor::{self, Dir};
 use crate::runtime::sched::scheduler::{Woken, current};
 use crate::static_symbols;
-pub use crate::runtime::objectmodel::io::Poller;
-pub(crate) use crate::runtime::objectmodel::io::poller_header_word;
 use rustix::fd::AsRawFd;
 use std::ffi::CString;
 use std::sync::{
@@ -309,6 +312,23 @@ pub mod io_ops {
         }
     }
 
+    #[scheme(name = "delete-directory*")]
+    pub fn delete_directory_all(path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
+        match std::fs::remove_dir_all(path.to_string()) {
+            Ok(()) => Value::new(true),
+            Err(err) => {
+                let error = err.to_string();
+                call.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "delete-directory*",
+                    &error,
+                    path.into(),
+                )
+            }
+        }
+    }
+
     #[scheme(name = "delete-file")]
     pub fn delete_file(path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
         match std::fs::remove_file(path.to_string()) {
@@ -420,6 +440,27 @@ pub mod io_ops {
                 "write-executable",
                 "failed to write executable",
                 out.into(),
+            ),
+        }
+    }
+
+    /// `(fasl-read-directory path)`: the directory header of the FASL image `path`, a list of
+    /// `(name imports exports meta)` entries, or `#f` when it has none. Reads only the header.
+    #[scheme(name = "fasl-read-directory")]
+    pub fn fasl_read_directory(path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
+        use crate::runtime::fasl::Reader;
+
+        let result = std::fs::File::open(path.to_string())
+            .and_then(|file| Reader::new(ctx, file).read_directory());
+        match result {
+            Ok(Some(directory)) => directory,
+            Ok(None) => Value::new(false),
+            Err(err) => call.raise_io_error(
+                err,
+                IoOperation::Read,
+                "fasl-read-directory",
+                "failed to read the FASL header",
+                path.into(),
             ),
         }
     }
@@ -1878,6 +1919,119 @@ pub mod io_ops {
         }
     }
 
+    /// `(%process-spawn* argv env cwd stdin stdout stderr)`: starts the program `(vector-ref argv 0)`
+    /// with the arguments after it, searched in the `PATH`, without a shell. `env` is a vector of
+    /// `"NAME=VALUE"` strings that are set, and `"NAME"` strings that are removed, in the
+    /// environment of the child; `cwd` is a directory or `#f`. The three stdio arguments are
+    /// strings: `"inherit"`, `"pipe"`, `"null"`, `"file:PATH"` (written or read), `"append:PATH"`
+    /// and, for `stderr` only, `"merge"`, which sends it where `stdout` goes. Returns
+    /// `(pid stdin-fd stdout-fd stderr-fd)`; a descriptor is the parent's end of a pipe, or `#f`.
+    #[scheme(name = "%process-spawn*")]
+    pub fn process_spawn_direct(
+        argv: Gc<'gc, Vector<'gc>>,
+        env: Gc<'gc, Vector<'gc>>,
+        cwd: Value<'gc>,
+        stdin: Gc<'gc, Str<'gc>>,
+        stdout: Gc<'gc, Str<'gc>>,
+        stderr: Gc<'gc, Str<'gc>>,
+    ) -> Value<'gc> {
+        let strings = |values: &[Value<'gc>]| -> Option<Vec<String>> {
+            values
+                .iter()
+                .map(|value| value.try_as::<Str>().map(|s| s.to_string()))
+                .collect()
+        };
+        let (Some(argv), Some(env)) = (strings(argv.as_slice()), strings(env.as_slice())) else {
+            let err = std::io::Error::new(std::io::ErrorKind::InvalidInput, "expected strings");
+            return call.raise_io_error(
+                err,
+                IoOperation::Open,
+                "%process-spawn*",
+                "the arguments and the environment have to be strings",
+                Value::new(false),
+            );
+        };
+        let cwd = cwd.try_as::<Str>().map(|s| s.to_string());
+        let (stdin, stdout, stderr) = (stdin.to_string(), stdout.to_string(), stderr.to_string());
+        let program = argv.first().cloned().unwrap_or_default();
+        match spawn_direct(&argv, &env, cwd.as_deref(), &stdin, &stdout, &stderr) {
+            Ok((pid, fds)) => {
+                let fd_value = |fd: Option<i32>| match fd {
+                    Some(fd) => Value::new(fd),
+                    None => Value::new(false),
+                };
+                let mut list = Value::null();
+                for value in [
+                    fd_value(fds[2]),
+                    fd_value(fds[1]),
+                    fd_value(fds[0]),
+                    Value::new(pid),
+                ] {
+                    list = Value::cons(ctx, value, list);
+                }
+                list
+            }
+            Err(err) => {
+                let error = err.to_string();
+                call.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "%process-spawn*",
+                    &error,
+                    Str::new(ctx, program, true).into(),
+                )
+            }
+        }
+    }
+
+    /// `(%process-kill pid signal)`: sends the signal number to the process. Returns whether it
+    /// was sent.
+    #[scheme(name = "%process-kill")]
+    pub fn process_kill(pid: i32, signal: i32) -> Value<'gc> {
+        // SAFETY: FFI: kill takes plain integers.
+        Value::new(unsafe { libc::kill(pid, signal) } == 0)
+    }
+
+    /// `(%process-exec program argv)`: replaces this process with `program` (a path, not searched
+    /// for in the `PATH`), run with the strings of the vector `argv`, the first of which is the
+    /// name it is to know itself by. Returns only when the program cannot be run: it raises the
+    /// I/O error.
+    #[scheme(name = "%process-exec")]
+    pub fn process_exec(program: Gc<'gc, Str<'gc>>, argv: Gc<'gc, Vector<'gc>>) -> Value<'gc> {
+        use std::os::unix::process::CommandExt;
+        let strings: Option<Vec<String>> = argv
+            .as_slice()
+            .iter()
+            .map(|value| value.try_as::<Str>().map(|s| s.to_string()))
+            .collect();
+        let Some(strings) = strings else {
+            let err = std::io::Error::new(std::io::ErrorKind::InvalidInput, "expected strings");
+            return call.raise_io_error(
+                err,
+                IoOperation::Open,
+                "%process-exec",
+                "the arguments have to be strings",
+                program.into(),
+            );
+        };
+        let path = program.to_string();
+        let mut command = std::process::Command::new(&path);
+        if let Some((name, args)) = strings.split_first() {
+            command.arg0(name);
+            command.args(args);
+        }
+        // `exec` returns only when it failed.
+        let err = command.exec();
+        let error = err.to_string();
+        call.raise_io_error(
+            err,
+            IoOperation::Open,
+            "%process-exec",
+            &error,
+            program.into(),
+        )
+    }
+
     #[scheme(name = "%process-wait")]
     pub fn process_wait(pid: i32) -> Value<'gc> {
         let outcome = match current() {
@@ -2294,16 +2448,46 @@ pub mod io_ops {
         }
     }
 
-    /// Serialize DATUM with the runtime FASL writer (compression off) to the
-    /// file at PATH.
+    /// `(fasl-write datum path [directory [compression]])`: serialize DATUM with the runtime
+    /// FASL writer to the file at PATH.
+    ///
+    /// DIRECTORY, when given and not `#f`, is a plain datum that goes in the header of the
+    /// image, where `fasl-read-directory` reads it without reading DATUM (the `.wpo` files of
+    /// the static linker keep the library decls there). COMPRESSION is `'gzip`, or `'none`
+    /// or `#f` (the default) for none. A program datum (`#(#%program entry #(code ...))`,
+    /// layout in `runtime/fasl/program_datum.rs`) is written as a loadable code image; a
+    /// malformed one raises an error.
     #[scheme(name = "fasl-write")]
-    pub fn fasl_write(datum: Value<'gc>, path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
+    pub fn fasl_write(
+        datum: Value<'gc>,
+        path: Gc<'gc, Str<'gc>>,
+        directory: Option<Value<'gc>>,
+        compression: Option<Value<'gc>>,
+    ) -> Value<'gc> {
+        let compression = match fasl_compression(compression) {
+            Ok(compression) => compression,
+            Err(message) => {
+                return call.raise_error(
+                    "fasl-write",
+                    &message,
+                    &[compression.unwrap_or(Value::new(false))],
+                );
+            }
+        };
         match std::fs::File::create(path.to_string()) {
             Ok(file) => {
-                let writer = Writer::new(ctx, std::io::BufWriter::new(file));
-                match writer.write(datum) {
+                match fasl_write_image(
+                    ctx,
+                    std::io::BufWriter::new(file),
+                    datum,
+                    directory,
+                    compression,
+                ) {
                     Ok(()) => Value::new(true),
-                    Err(err) => {
+                    Err(FaslWriteError::Malformed(message)) => {
+                        call.raise_error("fasl-write", &message, &[datum])
+                    }
+                    Err(FaslWriteError::Io(err)) => {
                         let error = err.to_string();
                         call.raise_io_error(
                             err,
@@ -2322,12 +2506,24 @@ pub mod io_ops {
         }
     }
 
-    /// Deserialize one value from the FASL file at PATH.
+    /// `(fasl-read path [mode])`: deserialize one value from the FASL file at PATH. MODE is
+    /// `'program-datum` to get a program image as a program datum (see `fasl-write`) instead
+    /// of its entry thunk, `'normal` or `#f` (the default) otherwise.
     #[scheme(name = "fasl-read")]
-    pub fn fasl_read(path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
+    pub fn fasl_read(path: Gc<'gc, Str<'gc>>, mode: Option<Value<'gc>>) -> Value<'gc> {
+        let options = match fasl_read_options(mode) {
+            Ok(options) => options,
+            Err(message) => {
+                return call.raise_error(
+                    "fasl-read",
+                    &message,
+                    &[mode.unwrap_or(Value::new(false))],
+                );
+            }
+        };
         match std::fs::File::open(path.to_string()) {
             Ok(file) => {
-                let reader = Reader::new(ctx, std::io::BufReader::new(file));
+                let reader = Reader::new_with_options(ctx, std::io::BufReader::new(file), options);
                 match reader.read() {
                     Ok(value) => value,
                     Err(err) => {
@@ -2349,18 +2545,35 @@ pub mod io_ops {
         }
     }
 
-    /// Serialize DATUM to a bytevector.
+    /// `(fasl-write->bytevector datum [directory [compression]])`: like `fasl-write`, to a
+    /// bytevector.
     #[scheme(name = "fasl-write->bytevector")]
-    pub fn fasl_write_to_bytevector(datum: Value<'gc>) -> Value<'gc> {
+    pub fn fasl_write_to_bytevector(
+        datum: Value<'gc>,
+        directory: Option<Value<'gc>>,
+        compression: Option<Value<'gc>>,
+    ) -> Value<'gc> {
+        let compression = match fasl_compression(compression) {
+            Ok(compression) => compression,
+            Err(message) => {
+                return call.raise_error(
+                    "fasl-write->bytevector",
+                    &message,
+                    &[compression.unwrap_or(Value::new(false))],
+                );
+            }
+        };
         let mut bytes: Vec<u8> = Vec::new();
-        let writer = Writer::new(ctx, &mut bytes);
-        match writer.write(datum) {
+        match fasl_write_image(ctx, &mut bytes, datum, directory, compression) {
             Ok(()) => {
                 let bv = ByteVector::new::<false>(ctx, bytes.len(), true);
                 bv.copy_from(bytes.as_slice());
                 bv.into()
             }
-            Err(err) => {
+            Err(FaslWriteError::Malformed(message)) => {
+                call.raise_error("fasl-write->bytevector", &message, &[datum])
+            }
+            Err(FaslWriteError::Io(err)) => {
                 let error = err.to_string();
                 call.raise_io_error(
                     err,
@@ -2373,11 +2586,21 @@ pub mod io_ops {
         }
     }
 
-    /// Deserialize one value from the FASL bytevector BV.
+    /// `(fasl-read-bytevector bv [mode])`: like `fasl-read`, from the bytevector BV.
     #[scheme(name = "fasl-read-bytevector")]
-    pub fn fasl_read_bytevector(bv: Gc<'gc, ByteVector>) -> Value<'gc> {
+    pub fn fasl_read_bytevector(bv: Gc<'gc, ByteVector>, mode: Option<Value<'gc>>) -> Value<'gc> {
+        let options = match fasl_read_options(mode) {
+            Ok(options) => options,
+            Err(message) => {
+                return call.raise_error(
+                    "fasl-read-bytevector",
+                    &message,
+                    &[mode.unwrap_or(Value::new(false))],
+                );
+            }
+        };
         let bytes = bv.as_slice();
-        let reader = Reader::new(ctx, std::io::Cursor::new(bytes));
+        let reader = Reader::new_with_options(ctx, std::io::Cursor::new(bytes), options);
         match reader.read() {
             Ok(value) => value,
             Err(err) => {
@@ -2391,6 +2614,70 @@ pub mod io_ops {
                 )
             }
         }
+    }
+}
+
+enum FaslWriteError {
+    /// The datum is a malformed program datum.
+    Malformed(String),
+    Io(std::io::Error),
+}
+
+/// The compression named by the optional argument of `fasl-write`.
+fn fasl_compression(value: Option<Value<'_>>) -> Result<Compression, String> {
+    let Some(value) = value.filter(|value| *value != Value::new(false)) else {
+        return Ok(Compression::None);
+    };
+    match value
+        .try_as::<Symbol>()
+        .map(|symbol| symbol.to_string())
+        .as_deref()
+    {
+        Some("none") => Ok(Compression::None),
+        Some("gzip") => Ok(Compression::Gzip),
+        _ => Err("compression must be 'gzip, 'none or #f".into()),
+    }
+}
+
+/// The reader options named by the optional MODE argument of `fasl-read`.
+fn fasl_read_options(mode: Option<Value<'_>>) -> Result<LoadOptions, String> {
+    let Some(mode) = mode.filter(|mode| *mode != Value::new(false)) else {
+        return Ok(LoadOptions::from_flags());
+    };
+    match mode
+        .try_as::<Symbol>()
+        .map(|symbol| symbol.to_string())
+        .as_deref()
+    {
+        Some("normal") => Ok(LoadOptions::from_flags()),
+        Some("program-datum") => Ok(LoadOptions::PROGRAM_DATUM),
+        _ => Err("mode must be 'program-datum, 'normal or #f".into()),
+    }
+}
+
+/// Writes `datum` as an FASL image: a program image for a program datum, else a plain datum.
+fn fasl_write_image<'gc, W: std::io::Write>(
+    ctx: MutationContext<'gc>,
+    out: W,
+    datum: Value<'gc>,
+    directory: Option<Value<'gc>>,
+    compression: Compression,
+) -> Result<(), FaslWriteError> {
+    let directory = directory.filter(|directory| *directory != Value::new(false));
+    let writer = Writer::new(ctx, out).with_directory(directory);
+    if is_program_datum(datum) {
+        let program = datum_to_program(datum).map_err(FaslWriteError::Malformed)?;
+        if crate::runtime::fasl::program_datum::verify_enabled() {
+            crate::runtime::fasl::program_datum::verify_program(&program)
+                .map_err(FaslWriteError::Malformed)?;
+        }
+        program
+            .with_spec(|spec| writer.write_image(Image::Program(spec), compression))
+            .map_err(FaslWriteError::Io)
+    } else {
+        writer
+            .write_image(Image::Value(datum), compression)
+            .map_err(FaslWriteError::Io)
     }
 }
 
@@ -2840,6 +3127,115 @@ fn await_fd_timed<'gc>(
             }
         }
     }
+}
+
+/// Starts a child process for `%process-spawn*`: the pid and the descriptors of the parent's
+/// ends of the pipes, `[stdin, stdout, stderr]`.
+fn spawn_direct(
+    argv: &[String],
+    env: &[String],
+    cwd: Option<&str>,
+    stdin: &str,
+    stdout: &str,
+    stderr: &str,
+) -> std::io::Result<(i32, [Option<i32>; 3])> {
+    use std::fs::OpenOptions;
+    use std::io::{Error, ErrorKind};
+    use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
+    use std::process::{Command, Stdio};
+
+    let invalid = |what: &str| Error::new(ErrorKind::InvalidInput, what.to_owned());
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| invalid("no program to run"))?;
+    let mut command = Command::new(program);
+    command.args(args);
+    for entry in env {
+        match entry.split_once('=') {
+            Some((name, value)) => command.env(name, value),
+            None => command.env_remove(entry),
+        };
+    }
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+
+    let mut stdin_pipe = false;
+    command.stdin(match stdin {
+        "inherit" => Stdio::inherit(),
+        "null" => Stdio::null(),
+        "pipe" => {
+            stdin_pipe = true;
+            Stdio::piped()
+        }
+        spec => match spec.strip_prefix("file:") {
+            Some(path) => Stdio::from(std::fs::File::open(path)?),
+            None => return Err(invalid("unknown stdin")),
+        },
+    });
+
+    // The end of an output stream the child writes to, and the end the parent reads.
+    let output = |spec: &str, inherited: i32| -> std::io::Result<(OwnedFd, Option<OwnedFd>)> {
+        let file = |path: &str, append: bool| {
+            OpenOptions::new()
+                .write(true)
+                .create(true)
+                .append(append)
+                .truncate(!append)
+                .open(path)
+                .map(OwnedFd::from)
+        };
+        match spec {
+            "inherit" => {
+                // SAFETY: FFI: dup of a standard descriptor; the result is owned here.
+                let fd = unsafe { libc::dup(inherited) };
+                if fd < 0 {
+                    Err(Error::last_os_error())
+                } else {
+                    // SAFETY: `fd` is a fresh descriptor that nothing else owns.
+                    Ok((unsafe { OwnedFd::from_raw_fd(fd) }, None))
+                }
+            }
+            "null" => file("/dev/null", true).map(|fd| (fd, None)),
+            "pipe" => {
+                let (reader, writer) = std::io::pipe()?;
+                Ok((OwnedFd::from(writer), Some(OwnedFd::from(reader))))
+            }
+            spec => match (spec.strip_prefix("file:"), spec.strip_prefix("append:")) {
+                (Some(path), _) => file(path, false).map(|fd| (fd, None)),
+                (_, Some(path)) => file(path, true).map(|fd| (fd, None)),
+                _ => Err(invalid("unknown output")),
+            },
+        }
+    };
+    let (out_child, out_parent) = output(stdout, 1)?;
+    let (err_child, err_parent) = if stderr == "merge" {
+        (out_child.try_clone()?, None)
+    } else {
+        output(stderr, 2)?
+    };
+    command.stdout(Stdio::from(out_child));
+    command.stderr(Stdio::from(err_child));
+
+    let mut child = command.spawn()?;
+    // The pipes the child writes to are closed in this process once `command` is dropped, so a
+    // reader sees the end of the stream when the child has exited.
+    drop(command);
+    let pid = child.id() as i32;
+    let stdin_fd = if stdin_pipe {
+        child.stdin.take().map(|pipe| pipe.into_raw_fd())
+    } else {
+        None
+    };
+    std::mem::forget(child);
+    Ok((
+        pid,
+        [
+            stdin_fd,
+            out_parent.map(IntoRawFd::into_raw_fd),
+            err_parent.map(IntoRawFd::into_raw_fd),
+        ],
+    ))
 }
 
 /// Wait on a child process

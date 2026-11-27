@@ -31,8 +31,8 @@ tree-sitter = { workspace = true, optional = true }
 tree-sitter-scheme = { workspace = true, optional = true }
 rustix = { version = "*", features = ["fs", "pipe", "event"] }
 paste.workspace = true
-pretty.workspace = true
-petgraph.workspace = true
+pretty = { workspace = true, optional = true }
+petgraph = { workspace = true, optional = true }
 libc.workspace = true
 log.workspace = true
 backtrace.workspace = true
@@ -51,6 +51,7 @@ cranelift-entity = "0.134.2"
 polling = "3.11.0"
 smallvec = "1.15.1"
 flate2 = "1.1.9"
+sha2 = "0.10"
 
 [dependencies.im]
 version = "15.1.0"
@@ -60,7 +61,7 @@ package = "im-rc"
 default = ["portable", "bootstrap"]
 portable = []
 aslr = []
-bootstrap = ["tree-sitter", "tree-sitter-scheme", "num-bigint"]
+bootstrap = ["tree-sitter", "tree-sitter-scheme", "num-bigint", "pretty", "petgraph"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libsui = "0.16.4"

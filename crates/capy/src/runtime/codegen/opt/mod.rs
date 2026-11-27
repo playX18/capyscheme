@@ -174,6 +174,7 @@ impl OptimizingCompiler {
             data,
             frame_words,
             annotations: annotation_labels,
+            lazy_returns: lazy_labels,
             ..
         } = emit::emit(
             masm,
@@ -277,6 +278,15 @@ impl OptimizingCompiler {
                 .collect()
         };
         let entry_off = image.finished.offset(unit_entry).expect("bound label") as usize;
+        let mut lazy_returns: Vec<(u32, u32)> = lazy_labels
+            .into_iter()
+            .map(|(ra, shadow)| {
+                let ra = image.finished.offset(ra).expect("bound label");
+                let shadow = image.finished.offset(shadow).expect("bound label");
+                (ra as u32, shadow as u32)
+            })
+            .collect();
+        lazy_returns.sort_unstable_by_key(|&(ra, _)| ra);
         let reheal_off = image.finished.offset(reheal).expect("bound label") as usize;
 
         let mut osr = Vec::with_capacity(osr_labels.len());
@@ -358,6 +368,7 @@ impl OptimizingCompiler {
             generic_cold: func.generic_cold,
             entry_jump: CodeOffset(jump_at as u32),
             reheal: CodeOffset(reheal_off as u32),
+            lazy_returns: lazy_returns.into_boxed_slice(),
         };
         Ok(Some(BuiltUnit {
             tier: Tier::Optimizing,
@@ -389,7 +400,7 @@ impl OptimizingCompiler {
                     class: dep.class,
                     id: dep.id,
                     stamp: dep.stamp,
-                    subtree: dep.subtree,
+                    kind: dep.kind,
                 })
                 .collect(),
             generic_dependencies: func

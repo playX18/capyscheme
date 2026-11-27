@@ -139,6 +139,10 @@ pub unsafe trait ClassTagged {
 
     /// Built-in class IDs accepted for this value type.
     const CLASS_IDS: &'static [u32];
+
+    /// Metaobject layout that user classes may extend. `None` for everything
+    /// else, which keeps `Value::is` a pure id compare.
+    const FAMILY: Option<crate::runtime::objectmodel::class::LayoutFamily> = None;
 }
 
 /// Converts a Rust value into a runtime [`Value`].
@@ -487,6 +491,17 @@ impl Arity {
     /// Return whether `n` is accepted by this arity.
     pub fn is_valid(&self, n: usize) -> bool {
         n >= self.min && self.max.is_none_or(|max| n <= max)
+    }
+
+    /// The arity mask of this arity: bit `n` is set when `n` arguments are accepted, and a
+    /// variadic arity has all the bits from `min` up, as a negative number (`-(1 << min)`).
+    /// `None` when the bits do not fit a fixnum.
+    pub fn mask(&self) -> Option<i32> {
+        match self.max {
+            Some(max) if max < 30 => Some(((1i64 << (max + 1)) - (1i64 << self.min)) as i32),
+            None if self.min < 30 => Some((-(1i64 << self.min)) as i32),
+            _ => None,
+        }
     }
 }
 

@@ -17,6 +17,7 @@ use mmtk::util::Address;
 use parking_lot::{Condvar, Mutex};
 
 use super::context::{SavedContext, context_init, context_switch};
+use super::introspect::{State, ThreadInfo, wait};
 use super::preempt;
 use super::queue::{DYNAMIC_POOL_MAX, PooledDynamic, Shared, WorkerRng};
 use super::reactor::{self, Dir, WAKE_CLOSED, WAKE_NONE, WAKE_READY, WAKE_TIMER};
@@ -343,10 +344,17 @@ fn global() -> &'static Arc<Shared> {
     GLOBAL.get_or_init(|| start_workers(Config::from_env()))
 }
 
+thread_local! {
+    /// Index of the worker loop running on this OS thread, for
+    /// `CAPY_GC_STACK_OWNERSHIP` checks.
+    static WORKER_INDEX: Cell<usize> = const { Cell::new(usize::MAX) };
+}
+
 /// The stack pool of the worker running the calling thread.
 pub(crate) fn stack_pool() -> Option<&'static StackPool> {
     let cx = current()?;
     let g = cx.g();
+
     let shared = g.sched.shared.get();
     if shared.is_null() {
         return None;
@@ -363,6 +371,7 @@ fn dynamic_pool() -> Option<&'static Mutex<Vec<PooledDynamic>>> {
     if shared.is_null() {
         return None;
     }
+
     // SAFETY: as for `stack_pool`.
     Some(unsafe { &(&(*shared).slots)[g.sched.worker.get()].dynamic_pool })
 }
@@ -404,6 +413,8 @@ where
     F: FnOnce(SchedContext),
 {
     struct AssertSend<T>(T);
+    // SAFETY: the wrapped value is moved into the thread that runs the scheduler and is used only
+    // there; the spawning thread does not touch it after the move.
     unsafe impl<T> Send for AssertSend<T> {}
 
     struct StopOnDrop(Arc<Shared>);
@@ -439,7 +450,8 @@ where
     });
     // SAFETY: the box is consumed by the main thread before this function
     // returns
-    let main: Entry = unsafe { std::mem::transmute::<Box<dyn FnOnce(SchedContext) + '_>, Entry>(main) };
+    let main: Entry =
+        unsafe { std::mem::transmute::<Box<dyn FnOnce(SchedContext) + '_>, Entry>(main) };
 
     // Build the main thread's start state and queue it while the other
     // workers are not running yet
@@ -561,6 +573,7 @@ impl Builder {
         let id = VirtualThreadId(NEXT_VIRTUAL_THREAD_ID.fetch_add(1, Ordering::Relaxed));
         let entry: Entry = Box::new(f);
         let cached = shared.gfree_get(current_worker_of(shared));
+        let parent = current().map_or(0, |cx| cx.id().as_u64());
         let task = Arc::new_cyclic(|weak| {
             let thread: *mut VirtualThread = match cached {
                 Some(mut g) => {
@@ -596,6 +609,12 @@ impl Builder {
                 wait_gen: AtomicU64::new(0),
                 wake_reason: AtomicU8::new(WAKE_NONE),
                 interrupted: AtomicBool::new(false),
+                parent,
+                born: std::time::Instant::now(),
+                wait_kind: AtomicU8::new(wait::NONE),
+                wait_arg: AtomicU64::new(0),
+                wait_since: AtomicU64::new(0),
+                label: Mutex::new(None),
             }
         });
         live_shard(id.0).lock().insert(id.0, task.clone());
@@ -673,8 +692,23 @@ pub(crate) struct Task {
     pub(crate) wake_reason: AtomicU8,
     /// Set by `interrupt_virtual_thread`, cleared when an await reports it.
     pub(crate) interrupted: AtomicBool,
+    /// The thread that spawned this one, or zero.
+    pub(crate) parent: u64,
+    /// When the thread was spawned.
+    pub(crate) born: std::time::Instant,
+    /// What the thread is parked for, a [`wait`] kind. Written by the thread
+    /// itself around a park, read by introspection.
+    pub(crate) wait_kind: AtomicU8,
+    /// The object of the wait, see [`wait`].
+    pub(crate) wait_arg: AtomicU64,
+    /// When the wait began, in nanoseconds since `born`.
+    pub(crate) wait_since: AtomicU64,
+    /// A name set by the program after the thread started.
+    pub(crate) label: Mutex<Option<String>>,
 }
 
+// SAFETY: a task is handed between workers through the run queues, one worker runs it at a time,
+// and the fields other threads read (`wait_gen`, `wake_reason`, `interrupted`) are atomics.
 unsafe impl Send for Task {}
 unsafe impl Sync for Task {}
 
@@ -722,6 +756,72 @@ impl Task {
     fn detach_header(&self) -> *mut VirtualThread {
         let _inner = self.inner.lock();
         self.thread.swap(std::ptr::null_mut(), Ordering::AcqRel)
+    }
+
+    /// What introspection reports about this thread. Reads atomics only, so
+    /// the values may be a moment apart from each other.
+    fn info(&self) -> ThreadInfo {
+        let state = match self.phase.load(Ordering::SeqCst) {
+            PHASE_RUNNING => State::Running,
+            PHASE_PARKING | PHASE_PARKED => State::Blocked,
+            PHASE_DONE => State::Done,
+            _ => State::Runnable,
+        };
+        let wait_kind = self.wait_kind.load(Ordering::Acquire);
+        let age = self.born.elapsed();
+        let waiting = if wait_kind == wait::NONE {
+            std::time::Duration::ZERO
+        } else {
+            age.saturating_sub(std::time::Duration::from_nanos(
+                self.wait_since.load(Ordering::Relaxed),
+            ))
+        };
+        let affinity = self.affinity.load(Ordering::SeqCst);
+        ThreadInfo {
+            id: self.id.0,
+            parent: self.parent,
+            name: self.label.lock().clone().or_else(|| self.name.clone()),
+            state,
+            level: self.level.load(Ordering::Relaxed),
+            base: self.base.load(Ordering::Relaxed),
+            worker: self.home.load(Ordering::Relaxed),
+            pinned: (affinity != NO_AFFINITY).then_some(affinity),
+            wait_kind,
+            wait_arg: self.wait_arg.load(Ordering::Relaxed),
+            waiting,
+            age,
+            killed: self.virtual_thread_kill_state() != KILL_LIVE,
+        }
+    }
+}
+
+/// Every thread that has not finished, ordered by id.
+pub(crate) fn snapshot() -> Vec<ThreadInfo> {
+    let mut tasks: Vec<Arc<Task>> = Vec::new();
+    for shard in LIVE.iter() {
+        tasks.extend(shard.0.lock().values().cloned());
+    }
+    let mut infos: Vec<ThreadInfo> = tasks.iter().map(|t| t.info()).collect();
+    infos.sort_unstable_by_key(|t| t.id);
+    infos
+}
+
+/// Marks the running thread as waiting until it is dropped. See
+/// [`SchedContext::waiting`].
+pub(crate) struct WaitGuard {
+    task: *const Task,
+    set: bool,
+}
+
+impl Drop for WaitGuard {
+    fn drop(&mut self) {
+        if self.set {
+            // SAFETY: the guard is dropped by the thread that made it, which
+            // keeps its task alive.
+            unsafe { &*self.task }
+                .wait_kind
+                .store(wait::NONE, Ordering::Release);
+        }
     }
 }
 
@@ -1065,6 +1165,29 @@ impl SchedContext {
         self.task().id
     }
 
+    /// Set or clear the name that dumps and snapshots show.
+    pub(crate) fn set_label(&self, label: Option<String>) {
+        *self.task().label.lock() = label;
+    }
+
+    /// Record that the thread is about to wait for `kind` on `arg`, until the
+    /// guard drops. A wait that is already recorded wins, so a high level
+    /// caller (a mutex acquire) is not overwritten by the park it ends in.
+    pub(crate) fn waiting(&self, kind: u8, arg: u64) -> WaitGuard {
+        let task = self.task();
+        let set = task.wait_kind.load(Ordering::Relaxed) == wait::NONE;
+        if set {
+            task.wait_arg.store(arg, Ordering::Relaxed);
+            task.wait_since
+                .store(task.born.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            task.wait_kind.store(kind, Ordering::Release);
+        }
+        WaitGuard {
+            task: task as *const Task,
+            set,
+        }
+    }
+
     /// The name set with [`Builder::name`], if any.
     pub fn name(&self) -> Option<&str> {
         self.task().name.as_deref()
@@ -1144,6 +1267,7 @@ impl SchedContext {
         if self.task().notified.swap(false, Ordering::SeqCst) {
             return self.check_kill();
         }
+        let _wait = self.waiting(wait::PARK, 0);
         self.flush_own_lab_from_native();
         self.switch_out(PHASE_PARKING);
         self.check_kill()
@@ -1188,6 +1312,7 @@ impl SchedContext {
                 },
             );
         }
+        let _wait = self.waiting(wait::PARK, 0);
         // The window must be back with the worker before the collector can
         // run while we are off-CPU, and only a mutating thread may touch the
         // allocator. So flush here, then leave the mutating state.
@@ -1264,6 +1389,7 @@ impl SchedContext {
         mut recheck: impl FnMut() -> Option<R>,
     ) -> (MutationContext<'gc>, Result<Result<Woken<R>, i32>, Killed>) {
         let task = self.task_arc();
+        let _wait = self.waiting(wait::IO, fd as u64);
         let generation = match reactor::register_fd(&task, fd, dir) {
             Ok(generation) => generation,
             Err(errno) => return (ctx, Ok(Err(errno))),
@@ -1286,6 +1412,7 @@ impl SchedContext {
         deadline: std::time::Instant,
     ) -> (MutationContext<'gc>, Result<Woken<()>, Killed>) {
         let task = self.task_arc();
+        let _wait = self.waiting(wait::SLEEP, 0);
         let seq = reactor::register_timer(&task, deadline);
         let (ctx, parked) = self.park_with(ctx);
         reactor::cancel_timer(seq);
@@ -1374,6 +1501,7 @@ impl SchedContext {
         mut recheck: impl FnMut() -> Option<R>,
     ) -> (MutationContext<'gc>, Result<Result<Woken<R>, i32>, Killed>) {
         let task = self.task_arc();
+        let _wait = self.waiting(wait::IO, fd as u64);
         let generation = match reactor::register_fd_dirs(&task, fd, read, write) {
             Ok(generation) => generation,
             Err(errno) => return (ctx, Ok(Err(errno))),
@@ -1398,6 +1526,7 @@ impl SchedContext {
     /// Park for at least `duration`.
     pub fn sleep(&self, duration: Duration) -> Result<(), Killed> {
         let task = self.task_arc();
+        let _wait = self.waiting(wait::SLEEP, duration.as_nanos() as u64);
         let deadline = std::time::Instant::now() + duration;
         loop {
             let now = std::time::Instant::now();
@@ -1689,6 +1818,7 @@ fn worker_main(shared: Arc<Shared>, index: usize) {
 /// Run threads on the calling thread, which must already be bound to
 /// `mutator`, until the runtime stops.
 fn worker_loop(shared: &Arc<Shared>, index: usize, mutator: &Mutator<crate::Rootable!(())>) {
+    WORKER_INDEX.with(|w| w.set(index));
     let thread = current_thread();
     let _ = shared.slots[index].thread.set(thread);
     shared.slots[index]
@@ -1782,6 +1912,10 @@ fn run(
 
         task.phase.store(PHASE_RUNNING, Ordering::SeqCst);
         slot.slice_id.store(epoch, Ordering::Release);
+        // A thread that was parked or queued missed the lazy-deopt
+        // handshakes since it last ran: its frames that return into units
+        // invalidated meanwhile are patched before it runs.
+        crate::runtime::codegen::opt::deopt::lazy::on_switch_in((*gp).tc_ptr());
         (*native).thread().publish_current_virtual_thread(gp);
         slot.running_level
             .store(task.level.load(Ordering::Relaxed), Ordering::Relaxed);
@@ -1795,6 +1929,9 @@ fn run(
         (*native)
             .thread()
             .publish_current_virtual_thread(home_virtual_thread);
+        // The worker's own context was not the running one while the thread
+        // ran, so handshakes in that time patched the thread's stack, not it.
+        crate::runtime::codegen::opt::deopt::lazy::on_switch_in((*home_virtual_thread).tc_ptr());
 
         match task.phase.load(Ordering::SeqCst) {
             PHASE_DONE => {

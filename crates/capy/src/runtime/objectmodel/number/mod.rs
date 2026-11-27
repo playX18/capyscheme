@@ -6,21 +6,21 @@
 
 mod arith;
 mod bigint;
+mod bitwise;
 mod coerce;
 mod compare;
 mod complex_ops;
 mod construct;
-mod bitwise;
-mod predicates;
-mod rational;
-mod rounding;
-mod transcendental;
 mod convert;
 mod display;
 mod exact;
 pub mod layout;
 mod parse;
+mod predicates;
 mod print;
+mod rational;
+mod rounding;
+mod transcendental;
 pub use bigint::*;
 pub use convert::*;
 pub use exact::*;
@@ -208,12 +208,6 @@ impl<'gc> FromValue<'gc> for Number<'gc> {
     }
 }
 
-
-
-
-
-
-
 impl<'gc> Value<'gc> {
     pub fn is_number(self) -> bool {
         self.is_inline_number()
@@ -264,9 +258,6 @@ impl<'gc> Hash for Number<'gc> {
         }
     }
 }
-
-
-
 
 const fn nbits32(mut x: u32) -> u32 {
     x = x - ((x >> 1) & 0x55555555);

@@ -8,10 +8,10 @@ use core::mem::{align_of, offset_of, size_of};
 use crate::heap::object::{MAX_CLASS_ID, OBJECT_HEADER_OFFSET};
 use crate::heap::sync::thread::VirtualThread;
 use crate::runtime::interp::stack::StackState;
-use crate::runtime::thread::ThreadContext;
 use crate::runtime::objectmodel::{
     ByteVector, Closure, CodeBlock, EnvRecord, NativeProc, Pair, Str, Tuple, Value, Vector,
 };
+use crate::runtime::thread::ThreadContext;
 
 pub use crate::heap::object::builtin_class_ids;
 
@@ -26,26 +26,34 @@ pub const TC_STACK_FP: usize =
     TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, fp);
 pub const TC_STACK_SP: usize =
     TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, sp);
-pub const TC_SCHEME_STACK: usize =
-    TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, scheme_stack);
-pub const TC_SCHEME_STACK_SIZE: usize =
-    TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, scheme_stack_size);
-pub const TC_STACK_SEGMENT: usize =
-    TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, segment);
-pub const TC_STACK_LINK: usize =
-    TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, stack_link);
+pub const TC_SCHEME_STACK: usize = TC_OFFSET
+    + offset_of!(ThreadContext<'static>, stack)
+    + offset_of!(StackState<'static>, scheme_stack);
+pub const TC_SCHEME_STACK_SIZE: usize = TC_OFFSET
+    + offset_of!(ThreadContext<'static>, stack)
+    + offset_of!(StackState<'static>, scheme_stack_size);
+pub const TC_STACK_SEGMENT: usize = TC_OFFSET
+    + offset_of!(ThreadContext<'static>, stack)
+    + offset_of!(StackState<'static>, segment);
+pub const TC_STACK_LINK: usize = TC_OFFSET
+    + offset_of!(ThreadContext<'static>, stack)
+    + offset_of!(StackState<'static>, stack_link);
 pub const TC_STACK_TOP_IP: usize =
     TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, top_ip);
-pub const TC_STACK_ACTIVATION: usize =
-    TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, activation);
-pub const TC_STACK_CALL_RATOR: usize =
-    TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, call_rator);
+pub const TC_STACK_ACTIVATION: usize = TC_OFFSET
+    + offset_of!(ThreadContext<'static>, stack)
+    + offset_of!(StackState<'static>, activation);
+pub const TC_STACK_CALL_RATOR: usize = TC_OFFSET
+    + offset_of!(ThreadContext<'static>, stack)
+    + offset_of!(StackState<'static>, call_rator);
 pub const TC_STACK_CALL_K: usize =
     TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, call_k);
-pub const TC_STACK_CALL_ARGC: usize =
-    TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, call_argc);
-pub const TC_STACK_CALL_ARGS: usize =
-    TC_OFFSET + offset_of!(ThreadContext<'static>, stack) + offset_of!(StackState<'static>, call_args);
+pub const TC_STACK_CALL_ARGC: usize = TC_OFFSET
+    + offset_of!(ThreadContext<'static>, stack)
+    + offset_of!(StackState<'static>, call_argc);
+pub const TC_STACK_CALL_ARGS: usize = TC_OFFSET
+    + offset_of!(ThreadContext<'static>, stack)
+    + offset_of!(StackState<'static>, call_args);
 
 /// Native data base to the yieldpoint flag: `0` idle, `> 0` taken at
 /// prologues and loop back-edges, `< 0` at prologues only.
@@ -322,7 +330,7 @@ pub const SCHEME_ENTRY_FRAME_BYTES: usize = 56;
 #[cfg(target_arch = "aarch64")]
 pub const SCHEME_ENTRY_FRAME_BYTES: usize = 96;
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-pub const SCHEME_ENTRY_FRAME_BYTES: usize = 0;
+compile_error!("capy supports only x86_64 and aarch64");
 /// `CFA = sp + SCHEME_ENTRY_CFA_OFFSET` inside the frame above: the caller's
 /// `sp` at the call. The return address is at `[CFA-8]` (x86-64, pushed by
 /// `call`) or in `lr`, saved at `[CFA-16]` (AArch64).
@@ -330,8 +338,6 @@ pub const SCHEME_ENTRY_FRAME_BYTES: usize = 0;
 pub const SCHEME_ENTRY_CFA_OFFSET: usize = 64;
 #[cfg(target_arch = "aarch64")]
 pub const SCHEME_ENTRY_CFA_OFFSET: usize = 96;
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-pub const SCHEME_ENTRY_CFA_OFFSET: usize = 0;
 /// Native entry frame from `sp` while Scheme runs: `save_scheme_state`'s
 /// `lea NATIVE_FP_FROM_SP[sp], rbp` on x86-64 points `rbp` at the saved
 /// caller's `rbp` above. Zero elsewhere, on AArch64 `x29` is never written.

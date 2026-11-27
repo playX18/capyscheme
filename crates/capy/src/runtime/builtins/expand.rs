@@ -4,7 +4,9 @@ use crate::heap::{alloc::Array, barrier, cell::Lock};
 use crate::runtime::hooks::Hook;
 
 use crate::{
-    expander::core::{self, GlobalSlot, LVar, LVarRef, ProcRef, Term, TermKind, TermRef, seq_from_slice},
+    expander::core::{
+        self, GlobalSlot, LVar, LVarRef, ProcRef, Term, TermKind, TermRef, seq_from_slice,
+    },
     runtime::{prelude::*, variable::Variable},
     static_symbols,
 };
@@ -445,10 +447,6 @@ pub fn linklet_term_body<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value
 pub fn linklet_term_meta<'gc>(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_linklet_term(ctx, v));
     v.downcast::<Tuple>()[LINKLET_META].get()
-}
-
-pub fn init_expand<'gc>(ctx: MutationContext<'gc>) {
-    let _ = ctx;
 }
 
 pub(crate) struct TermConverter<'gc> {

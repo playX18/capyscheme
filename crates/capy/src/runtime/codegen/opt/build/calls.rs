@@ -305,7 +305,8 @@ impl<'s, 'gc> Builder<'s, 'gc> {
     }
 
     fn self_tail_closure(&self, pc: usize, argc: u32) -> Option<Value> {
-        if self.inline.depth != 0 || self.argc != Some(argc) {
+        // An `apply` site's arguments are not in the registers.
+        if self.inline.depth != 0 || self.argc != Some(argc) || self.apply.is_some() {
             return None;
         }
         match profile::call_shape(self.buffer, pc)? {

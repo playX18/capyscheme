@@ -74,6 +74,17 @@ fn numbered(op: Op) -> bool {
             | Op::AddI64
             | Op::SubI64
             | Op::MulI64
+            | Op::AddI32
+            | Op::SubI32
+            | Op::MulI32
+            | Op::BitI32(_)
+            | Op::BitI64(_)
+            | Op::ShiftI32(..)
+            | Op::ShiftI32Var(_)
+            | Op::ShiftI64(..)
+            | Op::ShlI32Ovf(_)
+            | Op::ShlI32OvfVar
+            | Op::CharFromCode
             | Op::CmpI64(_)
             | Op::TestInt64
             | Op::Int64ToDouble
@@ -84,6 +95,9 @@ fn numbered(op: Op) -> bool {
             | Op::SubF64
             | Op::MulF64
             | Op::DivF64
+            | Op::MinF64
+            | Op::MaxF64
+            | Op::AbsF64
             | Op::CmpI32(_)
             | Op::CmpF64(_)
             | Op::EqBits
@@ -103,6 +117,8 @@ fn numbered(op: Op) -> bool {
             | Op::ModI32
             | Op::CheckChar
             | Op::VectorLength
+            | Op::Select
+            | Op::CheckBound { .. }
     )
 }
 

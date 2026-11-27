@@ -16,6 +16,7 @@ use std::time::Instant;
 
 use parking_lot::{Condvar, Mutex};
 
+use super::introspect::wait;
 use super::scheduler::{self, Waker};
 
 /// Owner tokens for threads that are not threads carry this bit, so they
@@ -87,11 +88,16 @@ pub(crate) struct Waiter {
     /// lock that guards the queue the waiter sits in.
     granted: AtomicBool,
     wakeup: Wakeup,
+    /// What the waiter waits for (a [`wait`] kind), for introspection.
+    pub(crate) kind: u8,
+    /// The object it waits on: a mutex or condition address, or the id of the
+    /// thread a joiner waits for.
+    pub(crate) arg: u64,
 }
 
 impl Waiter {
-    /// A waiter for the calling context.
-    pub(crate) fn current() -> Arc<Self> {
+    /// A waiter for the calling context, waiting for `kind` on `arg`.
+    pub(crate) fn current(kind: u8, arg: u64) -> Arc<Self> {
         let (token, wakeup) = match scheduler::current() {
             Some(cx) => (cx.id().as_u64(), Wakeup::VirtualThread(cx.waker())),
             None => (
@@ -103,6 +109,8 @@ impl Waiter {
             token,
             granted: AtomicBool::new(false),
             wakeup,
+            kind,
+            arg,
         })
     }
 
@@ -176,5 +184,50 @@ pub(crate) fn cancel(key: usize, waiter: &Arc<Waiter>) -> bool {
             queues.remove(&key);
         }
         true
+    })
+}
+
+/// A blocked thread and the thread it waits for.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WaitEdge {
+    /// The blocked thread's id.
+    pub(crate) waiter: u64,
+    /// A [`wait`] kind.
+    pub(crate) kind: u8,
+    /// The thread that has to act before the waiter can go on: a mutex's
+    /// owner, or the thread being joined. `None` for a condition wait, whose
+    /// signaller is anyone, and for a mutex nobody holds right now.
+    pub(crate) holder: Option<u64>,
+}
+
+/// Every queued waiter that is a virtual thread, with its holder.
+///
+/// `mutex_owner` maps a mutex address to its current owner. It is called with
+/// the queue lock held, which is what keeps the mutex alive: a waiter roots its
+/// mutex until it leaves the queue, and leaving takes this lock. It must not
+/// block on the mutex's own state lock, because the order elsewhere is state
+/// first, then this lock.
+pub(crate) fn wait_edges(mutex_owner: impl Fn(usize) -> Option<u64>) -> Vec<WaitEdge> {
+    with_queues(|queues| {
+        let mut edges = Vec::new();
+        for queue in queues.values() {
+            for waiter in queue {
+                if waiter.token & THREAD_TOKEN_BIT != 0 {
+                    continue;
+                }
+                let holder = match waiter.kind {
+                    wait::MUTEX => mutex_owner(waiter.arg as usize),
+                    wait::JOIN => Some(waiter.arg).filter(|&id| id != 0),
+                    _ => None,
+                };
+                edges.push(WaitEdge {
+                    waiter: waiter.token,
+                    kind: waiter.kind,
+                    holder,
+                });
+            }
+        }
+        edges.sort_unstable_by_key(|e| e.waiter);
+        edges
     })
 }

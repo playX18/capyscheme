@@ -3,12 +3,11 @@ use std::{cell::Cell, marker::PhantomData, sync::OnceLock};
 use crate::Rootable;
 use crate::heap::{Gc, Root, Trace, Visitor, sync::monitor::Monitor};
 
+use crate::expander::prim_names::for_each_prim_name;
 use crate::{
-    expander::primitives::for_each_prim_name,
     prelude::{FromValue, HashTable, HashTableRef, HashTableType, IntoValue, Value, VariableRef},
     runtime::{MutationContext, linklet::LibraryInstance},
 };
-
 
 type GlobalMap<'gc> = Vec<Value<'gc>>;
 type RootedGlobalTable = crate::Rootable!(GlobalTable<'_>);
@@ -18,7 +17,8 @@ type RootedGlobalTable = crate::Rootable!(GlobalTable<'_>);
 /// Implemented as a vector of [`Value`]s, indexed by [`GlobalSlot`]s which allows
 /// us to serialize and deserialize it in a straightforward manner.
 pub struct GlobalTable<'gc> {
-    // TODO(GC): Allow removing globals? Use a slab or similar data structure?
+    // Globals are never removed: a slot index is stored in compiled code and in serialized
+    // images, so reusing one would change what that code refers to. The table only grows.
     globals: Monitor<GlobalMap<'gc>>,
 }
 
@@ -233,9 +233,14 @@ pub struct VmState<'gc> {
     pub loc_capy_root: Cell<Value<'gc>>,
     pub loc_capy_sysroot: Cell<Value<'gc>>,
     pub loc_fresh_auto_compile: Cell<Value<'gc>>,
+    /// `%libmap-path`: the library map file to install, or `#f`.
+    pub loc_libmap_path: Cell<Value<'gc>>,
+    /// `%libmap-explicit?`: whether the library map was asked for with `--libmap`.
+    pub loc_libmap_explicit: Cell<Value<'gc>>,
 
     /// Tier-up jobs waiting for a JIT worker.
     pub jit_jobs: crate::runtime::codegen::jit::JobQueue<'gc>,
+    #[cfg(feature = "bootstrap")]
     pub compile_jobs: crate::runtime::compile_service::CompileQueue<'gc>,
 }
 
@@ -270,6 +275,14 @@ impl<'gc> VmState<'gc> {
 
     pub fn loc_fresh_auto_compile(&self) -> VariableRef<'gc> {
         self.loc_fresh_auto_compile.get().downcast()
+    }
+
+    pub fn loc_libmap_path(&self) -> VariableRef<'gc> {
+        self.loc_libmap_path.get().downcast()
+    }
+
+    pub fn loc_libmap_explicit(&self) -> VariableRef<'gc> {
+        self.loc_libmap_explicit.get().downcast()
     }
 
     pub fn capy_instance(&self) -> Gc<'gc, LibraryInstance<'gc>> {
@@ -316,9 +329,12 @@ impl<'gc> VmState<'gc> {
             loc_capy_root,
             loc_capy_sysroot,
             loc_fresh_auto_compile,
+            loc_libmap_path,
+            loc_libmap_explicit,
             // Traced by its own `Trace` impl, not a value cell.
             jit_jobs: _,
-            compile_jobs: _,
+            #[cfg(feature = "bootstrap")]
+                compile_jobs: _,
         } = self;
 
         f(capy_module_name);
@@ -338,6 +354,8 @@ impl<'gc> VmState<'gc> {
         f(loc_capy_root);
         f(loc_capy_sysroot);
         f(loc_fresh_auto_compile);
+        f(loc_libmap_path);
+        f(loc_libmap_explicit);
     }
 }
 
@@ -346,7 +364,8 @@ impl<'gc> VmState<'gc> {
         let capy_module_name = crate::list!(ctx, ctx.intern("capy"));
         let empty_wrap = crate::list!(ctx, Value::null());
 
-        let capy_instance = LibraryInstance::new(ctx, crate::list!(ctx, ctx.intern("#%capy")), true);
+        let capy_instance =
+            LibraryInstance::new(ctx, crate::list!(ctx, ctx.intern("#%capy")), true);
         let define = |ctx: MutationContext<'gc>, name: &str, value: Value<'gc>| {
             capy_instance.define(ctx, ctx.intern(name), value)
         };
@@ -366,6 +385,8 @@ impl<'gc> VmState<'gc> {
         let loc_compile_fallback_path = define(ctx, "%compile-fallback-path", Value::null());
         let loc_capy_root = define(ctx, "%capy-root", ctx.str(env!("CARGO_MANIFEST_DIR")));
         let loc_fresh_auto_compile = define(ctx, "%fresh-auto-compile", Value::new(false));
+        let loc_libmap_path = define(ctx, "%libmap-path", Value::new(false));
+        let loc_libmap_explicit = define(ctx, "%libmap-explicit?", Value::new(false));
 
         let interesting_primitive_vars = HashTable::new(ctx, HashTableType::Eq, 128, 0.75);
 
@@ -410,7 +431,10 @@ impl<'gc> VmState<'gc> {
             loc_capy_root: Cell::new(loc_capy_root.into()),
             loc_capy_sysroot: Cell::new(loc_capy_root.into()),
             loc_fresh_auto_compile: Cell::new(loc_fresh_auto_compile.into()),
+            loc_libmap_path: Cell::new(loc_libmap_path.into()),
+            loc_libmap_explicit: Cell::new(loc_libmap_explicit.into()),
             jit_jobs: Default::default(),
+            #[cfg(feature = "bootstrap")]
             compile_jobs: Default::default(),
         }
     }
@@ -435,7 +459,10 @@ impl<'gc> VmState<'gc> {
             loc_capy_root: Cell::new(Value::undefined()),
             loc_capy_sysroot: Cell::new(Value::undefined()),
             loc_fresh_auto_compile: Cell::new(Value::undefined()),
+            loc_libmap_path: Cell::new(Value::undefined()),
+            loc_libmap_explicit: Cell::new(Value::undefined()),
             jit_jobs: Default::default(),
+            #[cfg(feature = "bootstrap")]
             compile_jobs: Default::default(),
         }
     }

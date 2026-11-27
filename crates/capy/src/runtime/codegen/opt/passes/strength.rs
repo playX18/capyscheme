@@ -38,9 +38,9 @@ use super::loops::{canon, find_loops, induction_step, int_const};
 use super::range;
 use super::simplify::edges_mut;
 use super::{PassOutcome, Subst, replace_uses};
-use crate::runtime::codegen::opt::ir::frame_state::{FrameState, FrameStateData};
+use crate::runtime::codegen::opt::ir::frame_state::{FrameState, FrameStateData, VirtualObject};
 use crate::runtime::codegen::opt::ir::func::{Block, Func, Value, ValueDef};
-use crate::runtime::codegen::opt::ir::inst::{Constant, Inst, Op, Terminator};
+use crate::runtime::codegen::opt::ir::inst::{BitOp, Constant, Inst, Op, ShiftKind, Terminator};
 use crate::runtime::codegen::opt::ir::types::Type;
 use cranelift_entity::{EntityList, SecondaryMap};
 
@@ -66,6 +66,13 @@ enum Rep {
         base: Value,
         constant: i64,
         constant_first: bool,
+    },
+    /// An i64 `mod` or `quot` by the constant `2^shift`: a mask, or a shift
+    /// of the operand biased toward zero.
+    PowerOfTwo {
+        base: Value,
+        shift: u8,
+        quotient: bool,
     },
     /// The result is `base * 2^k`, optionally negated, built by doubling
     /// with `op`.
@@ -348,7 +355,7 @@ fn division_rep(
             if magnitude_lt(analysis, block, value, constant) {
                 return Some(zero());
             }
-            None
+            power_of_two_rep(op, value, constant)
         }
         Op::RemI64 | Op::RemI32 => {
             if constant == 1 || constant == -1 {
@@ -365,7 +372,9 @@ fn division_rep(
             if constant == 1 || constant == -1 {
                 return Some(zero());
             }
-            let delta = period_offset(analysis, block, value, constant, int64)?;
+            let Some(delta) = period_offset(analysis, block, value, constant, int64) else {
+                return power_of_two_rep(op, value, constant);
+            };
             if delta == 0 {
                 return Some(Rep::Value(value));
             }
@@ -386,6 +395,29 @@ fn division_rep(
                 })
             }
         }
+        _ => None,
+    }
+}
+
+/// `mod.i64` and `quot.i64` by a positive power of two above one. The divisor
+/// is positive, so `mod` is the low bits, and `quot` rounds toward zero by
+/// adding `2^k - 1` to a negative operand before the arithmetic shift.
+fn power_of_two_rep(op: Op, value: Value, constant: i64) -> Option<Rep> {
+    if constant < 2 || constant & (constant - 1) != 0 {
+        return None;
+    }
+    let shift = constant.trailing_zeros() as u8;
+    match op {
+        Op::ModI64 => Some(Rep::PowerOfTwo {
+            base: value,
+            shift,
+            quotient: false,
+        }),
+        Op::QuotI64 => Some(Rep::PowerOfTwo {
+            base: value,
+            shift,
+            quotient: true,
+        }),
         _ => None,
     }
 }
@@ -541,6 +573,54 @@ fn apply(func: &mut Func, plan: &Plan, ty: Type, subst: &mut Subst) -> Option<bo
             };
             func.insts[plan.inst].args = EntityList::from_slice(&args, &mut func.pool);
             Some(false)
+        }
+        Rep::PowerOfTwo {
+            base,
+            shift,
+            quotient,
+        } => {
+            if !matches!(ty, Type::Int64) {
+                return None;
+            }
+            let block = plan.block;
+            let start = func.blocks[block].insts.len();
+            let int64 = Some(Type::Int64);
+            let result_value = if quotient {
+                let sign = func.push_inst(
+                    block,
+                    Op::ShiftI64(ShiftKind::Sar, 63),
+                    &[base],
+                    int64,
+                    None,
+                )?;
+                let bias = func.push_inst(
+                    block,
+                    Op::ShiftI64(ShiftKind::Shr, 64 - shift),
+                    &[sign],
+                    int64,
+                    None,
+                )?;
+                let sum = func.push_inst(block, Op::AddI64, &[base, bias], int64, None)?;
+                func.push_inst(
+                    block,
+                    Op::ShiftI64(ShiftKind::Sar, shift),
+                    &[sum],
+                    int64,
+                    None,
+                )?
+            } else {
+                let mask = func.push_inst(
+                    block,
+                    Op::Const(Constant::Int64((1i64 << shift) - 1)),
+                    &[],
+                    int64,
+                    None,
+                )?;
+                func.push_inst(block, Op::BitI64(BitOp::And), &[base, mask], int64, None)?
+            };
+            move_new_insts(func, block, start, plan.inst);
+            subst.add(result, result_value);
+            Some(true)
         }
         Rep::Double {
             base,
@@ -936,6 +1016,15 @@ fn clone_entry_frame(
             .iter()
             .map(|&(reg, value)| (reg, resolve(value)))
             .collect();
+        let virtuals = data
+            .virtuals
+            .iter()
+            .map(|object| VirtualObject {
+                alias: resolve(object.alias),
+                kind: object.kind,
+                fields: object.fields.iter().map(|&f| resolve(f)).collect(),
+            })
+            .collect();
         let parent = data
             .parent
             .map(|parent| clone(func, parent, header_params, seed_params, memo));
@@ -949,10 +1038,77 @@ fn clone_entry_frame(
             returned: data.returned,
             rest: data.rest,
             inline_site: data.inline_site,
+            virtuals,
         });
         memo.insert(frame, cloned);
         cloned
     }
     let mut memo = HashMap::new();
     clone(func, frame, header_params, seed_params, &mut memo)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::codegen::opt::ir::inst::BitOp;
+    use crate::runtime::codegen::opt::ir::verify::verify;
+    use crate::runtime::codegen::opt::passes::testutil::{frame, push, ret};
+
+    /// `(x mod c, x quot c)` for an i64 `x`, returned through `box.int64`.
+    fn divide_by(c: i64) -> Func<'static> {
+        let mut func: Func<'static> = Func::new();
+        let entry = func.entry;
+        let closure = func.append_param(entry, Type::Any);
+        let x = func.append_param(entry, Type::Int64);
+        let state = frame(&mut func, closure);
+        let c = push(
+            &mut func,
+            entry,
+            Op::Const(Constant::Int64(c)),
+            &[],
+            Type::Int64,
+        );
+        let m = func
+            .push_inst(entry, Op::ModI64, &[x, c], Some(Type::Int64), Some(state))
+            .unwrap();
+        let q = func
+            .push_inst(entry, Op::QuotI64, &[x, c], Some(Type::Int64), Some(state))
+            .unwrap();
+        let sum = push(&mut func, entry, Op::AddI64, &[m, q], Type::Int64);
+        ret(&mut func, entry, sum);
+        func
+    }
+
+    fn count(func: &Func<'_>, pred: impl Fn(Op) -> bool) -> usize {
+        func.blocks
+            .values()
+            .flat_map(|data| data.insts.iter())
+            .filter(|&&inst| pred(func.insts[inst].op))
+            .count()
+    }
+
+    #[test]
+    fn mod_and_quot_by_a_power_of_two_need_no_division() {
+        let mut func = divide_by(8);
+        verify(&func).expect("valid before");
+        super::run(&mut func);
+        verify(&func).expect("valid after");
+        assert_eq!(count(&func, |op| matches!(op, Op::ModI64 | Op::QuotI64)), 0);
+        assert_eq!(count(&func, |op| op == Op::BitI64(BitOp::And)), 1);
+        assert_eq!(count(&func, |op| matches!(op, Op::ShiftI64(..))), 3);
+    }
+
+    #[test]
+    fn mod_and_quot_by_other_constants_stay() {
+        for c in [3, 6, 1000, -4] {
+            let mut func = divide_by(c);
+            super::run(&mut func);
+            verify(&func).expect("valid after");
+            assert_eq!(
+                count(&func, |op| matches!(op, Op::ModI64 | Op::QuotI64)),
+                2,
+                "divisor {c}"
+            );
+        }
+    }
 }

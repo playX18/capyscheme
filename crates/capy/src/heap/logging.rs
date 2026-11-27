@@ -131,6 +131,11 @@ fn parse_log_filters(builder: &mut env_logger::Builder) {
     builder.filter_module("capy::heap::logging", log::LevelFilter::Info);
     builder.filter_module(DUMP_LOG_TARGET, log::LevelFilter::Info);
     builder.filter_module(BOOT_LOG_TARGET, log::LevelFilter::Error);
+    // The template image failing to generate means no JIT; that has to be visible by default.
+    builder.filter_module(
+        "capy::runtime::codegen::template_image",
+        log::LevelFilter::Error,
+    );
 
     let gc_trace = process_args_request_gc_logging();
     if gc_trace {
@@ -218,7 +223,7 @@ pub(crate) fn mmtk_builder() -> MMTKBuilder {
         builder.options.gc_trigger.set(GCTriggerSelector::Delegated);
     }
 
-    if process_args_request_gc_logging() {
+    if process_args_request_gc_logging() || flags::gc_log() {
         set_gc_logging_enabled(true);
         builder.options.count_live_bytes_in_gc.set(true);
     }

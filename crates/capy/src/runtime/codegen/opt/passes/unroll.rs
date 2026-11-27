@@ -35,7 +35,7 @@ use super::lcssa::form_lcssa;
 use super::loops::{Loop, canon, find_loops, induction_step, outside_uses_loop_values};
 use super::range;
 use super::simplify::edges_mut;
-use crate::runtime::codegen::opt::ir::frame_state::{FrameState, FrameStateData};
+use crate::runtime::codegen::opt::ir::frame_state::{FrameState, FrameStateData, VirtualObject};
 use crate::runtime::codegen::opt::ir::func::{Block, Func, Value, ValueDef};
 use crate::runtime::codegen::opt::ir::inst::{Cmp, Constant, Edge, Inst, Op, Terminator};
 use crate::runtime::codegen::opt::ir::types::Type;
@@ -723,6 +723,15 @@ impl FrameCloner {
             .iter()
             .map(|&(reg, value)| (reg, resolve(map, value)))
             .collect();
+        let virtuals = data
+            .virtuals
+            .iter()
+            .map(|object| VirtualObject {
+                alias: resolve(map, object.alias),
+                kind: object.kind,
+                fields: object.fields.iter().map(|&f| resolve(map, f)).collect(),
+            })
+            .collect();
         let parent = data
             .parent
             .map(|parent| self.clone_frame(func, map, parent));
@@ -736,8 +745,89 @@ impl FrameCloner {
             returned: data.returned,
             rest: data.rest,
             inline_site: data.inline_site,
+            virtuals,
         });
         self.memo.insert(frame, cloned);
         cloned
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A frame whose chain has virtual objects in both frames. Cloning it
+    /// through a value map rewrites the aliases and the fields, and keeps the
+    /// entries' kinds and the sharing of one clone per original.
+    #[test]
+    fn cloning_a_frame_remaps_its_virtuals() {
+        use crate::runtime::codegen::opt::ir::frame_state::{FrameStateData, VirtualObject};
+        use crate::runtime::codegen::opt::ir::inst::RematKind;
+        use crate::runtime::codegen::opt::ir::types::CodeRef;
+        use crate::runtime::codegen::opt::passes::testutil::{const_any, push};
+        let mut func: Func<'static> = Func::new();
+        let entry = func.entry;
+        let x = func.append_param(entry, Type::Any);
+        let y = func.append_param(entry, Type::Any);
+        let p = push(&mut func, entry, Op::Remat(RematKind::Pair), &[], Type::Any);
+        let q = push(&mut func, entry, Op::Remat(RematKind::Pair), &[], Type::Any);
+        let x2 = const_any(&mut func, entry, 0x10);
+        let y2 = const_any(&mut func, entry, 0x20);
+        let p2 = push(&mut func, entry, Op::Remat(RematKind::Pair), &[], Type::Any);
+        let q2 = push(&mut func, entry, Op::Remat(RematKind::Pair), &[], Type::Any);
+        let parent = func.push_frame(FrameStateData {
+            code: CodeRef::from_u32(0),
+            pc: 1,
+            closure: x,
+            registers: vec![(1, q)],
+            parent: None,
+            call_base: None,
+            returned: None,
+            rest: None,
+            inline_site: None,
+            virtuals: vec![VirtualObject {
+                alias: q,
+                kind: RematKind::Pair,
+                fields: vec![y, x],
+            }],
+        });
+        let inner = func.push_frame(FrameStateData {
+            code: CodeRef::from_u32(0),
+            pc: 2,
+            closure: x,
+            registers: vec![(1, p), (2, p)],
+            parent: Some(parent),
+            call_base: Some(0),
+            returned: None,
+            rest: None,
+            inline_site: None,
+            virtuals: vec![VirtualObject {
+                alias: p,
+                kind: RematKind::Pair,
+                fields: vec![q, y],
+            }],
+        });
+        let map: HashMap<Value, Value> =
+            [(x, x2), (y, y2), (p, p2), (q, q2)].into_iter().collect();
+        let mut cloner = FrameCloner::default();
+        let cloned = cloner.clone_frame(&mut func, &map, inner);
+        assert_ne!(cloned, inner);
+        let data = func.frames[cloned].clone();
+        assert_eq!(data.closure, x2);
+        assert_eq!(data.registers, vec![(1, p2), (2, p2)], "F3: one alias");
+        assert_eq!(data.virtuals.len(), 1);
+        assert_eq!(data.virtuals[0].alias, p2);
+        assert_eq!(data.virtuals[0].kind, RematKind::Pair);
+        assert_eq!(data.virtuals[0].fields, vec![q2, y2]);
+        let cloned_parent = data.parent.expect("the parent is cloned too");
+        assert_ne!(cloned_parent, parent);
+        let up = &func.frames[cloned_parent];
+        assert_eq!(up.virtuals[0].alias, q2);
+        assert_eq!(up.virtuals[0].fields, vec![y2, x2]);
+        // The original states are untouched.
+        assert_eq!(func.frames[inner].virtuals[0].alias, p);
+        assert_eq!(func.frames[parent].virtuals[0].fields, vec![y, x]);
+        // A second request for the same frame shares the clone.
+        assert_eq!(cloner.clone_frame(&mut func, &map, inner), cloned);
     }
 }

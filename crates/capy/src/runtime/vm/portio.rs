@@ -1,4 +1,4 @@
-//! Native helpers for the Scheme port layer (`lib/boot/*ports*.scm`).
+//! Native helpers for the Scheme port layer (`pkgs/core/src/boot/*ports*.scm`).
 //!
 //! These operate on plain bytevectors/strings and know nothing about port
 //! records, so the Scheme side keeps full control of buffering and state.
@@ -7,7 +7,7 @@
 use crate::heap::Gc;
 use crate::prelude::*;
 
-/// Codec selectors shared with `lib/boot/ports-core.scm`.
+/// Codec selectors shared with `pkgs/core/src/boot/ports-core.scm`.
 const CODEC_LATIN1: i32 = 0;
 const CODEC_UTF8: i32 = 1;
 
@@ -311,5 +311,97 @@ pub mod port_ops {
             Some(i) => (start + i).into_value(ctx),
             None => Value::new(false),
         }
+    }
+
+    /// `(%read-char-fast port lookahead?)` => character or #f.
+    ///
+    /// Fast path for `%ports/read-char-checked` (`pkgs/core/src/boot/textual-ports.scm`):
+    /// one ASCII byte of a UTF-8 input-only port, consumed (or peeked) with
+    /// position bookkeeping, without going through the dozen generic Scheme
+    /// calls the inlined check still needs. Returns #f whenever the slow path
+    /// must run instead (empty buffer, multibyte input, newline/CR handling,
+    /// anchors due, other codecs, non-input or closed ports, ...).
+    ///
+    /// Field indices mirror the port tuple layout documented in
+    /// `pkgs/core/src/boot/ports-core.scm`. Unlike the rest of this module this helper
+    /// reaches into port records; the checks replicate
+    /// `%ports/read-char-checked` exactly, and anything unrecognized falls
+    /// back to it, so behavior is unchanged. Symbols compare by name rather
+    /// than identity, so a hand-built tuple with uninterned symbols takes
+    /// the fast path too; the bytes read are identical either way.
+    #[scheme(name = "%read-char-fast")]
+    pub fn read_char_fast(port: Value<'gc>, lookahead: bool) -> Value<'gc> {
+        // Port tuple fields (see pkgs/core/src/boot/ports-core.scm).
+        const TAG: usize = 0;
+        const DIRECTION: usize = 2;
+        const TRANSCODER: usize = 3;
+        const STATE: usize = 6;
+        const IN_BUF: usize = 8;
+        const IN_PTR: usize = 9;
+        const IN_LIM: usize = 10;
+        const CHAR_POS: usize = 13;
+        const CODEC: usize = 21;
+        const ANCHOR_NEXT: usize = 24;
+        const PENDING_CHAR: usize = 27;
+
+        let fail = || Value::new(false);
+        let Some(tup) = port.try_as::<Tuple>() else {
+            return fail();
+        };
+        if tup.len() <= PENDING_CHAR {
+            return fail();
+        }
+        let field = |i: usize| tup[i].get();
+        let sym_eq = |v: Value<'gc>, name: &str| -> bool {
+            match v.try_as::<Symbol>() {
+                Some(s) => s.as_str() == name,
+                None => false,
+            }
+        };
+        if !sym_eq(field(TAG), "<port>")
+            || !sym_eq(field(DIRECTION), "input")
+            || field(TRANSCODER) == Value::new(false)
+            || sym_eq(field(STATE), "closed")
+            || field(CODEC) != Value::from_i32(CODEC_UTF8)
+            || field(PENDING_CHAR) != Value::new(false)
+        {
+            return fail();
+        }
+        let [ptr_v, lim_v] = [field(IN_PTR), field(IN_LIM)];
+        if !ptr_v.is_int32() || !lim_v.is_int32() {
+            return fail();
+        }
+        let (ptr, lim) = (ptr_v.as_int32(), lim_v.as_int32());
+        if ptr < 0 || ptr >= lim {
+            return fail();
+        }
+        let Some(bv) = field(IN_BUF).try_as::<ByteVector>() else {
+            return fail();
+        };
+        let bytes = bv.as_slice();
+        let (ptr_u, lim_u) = (ptr as usize, lim as usize);
+        if lim_u > bytes.len() || ptr_u >= bytes.len() {
+            return fail();
+        }
+        let b = bytes[ptr_u];
+        if b >= 128 || b == 10 || b == 13 {
+            return fail();
+        }
+        let [pos_v, anchor_v] = [field(CHAR_POS), field(ANCHOR_NEXT)];
+        if !pos_v.is_int32() || !anchor_v.is_int32() {
+            return fail();
+        }
+        let Some(n) = pos_v.as_int32().checked_add(1) else {
+            return fail();
+        };
+        if n >= anchor_v.as_int32() {
+            return fail();
+        }
+        if !lookahead {
+            let mut slot = Gc::write(ctx, tup);
+            slot[IN_PTR].unlock().set(Value::from_i32(ptr + 1));
+            slot[CHAR_POS].unlock().set(Value::from_i32(n));
+        }
+        Value::from_char(b as char)
     }
 }

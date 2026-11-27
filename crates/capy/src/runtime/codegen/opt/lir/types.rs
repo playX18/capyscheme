@@ -149,8 +149,9 @@ pub struct VRegData {
     pub repr: VRepr,
     /// The IR value this register holds, if one maps to it.
     pub value: Option<Value>,
-    /// A tagged immediate that frame states rebuild from the constant. Such a
-    /// register has no definition, no location and no live range.
+    /// A constant that frame states rebuild from the code: a tagged word, or
+    /// an unboxed integer or double the deopt boxes. Such a register has no
+    /// definition, no location and no live range.
     pub imm: Option<Constant>,
     /// A rematerialization marker: the register has no runtime value and no
     /// location. An exit whose frame state names it gets a `Materialize`
@@ -188,6 +189,10 @@ pub enum FloatOp {
     Sub,
     Mul,
     Div,
+    /// AArch64 `fmin` semantics; see `Op::MinF64`.
+    Min,
+    /// AArch64 `fmax` semantics; see `Op::MaxF64`.
+    Max,
 }
 
 /// A shift of a two-limb integer by an immediate count.

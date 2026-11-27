@@ -20,6 +20,7 @@ pub enum Hook {
     SlotRefUsingClass,
     SlotSetUsingClass,
     SlotBoundUsingClass,
+    SlotUnbindUsingClass,
     SlotUnbound,
     SlotMissing,
     SlotRef,
@@ -59,9 +60,18 @@ pub enum Hook {
     TermGlobalRef,
     TermGlobalSet,
     TermLinklet,
+    /// Combined dispatch.
+    GenericEmf,
+    /// Spread list as values.
+    ValuesSpread,
+    /// Called as `(no-applicable-method gf . args)` when a generic has no method for a call and
+    /// no fallback.
+    NoApplicableMethod,
+    /// The procedure `apply`, for the optimizing tier's generic `apply` call.
+    Apply,
 }
 
-const HOOK_COUNT: usize = 45;
+const HOOK_COUNT: usize = 50;
 
 impl Hook {
     /// Every hook, in slot order.
@@ -72,6 +82,7 @@ impl Hook {
         Hook::SlotRefUsingClass,
         Hook::SlotSetUsingClass,
         Hook::SlotBoundUsingClass,
+        Hook::SlotUnbindUsingClass,
         Hook::SlotUnbound,
         Hook::SlotMissing,
         Hook::SlotRef,
@@ -111,6 +122,10 @@ impl Hook {
         Hook::TermGlobalRef,
         Hook::TermGlobalSet,
         Hook::TermLinklet,
+        Hook::GenericEmf,
+        Hook::ValuesSpread,
+        Hook::NoApplicableMethod,
+        Hook::Apply,
     ];
 
     /// The name Scheme code installs this hook under.
@@ -122,6 +137,7 @@ impl Hook {
             Hook::SlotRefUsingClass => "slot-ref-using-class",
             Hook::SlotSetUsingClass => "slot-set-using-class!",
             Hook::SlotBoundUsingClass => "slot-bound-using-class?",
+            Hook::SlotUnbindUsingClass => "slot-unbind-using-class!",
             Hook::SlotUnbound => "slot-unbound",
             Hook::SlotMissing => "slot-missing",
             Hook::SlotRef => "slot-ref",
@@ -161,6 +177,10 @@ impl Hook {
             Hook::TermGlobalRef => "&global-ref",
             Hook::TermGlobalSet => "&global-set",
             Hook::TermLinklet => "&linklet",
+            Hook::GenericEmf => "%generic-dispatch-emf",
+            Hook::ValuesSpread => "%values-spread",
+            Hook::NoApplicableMethod => "no-applicable-method",
+            Hook::Apply => "apply",
         }
     }
 

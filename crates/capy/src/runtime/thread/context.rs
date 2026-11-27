@@ -22,6 +22,11 @@ pub struct ThreadContext<'gc> {
     pub(crate) exit_value: Cell<Value<'gc>>,
     /// Stub table for code that calls stubs instead of patching, null until the generated image is installed.
     pub(crate) stubs: *const (),
+    /// The lazy-deopt epoch this stack was last patched at
+    /// ([`LAZY_EPOCH`](crate::runtime::codegen::opt::deopt::lazy::LAZY_EPOCH)).
+    /// A stack behind the global epoch may hold return addresses into units
+    /// invalidated since, and is patched before it runs again.
+    pub(crate) lazy_epoch: Cell<u64>,
 }
 
 impl<'gc> ThreadContext<'gc> {
@@ -36,6 +41,7 @@ impl<'gc> ThreadContext<'gc> {
             ip: Cell::new(std::ptr::null()),
             exit_value: Cell::new(Value::undefined()),
             stubs: std::ptr::null(),
+            lazy_epoch: Cell::new(0),
         }
     }
 }

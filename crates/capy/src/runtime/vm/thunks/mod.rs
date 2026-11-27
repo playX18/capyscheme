@@ -59,9 +59,9 @@ thunks! {
         crate::runtime::variable::Variable::new(ctx, value).into()
     }
 
-    pub fn late_variable(ctx: MutationContext<'gc>,
+    pub fn capy_variable(ctx: MutationContext<'gc>,
         name: Value<'gc>) -> Value<'gc> {
-        late_variable_impl(ctx, name)
+        capy_variable_impl(ctx, name)
     }
 
     pub fn yieldpoint_block(ctx: MutationContext<'gc>) -> () {
@@ -318,6 +318,10 @@ thunks! {
         misc::string_ref_value(ctx, s, index)
     }
 
+    pub fn vector_length(ctx: MutationContext<'gc>, v: Value<'gc>) -> Value<'gc> {
+        vectors::vector_length(ctx, v)
+    }
+
     pub fn bytevector_length(ctx: MutationContext<'gc>, bv: Value<'gc>) -> Value<'gc> {
         vectors::bytevector_length(ctx, bv)
     }
@@ -565,11 +569,13 @@ pub fn make_lexical_violation<'gc>(
     }
 }
 
-/// The variable [`crate::runtime::linklet::late_variable`] finds for `name`. Raises an
-/// undefined-variable violation when no bound variable has that name.
-fn late_variable_impl<'gc>(ctx: MutationContext<'gc>, name: Value<'gc>) -> Value<'gc> {
+/// The variable of the primitive `name`, a bound variable of the `(#%capy)` instance. That is
+/// every native procedure, and what a boot file assigns to a name the instance declares. It
+/// raises an undefined-variable violation when nothing is bound under `name`: code that names
+/// a boot-defined binding refers to it through its library, not as a primitive.
+fn capy_variable_impl<'gc>(ctx: MutationContext<'gc>, name: Value<'gc>) -> Value<'gc> {
     assert!(name.is::<Symbol>());
-    match crate::runtime::linklet::late_variable(ctx, name) {
+    match crate::runtime::linklet::capy_variable(ctx, name) {
         Some(var) => var.into(),
         None => thunk_raise(
             ctx,

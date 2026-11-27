@@ -43,6 +43,20 @@ pub mod interrupt_ops {
         Value::undefined()
     }
 
+    /// Undo the mask that delivery put on the calling thread. Delivery masks
+    /// interrupts around the thunk and unmasks when it returns, but a thunk
+    /// that escapes (it raises into a `guard`, say) leaves the thread masked
+    /// for good. `thread-interrupt!` wraps its thunk so that an escape calls
+    /// this once.
+    #[scheme(name = "%interrupts-unmask!")]
+    pub fn interrupts_unmask() -> Value<'gc> {
+        let thread = ctx.state().thread_object;
+        if thread.interrupt_level() > 0 {
+            thread.unmask_interrupts();
+        }
+        Value::undefined()
+    }
+
     #[scheme(name = "current-interrupt-level")]
     pub fn current_interrupt_level() -> usize {
         let level = ctx.state().thread_object.interrupt_level();

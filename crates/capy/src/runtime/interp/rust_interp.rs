@@ -34,7 +34,7 @@ use crate::runtime::interp::markers;
 use crate::runtime::interp::profile::ARRAY_FAST;
 use crate::runtime::interp::runtime_procs;
 use crate::runtime::interp::slow;
-use crate::runtime::interp::stack::{self, Ip, Slot};
+use crate::runtime::interp::stack::{Ip, Slot};
 use crate::runtime::objectmodel::{
     Closure, EnvRecord, IntoValue, NativeReturn, Pair, ReturnCode, Value, Vector,
 };
@@ -44,7 +44,7 @@ use crate::runtime::vm::exceptions::RaiseKind;
 
 pub type Handler = for<'gc> unsafe extern "rust-preserve-none" fn(
     Ip,
-    Slot<'gc>,
+    CallFrame<'gc>,
     MutationContext<'gc>,
     Option<Gc<'gc, Closure<'gc>>>,
     MetadataArea,
@@ -120,7 +120,7 @@ macro_rules! op {
         $(#[$attr])*
         #[allow(unused_variables, unused_mut, unused_unsafe)]
         unsafe extern "rust-preserve-none" fn $name<'gc, const $W: u8>(
-            $ip: Ip, $fp: Slot<'gc>, $th: MutationContext<'gc>, $clo: Option<Gc<'gc, Closure<'gc>>>, $md: MetadataArea, $dt: Dt, $w: u64,
+            $ip: Ip, mut $fp: CallFrame<'gc>, $th: MutationContext<'gc>, $clo: Option<Gc<'gc, Closure<'gc>>>, $md: MetadataArea, $dt: Dt, $w: u64,
         ) -> NativeReturn<'gc> {
             unsafe { $body }
         }
@@ -129,7 +129,7 @@ macro_rules! op {
         $(#[$attr])*
         #[allow(unused_variables, unused_mut, unused_unsafe)]
         unsafe extern "rust-preserve-none" fn $name<'gc>(
-            $ip: Ip, $fp: Slot<'gc>, $th: MutationContext<'gc>, $clo: Option<Gc<'gc, Closure<'gc>>>, $md: MetadataArea, $dt: Dt, $w: u64,
+            $ip: Ip, mut $fp: CallFrame<'gc>, $th: MutationContext<'gc>, $clo: Option<Gc<'gc, Closure<'gc>>>, $md: MetadataArea, $dt: Dt, $w: u64,
         ) -> NativeReturn<'gc> {
             unsafe { $body }
         }
@@ -208,11 +208,11 @@ macro_rules! return_values {
     ($fp:expr, $th:expr, $clo:expr, $md:expr, $dt:expr, $count:expr) => {{
         let fp = $fp;
         let count = $count as u64;
-        let ra = stack::return_address(fp);
+        let ra = fp.return_address();
         if ra == markers::interpreter_return() {
             // Read the resume point before dispatching: `return-point` writes `dst`,
             // which is often `r[base-1]` itself.
-            let ip = stack::resume_ip(fp);
+            let ip = fp.resume_ip();
             if count == 1 {
                 become ($dt.get(*ip))(ip, fp, $th, $clo, $md, $dt, 1)
             }
@@ -236,7 +236,7 @@ macro_rules! dispatch_control {
             } => {
                 let clo = Closure::from_value(cp);
                 let md = MetadataArea::from_ptr(Closure::code_block(clo).buffer.metadata());
-                become ($dt.get(*ip))(ip, fp, $th, Some(clo), md, $dt, ac)
+                become ($dt.get(*ip))(ip, CallFrame::create(fp), $th, Some(clo), md, $dt, ac)
             }
             slow::Control::Exit { code, value } => {
                 return NativeReturn { code, value };
@@ -259,7 +259,7 @@ pub unsafe fn run<'gc>(ctx: MutationContext<'gc>, fp: Slot<'gc>, argc: usize) ->
         let dt = Dt(DISPATCH_NARROW.0.as_ptr());
         enter(
             std::ptr::null(),
-            fp,
+            CallFrame::create(fp),
             ctx,
             None,
             MetadataArea::null(),
@@ -270,7 +270,7 @@ pub unsafe fn run<'gc>(ctx: MutationContext<'gc>, fp: Slot<'gc>, argc: usize) ->
 }
 
 op! { fn enter(ip, fp, th, clo, md, dt, argc) {
-    let callee = *fp.add(1);
+    let callee = fp.callee();
     call_closure!(fp, th, callee, argc, dt)
 }}
 
@@ -294,9 +294,15 @@ fn bail_shape_at(ip: Ip) -> BailShape {
             byte => byte as u32,
         }
     };
-    if opcode == OpcodeId::OpCall as u32 || opcode == OpcodeId::OpCallSelf as u32 {
+    if opcode == OpcodeId::OpCall as u32
+        || opcode == OpcodeId::OpCallSelf as u32
+        || opcode == OpcodeId::OpApply as u32
+    {
         BailShape::Call
-    } else if opcode == OpcodeId::OpTailCall as u32 || opcode == OpcodeId::OpTailCallSelf as u32 {
+    } else if opcode == OpcodeId::OpTailCall as u32
+        || opcode == OpcodeId::OpTailCallSelf as u32
+        || opcode == OpcodeId::OpTailApply as u32
+    {
         BailShape::Tcall
     } else if opcode == OpcodeId::OpReturnPoint as u32
         || opcode == OpcodeId::OpReturnPointForward as u32
@@ -334,6 +340,7 @@ unsafe fn resume_with<'gc>(
     dt: Dt,
 ) -> NativeReturn<'gc> {
     unsafe {
+        let fp = CallFrame::create(fp);
         let shape = bail_shape_at(ip);
         // The running closure lives in `fp[1]`, except at `tail-call` (where the
         // frame holds the callee, which may not be a closure at all) and at
@@ -342,8 +349,8 @@ unsafe fn resume_with<'gc>(
         let clo = match shape {
             BailShape::Tcall | BailShape::ReturnPoint => None,
             BailShape::Call | BailShape::Other => {
-                debug_assert!((*fp.add(1)).is::<Closure>());
-                Some(Closure::from_value(*fp.add(1)))
+                debug_assert!(fp.callee().is::<Closure>());
+                Some(Closure::from_value(fp.callee()))
             }
         };
         match shape {
@@ -433,13 +440,12 @@ op! { fn op_wide32(ip, fp, th, clo, md, dt, w) {
 }}
 
 op! { fn op_enter<W>(ip, fp, th, clo, md, dt, argc) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpEnter, W, ip);
     if argc != op.argc.0 as u64 {
         become enter_arity(ip, fp, th, clo, md, dt, argc)
     }
     let tc = th.tc();
-    if fp.add(op.frame.0 as usize) > tc.esp.load(Relaxed) {
+    if fp.add(op.frame.0 as usize).slot() > tc.esp.load(Relaxed) {
         become enter_overflow(ip, fp, th, clo, md, dt, argc)
     }
     // A poked `esp` fails the overflow check above, so entries need no
@@ -463,7 +469,7 @@ op! { fn op_enter<W>(ip, fp, th, clo, md, dt, argc) {
 
 op! { #[cold] #[inline(never)] fn enter_arity(ip, fp, th, clo, md, dt, argc) {
     dispatch_control!(
-        slow::control_enter_arity(th, fp, clo.expect("entry has a closure"), argc as usize),
+        slow::control_enter_arity(th, fp.slot(), clo.expect("entry has a closure"), argc as usize),
         th,
         dt
     )
@@ -471,21 +477,20 @@ op! { #[cold] #[inline(never)] fn enter_arity(ip, fp, th, clo, md, dt, argc) {
 
 op! { #[cold] #[inline(never)] fn enter_overflow(ip, fp, th, clo, md, dt, argc) {
     dispatch_control!(
-        slow::control_enter_overflow(th, fp, argc as usize, ip),
+        slow::control_enter_overflow(th, fp.slot(), argc as usize, ip),
         th,
         dt
     )
 }}
 
 op! { fn op_enter_rest<W>(ip, fp, th, clo, md, dt, argc) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpEnterRest, W, ip);
     if argc < op.required.0 as u64 {
         become enter_arity(ip, fp, th, clo, md, dt, argc)
     }
     let extras = (argc - op.required.0 as u64) as usize;
     let tc = th.tc();
-    if fp.add(op.frame.0 as usize + extras) > tc.esp.load(Relaxed) {
+    if fp.add(op.frame.0 as usize + extras).slot() > tc.esp.load(Relaxed) {
         become enter_overflow(ip, fp, th, clo, md, dt, argc)
     }
     // A poked `esp` fails the overflow check above, so entries need no
@@ -506,15 +511,14 @@ op! { fn op_enter_rest<W>(ip, fp, th, clo, md, dt, argc) {
     }
     // The extras leave the argument area so the registers below `base` are
     // free for locals.
-    std::ptr::copy(fp.add(2 + op.required.0 as usize), fp.add(op.base.0 as usize), extras);
-    frame[op.cnt] = Value::from_i32(extras as i32);
+    std::ptr::copy(fp.arguments_ptr().add(op.required.0 as usize), fp.register(op.base), extras);
+    fp[op.cnt] = Value::from_i32(extras as i32);
     advance!(OpEnterRest, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_enter_case<W>(ip, fp, th, clo, md, dt, argc) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpEnterCase, W, ip);
-    let pool = frame.code_block().buffer.pool().as_ptr();
+    let pool = fp.code_block().buffer.pool().as_ptr();
     let table = unsafe { pool.add(op.table.0 as usize) };
     let count = unsafe { table.read() } as usize;
     for row in 0..count {
@@ -531,22 +535,22 @@ op! { fn op_enter_case<W>(ip, fp, th, clo, md, dt, argc) {
         if rest_base != CASE_NO_REST {
             let extras = (argc - min) as usize;
             let tc = th.tc();
-            if fp.add(row_frame + extras) > tc.esp.load(Relaxed) {
+            if fp.add(row_frame + extras).slot() > tc.esp.load(Relaxed) {
                 become enter_overflow(ip, fp, th, clo, md, dt, argc)
             }
 
             unsafe {
                 std::ptr::copy(
-                    fp.add(2 + min as usize),
-                    fp.add(rest_base as usize),
+                    fp.arguments_ptr().add(min as usize),
+                    fp.register(Register(rest_base)),
                     extras,
                 );
             }
-            frame[Register(rest_cnt)] = Value::from_i32(extras as i32);
+            fp[Register(rest_cnt)] = Value::from_i32(extras as i32);
         }
-        let group = Closure::from_value(frame[Register(1)]);
+        let group = Closure::from_value(fp[Register(1)]);
         let clause = Closure::from_value(Closure::free_get(group, row));
-        frame[Register(1)] = clause.into();
+        fp[Register(1)] = clause.into();
 
         #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
         {
@@ -566,14 +570,13 @@ op! { fn op_enter_case<W>(ip, fp, th, clo, md, dt, argc) {
 }}
 
 op! { #[cold] #[inline(never)] fn enter_case_arity(ip, fp, th, clo, md, dt, argc) {
-    dispatch_control!(slow::control_enter_case_arity(th, fp, argc as usize), th, dt)
+    dispatch_control!(slow::control_enter_case_arity(th, fp.slot(), argc as usize), th, dt)
 }}
 
 op! { fn call_native(ip, fp, th, clo, md, dt, argc) {
-    let frame = CallFrame::create(fp);
     th.tc().ip.set(ip);
     dispatch_control!(
-        slow::control_run_native(th, fp, clo.expect("native entry has a closure"), argc as usize),
+        slow::control_run_native(th, fp.slot(), clo.expect("native entry has a closure"), argc as usize),
         th,
         dt
     )
@@ -605,7 +608,7 @@ op! { #[cold] #[inline(never)] fn call_non_closure(ip, fp, th, clo, md, dt, argc
         })
     };
     dispatch_control!(
-        slow::control_enter(th, fp, *fp.add(1), argc as usize, site),
+        slow::control_enter(th, fp.slot(), fp.callee(), argc as usize, site),
         th,
         dt
     )
@@ -614,7 +617,7 @@ op! { #[cold] #[inline(never)] fn call_non_closure(ip, fp, th, clo, md, dt, argc
 // Call the exception handler with the condition in `exit_value`, as a tail
 // call from the frame at `fp`: the handler returns to that frame's caller.
 op! { #[cold] #[inline(never)] fn raise_in_frame(ip, fp, th, clo, md, dt, w) {
-    dispatch_control!(slow::control_raise_in_frame(th, fp), th, dt)
+    dispatch_control!(slow::control_raise_in_frame(th, fp.slot()), th, dt)
 }}
 
 // Call the exception handler with the condition in `exit_value` from a
@@ -630,32 +633,30 @@ pub use crate::runtime::interp::slow::push_raise_frame;
 // instruction `ip`, whose source location goes into the condition.
 op! { #[cold] #[inline(never)] fn raise_kind(ip, fp, th, clo, md, dt, w) {
     dispatch_control!(
-        slow::control_raise_kind(th, fp, clo, ip, (w & 0xff) as usize),
+        slow::control_raise_kind(th, fp.slot(), clo, ip, (w & 0xff) as usize),
         th,
         dt
     )
 }}
 
 op! { fn op_raise<W>(ip, fp, th, clo, md, dt, w) {
-    dispatch_control!(slow::control_raise(th, fp, clo, ip), th, dt)
+    dispatch_control!(slow::control_raise(th, fp.slot(), clo, ip), th, dt)
 }}
 
 // Single-value entry. The value is in `r2` of the returning frame, it is
 // written to `r[dst]` of the caller's. The metadata belongs to the caller's
 // code block, so it is read after `md` is reloaded.
 op! { fn op_return_point<W>(ip, fp, th, clo, md, dt, count) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpReturnPoint, W, ip);
-    let value = *fp.add(2);
-    let mut frame = frame.sub(op.frame.0 as usize);
-    let fp = frame.slot();
-    let clo = Closure::from_value(frame.callee());
+    let value = fp.argument(0);
+    let mut fp = fp.sub(op.frame.0 as usize);
+    let clo = Closure::from_value(fp.callee());
     let md = MetadataArea::from_ptr(Closure::code_block(clo).buffer.metadata());
     // A count other than 1 arrives through `return_many_values` at an
     // `MV_IGNORE` return point. With no values, `r2` is a stale slot that may
     // point at freed memory, so only a single value is stored and profiled.
     if count == 1 {
-        frame[op.dst] = value;
+        fp[op.dst] = value;
         (*md.entry::<def::OpReturnPoint>(op.metadata_id)).profile.observe(value);
     }
     advance!(OpReturnPoint, W, ip, fp, th, Some(clo), md, dt)
@@ -669,29 +670,25 @@ op! { fn op_return_point_forward<W>(ip, fp, th, clo, md, dt, count) {
 }}
 
 op! { fn op_return_point_values<W>(ip, fp, th, clo, md, dt, count) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpReturnPointValues, W, ip);
-    let frame = frame.sub(op.frame.0 as usize);
-    let fp = frame.slot();
+    let fp = fp.sub(op.frame.0 as usize);
     if count != op.nvals.0 as u64 {
         become wrong_value_count(ip, fp, th, clo, md, dt, count)
     }
-    let clo = Closure::from_value(frame.callee());
+    let clo = Closure::from_value(fp.callee());
     let md = MetadataArea::from_ptr(Closure::code_block(clo).buffer.metadata());
     advance!(OpReturnPointValues, W, ip, fp, th, Some(clo), md, dt)
 }}
 
 op! { fn op_return_point_values_rest<W>(ip, fp, th, clo, md, dt, count) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpReturnPointValuesRest, W, ip);
     let base = op.frame.0 as usize;
-    let frame = frame.sub(base);
-    let fp = frame.slot();
+    let mut fp = fp.sub(base);
     if count < op.nvals.0 as u64 {
         become wrong_value_count(ip, fp, th, clo, md, dt, count)
     }
-    *fp.add(base) = Value::from_i32((count - op.nvals.0 as u64) as i32);
-    let clo = Closure::from_value(frame.callee());
+    fp[Register(op.frame.0 as u32)] = Value::from_i32((count - op.nvals.0 as u64) as i32);
+    let clo = Closure::from_value(fp.callee());
     let md = MetadataArea::from_ptr(Closure::code_block(clo).buffer.metadata());
     advance!(OpReturnPointValuesRest, W, ip, fp, th, Some(clo), md, dt)
 }}
@@ -700,14 +697,13 @@ op! { fn op_return_point_values_rest<W>(ip, fp, th, clo, md, dt, count) {
 // (`fp[0]`, passed in the `ip` slot). The single-value interpreted case is
 // inline in `return_values!`, a count other than one follows `*(ra - MV_DISP)`.
 op! { fn do_return(ra, fp, th, clo, md, dt, count) {
-    dispatch_control!(slow::control_return(th, fp, ra, count), th, dt)
+    dispatch_control!(slow::control_return(th, fp.slot(), ra, count), th, dt)
 }}
 
 // Return `count` values, already in `fp[2..]`, to the stub return address
 // `ra`. A stub takes any count itself.
 op! { fn do_return_stub(ra, fp, th, clo, md, dt, count) {
-    let frame = CallFrame::create(fp);
-    dispatch_control!(slow::control_return(th, fp, ra, count), th, dt)
+    dispatch_control!(slow::control_return(th, fp.slot(), ra, count), th, dt)
 }}
 
 // Return `count` values (`count != 1`), already in `fp[2..]`, to the
@@ -718,7 +714,6 @@ op! { fn do_return_stub(ra, fp, th, clo, md, dt, count) {
 // anything else raises. `clo`/`md` are the callee's, every resumed point
 // reloads them after popping, as on the single-value path.
 op! { #[cold] #[inline(never)] fn return_many_values(ip, fp, th, clo, md, dt, count) {
-    let frame = CallFrame::create(fp);
     let (width, opcode, operands) = def::decode_header(ip);
     match opcode {
         OpcodeId::OpReturnPoint => {
@@ -740,134 +735,121 @@ op! { #[cold] #[inline(never)] fn return_many_values(ip, fp, th, clo, md, dt, co
 // `fp` is already the frame the values were returned into.
 op! { #[cold] #[inline(never)] fn wrong_value_count(ip, fp, th, clo, md, dt, count) {
     dispatch_control!(
-        slow::control_wrong_count(th, fp, ip, count),
+        slow::control_wrong_count(th, fp.slot(), ip, count),
         th,
         dt
     )
 }}
 
 op! { fn op_move<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpMove, W, ip);
-    frame[op.dst] = frame[op.src];
+    fp[op.dst] = fp[op.src];
     advance!(OpMove, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_move_two<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpMoveTwo, W, ip);
-    frame[op.dst1] = frame[op.src1];
-    frame[op.dst2] = frame[op.src2];
+    fp[op.dst1] = fp[op.src1];
+    fp[op.dst2] = fp[op.src2];
     advance!(OpMoveTwo, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_load_constant<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpLoadConstant, W, ip);
-    frame[op.dst] = frame.code_block().buffer.constant(op.constant.0 as usize);
+    fp[op.dst] = fp.code_block().buffer.constant(op.constant.0 as usize);
     advance!(OpLoadConstant, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_load_immediate<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpLoadImmediate, W, ip);
-    frame[op.dst] = Value::from_i32(op.value.0);
+    fp[op.dst] = Value::from_i32(op.value.0);
     advance!(OpLoadImmediate, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_load_raw<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpLoadRaw, W, ip);
-    frame[op.dst] = Value::from_raw(op.bits.0 as u64);
+    fp[op.dst] = Value::from_raw(op.bits.0 as u64);
     advance!(OpLoadRaw, W, ip, fp, th, clo, md, dt)
 }}
 
 // A cache cell is a one-slot box shared by every code block of a
 // compilation unit, the constant pool holds the box.
 op! { fn op_cell_ref<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpCellRef, W, ip);
-    let value = frame.code_block().buffer.constant(op.constant.0 as usize).downcast::<Variable>().value.get();
+    let value = fp.code_block().buffer.constant(op.constant.0 as usize).downcast::<Variable>().value.get();
     (*md.entry::<def::OpCellRef>(op.metadata_id)).profile.observe(value);
-    frame[op.dst] = value;
+    fp[op.dst] = value;
     advance!(OpCellRef, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_cell_set<W>(ip, fp, th, clo, md, dt, w) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpCellSet, W, ip);
-    let cell = frame.code_block().buffer.constant(op.constant.0 as usize);
+    let cell = fp.code_block().buffer.constant(op.constant.0 as usize);
     // A cache cell is a `Variable`: a write fires its watchpoint set, so
-    // optimized code that folded the cell is invalidated.
-    cell.downcast::<Variable>().set(th, frame[op.src]);
+    // optimized code that folded the cell is invalidated. The frame is
+    // published first, so that the lazy deopt of that code can walk the
+    // stack below it.
+    fp.park(th);
+    cell.downcast::<Variable>().set(th, fp[op.src]);
     advance!(OpCellSet, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_runtime_procedure<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpRuntimeProcedure, W, ip);
-    frame[op.dst] = runtime_procs::get(th, op.id.0);
+    fp[op.dst] = runtime_procs::get(th, op.id.0);
     advance!(OpRuntimeProcedure, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_closure<W>(ip, fp, th, clo, md, dt, w) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpClosure, W, ip);
-    slow::closure_body(th, frame, &op);
+    slow::closure_body(th, fp, &op);
     advance!(OpClosure, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_closure_env<W>(ip, fp, th, clo, md, dt, w) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpClosureEnv, W, ip);
-    slow::closure_env_body(th, frame, &op);
+    slow::closure_env_body(th, fp, &op);
     advance!(OpClosureEnv, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_free_ref<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpFreeRef, W, ip);
     let clo = clo.expect("free variable of a live closure");
-    frame[op.dst] = Closure::free_get(clo, op.index.0 as usize);
+    fp[op.dst] = Closure::free_get(clo, op.index.0 as usize);
     advance!(OpFreeRef, W, ip, fp, th, Some(clo), md, dt)
 }}
 
 op! { fn op_closure_ref<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpClosureRef, W, ip);
-    let closure = Closure::from_value(frame[op.closure]);
-    frame[op.dst] = Closure::free_get(closure, op.index.0 as usize);
+    let closure = Closure::from_value(fp[op.closure]);
+    fp[op.dst] = Closure::free_get(closure, op.index.0 as usize);
     advance!(OpClosureRef, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_closure_set<W>(ip, fp, th, clo, md, dt, w) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpClosureSet, W, ip);
-    let closure = Closure::from_value(frame[op.closure]);
-    Closure::free_set(closure, op.index.0 as usize, frame[op.src]);
+    let closure = Closure::from_value(fp[op.closure]);
+    Closure::free_set(closure, op.index.0 as usize, fp[op.src]);
     advance!(OpClosureSet, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_make_env<W>(ip, fp, th, clo, md, dt, w) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpMakeEnv, W, ip);
-    slow::make_env_body(th, frame, &op);
+    slow::make_env_body(th, fp, &op);
     advance!(OpMakeEnv, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_env_ref<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpEnvRef, W, ip);
-    let env = EnvRecord::from_value(frame[op.env]);
-    frame[op.dst] = EnvRecord::slot_get(env, op.index.0 as usize);
+    let env = EnvRecord::from_value(fp[op.env]);
+    fp[op.dst] = EnvRecord::slot_get(env, op.index.0 as usize);
     advance!(OpEnvRef, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_env_set<W>(ip, fp, th, clo, md, dt, w) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpEnvSet, W, ip);
-    let env = EnvRecord::from_value(frame[op.env]);
-    EnvRecord::slot_set(env, op.index.0 as usize, frame[op.src]);
+    let env = EnvRecord::from_value(fp[op.env]);
+    EnvRecord::slot_set(env, op.index.0 as usize, fp[op.src]);
     advance!(OpEnvSet, W, ip, fp, th, clo, md, dt)
 }}
 
@@ -877,9 +859,8 @@ op! { fn op_jump<W>(ip, fp, th, clo, md, dt, w) {
 }}
 
 op! { fn op_jump_if_true<W>(ip, fp, th, clo, md, dt, w) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpJumpIfTrue, W, ip);
-    let target = if frame[op.cond].as_bool() {
+    let target = if fp[op.cond].as_bool() {
         ip.offset(op.target as isize)
     } else {
         ip.add(def::OpJumpIfTrue::size_static::<W>())
@@ -888,9 +869,8 @@ op! { fn op_jump_if_true<W>(ip, fp, th, clo, md, dt, w) {
 }}
 
 op! { fn op_jump_if_false<W>(ip, fp, th, clo, md, dt, w) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpJumpIfFalse, W, ip);
-    let target = if frame[op.cond].as_bool() {
+    let target = if fp[op.cond].as_bool() {
         ip.add(def::OpJumpIfFalse::size_static::<W>())
     } else {
         ip.offset(op.target as isize)
@@ -901,9 +881,8 @@ op! { fn op_jump_if_false<W>(ip, fp, th, clo, md, dt, w) {
 macro_rules! type_branch {
     ($yes:ident, $YesOp:ident, $no:ident, $NoOp:ident, |$v:ident| $test:expr) => {
         op! { fn $yes<W>(ip, fp, th, clo, md, dt, w) {
-            let frame = CallFrame::create(fp);
             let op = decode!($YesOp, W, ip);
-            let $v = frame[op.src];
+            let $v = fp[op.src];
             let target = if $test {
                 ip.offset(op.target as isize)
             } else {
@@ -912,9 +891,8 @@ macro_rules! type_branch {
             next!(target, fp, th, clo, md, dt)
         }}
         op! { fn $no<W>(ip, fp, th, clo, md, dt, w) {
-            let frame = CallFrame::create(fp);
             let op = decode!($NoOp, W, ip);
-            let $v = frame[op.src];
+            let $v = fp[op.src];
             let target = if $test {
                 ip.add(def::$NoOp::size_static::<W>())
             } else {
@@ -955,10 +933,9 @@ type_branch!(
 );
 
 op! { fn op_jump_if_eq<W>(ip, fp, th, clo, md, dt, w) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpJumpIfEq, W, ip);
-    let x = frame[op.lhs];
-    let y = frame[op.rhs];
+    let x = fp[op.lhs];
+    let y = fp[op.rhs];
     let target = if x.bits() == y.bits() {
         ip.offset(op.target as isize)
     } else {
@@ -968,10 +945,9 @@ op! { fn op_jump_if_eq<W>(ip, fp, th, clo, md, dt, w) {
 }}
 
 op! { fn op_jump_if_not_eq<W>(ip, fp, th, clo, md, dt, w) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpJumpIfNotEq, W, ip);
-    let x = frame[op.lhs];
-    let y = frame[op.rhs];
+    let x = fp[op.lhs];
+    let y = fp[op.rhs];
     let target = if x.bits() != y.bits() {
         ip.offset(op.target as isize)
     } else {
@@ -983,10 +959,9 @@ op! { fn op_jump_if_not_eq<W>(ip, fp, th, clo, md, dt, w) {
 macro_rules! numeric_jump {
     ($name:ident, $Op:ident, $op:tt, $sense:expr) => {
         op! { fn $name<W>(ip, fp, th, clo, md, dt, w) {
-            let frame = CallFrame::create(fp);
             let op = decode!($Op, W, ip);
-            let x = frame[op.lhs];
-            let y = frame[op.rhs];
+            let x = fp[op.lhs];
+            let y = fp[op.rhs];
             if x.is_int32() && y.is_int32() {
                 (*md.entry::<def::$Op>(op.metadata_id)).profile.observe_fixnums();
                 let target = if (x.as_int32() $op y.as_int32()) == $sense {
@@ -1013,20 +988,20 @@ numeric_jump!(op_jump_if_not_greater_equal, OpJumpIfNotGreaterEqual, >=, false);
 numeric_jump!(op_jump_if_not_greater, OpJumpIfNotGreater, >, false);
 
 op! { #[cold] #[inline(never)] fn compare_slow(ip, fp, th, clo, md, dt, w) {
-    let target = slow::compare_slow_body(th, fp, ip, md.as_ptr());
+    let target = slow::compare_slow_body(th, fp.slot(), ip, md.as_ptr());
     next!(target, fp, th, clo, md, dt)
 }}
 
 op! { fn op_switch_fixnum<W>(ip, fp, th, clo, md, dt, w) {
-    next!(slow::switch_body(th, fp, ip), fp, th, clo, md, dt)
+    next!(slow::switch_body(th, fp.slot(), ip), fp, th, clo, md, dt)
 }}
 
 op! { fn op_switch_char<W>(ip, fp, th, clo, md, dt, w) {
-    next!(slow::switch_body(th, fp, ip), fp, th, clo, md, dt)
+    next!(slow::switch_body(th, fp.slot(), ip), fp, th, clo, md, dt)
 }}
 
 op! { fn op_switch_symbol<W>(ip, fp, th, clo, md, dt, w) {
-    next!(slow::switch_body(th, fp, ip), fp, th, clo, md, dt)
+    next!(slow::switch_body(th, fp.slot(), ip), fp, th, clo, md, dt)
 }}
 
 op! { fn op_loop_hint<W>(ip, fp, th, clo, md, dt, w) {
@@ -1051,7 +1026,7 @@ op! { fn op_loop_hint<W>(ip, fp, th, clo, md, dt, w) {
 }}
 
 op! { #[cold] #[inline(never)] fn loop_yield<W>(ip, fp, th, clo, md, dt, w) {
-    dispatch_control!(slow::control_loop_yield(th, fp, w, ip), th, dt)
+    dispatch_control!(slow::control_loop_yield(th, fp.slot(), w, ip), th, dt)
 }}
 
 op! { fn op_call<W>(ip, fp, th, clo, md, dt, w) {
@@ -1059,9 +1034,9 @@ op! { fn op_call<W>(ip, fp, th, clo, md, dt, w) {
     let callee_frame = fp.add(op.base.0 as usize);
     // The callee returns to `INTERP_RETURN`, the bytecode return point, the
     // `return-point` that follows this call, goes into the reserved `r[base-1]` slot.
-    stack::set_resume_ip(callee_frame, ip.add(def::OpCall::size_static::<W>()));
-    stack::set_return_address(callee_frame, markers::interpreter_return());
-    let callee = *callee_frame.add(1);
+    callee_frame.set_resume_ip(ip.add(def::OpCall::size_static::<W>()));
+    callee_frame.set_return_address(markers::interpreter_return());
+    let callee = callee_frame.callee();
     if callee.is::<Closure>() {
         let link = &(*md.entry::<def::OpCall>(op.metadata_id)).link;
         let block = Value::from_gc(Closure::code_block(Closure::from_value(callee)));
@@ -1078,9 +1053,8 @@ op! { fn op_call<W>(ip, fp, th, clo, md, dt, w) {
 }}
 
 op! { fn op_tail_call<W>(ip, fp, th, clo, md, dt, w) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpTailCall, W, ip);
-    let callee = frame.callee();
+    let callee = fp.callee();
     if callee.is::<Closure>() {
         let link = &(*md.entry::<def::OpTailCall>(op.metadata_id)).link;
         let block = Value::from_gc(Closure::code_block(Closure::from_value(callee)));
@@ -1099,10 +1073,10 @@ op! { fn op_tail_call<W>(ip, fp, th, clo, md, dt, w) {
 op! { fn op_call_self<W>(ip, fp, th, clo, md, dt, w) {
     let op = decode!(OpCallSelf, W, ip);
     let callee_frame = fp.add(op.base.0 as usize);
-    stack::set_resume_ip(callee_frame, ip.add(def::OpCallSelf::size_static::<W>()));
-    stack::set_return_address(callee_frame, markers::interpreter_return());
-    let callee = *fp.add(1);
-    *callee_frame.add(1) = callee;
+    callee_frame.set_resume_ip(ip.add(def::OpCallSelf::size_static::<W>()));
+    callee_frame.set_return_address(markers::interpreter_return());
+    let callee = fp.callee();
+    callee_frame.set_callee(callee);
     if callee.is::<Closure>() {
         let link = &(*md.entry::<def::OpCallSelf>(op.metadata_id)).link;
         let block = Value::from_gc(Closure::code_block(Closure::from_value(callee)));
@@ -1120,7 +1094,7 @@ op! { fn op_call_self<W>(ip, fp, th, clo, md, dt, w) {
 
 op! { fn op_tail_call_self<W>(ip, fp, th, clo, md, dt, w) {
     let op = decode!(OpTailCallSelf, W, ip);
-    let callee = *fp.add(1);
+    let callee = fp.callee();
     if callee.is::<Closure>() {
         let link = &(*md.entry::<def::OpTailCallSelf>(op.metadata_id)).link;
         let block = Value::from_gc(Closure::code_block(Closure::from_value(callee)));
@@ -1136,6 +1110,32 @@ op! { fn op_tail_call_self<W>(ip, fp, th, clo, md, dt, w) {
     become call_slow(ip, fp, th, clo, md, dt, op.argc.0 as u64)
 }}
 
+// `apply` and `tail-apply`: the arguments, the last of them a list, are
+// spread over the argument area by the slow path, which enters the callee
+// and records it at the site like a call.
+op! { fn op_apply<W>(ip, fp, th, clo, md, dt, w) {
+    let op = decode!(OpApply, W, ip);
+    let callee_frame = fp.add(op.base.0 as usize);
+    callee_frame.set_resume_ip(ip.add(def::OpApply::size_static::<W>()));
+    callee_frame.set_return_address(markers::interpreter_return());
+    become apply_slow(ip, callee_frame, th, clo, md, dt, op.argc.0 as u64)
+}}
+
+op! { fn op_tail_apply<W>(ip, fp, th, clo, md, dt, w) {
+    let op = decode!(OpTailApply, W, ip);
+    become apply_slow(ip, fp, th, clo, md, dt, op.argc.0 as u64)
+}}
+
+op! { #[cold] #[inline(never)] fn apply_slow(ip, fp, th, clo, md, dt, argc) {
+    let link = slow::generic_link(ip, md.as_ptr());
+    link.note_call(None);
+    let site = slow::EnterLink {
+        link,
+        buffer: Value::from_gc(crate::runtime::objectmodel::CodeBuffer::md_buffer(md.as_ptr())),
+    };
+    dispatch_control!(slow::control_apply(th, fp.slot(), argc as usize, Some(site)), th, dt)
+}}
+
 // The call site's cached callee differs from `*fp[1]`: store the new code
 // block (or mark the site polymorphic) and enter the callee.
 op! { #[cold] #[inline(never)] fn record_callee(ip, fp, th, clo, md, dt, argc) {
@@ -1144,16 +1144,15 @@ op! { #[cold] #[inline(never)] fn record_callee(ip, fp, th, clo, md, dt, argc) {
         buffer: Value::from_gc(crate::runtime::objectmodel::CodeBuffer::md_buffer(md.as_ptr())),
     };
     dispatch_control!(
-        slow::control_enter(th, fp, *fp.add(1), argc as usize, Some(site)),
+        slow::control_enter(th, fp.slot(), fp.callee(), argc as usize, Some(site)),
         th,
         dt
     )
 }}
 
 op! { fn op_return<W>(ip, fp, th, clo, md, dt, w) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpReturn, W, ip);
-    *fp.add(2) = frame[op.src];
+    fp.set_argument(0, fp[op.src]);
     return_values!(fp, th, clo, md, dt, 1)
 }}
 
@@ -1163,57 +1162,51 @@ op! { fn op_return_values<W>(ip, fp, th, clo, md, dt, w) {
 }}
 
 op! { fn op_rest_ref<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpRestRef, W, ip);
     let index = op.index.0 as i32;
-    if index >= (frame[op.cnt]).as_int32() {
+    if index >= (fp[op.cnt]).as_int32() {
         // `car` of an exhausted rest list.
         th.state().exit_value.set(Value::null());
         become raise_kind(ip, fp, th, clo, md, dt, RaiseKind::CarNotPair.code() as u64)
     }
-    frame[op.dst] = *fp.add(op.base.0 as usize + index as usize);
+    fp[op.dst] = *fp.register(op.base).add(index as usize);
     advance!(OpRestRef, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_rest_len<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpRestLen, W, ip);
-    frame[op.dst] = Value::new(frame[op.cnt].as_int32() - op.skip.0 as i32);
+    fp[op.dst] = Value::new(fp[op.cnt].as_int32() - op.skip.0 as i32);
     advance!(OpRestLen, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_rest_null<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpRestNull, W, ip);
-    frame[op.dst] = Value::new(frame[op.cnt].as_int32() == op.skip.0 as i32);
+    fp[op.dst] = Value::new(fp[op.cnt].as_int32() == op.skip.0 as i32);
     advance!(OpRestNull, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_rest_pair<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpRestPair, W, ip);
-    frame[op.dst] = Value::new(frame[op.cnt].as_int32() > op.skip.0 as i32);
+    fp[op.dst] = Value::new(fp[op.cnt].as_int32() > op.skip.0 as i32);
     advance!(OpRestPair, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_rest_list<W>(ip, fp, th, clo, md, dt, w) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpRestList, W, ip);
-    slow::rest_list_body(th, frame, &op);
+    slow::rest_list_body(th, fp, &op);
     advance!(OpRestList, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_values_rest<W>(ip, fp, th, clo, md, dt, w) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpValuesRest, W, ip);
-    slow::values_rest_body(th, frame, &op);
+    slow::values_rest_body(th, fp, &op);
     advance!(OpValuesRest, W, ip, fp, th, clo, md, dt)
 }}
 
 macro_rules! prim_op {
     ($name:ident) => {
         op! { fn $name<W>(ip, fp, th, clo, md, dt, w) {
-            match slow::prim_step(th, fp, ip) {
+            match slow::prim_step(th, fp.slot(), ip) {
                 Ok(next_ip) => next!(next_ip, fp, th, clo, md, dt),
                 Err(kind) => become raise_kind(ip, fp, th, clo, md, dt, kind as u64),
             }
@@ -1228,86 +1221,78 @@ prim_op!(op_call_primitive3);
 prim_op!(op_call_primitive_n);
 
 op! { fn op_car<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpCar, W, ip);
-    let pair = frame[op.src];
+    let pair = fp[op.src];
     if !pair.is::<Pair>() {
         th.state().exit_value.set(pair);
         become raise_kind(ip, fp, th, clo, md, dt, RaiseKind::CarNotPair.code() as u64)
     }
     let value = pair.car();
     (*md.entry::<def::OpCar>(op.metadata_id)).profile.observe(value);
-    frame[op.dst] = value;
+    fp[op.dst] = value;
     advance!(OpCar, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_cdr<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpCdr, W, ip);
-    let pair = frame[op.src];
+    let pair = fp[op.src];
     if !pair.is::<Pair>() {
         th.state().exit_value.set(pair);
         become raise_kind(ip, fp, th, clo, md, dt, RaiseKind::CdrNotPair.code() as u64)
     }
     let value = pair.cdr();
     (*md.entry::<def::OpCdr>(op.metadata_id)).profile.observe(value);
-    frame[op.dst] = value;
+    fp[op.dst] = value;
     advance!(OpCdr, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_cons<W>(ip, fp, th, clo, md, dt, w) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpCons, W, ip);
-    slow::cons_body(th, frame, &op);
+    slow::cons_body(th, fp, &op);
     advance!(OpCons, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_set_car<W>(ip, fp, th, clo, md, dt, w) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpSetCar, W, ip);
-    let pair = frame[op.pair];
+    let pair = fp[op.pair];
     barrier::field!(Gc::write(th, pair.downcast::<Pair>()), Pair, car)
         .unlock()
-        .set(frame[op.src]);
+        .set(fp[op.src]);
     advance!(OpSetCar, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_set_cdr<W>(ip, fp, th, clo, md, dt, w) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpSetCdr, W, ip);
-    let pair = frame[op.pair];
+    let pair = fp[op.pair];
     barrier::field!(Gc::write(th, pair.downcast::<Pair>()), Pair, cdr)
         .unlock()
-        .set(frame[op.src]);
+        .set(fp[op.src]);
     advance!(OpSetCdr, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_eq<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpEq, W, ip);
-    frame[op.dst] = Value::new((frame[op.lhs]).bits() == (frame[op.rhs]).bits());
+    fp[op.dst] = Value::new((fp[op.lhs]).bits() == (fp[op.rhs]).bits());
     advance!(OpEq, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_not<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpNot, W, ip);
-    frame[op.dst] = Value::new(!frame[op.src]);
+    fp[op.dst] = Value::new(!fp[op.src]);
     advance!(OpNot, W, ip, fp, th, clo, md, dt)
 }}
 
 macro_rules! arith {
     ($name:ident, $Op:ident, $checked:ident) => {
         op! { fn $name<W>(ip, fp, th, clo, md, dt, w) {
-            let mut frame = CallFrame::create(fp);
             let op = decode!($Op, W, ip);
-            let x = frame[op.lhs];
-            let y = frame[op.rhs];
+            let x = fp[op.lhs];
+            let y = fp[op.rhs];
             if x.is_int32() && y.is_int32() {
                 let profile = &(*md.entry::<def::$Op>(op.metadata_id)).profile;
                 profile.observe_fixnums();
                 if let Some(result) = x.as_int32().$checked(y.as_int32()) {
-                    frame[op.dst] = Value::from_i32(result);
+                    fp[op.dst] = Value::from_i32(result);
                     advance!($Op, W, ip, fp, th, clo, md, dt)
                 }
             }
@@ -1332,12 +1317,11 @@ fn div_fixnums(x: Value<'_>, y: Value<'_>) -> Option<(i32, i32)> {
 }
 
 op! { fn op_div<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpDiv, W, ip);
-    if let Some((lhs, rhs)) = div_fixnums(frame[op.lhs], frame[op.rhs]) {
+    if let Some((lhs, rhs)) = div_fixnums(fp[op.lhs], fp[op.rhs]) {
         if lhs % rhs == 0 {
             (*md.entry::<def::OpDiv>(op.metadata_id)).profile.observe_fixnums();
-            frame[op.dst] = Value::from_i32(lhs / rhs);
+            fp[op.dst] = Value::from_i32(lhs / rhs);
             advance!(OpDiv, W, ip, fp, th, clo, md, dt)
         }
     }
@@ -1345,31 +1329,28 @@ op! { fn op_div<W>(ip, fp, th, clo, md, dt, w) {
 }}
 
 op! { fn op_quotient<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpQuotient, W, ip);
-    if let Some((lhs, rhs)) = div_fixnums(frame[op.lhs], frame[op.rhs]) {
+    if let Some((lhs, rhs)) = div_fixnums(fp[op.lhs], fp[op.rhs]) {
         (*md.entry::<def::OpQuotient>(op.metadata_id)).profile.observe_fixnums();
-        frame[op.dst] = Value::from_i32(lhs / rhs);
+        fp[op.dst] = Value::from_i32(lhs / rhs);
         advance!(OpQuotient, W, ip, fp, th, clo, md, dt)
     }
     become arith_slow(ip, fp, th, clo, md, dt, w)
 }}
 
 op! { fn op_remainder<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpRemainder, W, ip);
-    if let Some((lhs, rhs)) = div_fixnums(frame[op.lhs], frame[op.rhs]) {
+    if let Some((lhs, rhs)) = div_fixnums(fp[op.lhs], fp[op.rhs]) {
         (*md.entry::<def::OpRemainder>(op.metadata_id)).profile.observe_fixnums();
-        frame[op.dst] = Value::from_i32(lhs % rhs);
+        fp[op.dst] = Value::from_i32(lhs % rhs);
         advance!(OpRemainder, W, ip, fp, th, clo, md, dt)
     }
     become arith_slow(ip, fp, th, clo, md, dt, w)
 }}
 
 op! { fn op_modulo<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpModulo, W, ip);
-    if let Some((lhs, rhs)) = div_fixnums(frame[op.lhs], frame[op.rhs]) {
+    if let Some((lhs, rhs)) = div_fixnums(fp[op.lhs], fp[op.rhs]) {
         // `Number::modulo`, fixnum arm: the remainder takes the divisor's
         // sign. `|rem| < |rhs|` keeps the adjustment in range.
         let mut rem = lhs % rhs;
@@ -1377,21 +1358,20 @@ op! { fn op_modulo<W>(ip, fp, th, clo, md, dt, w) {
             rem = rem.wrapping_add(rhs);
         }
         (*md.entry::<def::OpModulo>(op.metadata_id)).profile.observe_fixnums();
-        frame[op.dst] = Value::from_i32(rem);
+        fp[op.dst] = Value::from_i32(rem);
         advance!(OpModulo, W, ip, fp, th, clo, md, dt)
     }
     become arith_slow(ip, fp, th, clo, md, dt, w)
 }}
 
 op! { fn op_add_immediate<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpAddImmediate, W, ip);
-    let x = frame[op.src];
+    let x = fp[op.src];
     if x.is_int32() {
         let profile = &(*md.entry::<def::OpAddImmediate>(op.metadata_id)).profile;
         profile.observe_fixnums();
         if let Some(result) = x.as_int32().checked_add(op.value.0) {
-            frame[op.dst] = Value::from_i32(result);
+            fp[op.dst] = Value::from_i32(result);
             advance!(OpAddImmediate, W, ip, fp, th, clo, md, dt)
         }
     }
@@ -1399,16 +1379,15 @@ op! { fn op_add_immediate<W>(ip, fp, th, clo, md, dt, w) {
 }}
 
 op! { fn op_add_immediate_move<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpAddImmediateMove, W, ip);
-    let x = frame[op.src];
+    let x = fp[op.src];
     if x.is_int32() {
         let profile = &(*md.entry::<def::OpAddImmediateMove>(op.metadata_id)).profile;
         profile.observe_fixnums();
         if let Some(result) = x.as_int32().checked_add(op.value.0) {
             let sum = Value::from_i32(result);
-            frame[op.tmp] = sum;
-            frame[op.dst] = sum;
+            fp[op.tmp] = sum;
+            fp[op.dst] = sum;
             advance!(OpAddImmediateMove, W, ip, fp, th, clo, md, dt)
         }
     }
@@ -1418,13 +1397,12 @@ op! { fn op_add_immediate_move<W>(ip, fp, th, clo, md, dt, w) {
 macro_rules! numeric_cmp {
     ($name:ident, $Op:ident, $op:tt) => {
         op! { fn $name<W>(ip, fp, th, clo, md, dt, w) {
-            let mut frame = CallFrame::create(fp);
             let op = decode!($Op, W, ip);
-            let x = frame[op.lhs];
-            let y = frame[op.rhs];
+            let x = fp[op.lhs];
+            let y = fp[op.rhs];
             if x.is_int32() && y.is_int32() {
                 (*md.entry::<def::$Op>(op.metadata_id)).profile.observe_fixnums();
-                frame[op.dst] = Value::new(x.as_int32() $op y.as_int32());
+                fp[op.dst] = Value::new(x.as_int32() $op y.as_int32());
                 advance!($Op, W, ip, fp, th, clo, md, dt)
             }
             become arith_slow(ip, fp, th, clo, md, dt, w)
@@ -1439,14 +1417,13 @@ numeric_cmp!(op_greater_equal, OpGreaterEqual, >=);
 numeric_cmp!(op_greater, OpGreater, >);
 
 op! { fn op_negate<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpNegate, W, ip);
-    let x = frame[op.src];
+    let x = fp[op.src];
     if x.is_int32() {
         let profile = &(*md.entry::<def::OpNegate>(op.metadata_id)).profile;
         profile.observe_fixnums();
         if let Some(result) = x.as_int32().checked_neg() {
-            frame[op.dst] = Value::from_i32(result);
+            fp[op.dst] = Value::from_i32(result);
             advance!(OpNegate, W, ip, fp, th, clo, md, dt)
         }
     }
@@ -1454,16 +1431,15 @@ op! { fn op_negate<W>(ip, fp, th, clo, md, dt, w) {
 }}
 
 op! { fn op_abs<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpAbs, W, ip);
-    let x = frame[op.src];
+    let x = fp[op.src];
     if x.is_int32() {
         // `Number::abs`, fixnum arm: only `MIN` needs the heap.
         let value = x.as_int32();
         if value != i32::MIN {
             let profile = &(*md.entry::<def::OpAbs>(op.metadata_id)).profile;
             profile.observe_fixnums();
-            frame[op.dst] = Value::from_i32(value.abs());
+            fp[op.dst] = Value::from_i32(value.abs());
             advance!(OpAbs, W, ip, fp, th, clo, md, dt)
         }
     }
@@ -1471,55 +1447,52 @@ op! { fn op_abs<W>(ip, fp, th, clo, md, dt, w) {
 }}
 
 op! { fn op_sqrt<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpSqrt, W, ip);
-    let x = frame[op.src];
+    let x = fp[op.src];
 
     if x.is_flonum() {
         let profile = &(*md.entry::<def::OpSqrt>(op.metadata_id)).profile;
         profile.observe_unary(x);
-        frame[op.dst] = Value::from_f64(x.as_flonum().sqrt());
+        fp[op.dst] = Value::from_f64(x.as_flonum().sqrt());
         advance!(OpSqrt, W, ip, fp, th, clo, md, dt)
     }
     become arith_slow(ip, fp, th, clo, md, dt, w)
 }}
 
 op! { #[cold] #[inline(never)] fn arith_slow(ip, fp, th, clo, md, dt, w) {
-    let next_ip = slow::arith_slow_body(th, fp, ip, md.as_ptr());
+    let next_ip = slow::arith_slow_body(th, fp.slot(), ip, md.as_ptr());
     next!(next_ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_vector_ref<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpVectorRef, W, ip);
-    let vector = frame[op.vector];
-    let index = frame[op.index];
+    let vector = fp[op.vector];
+    let index = fp[op.index];
     if let Some(value) = prims::vector_ref_fast(vector, index) {
         let meta = &*md.entry::<def::OpVectorRef>(op.metadata_id);
         meta.array.observe(ARRAY_FAST);
         meta.profile.observe(value);
-        frame[op.dst] = value;
+        fp[op.dst] = value;
         advance!(OpVectorRef, W, ip, fp, th, clo, md, dt)
     }
     become vector_slow(ip, fp, th, clo, md, dt, w)
 }}
 
 op! { fn op_vector_ref_mul<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpVectorRefMul, W, ip);
-    let vector = frame[op.vector];
-    let index = frame[op.index];
+    let vector = fp[op.vector];
+    let index = fp[op.index];
     if let Some(value) = prims::vector_ref_fast(vector, index) {
         let meta = &*md.entry::<def::OpVectorRefMul>(op.metadata_id);
         meta.array.observe(ARRAY_FAST);
         meta.profile.observe(value);
-        frame[op.vdst] = value;
-        let x = frame[op.lhs];
-        let y = frame[op.rhs];
+        fp[op.vdst] = value;
+        let x = fp[op.lhs];
+        let y = fp[op.rhs];
         if x.is_int32() && y.is_int32() {
             meta.arith.observe_fixnums();
             if let Some(result) = x.as_int32().checked_mul(y.as_int32()) {
-                frame[op.mdst] = Value::from_i32(result);
+                fp[op.mdst] = Value::from_i32(result);
                 advance!(OpVectorRefMul, W, ip, fp, th, clo, md, dt)
             }
         }
@@ -1529,11 +1502,10 @@ op! { fn op_vector_ref_mul<W>(ip, fp, th, clo, md, dt, w) {
 }}
 
 op! { fn op_vector_set<W>(ip, fp, th, clo, md, dt, w) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpVectorSet, W, ip);
-    let vector = frame[op.vector];
-    let index = frame[op.index];
-    let value = frame[op.src];
+    let vector = fp[op.vector];
+    let index = fp[op.index];
+    let value = fp[op.src];
     if prims::vector_set_fast(th, vector, index, value) {
         (*md.entry::<def::OpVectorSet>(op.metadata_id)).array.observe(ARRAY_FAST);
         advance!(OpVectorSet, W, ip, fp, th, clo, md, dt)
@@ -1542,63 +1514,61 @@ op! { fn op_vector_set<W>(ip, fp, th, clo, md, dt, w) {
 }}
 
 op! { #[cold] #[inline(never)] fn vector_slow(ip, fp, th, clo, md, dt, w) {
-    let next_ip = slow::vector_slow_body(th, fp, ip, md.as_ptr());
+    let next_ip = slow::vector_slow_body(th, fp.slot(), ip, md.as_ptr());
     next!(next_ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_vector_length<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpVectorLength, W, ip);
-    let vector = frame[op.src];
+    let vector = fp[op.src];
     if vector.is::<Vector>() {
-        frame[op.dst] = vector.downcast::<Vector>().len().into_value(th);
+        fp[op.dst] = vector.downcast::<Vector>().len().into_value(th);
         advance!(OpVectorLength, W, ip, fp, th, clo, md, dt)
     }
     become vector_length_slow(ip, fp, th, clo, md, dt, w)
 }}
 
 op! { #[cold] #[inline(never)] fn vector_length_slow(ip, fp, th, clo, md, dt, w) {
-    match slow::vector_length_step(th, fp, ip) {
+    match slow::vector_length_step(th, fp.slot(), ip) {
         Some(next_ip) => next!(next_ip, fp, th, clo, md, dt),
         None => become raise_in_frame(ip, fp, th, clo, md, dt, 0),
     }
 }}
 
 op! { fn op_variable_ref<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpVariableRef, W, ip);
-    let value = frame[op.var].downcast::<Variable>().value.get();
+    let value = fp[op.var].downcast::<Variable>().value.get();
     (*md.entry::<def::OpVariableRef>(op.metadata_id)).profile.observe(value);
-    frame[op.dst] = value;
+    fp[op.dst] = value;
     advance!(OpVariableRef, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_variable_set<W>(ip, fp, th, clo, md, dt, w) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpVariableSet, W, ip);
-    let variable = frame[op.var];
-    variable.downcast::<Variable>().set(th, frame[op.src]);
+    let variable = fp[op.var];
+    // A watched variable fires its set, whose lazy deopt walks the stack
+    // below this published frame.
+    fp.park(th);
+    variable.downcast::<Variable>().set(th, fp[op.src]);
     advance!(OpVariableSet, W, ip, fp, th, clo, md, dt)
 }}
 
 op! { fn op_get_slot<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpGetSlot, W, ip);
-    let obj = frame[op.obj];
+    let obj = fp[op.obj];
     let meta = &*md.entry::<def::OpGetSlot>(op.metadata_id);
     if let Some(value) = slow::get_slot_fast(obj, meta) {
         meta.profile.observe(value);
-        frame[op.dst] = value;
+        fp[op.dst] = value;
         advance!(OpGetSlot, W, ip, fp, th, clo, md, dt)
     }
     become get_slot_miss::<W>(ip, fp, th, clo, md, dt, w)
 }}
 
 op! { #[cold] #[inline(never)] fn get_slot_miss<W>(ip, fp, th, clo, md, dt, w) {
-    let mut frame = CallFrame::create(fp);
     let op = decode!(OpGetSlot, W, ip);
-    if let Some(value) = slow::get_slot_miss_body(th, frame, md.as_ptr(), &op) {
-        frame[op.dst] = value;
+    if let Some(value) = slow::get_slot_miss_body(th, fp, md.as_ptr(), &op) {
+        fp[op.dst] = value;
         advance!(OpGetSlot, W, ip, fp, th, clo, md, dt)
     }
     // Uncacheable or unbound: run the out-of-line call to `slot-ref`.
@@ -1606,20 +1576,18 @@ op! { #[cold] #[inline(never)] fn get_slot_miss<W>(ip, fp, th, clo, md, dt, w) {
 }}
 
 op! { fn op_put_slot<W>(ip, fp, th, clo, md, dt, w) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpPutSlot, W, ip);
-    let obj = frame[op.obj];
+    let obj = fp[op.obj];
     let meta = &*md.entry::<def::OpPutSlot>(op.metadata_id);
-    if slow::put_slot_fast(th, obj, frame[op.src], meta) {
+    if slow::put_slot_fast(th, obj, fp[op.src], meta) {
         advance!(OpPutSlot, W, ip, fp, th, clo, md, dt)
     }
     become put_slot_miss::<W>(ip, fp, th, clo, md, dt, w)
 }}
 
 op! { #[cold] #[inline(never)] fn put_slot_miss<W>(ip, fp, th, clo, md, dt, w) {
-    let frame = CallFrame::create(fp);
     let op = decode!(OpPutSlot, W, ip);
-    if slow::put_slot_miss_body(th, frame, md.as_ptr(), &op) {
+    if slow::put_slot_miss_body(th, fp, md.as_ptr(), &op) {
         advance!(OpPutSlot, W, ip, fp, th, clo, md, dt)
     }
     // Uncacheable: run the out-of-line call to `slot-set!`.
@@ -1627,9 +1595,8 @@ op! { #[cold] #[inline(never)] fn put_slot_miss<W>(ip, fp, th, clo, md, dt, w) {
 }}
 
 op! { fn exit_to_template(ip, fp, th, clo, md, dt, w) {
-    let frame = CallFrame::create(fp);
     let tc = th.tc();
-    tc.stack.fp.set(fp);
+    tc.stack.fp.set(fp.slot());
     tc.ip.set(ip);
     tc.ac.set(w);
 
@@ -1649,18 +1616,18 @@ op! { fn exit_to_template(ip, fp, th, clo, md, dt, w) {
     };
     let cp = match frame_slots {
         Some(slots) => {
-            let caller = frame.sub(slots);
+            let caller = fp.sub(slots);
             debug_assert!(caller.callee().is::<Closure>());
             caller.callee()
         }
         None => {
-            debug_assert!(frame.callee().is::<Closure>());
-            frame.callee()
+            debug_assert!(fp.callee().is::<Closure>());
+            fp.callee()
         }
     };
     tc.cp.set(cp);
     if w == 1 && opcode == OpcodeId::OpReturnPoint {
-        tc.rv.set(*fp.add(2));
+        tc.rv.set(fp.argument(0));
     }
     return NativeReturn {
         code: ReturnCode::ResumeTemplate,
@@ -1736,6 +1703,8 @@ const fn build_dispatch_table<const W: u8>() -> [Handler; 256] {
         OpLoopHint => op_loop_hint,
         OpCall => op_call,
         OpTailCall => op_tail_call,
+        OpApply => op_apply,
+        OpTailApply => op_tail_apply,
         OpCallSelf => op_call_self,
         OpTailCallSelf => op_tail_call_self,
         OpReturn => op_return,

@@ -4,11 +4,7 @@ use std::ffi::c_void;
 
 use libc::c_char;
 
-use crate::runtime::{
-    sni,
-    objectmodel::{Closure, Value},
-    vm::ExecutionResult,
-};
+use crate::runtime::{objectmodel::Value, sni, vm::ExecutionResult};
 
 use super::env::{SCM_REF_NULL, ScmPtr, ScmRef, SniEnv, env_mut, ref_value, safe_cstr};
 use super::exceptions::set_type_error;
@@ -99,7 +95,7 @@ pub unsafe extern "C" fn sni_call_n(
     }
     let e = unsafe { env_mut(env) };
     let rator = unsafe { ref_value(proc) };
-    if !rator.is::<Closure>() {
+    if !crate::runtime::builtins::eval::is_applicable(rator) {
         set_type_error(e, "sni_call_n", "procedure", rator);
         return SCM_REF_NULL;
     }

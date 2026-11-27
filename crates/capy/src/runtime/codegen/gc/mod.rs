@@ -42,10 +42,12 @@ impl GcPlanInfo {
         Self {
             barrier: constraints.barrier,
             unlog_side_metadata_base: global_side_metadata_vm_base_address().as_usize(),
-            inline_alloc: matches!(
-                selector,
-                AllocatorSelector::BumpPointer(_) | AllocatorSelector::Immix(_)
-            ),
+            // Stress mode counts allocations in the runtime, so no inline bump.
+            inline_alloc: crate::heap::mutator::gc_stress_interval() == 0
+                && matches!(
+                    selector,
+                    AllocatorSelector::BumpPointer(_) | AllocatorSelector::Immix(_)
+                ),
             los_threshold: crate::heap::mutator::LOS_THRESHOLD_BYTES
                 .min(constraints.max_non_los_default_alloc_bytes),
         }

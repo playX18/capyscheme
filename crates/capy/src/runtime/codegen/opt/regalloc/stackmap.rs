@@ -37,7 +37,7 @@ pub(crate) fn reserve_poll_saves(
         let data = &func.blocks[b];
         let base = num.base[b];
         for (k, inst) in data.insts.iter().enumerate() {
-            let LirInst::Poll { safepoint } = inst else {
+            let LirInst::Poll { safepoint, .. } = inst else {
                 continue;
             };
             let pos = pos::early(base + k as u32);
@@ -123,6 +123,11 @@ pub(crate) fn build(
                 sp_at.push((sp, g, kind));
             }
             if let Some(e) = inst.deopt_exit() {
+                exit_at[e] = Some(g);
+            }
+            // A lazy exit is read at the call too: its values are the
+            // safepoint's, which a frame call keeps in slots across it.
+            if let Some(e) = inst.lazy_exit() {
                 exit_at[e] = Some(g);
             }
             if let LirInst::Const { dst, value } = inst {
@@ -332,6 +337,13 @@ impl ExitLocs<'_> {
         }
         let id = self.table.len() as u32;
         let kind = self.func.remats[rid].kind;
+        if self.func.remats[rid].fields.len() != kind.field_count() {
+            return Err(format!(
+                "{vreg} rebuilds {kind} with {} fields at {}: a remat placeholder without fields must be described by a virtual object of the frame state",
+                self.func.remats[rid].fields.len(),
+                self.exit
+            ));
+        }
         // Reserve the id before expanding the fields so that a nested entry
         // appended by the recursion does not shift it.
         self.table.push(RematDesc {

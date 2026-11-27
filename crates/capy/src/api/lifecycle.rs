@@ -6,22 +6,31 @@ use libc::c_void;
 
 use crate::{
     heap::{Gc, Mutator},
-    runtime::{MutationContext, Scheme, SchemeState, objectmodel::Value, vm::threading::ThreadObject},
+    runtime::{
+        MutationContext, Scheme, SchemeState, objectmodel::Value, vm::threading::ThreadObject,
+    },
 };
 
 use super::env::{SCM_REF_NULL, Scm, ScmPtr, ScmRef, SniEnv, env_mut};
 
-/// Create a new Scheme runtime instance (boots the VM).
+/// Set once a runtime exists in this process. The collector, the reference storage and the
+/// scheduler are process-wide, so only one runtime can be built; `scm_free` does not undo that.
+static RUNTIME_CREATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Create the Scheme runtime of this process (boots the VM).
+///
+/// A process has one runtime: the call returns null, after logging why, when `scm_new` or
+/// `scm_run_static` has run before, even if that runtime was freed.
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_new() -> *mut Scm {
+    if RUNTIME_CREATED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        eprintln!(
+            "capy: scm_new: this process already created a runtime; there is one per process"
+        );
+        return std::ptr::null_mut();
+    }
     let scm = Scheme::new();
     Box::into_raw(Box::new(Scm { scheme: scm }))
-}
-
-/// Unimplemented heap-image resume, returns a null handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn scm_from_image(_image_data: *const u8, _image_size: usize) -> *mut Scm {
-    std::ptr::null_mut()
 }
 
 /// Run a static bundle (`capyc --static`) in a fresh runtime, without booting it.
@@ -55,6 +64,12 @@ pub unsafe extern "C" fn scm_run_static(
         // SAFETY: `ptr` is a NUL-terminated string.
         let bytes = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_bytes();
         args.push(String::from_utf8_lossy(bytes).into_owned());
+    }
+    if RUNTIME_CREATED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        eprintln!(
+            "capy: scm_run_static: this process already created a runtime; there is one per process"
+        );
+        return -1;
     }
     let scm = Scheme::new_static_runtime();
     // The program runs as the main thread of the scheduler
@@ -105,21 +120,14 @@ pub unsafe extern "C" fn scm_enter(
     })
 }
 
-/// Alias for attach: same as enter for the creating thread.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn scm_attach_current_thread(
-    scm: ScmPtr,
-    enter: ScmEnterFn,
-    arg: *mut c_void,
-) -> libc::c_int {
-    unsafe { scm_enter(scm, enter, arg) }
-}
-
-/// No-op detach placeholder (threads are scoped to enter).
-#[unsafe(no_mangle)]
-pub extern "C" fn scm_detach_current_thread(_scm: ScmPtr) {}
-
 pub type ThreadFn = unsafe extern "C" fn(scm: ScmPtr, arg: *mut c_void) -> *mut c_void;
+
+/// A global ref that moves to the thread `scm_fork` starts. The storage behind it is process
+/// wide and its slots do not move, so using it from another OS thread is sound.
+struct SendRoot(Option<crate::runtime::sni::GlobalRef>);
+
+// SAFETY: see the type's documentation.
+unsafe impl Send for SendRoot {}
 
 /// Fork a new Scheme thread from the parent env's dynamic state.
 ///
@@ -144,18 +152,32 @@ pub unsafe extern "C" fn scm_fork(
     let e = unsafe { env_mut(env) };
     let thread_object = ThreadObject::new(e.ctx, None);
     let dynamic_state = e.ctx.dynamic_state().bits();
-    let thread_object_bits = thread_object.as_ptr() as u64;
+    // A global ref, not the parent's local ref: a pop of the parent's frame before the child has
+    // bound the thread must not free the object. The child releases it once it holds its own.
+    let thread_root = SendRoot(Some(crate::runtime::sni::GlobalRef::new(
+        thread_object.into(),
+    )));
+    // The local ref is made before the wait below: a collection during it may move the object,
+    // which a held `Gc` would not survive.
+    let local = e.make_local(thread_object.into());
     let thread_spawned = Arc::new(std::sync::Barrier::new(2));
     let thread_spawned_clone = thread_spawned.clone();
     let arg = arg as usize;
     std::thread::spawn(move || {
         let mutator = Mutator::new(|mc| {
-            // SAFETY: `thread_object_bits` was obtained from `Gc::as_ptr()` on
-            // the parent thread, and the parent's local ref keeps it alive.
+            // The global ref keeps the object alive (and updated, if the collector moves it)
+            // until it is dropped below, after the thread has bound it.
+            let mut thread_root = thread_root;
+            let root = thread_root
+                .0
+                .take()
+                .expect("the root is set until the child binds it");
+            // SAFETY: `scm_fork` rooted a `ThreadObject` in this global ref.
             let thread_object: Gc<'_, ThreadObject<'_>> =
-                unsafe { Gc::from_ptr(thread_object_bits as _) };
+                unsafe { root.get().downcast_unchecked() };
             thread_object.bind_current_runtime_thread();
             mc.init_state(SchemeState::new(mc, thread_object));
+            root.delete();
         });
         mutator.mutate(|ctx, _| {
             ctx.state()
@@ -173,7 +195,11 @@ pub unsafe extern "C" fn scm_fork(
             let _ = Box::from_raw(parent_ptr.0);
         }
     });
-    e.make_local(thread_object.into())
+    // Wait until the child has bound the thread object and released its global root. The child
+    // blocks on the same barrier, so without this wait it would never run `init`. The wait is in
+    // native state so a collection the child needs can proceed.
+    e.ctx.call_in_native(|| thread_spawned.wait());
+    local
 }
 
 /// Run `body(data)` as the main thread of `scm`.

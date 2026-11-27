@@ -5,7 +5,7 @@
 //! location through the source map of the code block it points into.
 
 use crate::{
-    compiler::bytecode::disasm,
+    bytecode::disasm,
     prelude::*,
     runtime::{
         MutationContext,
@@ -92,6 +92,30 @@ pub mod debug_ops {
         return crate::runtime::codegen::jit::compiled_count();
         #[cfg(not(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64"))))]
         0
+    }
+
+    /// The reasons Tier 2 builds failed, as a list of `(reason . count)` pairs, the most frequent
+    /// first. Counts only while `CAPY_JIT_STATS` is on or builds fail; empty when nothing failed.
+    #[scheme(name = "%jit-bailouts")]
+    pub fn jit_bailouts() -> Value<'gc> {
+        #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            let mut out = Value::null();
+            for (reason, count) in crate::runtime::codegen::jit::config::bailouts()
+                .into_iter()
+                .rev()
+            {
+                let entry = Value::cons(
+                    ctx,
+                    Str::new(ctx, reason, true).into(),
+                    Value::new(count as i32),
+                );
+                out = Value::cons(ctx, entry, out);
+            }
+            out
+        }
+        #[cfg(not(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64"))))]
+        Value::null()
     }
 
     /// The complete flag list with defaults and descriptions, as printed by

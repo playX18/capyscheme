@@ -6,26 +6,12 @@ use im::HashMap;
 
 use super::*;
 
-/// Nodes compared before the acyclic fast path gives up and restarts with the
-/// visited-set implementation. Large enough for the structures `equal?`
-/// normally sees, small enough to bound the work done twice on a structure the
-/// acyclic walk cannot handle (a heavily shared graph, or a cycle that the cdr
-/// spine does not expose).
 const EQUAL_FAST_WORK: u32 = 1 << 20;
-
-/// Recursion depth before the fast path gives up. A cycle through `car` or
-/// through vector elements is only bounded by this, and the mutator thread has
-/// the usual 2 MiB stack, so keep it to a few hundred frames.
 const EQUAL_FAST_DEPTH: u32 = 512;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum EqualSemantics {
-    /// `Value::equal`: its terminal-list pre-walk makes a non-pair,
-    /// non-vector left operand unequal to a pair or vector without reaching
-    /// `eqv?`.
     Prewalk,
-    /// `Value::r5rs_equal`: no pre-walk, so a non-pair, non-vector left
-    /// operand falls through to `eqv?` exactly as `r5rs_equal_visited` does.
     R5rs,
 }
 
@@ -42,8 +28,6 @@ impl EqualFastBudget {
         }
     }
 
-    /// Charges one node comparison; `None` means the budget ran out and the
-    /// caller must restart with the visited-set walk.
     #[inline]
     fn spend(&mut self) -> Option<()> {
         self.work = self.work.checked_sub(1)?;
@@ -53,9 +37,6 @@ impl EqualFastBudget {
 
 #[inline]
 fn equal_fast_enabled() -> bool {
-    // The flag is process-wide, so read it once. An `equal?`-heavy program
-    // must not re-parse the environment (or even re-check a `LazyLock`) on
-    // every call.
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(crate::utils::flags::equal_fast)
 }
@@ -66,7 +47,9 @@ impl<'gc> Value<'gc> {
             return true;
         }
 
-        if let Some(result) = crate::runtime::objectmodel::class::compare_primitive_values(self, other) {
+        if let Some(result) =
+            crate::runtime::objectmodel::class::compare_primitive_values(self, other)
+        {
             return result;
         }
 
@@ -613,11 +596,7 @@ impl<'gc> Value<'gc> {
         Some(a.eqv(b))
     }
 
-    fn equal_slow(
-        self,
-        other: Self,
-        visited: &mut HashMap<Value<'gc>, Vec<Value<'gc>>>,
-    ) -> bool {
+    fn equal_slow(self, other: Self, visited: &mut HashMap<Value<'gc>, Vec<Value<'gc>>>) -> bool {
         let c1 = self.is_terminal_list();
         if c1 != 0 {
             if c1 == other.is_terminal_list() {

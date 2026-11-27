@@ -10,11 +10,6 @@ use crate::runtime::{MutationContext, SchemeState, objectmodel::Value};
 
 /// Whether `value` is safe to hand to the collector as a root: an immediate,
 /// or an aligned pointer that lies in an MMTk space.
-///
-/// `Value::is_cell` only rejects the tagged immediates. A raw word such as a
-/// small integer, a class id, or an interior stack pointer passes it, and MMTk
-/// then aborts while tracing a non-object. Roots are therefore checked before
-/// they are traced; heap fields stay strict so real corruption is not hidden.
 #[inline]
 pub(crate) fn is_traceable_root(value: Value<'_>) -> bool {
     if !value.is_cell() {
@@ -28,10 +23,8 @@ pub(crate) fn is_traceable_root(value: Value<'_>) -> bool {
     }
     // SAFETY: `bits` is non-zero and aligned; `from_raw_address` validates the
     // rest before the space lookup.
-    mmtk::util::ObjectReference::from_raw_address(unsafe {
-        mmtk::util::Address::from_usize(bits)
-    })
-    .is_some_and(|object| mmtk::memory_manager::is_in_mmtk_spaces(object))
+    mmtk::util::ObjectReference::from_raw_address(unsafe { mmtk::util::Address::from_usize(bits) })
+        .is_some_and(|object| mmtk::memory_manager::is_in_mmtk_spaces(object))
 }
 
 /// Reports a root slot that does not hold a traceable value. The collector

@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 
 use cranelift_entity::{EntityList, SecondaryMap};
 
-use super::forward::{IndexKey, index_key, object};
+use super::forward::{Incoming, IndexKey, index_key, object_with};
 use super::{PassOutcome, Subst, replace_uses};
 use crate::runtime::codegen::opt::ir::func::{Block, Func, Value, ValueDef};
 use crate::runtime::codegen::opt::ir::inst::{Constant, Edge, Inst, Op, Repr, Terminator};
@@ -37,6 +37,17 @@ enum Fact {
 struct Taken {
     value: Value,
     fact: Fact,
+}
+
+/// How to take back a fact a block learned when the walk leaves the block's
+/// dominator subtree: the value's previous entry, which a dominating block may
+/// have set to a different class or code (an infeasible arm states the
+/// contrary of a dominating fact).
+#[derive(Clone, Copy)]
+enum Undo {
+    Fixnum(Value),
+    Class(Value, Option<ClassRef>),
+    Code(Value, Option<CodeRef>),
 }
 
 /// A guard and its operands, with the second operand present for the index
@@ -66,6 +77,55 @@ struct Scope {
     /// Guards turned into `Unbox` or `Int64ToInt32`, and tests turned into
     /// constants.
     unboxed: usize,
+    /// The arguments of the edges into each block, built once the OSR edges
+    /// are guarded (no edge changes during the walk).
+    incoming: Option<Incoming>,
+    /// The values passed as a block-parameter argument on some edge.
+    passed: SecondaryMap<Value, bool>,
+}
+
+impl Scope {
+    /// The object `value` refers to, see [`super::forward::object`].
+    fn object(&self, func: &Func, value: Value) -> Value {
+        let incoming = self.incoming.as_ref().expect("built before the walk");
+        object_with(func, &self.subst, incoming, value)
+    }
+
+    /// Learns `fact` about `value`, returning how to take it back, or `None`
+    /// when the scope already held it.
+    fn learn(&mut self, value: Value, fact: Fact) -> Option<Undo> {
+        match fact {
+            Fact::Fixnum => self.int32_known.insert(value).then_some(Undo::Fixnum(value)),
+            Fact::Class(class) => match self.class_known.insert(value, class) {
+                Some(previous) if previous == class => None,
+                previous => Some(Undo::Class(value, previous)),
+            },
+            Fact::Code(code) => match self.code_known.insert(value, code) {
+                Some(previous) if previous == code => None,
+                previous => Some(Undo::Code(value, previous)),
+            },
+        }
+    }
+
+    fn undo(&mut self, undo: Undo) {
+        match undo {
+            Undo::Fixnum(value) => {
+                self.int32_known.remove(&value);
+            }
+            Undo::Class(value, None) => {
+                self.class_known.remove(&value);
+            }
+            Undo::Class(value, Some(class)) => {
+                self.class_known.insert(value, class);
+            }
+            Undo::Code(value, None) => {
+                self.code_known.remove(&value);
+            }
+            Undo::Code(value, Some(code)) => {
+                self.code_known.insert(value, code);
+            }
+        }
+    }
 }
 
 pub(super) fn run(func: &mut Func) -> PassOutcome {
@@ -127,9 +187,13 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
     let osr_blocks: HashSet<Block> = func.osr.iter().map(|entry| entry.block).collect();
     let inferred = param_facts(func, &rpo, &osr_blocks);
     let guarded = guard_osr_edges(func, &inferred);
-    let mut scope = Scope::default();
+    let mut scope = Scope {
+        incoming: Some(Incoming::build(func)),
+        passed: passed_on_edges(func),
+        ..Scope::default()
+    };
     let mut keys_added: SecondaryMap<Block, Vec<Key>> = SecondaryMap::new();
-    let mut fact_added: SecondaryMap<Block, Vec<Taken>> = SecondaryMap::new();
+    let mut fact_added: SecondaryMap<Block, Vec<Undo>> = SecondaryMap::new();
     let mut stack = vec![Visit::Enter(func.entry)];
     while let Some(visit) = stack.pop() {
         match visit {
@@ -138,14 +202,9 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
                     // Canonicalize through class checks and single-incoming
                     // parameters, so an alias and the object it guards share
                     // the fact.
-                    let value = object(func, &scope.subst, value);
-                    let fresh = match fact {
-                        Fact::Fixnum => scope.int32_known.insert(value),
-                        Fact::Class(class) => scope.class_known.insert(value, class).is_none(),
-                        Fact::Code(code) => scope.code_known.insert(value, code).is_none(),
-                    };
-                    if fresh {
-                        fact_added[block].push(Taken { value, fact });
+                    let value = scope.object(func, value);
+                    if let Some(undo) = scope.learn(value, fact) {
+                        fact_added[block].push(undo);
                     }
                 }
                 // Facts that hold for a block parameter on every incoming
@@ -154,13 +213,8 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
                     let Some(fact) = inferred.get(&param).copied() else {
                         continue;
                     };
-                    let fresh = match fact {
-                        Fact::Fixnum => scope.int32_known.insert(param),
-                        Fact::Class(class) => scope.class_known.insert(param, class).is_none(),
-                        Fact::Code(code) => scope.code_known.insert(param, code).is_none(),
-                    };
-                    if fresh {
-                        fact_added[block].push(Taken { value: param, fact });
+                    if let Some(undo) = scope.learn(param, fact) {
+                        fact_added[block].push(undo);
                     }
                 }
                 let insts = func.blocks[block].insts.clone();
@@ -182,18 +236,10 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
                 for key in keys_added[block].drain(..) {
                     scope.avail.remove(&key);
                 }
-                for Taken { value, fact } in fact_added[block].drain(..) {
-                    match fact {
-                        Fact::Fixnum => {
-                            scope.int32_known.remove(&value);
-                        }
-                        Fact::Class(_) => {
-                            scope.class_known.remove(&value);
-                        }
-                        Fact::Code(_) => {
-                            scope.code_known.remove(&value);
-                        }
-                    }
+                // Latest first, so a value learned twice in the block gets
+                // back the entry it had before the block.
+                for undo in fact_added[block].drain(..).rev() {
+                    scope.undo(undo);
                 }
             }
         }
@@ -219,7 +265,7 @@ fn process(
     scope: &mut Scope,
     inst: Inst,
     added: &mut Vec<Key>,
-    learned: &mut Vec<Taken>,
+    learned: &mut Vec<Undo>,
 ) {
     let op = func.insts[inst].op;
     let Some(result) = func.insts[inst].result else {
@@ -250,7 +296,7 @@ fn process(
                 return;
             }
 
-            let canonical = object(func, &scope.subst, source);
+            let canonical = scope.object(func, source);
             // `Box(Int64)` is a bignum outside the fixnum range, which
             // `CheckInt64` must reject, so it cannot be forwarded as is.
             if repr != Repr::Int64 {
@@ -284,16 +330,13 @@ fn process(
                 scope.unboxed += 1;
             }
 
-            if fixnum && scope.int32_known.insert(canonical) {
-                learned.push(Taken {
-                    value: canonical,
-                    fact: Fact::Fixnum,
-                });
+            if fixnum {
+                learned.extend(scope.learn(canonical, Fact::Fixnum));
             }
             record(scope, key, result, added);
         }
         Op::TestInt32 | Op::TestInt64 => {
-            let canonical = object(func, &scope.subst, args[0]);
+            let canonical = scope.object(func, args[0]);
             let proven = scope.int32_known.contains(&canonical)
                 || [Repr::Int32, Repr::Int64].iter().any(|&repr| {
                     scope
@@ -309,7 +352,7 @@ fn process(
                 Op::TestClass(class) => class,
                 _ => ClassRef::PAIR,
             };
-            let canonical = object(func, &scope.subst, args[0]);
+            let canonical = scope.object(func, args[0]);
             let proven = scope.class_known.get(&canonical) == Some(&class)
                 || scope
                     .avail
@@ -325,9 +368,14 @@ fn process(
                 remove(scope, inst, result, raw);
             }
         }
+        Op::CheckU64 => {
+            if let Some(raw) = boxed_from(func, scope, args[0], Op::BoxU64) {
+                remove(scope, inst, result, raw);
+            }
+        }
         Op::CheckClass(class) => {
             let source = args[0];
-            let canonical = object(func, &scope.subst, source);
+            let canonical = scope.object(func, source);
             // A dominating `pair?`/`vector?`/`string?` (or any class test)
             // proved the object's class on this path, so the class check is
             // redundant.
@@ -335,7 +383,7 @@ fn process(
                 // A closure whose code block is known is a closure.
                 || (class == ClassRef::CLOSURE
                     && scope.code_known.contains_key(&canonical)))
-                && !passed_on_an_edge(func, result)
+                && !scope.passed[result]
             {
                 return remove(scope, inst, result, source);
             }
@@ -353,10 +401,10 @@ fn process(
         }
         Op::CheckCode(code) => {
             let source = args[0];
-            let canonical = object(func, &scope.subst, source);
+            let canonical = scope.object(func, source);
             // A dominating `procedure?` test on this code block, or a type
             // that already names it, makes the check redundant.
-            if scope.code_known.get(&canonical) == Some(&code) && !passed_on_an_edge(func, result) {
+            if scope.code_known.get(&canonical) == Some(&code) && !scope.passed[result] {
                 return remove(scope, inst, result, source);
             }
             if func
@@ -376,7 +424,7 @@ fn process(
             // same object, and a boxed/checked index names the same number.
             let key = (
                 op,
-                object(func, &scope.subst, args[0]),
+                scope.object(func, args[0]),
                 Some(index_key(func, &scope.subst, args[1])),
             );
             if let Some(&prev) = scope.avail.get(&key) {
@@ -423,6 +471,20 @@ fn param_facts(func: &Func, rpo: &[Block], osr_blocks: &HashSet<Block>) -> HashM
     // Optimistic pass: a parameter argument with no fact yet is ignored, so
     // two loops whose parameters flow into each other can both inherit the
     // fact their shared preheader argument proves.
+    // The arguments of the edges into each block from the non-OSR blocks, in
+    // reverse postorder and edge order.
+    let mut incoming: SecondaryMap<Block, Vec<&[Value]>> = SecondaryMap::new();
+    for &source in rpo {
+        if osr_blocks.contains(&source) {
+            continue;
+        }
+        let Some(term) = &func.blocks[source].term else {
+            continue;
+        };
+        for edge in term.edges() {
+            incoming[edge.block].push(func.edge_args(&edge));
+        }
+    }
     let mut facts: HashMap<Value, Fact> = HashMap::new();
     loop {
         let mut changed = false;
@@ -433,39 +495,28 @@ fn param_facts(func: &Func, rpo: &[Block], osr_blocks: &HashSet<Block>) -> HashM
                 }
                 let mut agreed: Option<Fact> = None;
                 let mut consistent = true;
-                for &source in rpo {
-                    if osr_blocks.contains(&source) {
-                        continue;
-                    }
-                    let Some(term) = &func.blocks[source].term else {
+                for args in &incoming[block] {
+                    let Some(&arg) = args.get(index) else {
+                        consistent = false;
                         continue;
                     };
-                    for edge in term.edges() {
-                        if edge.block != block {
+                    if arg == param {
+                        continue;
+                    }
+                    let known = static_fact(func, arg).or_else(|| facts.get(&arg).copied());
+                    let Some(fact) = known else {
+                        // An undetermined parameter is pending; anything
+                        // else is a concrete counterexample.
+                        if matches!(func.value_def(arg), ValueDef::Param { .. }) {
                             continue;
                         }
-                        let Some(&arg) = func.edge_args(&edge).get(index) else {
-                            consistent = false;
-                            continue;
-                        };
-                        if arg == param {
-                            continue;
-                        }
-                        let known = static_fact(func, arg).or_else(|| facts.get(&arg).copied());
-                        let Some(fact) = known else {
-                            // An undetermined parameter is pending; anything
-                            // else is a concrete counterexample.
-                            if matches!(func.value_def(arg), ValueDef::Param { .. }) {
-                                continue;
-                            }
-                            consistent = false;
-                            continue;
-                        };
-                        match agreed {
-                            None => agreed = Some(fact),
-                            Some(f) if f == fact => {}
-                            Some(_) => consistent = false,
-                        }
+                        consistent = false;
+                        continue;
+                    };
+                    match agreed {
+                        None => agreed = Some(fact),
+                        Some(f) if f == fact => {}
+                        Some(_) => consistent = false,
                     }
                 }
                 if let (true, Some(fact)) = (consistent, agreed) {
@@ -488,35 +539,14 @@ fn param_facts(func: &Func, rpo: &[Block], osr_blocks: &HashSet<Block>) -> HashM
                 continue;
             };
             let index = index as usize;
-            let mut valid = true;
-            'edges: for &source in rpo {
-                if osr_blocks.contains(&source) {
-                    continue;
-                }
-                let Some(term) = &func.blocks[source].term else {
-                    continue;
+            let valid = incoming[block].iter().all(|args| {
+                let Some(&arg) = args.get(index) else {
+                    return false;
                 };
-                for edge in term.edges() {
-                    if edge.block != block {
-                        continue;
-                    }
-                    let Some(&arg) = func.edge_args(&edge).get(index) else {
-                        valid = false;
-                        break 'edges;
-                    };
-                    if arg == param {
-                        continue;
-                    }
-                    if static_fact(func, arg) == Some(fact) {
-                        continue;
-                    }
-                    if snapshot.get(&arg) == Some(&fact) {
-                        continue;
-                    }
-                    valid = false;
-                    break 'edges;
-                }
-            }
+                arg == param
+                    || static_fact(func, arg) == Some(fact)
+                    || snapshot.get(&arg) == Some(&fact)
+            });
             if !valid {
                 facts.remove(&param);
                 removed = true;
@@ -582,19 +612,20 @@ fn guard_osr_edges(func: &mut Func, facts: &HashMap<Value, Fact>) -> bool {
     changed
 }
 
-/// Whether `value` is passed as a block-parameter argument anywhere.
-fn passed_on_an_edge(func: &Func, value: Value) -> bool {
+/// The values passed as a block-parameter argument anywhere.
+fn passed_on_edges(func: &Func) -> SecondaryMap<Value, bool> {
+    let mut passed = SecondaryMap::new();
     for (_, data) in func.blocks.iter() {
         let Some(term) = &data.term else {
             continue;
         };
         for edge in term.edges() {
-            if func.edge_args(&edge).iter().any(|&arg| arg == value) {
-                return true;
+            for &arg in func.edge_args(&edge) {
+                passed[arg] = true;
             }
         }
     }
-    false
+    passed
 }
 
 /// The raw value a `box` of `box_op` produced `value` from, if `value` is one.
@@ -624,4 +655,68 @@ fn remove(scope: &mut Scope, inst: Inst, result: Value, replacement: Value) {
 fn record(scope: &mut Scope, key: Key, result: Value, added: &mut Vec<Key>) {
     scope.avail.insert(key, result);
     added.push(key);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::codegen::opt::ir::verify::verify;
+    use crate::runtime::codegen::opt::passes::testutil::{block, branch, frame, placed, push, ret};
+
+    /// A class fact that a nested arm overwrites is restored when the walk
+    /// leaves that arm, so a sibling visited later sees the dominating fact.
+    ///
+    /// ```text
+    /// entry: t0 = test.class VECTOR x; branch t0 -> a else z
+    /// a:     branch c -> p else q          ; x is a vector here
+    /// q:     t1 = test.pair x; branch t1 -> r else s
+    /// r:     return x                      ; infeasible: states x is a pair
+    /// p:     check.class PAIR x            ; must stay
+    ///        check.class VECTOR x          ; redundant
+    /// ```
+    ///
+    /// The walk visits `q` (and `r`) before `p`: `r`'s fact must not leak.
+    #[test]
+    fn an_overwritten_class_fact_is_restored_on_exit() {
+        let mut func: Func<'static> = Func::new();
+        let entry = func.entry;
+        let x = func.append_param(entry, Type::Any);
+        let c = func.append_param(entry, Type::Bool);
+        let a = block(&mut func);
+        let z = block(&mut func);
+        let p = block(&mut func);
+        let q = block(&mut func);
+        let r = block(&mut func);
+        let s = block(&mut func);
+
+        let t0 = push(&mut func, entry, Op::TestClass(ClassRef::VECTOR), &[x], Type::Bool);
+        branch(&mut func, entry, t0, a, &[], z, &[]);
+        ret(&mut func, z, x);
+        branch(&mut func, a, c, p, &[], q, &[]);
+        let t1 = push(&mut func, q, Op::TestPair, &[x], Type::Bool);
+        branch(&mut func, q, t1, r, &[], s, &[]);
+        ret(&mut func, r, x);
+        ret(&mut func, s, x);
+        let fs = frame(&mut func, x);
+        let as_pair = func
+            .push_inst(p, Op::CheckClass(ClassRef::PAIR), &[x], Some(Type::Pair), Some(fs))
+            .unwrap();
+        let fs = frame(&mut func, x);
+        let as_vector = func
+            .push_inst(p, Op::CheckClass(ClassRef::VECTOR), &[as_pair], Some(Type::Vector), Some(fs))
+            .unwrap();
+        ret(&mut func, p, as_vector);
+        verify(&func).unwrap_or_else(|errors| panic!("{errors:?}"));
+
+        let ValueDef::Inst(pair_check) = func.value_def(as_pair) else {
+            unreachable!()
+        };
+        let ValueDef::Inst(vector_check) = func.value_def(as_vector) else {
+            unreachable!()
+        };
+        run(&mut func);
+        verify(&func).unwrap_or_else(|errors| panic!("{errors:?}"));
+        assert!(placed(&func, pair_check), "x is a vector in p, so its pair check stays");
+        assert!(!placed(&func, vector_check), "the vector check is redundant in p");
+    }
 }

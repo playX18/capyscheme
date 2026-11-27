@@ -111,13 +111,13 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             class: class_value,
             id: class.id().bits(),
             stamp,
-            subtree: false,
+            kind: crate::runtime::codegen::opt::ir::func::ClassDepKind::Layout,
         };
         if !self
             .func
             .class_deps
             .iter()
-            .any(|mine| mine.class == dep.class && mine.subtree == dep.subtree)
+            .any(|mine| mine.class == dep.class && mine.kind == dep.kind)
         {
             self.func.class_deps.push(dep);
         }
@@ -159,6 +159,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                     let Some(term) = &data.term else {
                         continue;
                     };
+
                     for edge in term.edges() {
                         if edge.block != block {
                             continue;

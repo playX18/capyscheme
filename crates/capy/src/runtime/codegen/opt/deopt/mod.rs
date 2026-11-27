@@ -8,7 +8,11 @@
 //!   callees and sunk objects included) and returns the resume address.
 //! - [`exits`]: the per-block exit profile that decides when a unit is
 //!   invalidated, and the `CAPY_OPT_STRESS_DEOPT` knob.
+//! - [`lazy`]: lazy deopt. When a broken assumption invalidates a unit, the
+//!   return addresses of live frames that return into it are replaced by
+//!   the call sites' shadow return addresses, which deopt on return.
 
 pub(crate) mod exits;
+pub(crate) mod lazy;
 pub(crate) mod metadata;
 pub(crate) mod runtime;

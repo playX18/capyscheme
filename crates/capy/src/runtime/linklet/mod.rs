@@ -7,15 +7,18 @@ use crate::heap::{Gc, Trace, barrier, cell::Lock};
 
 use crate::runtime::{
     MutationContext,
-    objectmodel::{ClassTagged, HashTable, HashTableType, IntoValue, Symbol, Value},
+    objectmodel::{ClassTagged, HashTable, HashTableType, IntoValue, Symbol, Value, Vector},
     variable::Variable,
 };
 
-
+mod directory;
+mod effects;
 mod instance;
 mod linklet;
 mod registry;
 
+pub use directory::LinkletDirectory;
+pub use effects::{PrimitiveEffect, primitive_effect, primitive_effects};
 pub use instance::LibraryInstance;
 pub use linklet::Linklet;
 pub use registry::*;

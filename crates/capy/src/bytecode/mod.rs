@@ -10,5 +10,6 @@
 //! [`prims`](crate::runtime::prims).
 
 pub mod def;
+pub mod disasm;
 pub mod operand;
 pub mod verify;

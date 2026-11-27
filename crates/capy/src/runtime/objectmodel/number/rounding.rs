@@ -133,5 +133,4 @@ impl<'gc> Number<'gc> {
             _ => self,
         }
     }
-
 }

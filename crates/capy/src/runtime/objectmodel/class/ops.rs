@@ -1,11 +1,17 @@
+use super::ic::protocol_is_plain;
 use crate::heap::Gc;
 use crate::runtime::MutationContext;
-use crate::runtime::objectmodel::class::ClassDescriptor;
-use crate::runtime::objectmodel::class::{
-    GenericDescriptor, OP_BOUND, OP_REF, OP_SET, generic_descriptor_from_value,
-};
-use super::ic::protocol_is_plain;
 use crate::runtime::objectmodel::Value;
+use crate::runtime::objectmodel::class::flags::LayoutFamily;
+use crate::runtime::objectmodel::class::{
+    ClassDescriptor, SlotAccessError, SlotAccessorDescriptor,
+};
+use crate::runtime::objectmodel::class::{
+    GenericDescriptor, OP_BOUND, OP_REF, OP_SET, OP_UNBIND,
+    generic::{Reason, invocable_instance_of, resolved_class_id},
+    generic_descriptor_from_value,
+};
+use crate::runtime::objectmodel::{Keyword, Symbol};
 use capy_derive::scheme;
 use smallvec::SmallVec;
 
@@ -18,9 +24,7 @@ fn class_slot_argument<'gc>(
     ClassDescriptor::slot_definition_for(ctx, class, name, fallback).unwrap_or(fallback)
 }
 
-/// Call a slot protocol generic through its cached effective method: the
-/// first method's body runs directly with its next-method argument, with no
-/// trip through the generic procedure. `args` are the dispatch arguments.
+/// Slot protocol call.
 fn call_protocol<'gc>(
     ctx: MutationContext<'gc>,
     call: &crate::runtime::vm::NativeCall<'_, 'gc>,
@@ -35,15 +39,36 @@ fn call_protocol<'gc>(
     call.tail(binding, args)
 }
 
-/// `make-instance`'s body, shared with the native `make` method body.
+/// Current descriptor.
+fn current_descriptor<'gc>(
+    ctx: MutationContext<'gc>,
+    class: Gc<'gc, ClassDescriptor<'gc>>,
+) -> Gc<'gc, ClassDescriptor<'gc>> {
+    crate::runtime::objectmodel::class_table(ctx)
+        .lookup(class.id())
+        .unwrap_or(class)
+}
+
 pub(crate) fn instantiate<'gc>(
     ctx: MutationContext<'gc>,
     call: &crate::runtime::vm::NativeCall<'_, 'gc>,
     class: Gc<'gc, ClassDescriptor<'gc>>,
     initargs: &[Value<'gc>],
 ) -> Value<'gc> {
-    use crate::runtime::objectmodel::class::{ClassCategory, SlotInitError};
     use crate::runtime::objectmodel::Keyword;
+    use crate::runtime::objectmodel::class::{ClassCategory, SlotInitError};
+    // Resolve forward reference.
+    let class = if class.unfinalized() {
+        let current = current_descriptor(ctx, class);
+        if current.unfinalized() {
+            let who = ctx.intern("make-instance");
+            let message = ctx.str("class is not finalized: a superclass is a forward reference");
+            return call.raise_assertion_violation(who, message, class.into());
+        }
+        current
+    } else {
+        class
+    };
     if class.category() != ClassCategory::Scheme {
         let who = ctx.intern("make-instance");
         let message = ctx.str("not a Scheme class");
@@ -54,6 +79,25 @@ pub(crate) fn instantiate<'gc>(
         let message = ctx.str("initargs must be keyword/value pairs");
         return call.raise_assertion_violation(who, message, Value::new(initargs.len() as i32));
     }
+
+    // Default initargs for the keys not supplied. Their thunks may collect,
+    // so the class is the one they return.
+    let completed;
+    let (class, initargs) = if class.default_initargs().is_empty() {
+        (class, initargs)
+    } else {
+        match super::instance::initargs_with_default_initargs(ctx, class, initargs) {
+            Ok((reloaded, full)) => {
+                completed = full;
+                (reloaded, completed.as_slice())
+            }
+            Err(error) => {
+                let who = ctx.intern("make-instance");
+                let message = ctx.str("default initarg thunk failed");
+                return call.raise_assertion_violation(who, message, error);
+            }
+        }
+    };
 
     let mut parsed_initargs: SmallVec<[(Value, Value); 8]> = SmallVec::new();
     for pair in initargs.as_chunks::<2>().0 {
@@ -103,22 +147,156 @@ pub(crate) fn instantiate<'gc>(
     }
 }
 
+/// The metaclass id named by an optional `metaclass` argument. `Err` carries
+/// the offending value when it is not a class.
+fn requested_metaclass<'gc>(
+    metaclass: Option<Value<'gc>>,
+) -> Result<Option<crate::heap::object::ClassId>, Value<'gc>> {
+    match metaclass {
+        None => Ok(None),
+        // The expansion of `define-class` passes `#f` for the default.
+        Some(value) if value == Value::new(false) => Ok(None),
+        Some(value) if value.is::<ClassDescriptor>() => {
+            Ok(Some(value.downcast::<ClassDescriptor>().id()))
+        }
+        Some(value) => Err(value),
+    }
+}
+
+/// The default initargs named by a list of `(keyword thunk)` pairs, `None`
+/// for no list. `Err` carries the first element that is not such a pair.
+fn parse_default_initargs<'gc>(
+    list: Option<Value<'gc>>,
+) -> Result<Vec<(Value<'gc>, Value<'gc>)>, Value<'gc>> {
+    let Some(list) = list else {
+        return Ok(Vec::new());
+    };
+    let mut defaults = Vec::new();
+    let mut cursor = list;
+    while cursor.is_pair() {
+        let entry = cursor.car();
+        let well_formed = entry.is_pair()
+            && entry.cdr().is_pair()
+            && entry.cdr().cdr().is_null()
+            && entry.car().is::<crate::runtime::objectmodel::Keyword>()
+            && entry
+                .cdr()
+                .car()
+                .is::<crate::runtime::objectmodel::proc::Closure>();
+        if !well_formed {
+            return Err(entry);
+        }
+        defaults.push((entry.car(), entry.cdr().car()));
+        cursor = cursor.cdr();
+    }
+    if cursor.is_null() {
+        Ok(defaults)
+    } else {
+        Err(list)
+    }
+}
+
+/// The list of `(keyword thunk)` pairs of a flat default initarg array.
+fn default_initarg_list<'gc>(ctx: MutationContext<'gc>, flat: &[Value<'gc>]) -> Value<'gc> {
+    flat.chunks_exact(2)
+        .rev()
+        .fold(Value::null(), |rest, pair| {
+            let thunk = Value::cons(ctx, pair[1], Value::null());
+            Value::cons(ctx, Value::cons(ctx, pair[0], thunk), rest)
+        })
+}
+
+/// `slot-ref` on a class object: its slots are the extension slots of its
+/// metaclass.
+fn class_extension_slot_ref<'gc>(
+    ctx: MutationContext<'gc>,
+    call: &crate::runtime::vm::NativeCall<'_, 'gc>,
+    class: Gc<'gc, ClassDescriptor<'gc>>,
+    name: Gc<'gc, Symbol<'gc>>,
+    fallback: Option<Value<'gc>>,
+) -> Value<'gc> {
+    match ClassDescriptor::extension_slot_ref(ctx, class, &name.to_string()) {
+        Ok(value) => value,
+        Err(SlotAccessError::Unknown) => match fallback {
+            Some(value) => value,
+            None => {
+                let who = ctx.intern("slot-ref");
+                let message = ctx.str("unknown slot");
+                call.raise_assertion_violation(who, message, name.into())
+            }
+        },
+        Err(SlotAccessError::Unbound) => {
+            let who = ctx.intern("slot-ref");
+            let message = ctx.str("unbound slot");
+            call.raise_assertion_violation(who, message, name.into())
+        }
+        Err(_) => {
+            let who = ctx.intern("slot-ref");
+            let message = ctx.str("stale slot accessor");
+            call.raise_assertion_violation(who, message, name.into())
+        }
+    }
+}
+
+/// Store the unbound marker in `accessor`'s slot (`slot-unbind!`). `None`
+/// when the class has no writer for the slot. A slot with a Scheme writer is
+/// refused as immutable: its writer would receive the marker.
+fn unbind_slot_value<'gc>(
+    ctx: MutationContext<'gc>,
+    class: Gc<'gc, ClassDescriptor<'gc>>,
+    receiver: Value<'gc>,
+    accessor: SlotAccessorDescriptor<'gc>,
+) -> Option<Result<(), SlotAccessError>> {
+    if !accessor.scheme_slot_set().is_empty() {
+        return Some(Err(SlotAccessError::Immutable));
+    }
+    accessor
+        .slot_set()
+        .or_else(|| class.primitive_operation_hooks().slot_set())
+        .map(|slot_set| slot_set(ctx, class, receiver, accessor, Value::empty()))
+}
+
+/// Raise the assertion violation for a failed unbind or raw slot access.
+fn raise_slot_error<'gc>(
+    ctx: MutationContext<'gc>,
+    call: &crate::runtime::vm::NativeCall<'_, 'gc>,
+    who: &str,
+    error: SlotAccessError,
+    irritant: Value<'gc>,
+) -> Value<'gc> {
+    let message = match error {
+        SlotAccessError::Immutable => "slot cannot be unbound",
+        SlotAccessError::OutOfBounds => "stale slot accessor",
+        SlotAccessError::Unknown => "unknown slot",
+        SlotAccessError::SchemeHookFailed => "slot writer failed",
+        SlotAccessError::Unbound => "unbound slot",
+    };
+    let who = ctx.intern(who);
+    let message = ctx.str(message);
+    call.raise_assertion_violation(who, message, irritant)
+}
+
 #[scheme(path=capy)]
 pub mod class_ops {
     use crate::heap::alloc::Array;
     use crate::prelude::*;
 
+    use super::{class_extension_slot_ref, requested_metaclass};
+    use crate::heap::object::ClassId;
     use crate::runtime::objectmodel::class::{
-        ClassCategory, ClassDescriptor, ClassListError, GenericDescriptor, GenericDispatchError,
-        MethodDescriptor, MethodFlags, NextMethodDescriptor, SchemeClassSpecError, SchemeInstance,
-        SlotAccessError, SlotAccessorDefinition, SlotDefinitionDescriptor, builtin_class_specs,
+        ClassCategory, ClassDescriptor, ClassListError, ClassTableError, EqlSpecializer,
+        GenericDescriptor, GenericDispatchError, MethodCombination, MethodDescriptor, MethodFlags,
+        NextMethodDescriptor, SchemeClassSpecError, SchemeInstance, SlotAccessError,
+        SlotAccessorDefinition, SlotDefinitionDescriptor, builtin_class_specs,
         call_scheme_slot_bound, call_scheme_slot_ref, call_scheme_slot_set,
         class_id_list_to_class_objects, class_id_to_class_object, class_table,
-        generic_descriptor_from_value, generic_procedure, parse_class_list, slot_accessor_list,
-        slot_definition_list, try_scheme_instance,
+        generic_descriptor_from_value, generic_procedure, parse_class_list, parse_specializer_list,
+        slot_accessor_list, slot_definition_list, try_scheme_instance,
     };
     use crate::runtime::objectmodel::{Keyword, Symbol};
     use crate::runtime::watchpoint::grace;
+
+    use super::super::combination::standard_combination;
 
     #[scheme(name = "class?")]
     pub fn class_p(value: Value<'gc>) -> bool {
@@ -190,6 +368,29 @@ pub mod class_ops {
         initargs
     }
 
+    #[scheme(name = "class-direct-default-initargs")]
+    pub fn class_direct_default_initargs(class: Gc<'gc, ClassDescriptor<'gc>>) -> Value<'gc> {
+        default_initarg_list(ctx, class.direct_default_initargs())
+    }
+
+    #[scheme(name = "class-default-initargs")]
+    pub fn class_default_initargs(class: Gc<'gc, ClassDescriptor<'gc>>) -> Value<'gc> {
+        default_initarg_list(ctx, class.default_initargs())
+    }
+
+    #[scheme(name = "class-prototype")]
+    pub fn class_prototype(class: Gc<'gc, ClassDescriptor<'gc>>) -> Value<'gc> {
+        // A prototype is a `SchemeInstance`, so the class must lay out its
+        // instances that way: a Scheme class that is not a metaobject.
+        if class.category() != ClassCategory::Scheme || class.layout_family() != LayoutFamily::None
+        {
+            let who = ctx.intern("class-prototype");
+            let message = ctx.str("class does not have Scheme instances");
+            return call.raise_assertion_violation(who, message, class.into());
+        }
+        ClassDescriptor::prototype(ctx, class)
+    }
+
     #[scheme(name = "class-direct-methods")]
     pub fn class_direct_methods(class: Gc<'gc, ClassDescriptor<'gc>>) -> Value<'gc> {
         let methods = Value::list_from_slice(ctx, class.direct_methods().as_slice());
@@ -217,21 +418,83 @@ pub mod class_ops {
         class.flags().malleable()
     }
 
+    #[scheme(name = "class-finalized?")]
+    pub fn class_finalized_p(class: Gc<'gc, ClassDescriptor<'gc>>) -> bool {
+        !current_descriptor(ctx, class).unfinalized()
+    }
+
+    #[scheme(name = "%make-forward-referenced-class")]
+    pub fn make_forward_referenced_class(name: Gc<'gc, Symbol<'gc>>) -> Value<'gc> {
+        let _mop = crate::runtime::objectmodel::class::lock::mop_lock(ctx);
+        match class_table(ctx).register_forward_reference(ctx, &name.to_string()) {
+            Ok(class) => class.into(),
+            Err(_) => {
+                let who = ctx.intern("%make-forward-referenced-class");
+                let message = ctx.str("could not register forward reference");
+                call.raise_assertion_violation(who, message, name.into())
+            }
+        }
+    }
+
+    #[scheme(name = "%resolve-forward-reference!")]
+    pub fn resolve_forward_reference(
+        placeholder: Gc<'gc, ClassDescriptor<'gc>>,
+        target: Gc<'gc, ClassDescriptor<'gc>>,
+    ) -> Value<'gc> {
+        match class_table(ctx).resolve_forward_reference(ctx, placeholder.id(), target.id()) {
+            Ok(()) => target.into(),
+            Err(error) => {
+                let who = ctx.intern("%resolve-forward-reference!");
+                let (message, irritant) = match error {
+                    ClassTableError::NotForwardReference(_) => {
+                        ("class is not a forward reference", placeholder.into())
+                    }
+                    ClassTableError::Cycle(_) => (
+                        "forward reference would make a class its own superclass",
+                        target.into(),
+                    ),
+                    ClassTableError::InconsistentPrecedence(remaining) => (
+                        "inconsistent class precedence",
+                        class_id_list_to_class_objects(ctx, &remaining),
+                    ),
+                    _ => ("could not resolve forward reference", placeholder.into()),
+                };
+                call.raise_assertion_violation(who, ctx.str(message), irritant)
+            }
+        }
+    }
+
     #[scheme(name = "class-sealed?")]
     pub fn class_sealed_p(class: Gc<'gc, ClassDescriptor<'gc>>) -> bool {
         class.flags().sealed()
     }
 
+    /// Seal class.
     #[scheme(name = "class-seal!")]
     pub fn class_seal(class: Gc<'gc, ClassDescriptor<'gc>>) -> Value<'gc> {
-        class.seal();
-        class.into()
+        let _mop = crate::runtime::objectmodel::class::lock::mop_lock(ctx);
+        class.seal(false);
+        grace(ctx, class.into())
+    }
+
+    /// Seal allowing subclasses.
+    #[scheme(name = "%class-seal-allowing-subclasses!")]
+    pub fn class_seal_allowing_subclasses(class: Gc<'gc, ClassDescriptor<'gc>>) -> Value<'gc> {
+        let _mop = crate::runtime::objectmodel::class::lock::mop_lock(ctx);
+        class.seal(true);
+        grace(ctx, class.into())
+    }
+
+    #[scheme(name = "class-final?")]
+    pub fn class_final_p(class: Gc<'gc, ClassDescriptor<'gc>>) -> bool {
+        class.flags().no_subclasses()
     }
 
     #[scheme(name = "class-unseal!")]
     pub fn class_unseal(class: Gc<'gc, ClassDescriptor<'gc>>) -> Value<'gc> {
-        if class.unseal() {
-            class.into()
+        let _mop = crate::runtime::objectmodel::class::lock::mop_lock(ctx);
+        if ClassDescriptor::unseal(class) {
+            grace(ctx, class.into())
         } else {
             let who = ctx.intern("class-unseal!");
             let message = ctx.str("class cannot be unsealed");
@@ -295,24 +558,60 @@ pub mod class_ops {
 
     #[scheme(name = "generic-seal!")]
     pub fn generic_seal(value: Value<'gc>) -> Value<'gc> {
+        let _mop = crate::runtime::objectmodel::class::lock::mop_lock(ctx);
         let Some(generic) = generic_descriptor_from_value(ctx, value) else {
             let who = ctx.intern("generic-seal!");
             let message = ctx.str("not a generic procedure");
             return call.raise_assertion_violation(who, message, value);
         };
         GenericDescriptor::set_sealed(ctx, generic, true);
-        Value::void()
+        grace(ctx, Value::void())
+    }
+
+    /// Empty every cache of a generic and dispatch afresh (CMUCL
+    /// `flush-emf-cache`), see `GenericDescriptor::flush_cache`.
+    #[scheme(name = "generic-flush-cache!")]
+    pub fn generic_flush_cache(value: Value<'gc>) -> Value<'gc> {
+        let Some(generic) = generic_descriptor_from_value(ctx, value) else {
+            let who = ctx.intern("generic-flush-cache!");
+            let message = ctx.str("not a generic procedure");
+            return call.raise_assertion_violation(who, message, value);
+        };
+        GenericDescriptor::flush_cache(ctx, generic);
+        grace(ctx, Value::undefined())
+    }
+
+    /// Precompute the dispatch entry for the classes `classes` (a list with
+    /// one class per dispatch argument). `#t` when the entry is now cached.
+    #[scheme(name = "%generic-precompute-key!")]
+    pub fn generic_precompute_key(value: Value<'gc>, classes: Value<'gc>) -> Value<'gc> {
+        let Some(generic) = generic_descriptor_from_value(ctx, value) else {
+            let who = ctx.intern("generic-precompute!");
+            let message = ctx.str("not a generic procedure");
+            return call.raise_assertion_violation(who, message, value);
+        };
+        let ids: Vec<ClassId> = match parse_class_list(classes) {
+            Ok(ids) => ids,
+            Err(_) => {
+                let who = ctx.intern("generic-precompute!");
+                let message = ctx.str("classes must be a list of classes");
+                return call.raise_assertion_violation(who, message, classes);
+            }
+        };
+        let cached = GenericDescriptor::precompute_key(ctx, generic, &ids);
+        grace(ctx, Value::new(cached))
     }
 
     #[scheme(name = "generic-unseal!")]
     pub fn generic_unseal(value: Value<'gc>) -> Value<'gc> {
+        let _mop = crate::runtime::objectmodel::class::lock::mop_lock(ctx);
         let Some(generic) = generic_descriptor_from_value(ctx, value) else {
             let who = ctx.intern("generic-unseal!");
             let message = ctx.str("not a generic procedure");
             return call.raise_assertion_violation(who, message, value);
         };
         GenericDescriptor::set_sealed(ctx, generic, false);
-        Value::void()
+        grace(ctx, Value::void())
     }
 
     #[scheme(name = "method?")]
@@ -325,10 +624,202 @@ pub mod class_ops {
         method.generic().into()
     }
 
+    /// The specializers as written: a class for a class position, the
+    /// interned `eql-specializer` for an eql one.
     #[scheme(name = "method-specializers")]
     pub fn method_specializers(method: Gc<'gc, MethodDescriptor<'gc>>) -> Value<'gc> {
-        let specializers = class_id_list_to_class_objects(ctx, method.specializers());
-        specializers
+        let objects = method
+            .specializers()
+            .iter()
+            .enumerate()
+            .map(|(position, id)| match method.eql_at(position) {
+                Some(object) => Value::from(EqlSpecializer::intern(ctx, object)),
+                None => class_id_to_class_object(ctx, *id),
+            })
+            .collect::<Vec<_>>();
+        Value::list_from_slice(ctx, &objects)
+    }
+
+    /// The specializer `(eql object)`, interned: the same object for `eqv?`
+    /// arguments.
+    #[scheme(name = "intern-eql-specializer")]
+    pub fn intern_eql_specializer(object: Value<'gc>) -> Value<'gc> {
+        Value::from(EqlSpecializer::intern(ctx, object))
+    }
+
+    #[scheme(name = "eql-specializer?")]
+    pub fn eql_specializer_p(value: Value<'gc>) -> bool {
+        value.is::<EqlSpecializer>()
+    }
+
+    #[scheme(name = "eql-specializer-object")]
+    pub fn eql_specializer_object(specializer: Gc<'gc, EqlSpecializer<'gc>>) -> Value<'gc> {
+        specializer.object()
+    }
+
+    /// The standard method combination, the one every generic starts with.
+    #[scheme(name = "%standard-method-combination")]
+    pub fn standard_method_combination() -> Value<'gc> {
+        Value::from(standard_combination(ctx))
+    }
+
+    /// A combination named `name` whose effective methods `builder` makes:
+    /// `(builder gf methods options) -> emf`.
+    #[scheme(name = "%make-method-combination")]
+    pub fn make_method_combination(name: Gc<'gc, Symbol<'gc>>, builder: Value<'gc>) -> Value<'gc> {
+        Value::from(MethodCombination::new(
+            ctx,
+            name,
+            Value::null(),
+            builder,
+            false,
+        ))
+    }
+
+    #[scheme(name = "method-combination?")]
+    pub fn method_combination_p(value: Value<'gc>) -> bool {
+        value.is::<MethodCombination>()
+    }
+
+    #[scheme(name = "method-combination-name")]
+    pub fn method_combination_name(combination: Gc<'gc, MethodCombination<'gc>>) -> Value<'gc> {
+        Value::from(combination.name())
+    }
+
+    #[scheme(name = "method-combination-options")]
+    pub fn method_combination_options(combination: Gc<'gc, MethodCombination<'gc>>) -> Value<'gc> {
+        combination.options()
+    }
+
+    /// The builder procedure of a combination, `#f` for the standard one.
+    #[scheme(name = "%method-combination-builder")]
+    pub fn method_combination_builder(combination: Gc<'gc, MethodCombination<'gc>>) -> Value<'gc> {
+        combination.builder()
+    }
+
+    /// The methods applicable to the arguments `args` (a list), every role,
+    /// most specific first with `eql` matches ranked above classes. `()`
+    /// when none applies.
+    #[scheme(name = "generic-applicable-methods")]
+    pub fn generic_applicable_methods(generic: Value<'gc>, args: Value<'gc>) -> Value<'gc> {
+        let Some(generic) = generic_descriptor_from_value(ctx, generic) else {
+            return Value::new(false);
+        };
+        let args = crate::runtime::objectmodel::class::generic::list_items(args);
+        match generic.all_applicable_methods(ctx, &args) {
+            Ok(methods) => {
+                let values: Vec<Value<'gc>> = methods.iter().copied().map(Value::from).collect();
+                Value::list_from_slice(ctx, &values)
+            }
+            Err(_) => Value::list_from_slice(ctx, &[]),
+        }
+    }
+
+    /// `(%generic-cache-emf! gf epoch emf args)`: publish `emf`, the effective
+    /// method Scheme built for the applicable methods of the argument list
+    /// `args`, computed under `epoch` (refused once a change has happened).
+    #[scheme(name = "%generic-cache-emf!")]
+    pub fn generic_cache_emf(
+        generic: Value<'gc>,
+        epoch: i32,
+        emf: Value<'gc>,
+        args: Value<'gc>,
+    ) -> Value<'gc> {
+        if let Some(generic) = generic_descriptor_from_value(ctx, generic) {
+            let args = crate::runtime::objectmodel::class::generic::list_items(args);
+            GenericDescriptor::cache_emf(ctx, generic, epoch as u32, emf, &args);
+        }
+        Value::undefined()
+    }
+
+    #[scheme(name = "generic-method-combination")]
+    pub fn generic_method_combination(generic: Value<'gc>) -> Value<'gc> {
+        let Some(generic) = generic_descriptor_from_value(ctx, generic) else {
+            let who = ctx.intern("generic-method-combination");
+            let message = ctx.str("not a generic procedure");
+            return call.raise_assertion_violation(who, message, generic);
+        };
+        Value::from(generic.combination())
+    }
+
+    /// Give `generic` the combination `combination` with `options` (a Scheme
+    /// list). Roles are derived again and the generic is invalidated.
+    #[scheme(name = "%set-generic-combination!")]
+    pub fn set_generic_combination(
+        generic: Value<'gc>,
+        combination: Gc<'gc, MethodCombination<'gc>>,
+        options: Value<'gc>,
+    ) -> Value<'gc> {
+        let _mop = crate::runtime::objectmodel::class::lock::mop_lock(ctx);
+        let Some(generic_descriptor) = generic_descriptor_from_value(ctx, generic) else {
+            let who = ctx.intern("set-generic-method-combination!");
+            let message = ctx.str("not a generic procedure");
+            return call.raise_assertion_violation(who, message, generic);
+        };
+        if generic_descriptor.flags().sealed() {
+            let who = ctx.intern("set-generic-method-combination!");
+            let message = ctx.str("generic is sealed");
+            return call.raise_assertion_violation(who, message, generic_descriptor.into());
+        }
+        let named = MethodCombination::new(
+            ctx,
+            combination.name(),
+            options,
+            combination.builder(),
+            combination.is_standard(),
+        );
+        GenericDescriptor::set_combination(ctx, generic_descriptor, named);
+        grace(ctx, Value::undefined())
+    }
+
+    /// Store the argument precedence order of `generic`: a list of argument
+    /// positions (small exact integers), or `()` to clear it.
+    #[scheme(name = "%set-generic-precedence!")]
+    pub fn set_generic_precedence(generic: Value<'gc>, order: Value<'gc>) -> Value<'gc> {
+        let Some(generic_descriptor) = generic_descriptor_from_value(ctx, generic) else {
+            let who = ctx.intern("%set-generic-precedence!");
+            let message = ctx.str("not a generic procedure");
+            return call.raise_assertion_violation(who, message, generic);
+        };
+        if generic_descriptor.flags().sealed() {
+            let who = ctx.intern("%set-generic-precedence!");
+            let message = ctx.str("generic is sealed");
+            return call.raise_assertion_violation(who, message, generic_descriptor.into());
+        }
+        let mut positions = Vec::new();
+        let mut rest = order;
+        while rest.is_pair() {
+            let item = rest.car();
+            if !item.is_int32() || !(0..256).contains(&item.as_int32()) {
+                let who = ctx.intern("%set-generic-precedence!");
+                let message = ctx.str("argument precedence order must list argument positions");
+                return call.raise_assertion_violation(who, message, item);
+            }
+            positions.push(item.as_int32() as u8);
+            rest = rest.cdr();
+        }
+        let stored = if positions.is_empty() {
+            None
+        } else {
+            Some(Array::from_slice(ctx, &positions))
+        };
+        GenericDescriptor::set_precedence(ctx, generic_descriptor, stored);
+        grace(ctx, Value::undefined())
+    }
+
+    /// The argument precedence order of a generic, `()` when none was set.
+    #[scheme(name = "generic-argument-precedence-order")]
+    pub fn generic_argument_precedence_order(generic: Value<'gc>) -> Value<'gc> {
+        let Some(generic_descriptor) = generic_descriptor_from_value(ctx, generic) else {
+            let who = ctx.intern("generic-argument-precedence-order");
+            let message = ctx.str("not a generic procedure");
+            return call.raise_assertion_violation(who, message, generic);
+        };
+        let positions: Vec<Value<'gc>> = generic_descriptor
+            .precedence()
+            .map(|order| order.iter().map(|p| Value::new(*p as i32)).collect())
+            .unwrap_or_default();
+        Value::list_from_slice(ctx, &positions)
     }
 
     #[scheme(name = "method-required-arg-count")]
@@ -342,7 +833,12 @@ pub mod class_ops {
         default_body: Value<'gc>,
         slow: Value<'gc>,
     ) -> Value<'gc> {
-        crate::runtime::objectmodel::class::generic::make_method_body(ctx, initialize, default_body, slow)
+        crate::runtime::objectmodel::class::generic::make_method_body(
+            ctx,
+            initialize,
+            default_body,
+            slow,
+        )
     }
 
     /// Mark every method of a slot protocol generic as the stock one (called
@@ -355,9 +851,123 @@ pub mod class_ops {
             let message = ctx.str("not a generic procedure");
             return call.raise_assertion_violation(who, message, generic);
         };
+        GenericDescriptor::mark_protocol_role(
+            ctx,
+            generic,
+            crate::runtime::objectmodel::class::generic::ProtocolRole::SlotProtocol,
+        );
         for method in generic.methods().iter().copied() {
             MethodDescriptor::set_flags(ctx, method, method.flags().with_boot_slot_protocol());
         }
+        Value::undefined()
+    }
+
+    /// Mark every method `generic` has now as a stock one: the boot library's own, as opposed to a
+    /// user override (called by `base.scm` right after defining a protocol generic).
+    #[scheme(name = "%mark-stock-methods!")]
+    pub fn mark_stock_methods(generic: Value<'gc>) -> Value<'gc> {
+        let Some(generic) = generic_descriptor_from_value(ctx, generic) else {
+            let who = ctx.intern("%mark-stock-methods!");
+            let message = ctx.str("not a generic procedure");
+            return call.raise_assertion_violation(who, message, generic);
+        };
+        for method in generic.methods().iter().copied() {
+            MethodDescriptor::set_flags(ctx, method, method.flags().with_stock());
+        }
+        Value::undefined()
+    }
+
+    /// Whether every method of `generic` that can apply to an argument whose class is the class of
+    /// `argument` is a stock one. Reads the methods as they are now, so a method added later is
+    /// seen by the next call.
+    #[scheme(name = "%stock-methods-only?")]
+    pub fn stock_methods_only(generic: Value<'gc>, argument: Value<'gc>) -> bool {
+        let Some(generic) = generic_descriptor_from_value(ctx, generic) else {
+            return false;
+        };
+        let Some(class) =
+            resolved_class_id(ctx, argument).and_then(|id| class_table(ctx).lookup(id))
+        else {
+            return false;
+        };
+        generic
+            .methods()
+            .iter()
+            .copied()
+            .filter(|method| method.may_apply_to_classes(&[class]))
+            .all(|method| method.flags().stock())
+    }
+
+    /// Install `cpl` (a list of classes) as the precedence list of `class`. It must be a
+    /// reordering of the computed list. Returns the redefined class.
+    #[scheme(name = "%install-class-precedence!")]
+    pub fn install_class_precedence(
+        class: Gc<'gc, ClassDescriptor<'gc>>,
+        cpl: Value<'gc>,
+    ) -> Value<'gc> {
+        let _mop = crate::runtime::objectmodel::class::lock::mop_lock(ctx);
+        let ids = match parse_class_list(cpl) {
+            Ok(ids) => ids,
+            Err(_) => {
+                let who = ctx.intern("finalize-inheritance");
+                let message = ctx.str("the class precedence list must be a list of classes");
+                return call.raise_assertion_violation(who, message, cpl);
+            }
+        };
+        match class_table(ctx).install_precedence_list(ctx, class.id(), ids) {
+            Ok(redefined) => grace(ctx, redefined.into()),
+            Err(ClassTableError::BadPrecedenceOverride(_)) => {
+                let who = ctx.intern("finalize-inheritance");
+                let message = ctx.str(
+                    "the class precedence list must hold the classes of the computed one, once each, starting with the class",
+                );
+                call.raise_assertion_violation(who, message, cpl)
+            }
+            Err(ClassTableError::InconsistentPrecedence(remaining)) => {
+                let who = ctx.intern("finalize-inheritance");
+                let message = ctx.str("inconsistent class precedence");
+                let irritant = class_id_list_to_class_objects(ctx, &remaining);
+                call.raise_assertion_violation(who, message, irritant)
+            }
+            Err(_) => {
+                let who = ctx.intern("finalize-inheritance");
+                let message = ctx.str("could not install the class precedence list");
+                call.raise_assertion_violation(who, message, class.into())
+            }
+        }
+    }
+
+    /// Mark `generic` as a boot instance lifecycle generic (called by `base.scm` once its stock
+    /// methods exist): a method added to it afterwards turns off the native `make` fast path.
+    #[scheme(name = "%mark-lifecycle-generic!")]
+    pub fn mark_lifecycle_generic(generic: Value<'gc>) -> Value<'gc> {
+        let Some(generic) = generic_descriptor_from_value(ctx, generic) else {
+            let who = ctx.intern("%mark-lifecycle-generic!");
+            let message = ctx.str("not a generic procedure");
+            return call.raise_assertion_violation(who, message, generic);
+        };
+        GenericDescriptor::mark_protocol_role(
+            ctx,
+            generic,
+            crate::runtime::objectmodel::class::generic::ProtocolRole::Lifecycle,
+        );
+        Value::undefined()
+    }
+
+    /// Mark `generic` as the boot `initialize` generic (called by `base.scm` right after defining
+    /// it), so that slot caches treat it, and no generic that merely has the name, as the protocol.
+    #[scheme(name = "%mark-boot-initialize!")]
+    pub fn mark_boot_initialize(generic: Value<'gc>) -> Value<'gc> {
+        let Some(generic) = generic_descriptor_from_value(ctx, generic) else {
+            let who = ctx.intern("%mark-boot-initialize!");
+            let message = ctx.str("not a generic procedure");
+            return call.raise_assertion_violation(who, message, generic);
+        };
+        GenericDescriptor::mark_protocol_role(
+            ctx,
+            generic,
+            crate::runtime::objectmodel::class::generic::ProtocolRole::Initialize,
+        );
         Value::undefined()
     }
 
@@ -368,15 +978,16 @@ pub mod class_ops {
     pub fn generic_stats(on: bool) -> Value<'gc> {
         crate::runtime::objectmodel::class::generic::DISPATCH_STATS
             .store(on, std::sync::atomic::Ordering::Relaxed);
-        crate::runtime::objectmodel::class::generic::RUST_ENTRIES.store(0, std::sync::atomic::Ordering::Relaxed);
+        crate::runtime::objectmodel::class::generic::RUST_ENTRIES
+            .store(0, std::sync::atomic::Ordering::Relaxed);
         Value::undefined()
     }
 
     #[scheme(name = "%generic-rust-entries")]
     pub fn generic_rust_entries() -> Value<'gc> {
         Value::new(
-            crate::runtime::objectmodel::class::generic::RUST_ENTRIES.load(std::sync::atomic::Ordering::Relaxed)
-                as i32,
+            crate::runtime::objectmodel::class::generic::RUST_ENTRIES
+                .load(std::sync::atomic::Ordering::Relaxed) as i32,
         )
     }
 
@@ -389,6 +1000,136 @@ pub mod class_ops {
         )
     }
 
+    /// The shape of a generic's slot cache, as `(kind one-index?)` with kind
+    /// `empty`, `linear` or `table`.
+    #[scheme(name = "%generic-slot-cache-shape")]
+    pub fn generic_slot_cache_shape(generic: Value<'gc>) -> Value<'gc> {
+        use crate::runtime::objectmodel::class::generic::SlotCacheShape;
+        let Some(generic) = generic_descriptor_from_value(ctx, generic) else {
+            let who = ctx.intern("%generic-slot-cache-shape");
+            let message = ctx.str("not a generic procedure");
+            return call.raise_assertion_violation(who, message, generic);
+        };
+        let (shape, one_index) = generic.slot_cache_state();
+        let kind = match shape {
+            SlotCacheShape::Empty => "empty",
+            SlotCacheShape::Linear => "linear",
+            SlotCacheShape::Table => "table",
+        };
+        let kind: Value<'gc> = Symbol::from_str(ctx, kind).into();
+        Value::cons(
+            ctx,
+            kind,
+            Value::cons(ctx, Value::new(one_index), Value::null()),
+        )
+    }
+
+    /// Change watchpoint dependents of a generic (a test aid): how many Tier 2
+    /// units depend on its method set.
+    #[scheme(name = "%generic-change-watch-count")]
+    pub fn generic_change_watch_count(generic: Value<'gc>) -> Value<'gc> {
+        let Some(generic) = generic_descriptor_from_value(ctx, generic) else {
+            let who = ctx.intern("%generic-change-watch-count");
+            let message = ctx.str("not a generic procedure");
+            return call.raise_assertion_violation(who, message, generic);
+        };
+        Value::new(generic.change_wp().dependent_count() as i32)
+    }
+
+    /// The AMOP dependents of a generic or class, as a list.
+    #[scheme(name = "%dependents")]
+    pub fn dependents(metaobject: Value<'gc>) -> Value<'gc> {
+        if let Some(generic) = generic_descriptor_from_value(ctx, metaobject) {
+            return generic.dependents();
+        }
+        if let Some(class) = metaobject.try_as::<ClassDescriptor>() {
+            return class.dependents();
+        }
+        let who = ctx.intern("%dependents");
+        let message = ctx.str("not a generic function or class");
+        call.raise_assertion_violation(who, message, metaobject)
+    }
+
+    /// Replace the AMOP dependents of a generic or class with a list.
+    #[scheme(name = "%set-dependents!")]
+    pub fn set_dependents(metaobject: Value<'gc>, dependents: Value<'gc>) -> Value<'gc> {
+        let _mop = crate::runtime::objectmodel::class::lock::mop_lock(ctx);
+        if let Some(generic) = generic_descriptor_from_value(ctx, metaobject) {
+            GenericDescriptor::set_dependents(ctx, generic, dependents);
+        } else if let Some(class) = metaobject.try_as::<ClassDescriptor>() {
+            ClassDescriptor::set_dependents(ctx, class, dependents);
+        } else {
+            let who = ctx.intern("%set-dependents!");
+            let message = ctx.str("not a generic function or class");
+            return call.raise_assertion_violation(who, message, metaobject);
+        }
+        grace(ctx, Value::undefined())
+    }
+
+    /// Add `dependent` to the AMOP dependents of a generic or class, under the metaobject lock so
+    /// that two threads adding at once keep both. `#f` when it was already there.
+    #[scheme(name = "%add-dependent!")]
+    pub fn add_dependent(metaobject: Value<'gc>, dependent: Value<'gc>) -> Value<'gc> {
+        let _mop = crate::runtime::objectmodel::class::lock::mop_lock(ctx);
+        let generic = generic_descriptor_from_value(ctx, metaobject);
+        let class = metaobject.try_as::<ClassDescriptor>();
+        let current = match (generic, class) {
+            (Some(generic), _) => generic.dependents(),
+            (None, Some(class)) => class.dependents(),
+            (None, None) => {
+                let who = ctx.intern("add-dependent");
+                let message = ctx.str("not a generic function or class");
+                return call.raise_assertion_violation(who, message, metaobject);
+            }
+        };
+        let mut cursor = current;
+        while cursor.is_pair() {
+            if cursor.car().bits() == dependent.bits() {
+                return Value::new(false);
+            }
+            cursor = cursor.cdr();
+        }
+        let extended = Value::cons(ctx, dependent, current);
+        match (generic, class) {
+            (Some(generic), _) => GenericDescriptor::set_dependents(ctx, generic, extended),
+            (None, Some(class)) => ClassDescriptor::set_dependents(ctx, class, extended),
+            (None, None) => unreachable!("checked above"),
+        }
+        grace(ctx, Value::undefined())
+    }
+
+    /// Remove `dependent` from the AMOP dependents of a generic or class, under the metaobject lock.
+    #[scheme(name = "%remove-dependent!")]
+    pub fn remove_dependent(metaobject: Value<'gc>, dependent: Value<'gc>) -> Value<'gc> {
+        let _mop = crate::runtime::objectmodel::class::lock::mop_lock(ctx);
+        let generic = generic_descriptor_from_value(ctx, metaobject);
+        let class = metaobject.try_as::<ClassDescriptor>();
+        let current = match (generic, class) {
+            (Some(generic), _) => generic.dependents(),
+            (None, Some(class)) => class.dependents(),
+            (None, None) => {
+                let who = ctx.intern("remove-dependent");
+                let message = ctx.str("not a generic function or class");
+                return call.raise_assertion_violation(who, message, metaobject);
+            }
+        };
+        let mut kept = Vec::new();
+        let mut cursor = current;
+        while cursor.is_pair() {
+            if cursor.car().bits() != dependent.bits() {
+                kept.push(cursor.car());
+            }
+            cursor = cursor.cdr();
+        }
+        let list = Value::list_from_slice(ctx, &kept);
+        match (generic, class) {
+            (Some(generic), _) => GenericDescriptor::set_dependents(ctx, generic, list),
+            (None, Some(class)) => ClassDescriptor::set_dependents(ctx, class, list),
+            (None, None) => unreachable!("checked above"),
+        }
+        grace(ctx, Value::undefined())
+    }
+
     #[scheme(name = "method-body")]
     pub fn method_body(method: Gc<'gc, MethodDescriptor<'gc>>) -> Value<'gc> {
         method.body()
@@ -397,6 +1138,26 @@ pub mod class_ops {
     #[scheme(name = "method-locked?")]
     pub fn method_locked_p(method: Gc<'gc, MethodDescriptor<'gc>>) -> bool {
         method.flags().locked()
+    }
+
+    /// The qualifier keywords the method was added with (`()` for a primary).
+    #[scheme(name = "method-qualifiers")]
+    pub fn method_qualifiers(method: Gc<'gc, MethodDescriptor<'gc>>) -> Value<'gc> {
+        method.qualifiers()
+    }
+
+    /// The method's role in the standard combination: `primary`, `before`,
+    /// `after`, `around` or `other`.
+    #[scheme(name = "%method-role")]
+    pub fn method_role(method: Gc<'gc, MethodDescriptor<'gc>>) -> Value<'gc> {
+        ctx.intern(method.role().name()).into()
+    }
+
+    /// Whether the method's body never reads its next-method argument, so a
+    /// caller may pass `#f` instead of building the chain.
+    #[scheme(name = "%method-no-next?")]
+    pub fn method_no_next(method: Gc<'gc, MethodDescriptor<'gc>>) -> bool {
+        method.flags().no_next()
     }
 
     #[scheme(name = "slot-definition?")]
@@ -441,6 +1202,12 @@ pub mod class_ops {
     #[scheme(name = "slot-definition-init-value")]
     pub fn slot_definition_init_value(slot: Gc<'gc, SlotDefinitionDescriptor<'gc>>) -> Value<'gc> {
         slot.init_value()
+    }
+
+    /// Whether the slot definition has an init value (`#:init-value`), as opposed to none.
+    #[scheme(name = "%slot-definition-has-init-value?")]
+    pub fn slot_definition_has_init_value(slot: Gc<'gc, SlotDefinitionDescriptor<'gc>>) -> bool {
+        !slot.init_value().is_empty()
     }
 
     #[scheme(name = "slot-definition-init-thunk")]
@@ -579,7 +1346,7 @@ pub mod class_ops {
 
     #[scheme(name = "class-of")]
     pub fn class_of(value: Value<'gc>) -> Value<'gc> {
-        match value.class(ctx) {
+        match resolved_class_id(ctx, value).and_then(|id| class_table(ctx).lookup(id)) {
             Some(class) => class.into(),
             None => Value::new(false),
         }
@@ -590,7 +1357,7 @@ pub mod class_ops {
         if let Some(instance) = try_scheme_instance(ctx, value) {
             return instance.class().into();
         }
-        match value.class(ctx) {
+        match resolved_class_id(ctx, value).and_then(|id| class_table(ctx).lookup(id)) {
             Some(class) => class.into(),
             None => Value::new(false),
         }
@@ -623,7 +1390,9 @@ pub mod class_ops {
         value
     }
 
-    #[scheme(name = "change-class")]
+    /// Move `value` to `new_class`, keeping the slots they share. `change-class`, the generic of
+    /// `base.scm`, wraps it with `update-instance-for-different-class`.
+    #[scheme(name = "%change-class")]
     pub fn change_class(value: Value<'gc>, new_class: Gc<'gc, ClassDescriptor<'gc>>) -> Value<'gc> {
         let Some(instance) = try_scheme_instance(ctx, value) else {
             let who = ctx.intern("change-class");
@@ -633,6 +1402,13 @@ pub mod class_ops {
         if new_class.category() != ClassCategory::Scheme {
             let who = ctx.intern("change-class");
             let message = ctx.str("new class is not a Scheme class");
+            return call.raise_assertion_violation(who, message, new_class.into());
+        }
+        // A sealed class is not malleable: no instance may move into it or out.
+        let current = value.class_id().and_then(|id| class_table(ctx).lookup(id));
+        if !new_class.flags().malleable() || current.is_some_and(|c| !c.flags().malleable()) {
+            let who = ctx.intern("change-class");
+            let message = ctx.str("change-class cannot involve a sealed class");
             return call.raise_assertion_violation(who, message, new_class.into());
         }
         SchemeInstance::touch(ctx, instance);
@@ -645,12 +1421,33 @@ pub mod class_ops {
         name: Gc<'gc, Symbol<'gc>>,
         slot_names: Value<'gc>,
         direct_supers: Option<Value<'gc>>,
+        metaclass: Option<Value<'gc>>,
+        default_initargs: Option<Value<'gc>>,
     ) -> Value<'gc> {
+        let _mop = crate::runtime::objectmodel::class::lock::mop_lock(ctx);
+        let default_initargs = match parse_default_initargs(default_initargs) {
+            Ok(defaults) => defaults,
+            Err(value) => {
+                let who = ctx.intern("make-class");
+                let message = ctx.str("default initargs must be (keyword thunk) pairs");
+                return call.raise_assertion_violation(who, message, value);
+            }
+        };
+        let metaclass_id = match requested_metaclass(metaclass) {
+            Ok(id) => id,
+            Err(value) => {
+                let who = ctx.intern("make-class");
+                let message = ctx.str("metaclass is not a class");
+                return call.raise_assertion_violation(who, message, value);
+            }
+        };
         match class_table(ctx).register_scheme_class_from_slot_list(
             ctx,
             name,
             slot_names,
             direct_supers.unwrap_or(Value::null()),
+            metaclass_id,
+            &default_initargs,
         ) {
             Ok(class) => class.into(),
             Err(SchemeClassSpecError::SlotsNotList(value)) => {
@@ -696,6 +1493,24 @@ pub mod class_ops {
             Err(SchemeClassSpecError::MissingProcedureSlot(_)) => {
                 unreachable!("ordinary Scheme classes do not require an invoker slot")
             }
+            Err(SchemeClassSpecError::ClassTable(ClassTableError::NotMetaclass(_))) => {
+                let who = ctx.intern("make-class");
+                let message = ctx.str("metaclass is not a class metaobject class");
+                call.raise_assertion_violation(who, message, metaclass.unwrap_or(name.into()))
+            }
+            Err(SchemeClassSpecError::ClassTable(ClassTableError::InconsistentPrecedence(
+                remaining,
+            ))) => {
+                let who = ctx.intern("make-class");
+                let message = ctx.str("inconsistent class precedence");
+                let irritant = class_id_list_to_class_objects(ctx, &remaining);
+                call.raise_assertion_violation(who, message, irritant)
+            }
+            Err(SchemeClassSpecError::ClassTable(ClassTableError::SealedSuperclass(id))) => {
+                let who = ctx.intern("make-class");
+                let message = ctx.str("superclass is sealed and takes no subclasses");
+                call.raise_assertion_violation(who, message, class_id_to_class_object(ctx, id))
+            }
             Err(SchemeClassSpecError::ClassTable(_)) => {
                 let who = ctx.intern("make-class");
                 let message = ctx.str("could not register class");
@@ -709,12 +1524,23 @@ pub mod class_ops {
         name: Gc<'gc, Symbol<'gc>>,
         slot_names: Value<'gc>,
         direct_supers: Option<Value<'gc>>,
+        default_initargs: Option<Value<'gc>>,
     ) -> Value<'gc> {
+        let _mop = crate::runtime::objectmodel::class::lock::mop_lock(ctx);
+        let default_initargs = match parse_default_initargs(default_initargs) {
+            Ok(defaults) => defaults,
+            Err(value) => {
+                let who = ctx.intern("make-invocable-class");
+                let message = ctx.str("default initargs must be (keyword thunk) pairs");
+                return call.raise_assertion_violation(who, message, value);
+            }
+        };
         match class_table(ctx).register_invocable_scheme_class_from_slot_list(
             ctx,
             name,
             slot_names,
             direct_supers.unwrap_or(Value::null()),
+            &default_initargs,
         ) {
             Ok(class) => class.into(),
             Err(SchemeClassSpecError::SlotsNotList(value)) => {
@@ -762,6 +1588,19 @@ pub mod class_ops {
                 let message = ctx.str("invocable class must define a procedure slot");
                 call.raise_assertion_violation(who, message, value)
             }
+            Err(SchemeClassSpecError::ClassTable(ClassTableError::InconsistentPrecedence(
+                remaining,
+            ))) => {
+                let who = ctx.intern("make-invocable-class");
+                let message = ctx.str("inconsistent class precedence");
+                let irritant = class_id_list_to_class_objects(ctx, &remaining);
+                call.raise_assertion_violation(who, message, irritant)
+            }
+            Err(SchemeClassSpecError::ClassTable(ClassTableError::SealedSuperclass(id))) => {
+                let who = ctx.intern("make-invocable-class");
+                let message = ctx.str("superclass is sealed and takes no subclasses");
+                call.raise_assertion_violation(who, message, class_id_to_class_object(ctx, id))
+            }
             Err(SchemeClassSpecError::ClassTable(_)) => {
                 let who = ctx.intern("make-invocable-class");
                 let message = ctx.str("could not register class");
@@ -770,19 +1609,40 @@ pub mod class_ops {
         }
     }
 
-    #[scheme(name = "redefine-class!")]
+    #[scheme(name = "%redefine-class!")]
     pub fn redefine_class(
         class: Gc<'gc, ClassDescriptor<'gc>>,
         name: Gc<'gc, Symbol<'gc>>,
         slot_names: Value<'gc>,
         direct_supers: Option<Value<'gc>>,
+        metaclass: Option<Value<'gc>>,
+        default_initargs: Option<Value<'gc>>,
     ) -> Value<'gc> {
+        let _mop = crate::runtime::objectmodel::class::lock::mop_lock(ctx);
+        let default_initargs = match parse_default_initargs(default_initargs) {
+            Ok(defaults) => defaults,
+            Err(value) => {
+                let who = ctx.intern("redefine-class!");
+                let message = ctx.str("default initargs must be (keyword thunk) pairs");
+                return call.raise_assertion_violation(who, message, value);
+            }
+        };
+        let metaclass_id = match requested_metaclass(metaclass) {
+            Ok(id) => id,
+            Err(value) => {
+                let who = ctx.intern("redefine-class!");
+                let message = ctx.str("metaclass is not a class");
+                return call.raise_assertion_violation(who, message, value);
+            }
+        };
         match class_table(ctx).redefine_scheme_class_from_slot_list(
             ctx,
             class,
             name,
             slot_names,
             direct_supers.unwrap_or(Value::null()),
+            metaclass_id,
+            &default_initargs,
         ) {
             Ok(class) => grace(ctx, class.into()),
             Err(SchemeClassSpecError::SlotsNotList(value)) => {
@@ -828,6 +1688,34 @@ pub mod class_ops {
             Err(SchemeClassSpecError::MissingProcedureSlot(_)) => {
                 unreachable!("ordinary Scheme class redefinition does not require an invoker slot")
             }
+            Err(SchemeClassSpecError::ClassTable(ClassTableError::NotMetaclass(_))) => {
+                let who = ctx.intern("redefine-class!");
+                let message = ctx.str("metaclass is not a class metaobject class");
+                call.raise_assertion_violation(who, message, metaclass.unwrap_or(class.into()))
+            }
+            Err(SchemeClassSpecError::ClassTable(ClassTableError::MetaclassChanged(_))) => {
+                let who = ctx.intern("redefine-class!");
+                let message = ctx.str("metaclass of a class cannot change on redefinition");
+                call.raise_assertion_violation(who, message, class.into())
+            }
+            Err(SchemeClassSpecError::ClassTable(ClassTableError::InconsistentPrecedence(
+                remaining,
+            ))) => {
+                let who = ctx.intern("redefine-class!");
+                let message = ctx.str("inconsistent class precedence");
+                let irritant = class_id_list_to_class_objects(ctx, &remaining);
+                call.raise_assertion_violation(who, message, irritant)
+            }
+            Err(SchemeClassSpecError::ClassTable(ClassTableError::SealedSuperclass(id))) => {
+                let who = ctx.intern("redefine-class!");
+                let message = ctx.str("superclass is sealed and takes no subclasses");
+                call.raise_assertion_violation(who, message, class_id_to_class_object(ctx, id))
+            }
+            Err(SchemeClassSpecError::ClassTable(ClassTableError::NotMalleable(_))) => {
+                let who = ctx.intern("redefine-class!");
+                let message = ctx.str("class is sealed and cannot be redefined");
+                call.raise_assertion_violation(who, message, class.into())
+            }
             Err(SchemeClassSpecError::ClassTable(_)) => {
                 let who = ctx.intern("redefine-class!");
                 let message = ctx.str("could not redefine class");
@@ -842,13 +1730,24 @@ pub mod class_ops {
         name: Gc<'gc, Symbol<'gc>>,
         slot_names: Value<'gc>,
         direct_supers: Option<Value<'gc>>,
+        default_initargs: Option<Value<'gc>>,
     ) -> Value<'gc> {
+        let _mop = crate::runtime::objectmodel::class::lock::mop_lock(ctx);
+        let default_initargs = match parse_default_initargs(default_initargs) {
+            Ok(defaults) => defaults,
+            Err(value) => {
+                let who = ctx.intern("redefine-invocable-class!");
+                let message = ctx.str("default initargs must be (keyword thunk) pairs");
+                return call.raise_assertion_violation(who, message, value);
+            }
+        };
         match class_table(ctx).redefine_invocable_scheme_class_from_slot_list(
             ctx,
             class,
             name,
             slot_names,
             direct_supers.unwrap_or(Value::null()),
+            &default_initargs,
         ) {
             Ok(class) => grace(ctx, class.into()),
             Err(SchemeClassSpecError::SlotsNotList(value)) => {
@@ -896,6 +1795,24 @@ pub mod class_ops {
                 let message = ctx.str("invocable class must define a procedure slot");
                 call.raise_assertion_violation(who, message, value)
             }
+            Err(SchemeClassSpecError::ClassTable(ClassTableError::InconsistentPrecedence(
+                remaining,
+            ))) => {
+                let who = ctx.intern("redefine-invocable-class!");
+                let message = ctx.str("inconsistent class precedence");
+                let irritant = class_id_list_to_class_objects(ctx, &remaining);
+                call.raise_assertion_violation(who, message, irritant)
+            }
+            Err(SchemeClassSpecError::ClassTable(ClassTableError::SealedSuperclass(id))) => {
+                let who = ctx.intern("redefine-invocable-class!");
+                let message = ctx.str("superclass is sealed and takes no subclasses");
+                call.raise_assertion_violation(who, message, class_id_to_class_object(ctx, id))
+            }
+            Err(SchemeClassSpecError::ClassTable(ClassTableError::NotMalleable(_))) => {
+                let who = ctx.intern("redefine-invocable-class!");
+                let message = ctx.str("class is sealed and cannot be redefined");
+                call.raise_assertion_violation(who, message, class.into())
+            }
             Err(SchemeClassSpecError::ClassTable(_)) => {
                 let who = ctx.intern("redefine-invocable-class!");
                 let message = ctx.str("could not redefine class");
@@ -928,7 +1845,85 @@ pub mod class_ops {
         grace(ctx, proc.into())
     }
 
-    #[scheme(name = "add-method!")]
+    #[scheme(name = "%make-generic-with-class")]
+    pub fn make_generic_with_class(
+        name: Gc<'gc, Symbol<'gc>>,
+        max_required_dispatch_args: i32,
+        class: Value<'gc>,
+    ) -> Value<'gc> {
+        let who = ctx.intern("%make-generic-with-class");
+        if max_required_dispatch_args < 0 {
+            let message = ctx.str("required dispatch argument count must be non-negative");
+            return call.raise_assertion_violation(
+                who,
+                message,
+                Value::new(max_required_dispatch_args),
+            );
+        }
+        let Some(class_descriptor) = class
+            .is::<ClassDescriptor>()
+            .then(|| class.downcast::<ClassDescriptor>())
+            .filter(|class| class.layout_family() == LayoutFamily::Generic)
+        else {
+            let message = ctx.str("generic function class must be a subclass of <generic>");
+            return call.raise_assertion_violation(who, message, class);
+        };
+        let generic = GenericDescriptor::new_in_class(
+            ctx,
+            &name.to_string(),
+            max_required_dispatch_args as usize,
+            class_descriptor.id(),
+        );
+        let proc = generic_procedure(ctx, name.into(), generic);
+        grace(ctx, proc.into())
+    }
+
+    /// AMOP `set-funcallable-instance-function!`. A generic takes a
+    /// discriminating function (`#f` restores native dispatch). An invocable
+    /// instance takes the procedure it forwards to.
+    #[scheme(name = "set-funcallable-instance-function!")]
+    pub fn set_funcallable_instance_function(
+        funcallable: Value<'gc>,
+        function: Value<'gc>,
+    ) -> Value<'gc> {
+        let who = ctx.intern("set-funcallable-instance-function!");
+        if let Some(generic) = generic_descriptor_from_value(ctx, funcallable) {
+            if generic.flags().sealed() {
+                let message = ctx.str("generic is sealed");
+                return call.raise_assertion_violation(who, message, funcallable);
+            }
+            let removing = function == Value::new(false);
+            if !removing && !function.is::<Closure>() {
+                let message = ctx.str("discriminating function is not a procedure");
+                return call.raise_assertion_violation(who, message, function);
+            }
+            GenericDescriptor::set_custom_dfun(ctx, generic, (!removing).then_some(function));
+            return grace(ctx, Value::undefined());
+        }
+        if invocable_instance_of(ctx, funcallable).is_some() && function.is::<Closure>() {
+            // The wrapper forwards to free slot 2 (see `invocable_instance_closure_proc`).
+            let closure = funcallable.downcast::<Closure>();
+            Gc::write(ctx, closure)[2].unlock().set(function);
+            return Value::undefined();
+        }
+        let message = ctx.str("not a funcallable instance");
+        call.raise_assertion_violation(who, message, funcallable)
+    }
+
+    #[scheme(name = "%enable-mop-protocol!")]
+    pub fn enable_mop_protocol() -> Value<'gc> {
+        crate::runtime::objectmodel::class::generic::MOP_ENABLED
+            .store(true, std::sync::atomic::Ordering::Release);
+        Value::undefined()
+    }
+
+    #[scheme(name = "%mop-protocol-enabled?")]
+    pub fn mop_protocol_enabled() -> bool {
+        crate::runtime::objectmodel::class::generic::MOP_ENABLED
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    #[scheme(name = "%add-method!")]
     pub fn add_method(
         generic: Value<'gc>,
         specializers: Value<'gc>,
@@ -938,15 +1933,18 @@ pub mod class_ops {
         no_next: Option<bool>,
         slot_kind: Option<Value<'gc>>,
         slot_name: Option<Value<'gc>>,
+        qualifiers: Option<Value<'gc>>,
+        next_cursor: Option<bool>,
     ) -> Value<'gc> {
+        let _mop = crate::runtime::objectmodel::class::lock::mop_lock(ctx);
         if required_arg_count < 0 {
             let who = ctx.intern("add-method!");
             let message = ctx.str("required argument count must be non-negative");
             return call.raise_assertion_violation(who, message, Value::new(required_arg_count));
         }
 
-        let specializers = match parse_class_list(specializers) {
-            Ok(specializers) => specializers,
+        let parsed = match parse_specializer_list(specializers) {
+            Ok(parsed) => parsed,
             Err(ClassListError::NotList(value)) => {
                 let who = ctx.intern("add-method!");
                 let message = ctx.str("specializers must be a proper list");
@@ -958,6 +1956,8 @@ pub mod class_ops {
                 return call.raise_assertion_violation(who, message, value);
             }
         };
+        let specializers: Vec<ClassId> = parsed.iter().map(|spec| spec.class).collect();
+        let eql: Vec<Value<'gc>> = parsed.iter().map(|spec| spec.eql).collect();
         let generic = match generic_descriptor_from_value(ctx, generic) {
             Some(generic) => generic,
             None => {
@@ -979,7 +1979,15 @@ pub mod class_ops {
             return call.raise_assertion_violation(who, message, generic.into());
         }
 
-        if let Some(method) = generic.find_method(&specializers, required_arg_count as usize)
+        let qualifiers = qualifiers.unwrap_or(Value::null());
+        if !is_keyword_list(qualifiers) {
+            let who = ctx.intern("add-method!");
+            let message = ctx.str("qualifiers must be a list of keywords");
+            return call.raise_assertion_violation(who, message, qualifiers);
+        }
+
+        if let Some(method) =
+            generic.find_method(&specializers, &eql, required_arg_count as usize, qualifiers)
             && method.flags().locked()
         {
             let who = ctx.intern("add-method!");
@@ -994,6 +2002,11 @@ pub mod class_ops {
         };
         if no_next.unwrap_or(false) {
             flags = flags.with_no_next();
+        }
+        // A body whose zero-argument next-method uses its own captured
+        // parameters: dispatch passes it a chain cursor (see `next_cursor`).
+        if next_cursor.unwrap_or(false) && !no_next.unwrap_or(false) {
+            flags = flags.with_next_cursor();
         }
         // `slot_kind` is `reader` or `writer` for a body that is exactly a
         // slot read or write of the symbol `slot_name`, else `#f`.
@@ -1011,19 +2024,49 @@ pub mod class_ops {
             ctx,
             generic,
             &specializers,
+            &eql,
             required_arg_count as usize,
             body,
             flags,
+            qualifiers,
         );
         if let (Some(_), Some(name)) = (slot_kind, slot_name) {
             MethodDescriptor::set_slot_name(ctx, method, name);
-            GenericDescriptor::clear_dispatcher_cache(ctx, generic);
+            GenericDescriptor::invalidate(ctx, generic, Reason::AddMethod(method));
         }
         grace(ctx, method.into())
     }
 
+    /// Remove a method from a generic. `#f` when the method is not one of its
+    /// methods. Sealed generics and locked methods refuse.
+    #[scheme(name = "%remove-method!")]
+    pub fn remove_method(
+        generic: Value<'gc>,
+        method: Gc<'gc, MethodDescriptor<'gc>>,
+    ) -> Value<'gc> {
+        let _mop = crate::runtime::objectmodel::class::lock::mop_lock(ctx);
+        let Some(generic) = generic_descriptor_from_value(ctx, generic) else {
+            let who = ctx.intern("remove-method!");
+            let message = ctx.str("not a generic procedure");
+            return call.raise_assertion_violation(who, message, generic);
+        };
+        if generic.flags().sealed() {
+            let who = ctx.intern("remove-method!");
+            let message = ctx.str("generic is sealed");
+            return call.raise_assertion_violation(who, message, generic.into());
+        }
+        if method.flags().locked() {
+            let who = ctx.intern("remove-method!");
+            let message = ctx.str("method is locked");
+            return call.raise_assertion_violation(who, message, method.into());
+        }
+        let removed = GenericDescriptor::remove_method(ctx, generic, method);
+        grace(ctx, Value::new(removed))
+    }
+
     #[scheme(name = "set-generic-fallback!")]
     pub fn set_generic_fallback(generic: Value<'gc>, fallback: Value<'gc>) -> Value<'gc> {
+        let _mop = crate::runtime::objectmodel::class::lock::mop_lock(ctx);
         let generic = match generic_descriptor_from_value(ctx, generic) {
             Some(generic) => generic,
             None => {
@@ -1032,6 +2075,11 @@ pub mod class_ops {
                 return call.raise_assertion_violation(who, message, generic);
             }
         };
+        if generic.flags().sealed() {
+            let who = ctx.intern("set-generic-fallback!");
+            let message = ctx.str("generic is sealed");
+            return call.raise_assertion_violation(who, message, generic.into());
+        }
         GenericDescriptor::set_fallback(ctx, generic, fallback);
         grace(ctx, Value::undefined())
     }
@@ -1046,6 +2094,11 @@ pub mod class_ops {
                 return call.raise_assertion_violation(who, message, generic);
             }
         };
+        if !generic.flags().simple() {
+            let who = ctx.intern("generic-dispatch");
+            let message = ctx.str("generic has a method combination, use generic-invoke");
+            return call.raise_assertion_violation(who, message, generic.into());
+        }
         match GenericDescriptor::dispatch_body_cached(ctx, generic, args) {
             Ok(body) => body,
             Err(GenericDispatchError::Arity) => {
@@ -1063,6 +2116,7 @@ pub mod class_ops {
 
     #[scheme(name = "generic-invoke")]
     pub fn generic_invoke(generic: Value<'gc>, args: &'gc [Value<'gc>]) -> Value<'gc> {
+        let generic_value = generic;
         let generic = match generic_descriptor_from_value(ctx, generic) {
             Some(generic) => generic,
             None => {
@@ -1071,6 +2125,46 @@ pub mod class_ops {
                 return call.raise_assertion_violation(who, message, generic);
             }
         };
+        if !generic.flags().simple() {
+            // Combined methods: the effective method, as a generic call makes.
+            let epoch = generic.epoch();
+            return match GenericDescriptor::applicable_methods_at(ctx, generic, args, epoch) {
+                Ok(methods) => {
+                    let (hook, full) =
+                        crate::runtime::objectmodel::class::generic::effective_method_call(
+                            ctx,
+                            generic_value,
+                            epoch,
+                            &methods,
+                            args,
+                        );
+                    call.tail(hook, &full)
+                }
+                Err(GenericDispatchError::NoApplicableMethod) if !generic.fallback().is_empty() => {
+                    call.tail(generic.fallback(), args)
+                }
+                Err(GenericDispatchError::Arity) => {
+                    let who = ctx.intern("generic-invoke");
+                    let message = ctx.str("not enough dispatch arguments");
+                    call.raise_assertion_violation(who, message, Value::new(args.len() as i32))
+                }
+                Err(GenericDispatchError::NoApplicableMethod) => {
+                    match ctx.try_hook(crate::runtime::hooks::Hook::NoApplicableMethod) {
+                        Some(hook) => {
+                            let mut full: Vec<Value<'gc>> = Vec::with_capacity(args.len() + 1);
+                            full.push(generic.into());
+                            full.extend_from_slice(args);
+                            call.tail(hook, &full)
+                        }
+                        None => {
+                            let who = ctx.intern("generic-invoke");
+                            let message = ctx.str("no applicable method");
+                            call.raise_assertion_violation(who, message, generic.into())
+                        }
+                    }
+                }
+            };
+        }
         match GenericDescriptor::invocation(ctx, generic, args) {
             Ok(invocation) => {
                 let args = invocation.fused_args(ctx);
@@ -1082,9 +2176,19 @@ pub mod class_ops {
                 call.raise_assertion_violation(who, message, Value::new(args.len() as i32))
             }
             Err(GenericDispatchError::NoApplicableMethod) => {
-                let who = ctx.intern("generic-invoke");
-                let message = ctx.str("no applicable method");
-                call.raise_assertion_violation(who, message, generic.into())
+                match ctx.try_hook(crate::runtime::hooks::Hook::NoApplicableMethod) {
+                    Some(hook) => {
+                        let mut full: Vec<Value<'gc>> = Vec::with_capacity(args.len() + 1);
+                        full.push(generic.into());
+                        full.extend_from_slice(args);
+                        call.tail(hook, &full)
+                    }
+                    None => {
+                        let who = ctx.intern("generic-invoke");
+                        let message = ctx.str("no applicable method");
+                        call.raise_assertion_violation(who, message, generic.into())
+                    }
+                }
             }
         }
     }
@@ -1099,6 +2203,11 @@ pub mod class_ops {
                 return call.raise_assertion_violation(who, message, generic);
             }
         };
+        if !generic.flags().simple() {
+            let who = ctx.intern("generic-next-methods");
+            let message = ctx.str("generic has a method combination, no single next-method chain");
+            return call.raise_assertion_violation(who, message, generic.into());
+        }
         match GenericDescriptor::next_method_chain(ctx, generic, args) {
             Ok(next_method) => next_method.into(),
             Err(GenericDispatchError::Arity) => {
@@ -1114,11 +2223,15 @@ pub mod class_ops {
         }
     }
 
+    /// `(%make-next-method generic methods args [tail])`: a next-method
+    /// object over the method list. `tail` (a procedure, or `#f`) runs when
+    /// the list is exhausted, see `next-method-invoke`.
     #[scheme(name = "%make-next-method")]
     pub fn make_next_method(
         generic: Value<'gc>,
         methods: Value<'gc>,
         args: Value<'gc>,
+        tail: Option<Value<'gc>>,
     ) -> Value<'gc> {
         let generic = match generic_descriptor_from_value(ctx, generic) {
             Some(generic) => generic,
@@ -1165,12 +2278,17 @@ pub mod class_ops {
             return call.raise_assertion_violation(who, message, methods);
         }
 
-        let next_method = NextMethodDescriptor::new(
+        let tail = match tail {
+            Some(tail) if tail != Value::new(false) => tail,
+            _ => Value::empty(),
+        };
+        let next_method = NextMethodDescriptor::with_tail(
             ctx,
             generic,
             Array::from_slice(ctx, &method_values),
             Array::from_slice(ctx, &arg_values),
             0,
+            tail,
         );
         next_method.into()
     }
@@ -1217,37 +2335,19 @@ pub mod class_ops {
         next_method.has_next()
     }
 
+    /// Run the next method of `next` with its own args, or the chain's tail,
+    /// or raise `no-next-method`. `#f` (no next-method object: the body was
+    /// entered without one) raises the same violation.
     #[scheme(name = "next-method-invoke")]
-    pub fn next_method_invoke(next_method: Gc<'gc, NextMethodDescriptor<'gc>>) -> Value<'gc> {
-        if next_method.has_next() {
-            let method = next_method.methods()[next_method.index() + 1];
-            let body = method.body();
-            if body.is::<Closure>() {
-                // A body that never reads its next argument gets `#f`: the
-                // chain step allocates nothing then.
-                let lead = if method.flags().no_next() {
-                    Value::new(false)
-                } else {
-                    NextMethodDescriptor::new(
-                        ctx,
-                        next_method.generic(),
-                        next_method.methods(),
-                        next_method.args(),
-                        next_method.index() + 1,
-                    )
-                    .into()
-                };
-                return call.enter_with(body, lead, next_method.args().as_slice());
-            }
-        }
-        match NextMethodDescriptor::next_invocation(ctx, next_method) {
-            Some((body, args)) => call.tail(body, args.as_slice()),
-            None => {
-                let who = ctx.intern("next-method-invoke");
-                let message = ctx.str("no next method");
-                call.raise_assertion_violation(who, message, next_method.into())
-            }
-        }
+    pub fn next_method_invoke(next: Value<'gc>) -> Value<'gc> {
+        next_method_call(ctx, call, next, None)
+    }
+
+    /// `next-method-invoke` with the arguments replaced: `(next-method-invoke-with
+    /// next arg ...)`. CLOS wants the same applicable methods; this is not checked.
+    #[scheme(name = "next-method-invoke-with")]
+    pub fn next_method_invoke_with(next: Value<'gc>, args: &'gc [Value<'gc>]) -> Value<'gc> {
+        next_method_call(ctx, call, next, Some(args))
     }
 
     #[scheme(name = "next-method-next")]
@@ -1272,12 +2372,27 @@ pub mod class_ops {
         super::instantiate(ctx, call, class, initargs)
     }
 
+    /// `make-instance` with the initargs as one list: `make` calls it so it
+    /// needs no `apply`.
+    #[scheme(name = "%make-instance-list")]
+    pub fn make_instance_list(
+        class: Gc<'gc, ClassDescriptor<'gc>>,
+        initargs: Value<'gc>,
+    ) -> Value<'gc> {
+        let items = crate::runtime::objectmodel::class::generic::list_items(initargs);
+        super::instantiate(ctx, call, class, &items)
+    }
+
     #[scheme(name = "slot-ref")]
     pub fn slot_ref(
         instance: Value<'gc>,
         name: Gc<'gc, Symbol<'gc>>,
         fallback: Option<Value<'gc>>,
     ) -> Value<'gc> {
+        if instance.is::<ClassDescriptor>() {
+            let class = instance.downcast::<ClassDescriptor>();
+            return class_extension_slot_ref(ctx, call, class, name, fallback);
+        }
         let Some(instance) = try_scheme_instance(ctx, instance) else {
             let who = ctx.intern("slot-ref");
             let message = ctx.str("not a Scheme instance");
@@ -1444,6 +2559,27 @@ pub mod class_ops {
         name: Gc<'gc, Symbol<'gc>>,
         value: Value<'gc>,
     ) -> Value<'gc> {
+        if instance.is::<ClassDescriptor>() {
+            let class = instance.downcast::<ClassDescriptor>();
+            return match ClassDescriptor::extension_slot_set(ctx, class, &name.to_string(), value) {
+                Ok(()) => Value::undefined(),
+                Err(SlotAccessError::Immutable) => {
+                    let who = ctx.intern("slot-set!");
+                    let message = ctx.str("immutable slot");
+                    call.raise_assertion_violation(who, message, name.into())
+                }
+                Err(SlotAccessError::Unknown) => {
+                    let who = ctx.intern("slot-set!");
+                    let message = ctx.str("unknown slot");
+                    call.raise_assertion_violation(who, message, name.into())
+                }
+                Err(_) => {
+                    let who = ctx.intern("slot-set!");
+                    let message = ctx.str("stale slot accessor");
+                    call.raise_assertion_violation(who, message, name.into())
+                }
+            };
+        }
         let Some(instance_obj) = try_scheme_instance(ctx, instance) else {
             let who = ctx.intern("slot-set!");
             let message = ctx.str("not a Scheme instance");
@@ -1509,6 +2645,111 @@ pub mod class_ops {
                 call.raise_assertion_violation(who, message, name.into())
             }
             Err(SlotAccessError::Unbound) => unreachable!("slot writes cannot fail as unbound"),
+        }
+    }
+
+    /// `slot-unbind!`: make slot `name` of `instance` unbound, so its reader
+    /// reports it unbound until a write binds it again. Goes through the
+    /// slot-unbind protocol generic when the class's protocol is not plain.
+    #[scheme(name = "slot-unbind!")]
+    pub fn slot_unbind(instance: Value<'gc>, name: Gc<'gc, Symbol<'gc>>) -> Value<'gc> {
+        let Some(instance_obj) = try_scheme_instance(ctx, instance) else {
+            let who = ctx.intern("slot-unbind!");
+            let message = ctx.str("not a Scheme instance");
+            return call.raise_assertion_violation(who, message, instance);
+        };
+        SchemeInstance::touch(ctx, instance_obj);
+        let slot_name = name.to_string();
+        let class = instance_obj.class();
+        let receiver = Value::from(instance_obj);
+
+        if !protocol_is_plain(ctx, class, OP_UNBIND)
+            && let Some(slot_unbind_using_class) =
+                ctx.try_hook(crate::runtime::hooks::Hook::SlotUnbindUsingClass)
+        {
+            let slot = class_slot_argument(ctx, class, &slot_name, name.into());
+            return call_protocol(
+                ctx,
+                call,
+                slot_unbind_using_class,
+                &[class.into(), receiver, slot],
+            );
+        }
+
+        let Some(accessor) = class.accessor_named(&slot_name) else {
+            let who = ctx.intern("slot-unbind!");
+            let message = ctx.str("class has no slot writer");
+            return call.raise_assertion_violation(who, message, class.into());
+        };
+        match unbind_slot_value(ctx, class, receiver, accessor) {
+            None => {
+                let who = ctx.intern("slot-unbind!");
+                let message = ctx.str("class has no slot writer");
+                call.raise_assertion_violation(who, message, class.into())
+            }
+            Some(Ok(())) => Value::undefined(),
+            Some(Err(error)) => raise_slot_error(ctx, call, "slot-unbind!", error, name.into()),
+        }
+    }
+
+    /// `slot-unbind-using-accessor!`: the stock unbind of one slot, with no
+    /// protocol dispatch (the standard `slot-unbind-using-class!` method).
+    #[scheme(name = "slot-unbind-using-accessor!")]
+    pub fn slot_unbind_using_accessor(
+        instance: Value<'gc>,
+        accessor: Gc<'gc, SlotAccessorDefinition<'gc>>,
+    ) -> Value<'gc> {
+        let Some(instance_obj) = try_scheme_instance(ctx, instance) else {
+            let who = ctx.intern("slot-unbind-using-accessor!");
+            let message = ctx.str("not a Scheme instance");
+            return call.raise_assertion_violation(who, message, instance);
+        };
+        SchemeInstance::touch(ctx, instance_obj);
+        let accessor = accessor.as_accessor_descriptor();
+        let class = instance_obj.class();
+        let receiver = Value::from(instance_obj);
+        let accessor_name: Value<'gc> = Symbol::from_str(ctx, accessor.name()).into();
+        match unbind_slot_value(ctx, class, receiver, accessor) {
+            None => {
+                let who = ctx.intern("slot-unbind-using-accessor!");
+                let message = ctx.str("class has no slot writer");
+                call.raise_assertion_violation(who, message, class.into())
+            }
+            Some(Ok(())) => Value::undefined(),
+            Some(Err(error)) => raise_slot_error(
+                ctx,
+                call,
+                "slot-unbind-using-accessor!",
+                error,
+                accessor_name,
+            ),
+        }
+    }
+
+    /// `standard-instance-access`: slot `index` of a Scheme instance, read
+    /// from its storage without the slot protocol or the slot caches. The
+    /// instance is migrated first, and an unbound slot raises rather than
+    /// letting the unbound marker escape.
+    #[scheme(name = "standard-instance-access")]
+    pub fn standard_instance_access(instance: Value<'gc>, index: i32) -> Value<'gc> {
+        let Some(instance_obj) = try_scheme_instance(ctx, instance) else {
+            let who = ctx.intern("standard-instance-access");
+            let message = ctx.str("not a Scheme instance");
+            return call.raise_assertion_violation(who, message, instance);
+        };
+        SchemeInstance::touch(ctx, instance_obj);
+        if index < 0 || index as usize >= instance_obj.slot_count() {
+            let who = ctx.intern("standard-instance-access");
+            let message = ctx.str("slot index out of bounds");
+            return call.raise_assertion_violation(who, message, Value::new(index));
+        }
+        match instance_obj.slot_checked(index as usize) {
+            Some(value) if !value.is_empty() => value,
+            _ => {
+                let who = ctx.intern("standard-instance-access");
+                let message = ctx.str("unbound slot");
+                call.raise_assertion_violation(who, message, Value::new(index))
+            }
         }
     }
 
@@ -1829,6 +3070,22 @@ pub mod class_ops {
 
     #[scheme(name = "slot-bound?")]
     pub fn slot_bound_p(instance: Value<'gc>, name: Gc<'gc, Symbol<'gc>>) -> Value<'gc> {
+        if instance.is::<ClassDescriptor>() {
+            let class = instance.downcast::<ClassDescriptor>();
+            return match ClassDescriptor::extension_slot_bound(ctx, class, &name.to_string()) {
+                Ok(bound) => Value::new(bound),
+                Err(SlotAccessError::Unknown) => {
+                    let who = ctx.intern("slot-bound?");
+                    let message = ctx.str("unknown slot");
+                    call.raise_assertion_violation(who, message, name.into())
+                }
+                Err(_) => {
+                    let who = ctx.intern("slot-bound?");
+                    let message = ctx.str("stale slot accessor");
+                    call.raise_assertion_violation(who, message, name.into())
+                }
+            };
+        }
         let Some(instance) = try_scheme_instance(ctx, instance) else {
             let who = ctx.intern("slot-bound?");
             let message = ctx.str("not a Scheme instance");
@@ -1967,6 +3224,75 @@ pub mod class_ops {
     }
 }
 
+/// Whether `list` is a proper list whose elements are all keywords.
+fn is_keyword_list<'gc>(list: Value<'gc>) -> bool {
+    let mut cursor = list;
+    while cursor.is_pair() {
+        if !cursor.car().is::<Keyword>() {
+            return false;
+        }
+        cursor = cursor.cdr();
+    }
+    cursor.is_null()
+}
+
 pub(crate) fn init_class_ops<'gc>(ctx: MutationContext<'gc>) {
     class_ops::register(ctx);
+}
+
+/// The body of `next-method-invoke` and `next-method-invoke-with`: enter the
+/// next method of the chain with `args` (the chain's own args when `None`).
+fn next_method_call<'gc>(
+    ctx: MutationContext<'gc>,
+    call: &crate::runtime::vm::NativeCall<'_, 'gc>,
+    next: Value<'gc>,
+    args: Option<&[Value<'gc>]>,
+) -> Value<'gc> {
+    use crate::runtime::objectmodel::Closure;
+    use crate::runtime::objectmodel::class::NextMethodDescriptor;
+    let Some(next_method) = next.try_as::<NextMethodDescriptor>() else {
+        let who = ctx.intern("next-method-invoke");
+        let message = ctx.str("no next method");
+        return call.raise_assertion_violation(who, message, next);
+    };
+    // A cursor carries no arguments. The bodies it is passed to call only
+    // `next-method-invoke-with`, so a zero-argument call on one is an error.
+    if args.is_none() && next_method.is_cursor() {
+        let who = ctx.intern("next-method-invoke");
+        let message = ctx.str("next method has no arguments of its own");
+        return call.raise_assertion_violation(who, message, next);
+    }
+    let stored = next_method.args();
+    let args: &[Value<'gc>] = match args {
+        Some(args) => args,
+        None => stored.as_slice(),
+    };
+    let methods = next_method.methods();
+    let index = next_method.index() + 1;
+    if index < methods.len() {
+        let body = methods[index].body();
+        // A body that never reads its next-method argument gets `#f`: the
+        // chain step allocates nothing then. A cursor body gets no argument
+        // array either.
+        let lead = NextMethodDescriptor::lead(
+            ctx,
+            next_method.generic(),
+            methods,
+            index,
+            next_method.tail().unwrap_or(Value::empty()),
+            args,
+        );
+        if body.is::<Closure>() {
+            return call.enter_with(body, lead, args);
+        }
+        let mut full = vec![lead];
+        full.extend_from_slice(args);
+        return call.tail(body, &full);
+    }
+    if let Some(tail) = next_method.tail() {
+        return call.tail(tail, args);
+    }
+    let who = ctx.intern("next-method-invoke");
+    let message = ctx.str("no next method");
+    call.raise_assertion_violation(who, message, next)
 }

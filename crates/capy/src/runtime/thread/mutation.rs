@@ -84,6 +84,25 @@ impl<'gc> Mutation<'gc> {
             .make_cached_closure(self, proc, captured, meta)
     }
 
+    /// Builds a `%call/cc`- or `%call/1cc`-family reified continuation
+    /// without taking any lock on hits; `meta` only runs on the first
+    /// capture. See
+    /// [`crate::runtime::objectmodel::ProcedureRegistry::make_reified_closure`].
+    pub fn make_reified_native_closure<F>(
+        self,
+        proc: NativeFn<'gc>,
+        captured: [Value<'gc>; 3],
+        oneshot: bool,
+        meta: F,
+    ) -> Gc<'gc, Closure<'gc>>
+    where
+        F: FnOnce() -> Value<'gc>,
+    {
+        PROCEDURES
+            .fetch(self)
+            .make_reified_closure(self, proc, captured, oneshot, meta)
+    }
+
     pub fn make_static_closure(
         self,
         proc: NativeFn<'gc>,
@@ -233,7 +252,7 @@ impl<'gc> Mutation<'gc> {
         }
         let key = crate::runtime::linklet::library_name(self, name);
         let inst = LibraryInstance::new(self, key, true);
-        crate::runtime::linklet::registry_register(
+        crate::runtime::linklet::registry_register_new(
             self,
             crate::runtime::linklet::root_registry(self),
             key,

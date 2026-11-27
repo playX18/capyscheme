@@ -129,6 +129,20 @@ pub(crate) fn inst_ops(func: &LirFunc, inst: &LirInst) -> Vec<OpInfo> {
     out
 }
 
+/// The frame values of a poll's lazy exit, which the poll carries as operands
+/// so they stay live to it. Like any exit's they are read from wherever the
+/// vreg lives, not used: counting them would reload every value the deopt
+/// needs at every poll, which sits in loops. A call's lazy exit shares the
+/// call's safepoint values and adds no operands, so it has none here.
+pub(crate) fn poll_lazy_frame(func: &LirFunc, inst: &LirInst) -> Vec<VReg> {
+    match inst {
+        LirInst::Poll {
+            lazy: Some(exit), ..
+        } => func.frame_regs(&func.exits[*exit].values),
+        _ => Vec::new(),
+    }
+}
+
 /// The operands of a terminator.
 pub(crate) fn term_ops(func: &LirFunc, term: &LirTerm) -> Vec<OpInfo> {
     plain_ops(term.operands(func))
@@ -480,6 +494,7 @@ pub(crate) fn build(
                 if let Some(sp) = inst.safepoint() {
                     frame.extend(func.frame_regs(&func.safepoints[sp].values));
                 }
+                frame.extend(poll_lazy_frame(func, inst));
                 for op in ops.iter().filter(|o| o.role == Role::Use) {
                     if let Some(i) = frame.iter().position(|&v| v == op.vreg) {
                         frame.swap_remove(i);

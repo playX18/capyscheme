@@ -8,7 +8,6 @@ mod dump;
 pub(crate) mod entry;
 pub(crate) mod promotion;
 pub(crate) mod registry;
-pub(crate) mod version;
 pub(crate) mod worker;
 
 pub use compile::compile;

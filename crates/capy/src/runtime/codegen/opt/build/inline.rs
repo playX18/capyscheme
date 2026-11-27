@@ -8,6 +8,7 @@ use cranelift_entity::{EntityList, EntityRef, SecondaryMap};
 use super::profile::{self, CallShape};
 use super::*;
 use crate::bytecode::def::Instruction;
+use crate::runtime::codegen::opt::ir::frame_state::VirtualObject;
 use crate::runtime::codegen::opt::ir::inst::InstData;
 
 /// The deepest inlining nest. The root is depth 0.
@@ -115,6 +116,8 @@ fn code_facts(code: &[u8]) -> CodeFacts {
             Instruction::OpLoopHint(_) => facts.loops += 1,
             Instruction::OpCall(_)
             | Instruction::OpTailCall(_)
+            | Instruction::OpApply(_)
+            | Instruction::OpTailApply(_)
             | Instruction::OpCallSelf(_)
             | Instruction::OpTailCallSelf(_)
             | Instruction::OpCallPrimitive0(_)
@@ -258,23 +261,58 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         self.func.codes.push(source)
     }
 
-    fn refuse(&self, pc: usize, why: &str) {
+    /// Logs that the call at `pc` is not inlined. `callee` names what it
+    /// calls when that is known: the one profiled target, or the global the
+    /// callee register was folded from.
+    fn refuse(&self, pc: usize, callee: Option<&str>, why: &str) {
         super::calls::refused(why);
+        if !log::log_enabled!(target: crate::heap::logging::JIT_LOG_TARGET, log::Level::Info) {
+            return;
+        }
+        let callee = callee.map_or_else(String::new, |name| format!("of {name} "));
         log::info!(
             target: crate::heap::logging::JIT_LOG_TARGET,
-            "  opt: no inlining at pc {pc} of {}: {why}",
+            "  opt: no inlining {callee}at pc {pc} of {}: {why}",
             self.label
         );
     }
 
-    fn skip_target(&self, pc: usize, why: &str) {
+    fn skip_target(&self, pc: usize, callee: &str, why: &str) {
         super::calls::refused(why);
         super::calls::target_skipped();
         log::info!(
             target: crate::heap::logging::JIT_LOG_TARGET,
-            "  opt: no inlining of one target at pc {pc} of {}: {why}",
+            "  opt: no inlining of target {callee} at pc {pc} of {}: {why}",
             self.label
         );
+    }
+
+    /// What the callee register of a call holds, for the log: the global it
+    /// was folded from, or the procedure it is a constant of.
+    fn callee_hint(&mut self, callee_reg: u32) -> Option<String> {
+        if !log::log_enabled!(target: crate::heap::logging::JIT_LOG_TARGET, log::Level::Info) {
+            return None;
+        }
+        let value = self.state.get(callee_reg as usize).copied().flatten()?;
+        if let Some(&variable) = self.folded_from.get(&value) {
+            return Some(format!("global {}", self.variable_label(variable)));
+        }
+        // A live load of a global: `load.cell (check.class var)` of a pool
+        // constant cell.
+        let ValueDef::Inst(inst) = self.func.value_def(value) else {
+            return None;
+        };
+        if self.func.insts[inst].op != Op::LoadCell {
+            return None;
+        }
+        let mut cell = self.func.args(inst)[0];
+        if let ValueDef::Inst(check) = self.func.value_def(cell) {
+            if matches!(self.func.insts[check].op, Op::CheckClass(_)) {
+                cell = self.func.args(check)[0];
+            }
+        }
+        let variable = self.pool_constant(cell)?;
+        Some(format!("global {}", self.variable_label(variable)))
     }
 
     /// Inlines the call at `pc` according to its profile and the cost model.
@@ -295,13 +333,19 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             return Ok(None);
         }
         if (self.blocked)(pc) {
-            self.refuse(pc, "a guard of this site failed too often");
+            {
+                let hint = self.callee_hint(callee_reg);
+                self.refuse(pc, hint.as_deref(), "a guard of this site failed too often");
+            }
             return Ok(None);
         }
         let (site_hits, targets, poly) = match profile::call_shape(self.buffer, pc) {
             Some(CallShape::Mono(Some(target))) => (target.hits, vec![target], false),
             Some(CallShape::Mono(None)) => {
-                self.refuse(pc, "the site never called a procedure");
+                {
+                    let hint = self.callee_hint(callee_reg);
+                    self.refuse(pc, hint.as_deref(), "the site never called a procedure");
+                }
                 return Ok(None);
             }
             Some(CallShape::Poly(targets)) if self.inline.poly => {
@@ -313,37 +357,57 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 (site_hits, targets, true)
             }
             Some(CallShape::Poly(_)) => {
+                let hint = self.callee_hint(callee_reg);
                 self.refuse(
                     pc,
+                    hint.as_deref(),
                     "the site is polymorphic and polymorphic inlining is off",
                 );
                 return Ok(None);
             }
             Some(CallShape::Mega) => {
-                self.refuse(pc, "the site is megamorphic");
+                {
+                    let hint = self.callee_hint(callee_reg);
+                    self.refuse(pc, hint.as_deref(), "the site is megamorphic");
+                }
                 return Ok(None);
             }
             None => {
-                self.refuse(pc, "no call profile");
+                {
+                    let hint = self.callee_hint(callee_reg);
+                    self.refuse(pc, hint.as_deref(), "no call profile");
+                }
                 return Ok(None);
             }
         };
         if targets.is_empty() {
-            self.refuse(pc, "the site never called a procedure");
+            {
+                let hint = self.callee_hint(callee_reg);
+                self.refuse(pc, hint.as_deref(), "the site never called a procedure");
+            }
             return Ok(None);
         }
 
         // A tail call has no return point to fall back to, so only a
         // monomorphic site inlines in tail position.
         if tail && poly {
-            self.refuse(pc, "a polymorphic tail call is not inlined");
+            {
+                let hint = self.callee_hint(callee_reg);
+                self.refuse(
+                    pc,
+                    hint.as_deref(),
+                    "a polymorphic tail call is not inlined",
+                );
+            }
             return Ok(None);
         }
 
         // The site as a whole must be hot, however the targets split.
         if site_hits < MIN_SITE_HITS {
+            let hint = self.callee_hint(callee_reg);
             self.refuse(
                 pc,
+                hint.as_deref(),
                 &format!("the site is cold: {site_hits} hits is under {MIN_SITE_HITS}"),
             );
             return Ok(None);
@@ -352,13 +416,45 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         let caller = code_facts(self.code);
         let named = targets.len();
         let mut bodies: Vec<Candidate> = Vec::with_capacity(named.min(MAX_POLY));
+        // The native targets of a polymorphic site that have an inline
+        // lowering: their arm is the lowering itself, with no body to splice.
+        let mut natives: Vec<NativeArm> = Vec::new();
+        let native_args = if poly && matches!(expect, Expect::One | Expect::Fixed(1) | Expect::Rest { fixed: 1, .. }) {
+            let mut args = Vec::with_capacity(argc as usize);
+            for index in 0..argc {
+                args.push(self.reg(first_arg + index)?);
+            }
+            Some(args)
+        } else {
+            None
+        };
         let mut total = 0usize;
         for target in targets {
-            if bodies.len() >= MAX_POLY {
+            if bodies.len() + natives.len() >= MAX_POLY {
                 break;
+            }
+            if let Some(args) = native_args.as_deref() {
+                let value = SchemeValue::from(target.callee);
+                if natives.iter().any(|arm| arm.value == value) {
+                    continue;
+                }
+                if target.callee.is_native() && target.hits >= MIN_TARGET_HITS {
+                    if let Some(shape) = self.native_arm_shape(target.callee, args) {
+                        natives.push(NativeArm {
+                            value,
+                            shape,
+                            hits: target.hits,
+                            label: crate::runtime::objectmodel::proc::procedure_label(
+                                target.callee,
+                            ),
+                        });
+                        continue;
+                    }
+                }
             }
             let callee_value = SchemeValue::from(target.callee);
             let buffer = target.callee.buffer;
+            let target_label = crate::runtime::objectmodel::proc::procedure_label(target.callee);
             if bodies
                 .iter()
                 .any(|candidate| candidate.value == callee_value)
@@ -374,18 +470,18 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                     });
             if let Err(why) = decision {
                 if poly {
-                    self.skip_target(pc, &why);
+                    self.skip_target(pc, &target_label, &why);
                     continue;
                 }
-                self.refuse(pc, &why);
+                self.refuse(pc, Some(&target_label), &why);
                 return Ok(None);
             }
             if total + facts.size > self.inline.remaining.get() as usize {
                 if poly {
-                    self.skip_target(pc, "the targets are over the budget");
+                    self.skip_target(pc, &target_label, "the targets are over the budget");
                     continue;
                 }
-                self.refuse(pc, "the targets are over the budget");
+                self.refuse(pc, Some(&target_label), "the targets are over the budget");
                 return Ok(None);
             }
 
@@ -420,20 +516,20 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                     self.inline.remaining.set(saved);
                     let why = format!("the callee does not build: {why}");
                     if poly {
-                        self.skip_target(pc, &why);
+                        self.skip_target(pc, &target_label, &why);
                         continue;
                     }
-                    self.refuse(pc, &why);
+                    self.refuse(pc, Some(&target_label), &why);
                     return Ok(None);
                 }
             };
             if let Err(why) = spliceable(&body, expect) {
                 self.inline.remaining.set(saved);
                 if poly {
-                    self.skip_target(pc, &why);
+                    self.skip_target(pc, &target_label, &why);
                     continue;
                 }
-                self.refuse(pc, &why);
+                self.refuse(pc, Some(&target_label), &why);
                 return Ok(None);
             }
             if body.deps.iter().any(|dep| {
@@ -445,10 +541,10 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 self.inline.remaining.set(saved);
                 let why = "the callee folded a global to another value";
                 if poly {
-                    self.skip_target(pc, why);
+                    self.skip_target(pc, &target_label, why);
                     continue;
                 }
-                self.refuse(pc, why);
+                self.refuse(pc, Some(&target_label), why);
                 return Ok(None);
             }
 
@@ -493,10 +589,10 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             if let Some(why) = unreadable {
                 self.inline.remaining.set(saved);
                 if poly {
-                    self.skip_target(pc, &why);
+                    self.skip_target(pc, &target_label, &why);
                     continue;
                 }
-                self.refuse(pc, &why);
+                self.refuse(pc, Some(&target_label), &why);
                 return Ok(None);
             }
             bodies.push(Candidate {
@@ -511,13 +607,23 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             total += facts.size;
         }
 
-        if bodies.is_empty() {
-            self.refuse(pc, "no target scored positive");
+        if bodies.is_empty() && natives.is_empty() {
+            {
+                let hint = self.callee_hint(callee_reg);
+                self.refuse(pc, hint.as_deref(), "no target scored positive");
+            }
             return Ok(None);
         }
 
         if total as u32 > self.inline.remaining.get() {
-            self.refuse(pc, "the nested inlining used up the budget");
+            {
+                let hint = self.callee_hint(callee_reg);
+                self.refuse(
+                    pc,
+                    hint.as_deref(),
+                    "the nested inlining used up the budget",
+                );
+            }
             return Ok(None);
         }
 
@@ -547,7 +653,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             .into_iter()
             .map(|ty| self.func.append_param(cont, ty))
             .collect();
-        let count = bodies.len();
+        let count = bodies.len() + natives.len();
         let partial = poly && count < named;
 
         if poly {
@@ -589,13 +695,72 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 );
             }
 
-            let mut operands = vec![raw_callee];
-            operands.extend(fallback_args.unwrap_or_default());
+            for (index, arm) in natives.iter().enumerate() {
+                let code = self.code_for_heap(arm.value);
+                let test = self.value_op(Op::TestCode(code), &[closure], Type::Bool, None);
+                let body = self.func.new_block();
+                let rest = self.func.new_block();
+                let then = self.func.edge(body, &[]);
+                let otherwise = self.func.edge(rest, &[]);
+                self.terminate(Terminator::Branch {
+                    cond: test,
+                    then,
+                    otherwise,
+                });
+                self.cur = body;
+                let args = fallback_args.clone().unwrap_or_default();
+                let frame = self.frame(pc, pc)?;
+                let value = self.native_lower(arm.shape, &args, frame)?;
+                // The native returns exactly one value: no extras follow it.
+                let mut edge_args = vec![value];
+                if matches!(expect, Expect::Rest { .. }) {
+                    let none = self.value_op(
+                        Op::Const(Constant::Int32(0)),
+                        &[],
+                        Type::Int32,
+                        None,
+                    );
+                    edge_args.push(none);
+                    edge_args.push(self.bits(SchemeValue::null().bits()));
+                }
+                let edge = self.func.edge(cont, &edge_args);
+                self.terminate(Terminator::Jump(edge));
+                self.cur = rest;
+                log::info!(
+                    target: crate::heap::logging::JIT_LOG_TARGET,
+                    "  opt: inlined native {} at pc {pc} of {} ({} hits, depth {}, {} of {count})",
+                    arm.label,
+                    self.label,
+                    arm.hits,
+                    self.inline.depth + 1,
+                    bodies.len() + index + 1
+                );
+            }
+
+            let fallback_args = fallback_args.unwrap_or_default();
             let frame = call.1;
-            let value = self.value_op(Op::CallGeneric(call.0), &operands, Type::Any, Some(frame));
-            let args = taken_args(&mut self.func, self.cur, expect, value, frame);
-            let edge = self.func.edge(cont, &args);
-            self.terminate(Terminator::Jump(edge));
+            if tail {
+                // A tail site stays a tail call: the enclosing splice makes it
+                // a call on the outer site's frame, which a deopt on return
+                // resumes, where a call here would return to this body's
+                // frame, which has no returned values, and keep the unit's
+                // check after it.
+                let args = EntityList::from_slice(&fallback_args, &mut self.func.pool);
+                self.terminate(Terminator::TailCall {
+                    callee: raw_callee,
+                    args,
+                    frame,
+                    check: None,
+                });
+            } else {
+                let mut operands = vec![raw_callee];
+                operands.extend(fallback_args);
+                let value =
+                    self.value_op(Op::CallGeneric(call.0), &operands, Type::Any, Some(frame));
+                let args = taken_args(&mut self.func, self.cur, expect, value, frame);
+                let edge = self.func.edge(cont, &args);
+                self.terminate(Terminator::Jump(edge));
+            }
         } else {
             let candidate = &bodies[0];
             let code = self.code_for_heap(candidate.value);
@@ -688,7 +853,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 .func
                 .class_deps
                 .iter()
-                .any(|mine| mine.class == dep.class && mine.subtree == dep.subtree)
+                .any(|mine| mine.class == dep.class && mine.kind == dep.kind)
             {
                 self.func.class_deps.push(*dep);
             }
@@ -723,6 +888,14 @@ struct Candidate<'gc> {
     /// Calls the site made to this callee, for the diagnostic log.
     hits: u32,
     /// The callee's procedure label, for the diagnostic log.
+    label: String,
+}
+
+/// One native target of a polymorphic site, lowered inline.
+struct NativeArm<'gc> {
+    value: SchemeValue<'gc>,
+    shape: super::bits::Native,
+    hits: u32,
     label: String,
 }
 
@@ -1223,6 +1396,18 @@ impl<'a, 'gc> Splice<'a, 'gc> {
         for &(reg, value) in &data.registers {
             registers.push((reg, self.value(value)?));
         }
+        let mut virtuals = Vec::with_capacity(data.virtuals.len());
+        for object in &data.virtuals {
+            let mut fields = Vec::with_capacity(object.fields.len());
+            for &field in &object.fields {
+                fields.push(self.value(field)?);
+            }
+            virtuals.push(VirtualObject {
+                alias: self.value(object.alias)?,
+                kind: object.kind,
+                fields,
+            });
+        }
         let new = FrameStateData {
             code: self.code(data.code)?,
             pc: data.pc,
@@ -1233,6 +1418,7 @@ impl<'a, 'gc> Splice<'a, 'gc> {
             returned: data.returned,
             rest: data.rest,
             inline_site,
+            virtuals,
         };
         let new = self.dest.push_frame(new);
         self.frames[frame.index()] = Some(new);
@@ -1289,4 +1475,27 @@ impl<'a, 'gc> Splice<'a, 'gc> {
             Terminator::Unreachable => Terminator::Unreachable,
         })
     }
+}
+
+/// A value as the JIT log prints it: a procedure by its label (`name at
+/// file:line:col`), anything else in its printed form, cut to 80 bytes.
+pub(super) fn value_label(value: SchemeValue<'_>) -> String {
+    use crate::runtime::objectmodel::Closure;
+    if value.is::<Closure>() {
+        let closure = Closure::from_value(value);
+        return format!(
+            "#<procedure {}>",
+            crate::runtime::objectmodel::proc::procedure_label(Closure::code_block(closure))
+        );
+    }
+    let mut text = format!("{value}");
+    if text.len() > 80 {
+        let mut cut = 80;
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        text.truncate(cut);
+        text.push_str("...");
+    }
+    text
 }

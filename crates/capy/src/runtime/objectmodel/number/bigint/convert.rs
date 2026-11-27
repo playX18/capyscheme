@@ -199,5 +199,4 @@ impl<'gc> BigInt<'gc> {
             this
         }
     }
-
 }

@@ -6,10 +6,7 @@
 use std::{cell::Cell, collections::HashMap, sync::OnceLock};
 
 use crate::{
-    expander::{
-        datum_sourcev, get_source_property,
-        primitives::{sym_variable_ref, sym_variable_set},
-    },
+    expander::{datum_sourcev, get_source_property},
     heap::{Gc, Global, Trace, alloc::array::Array, barrier, cell::Lock},
     list,
     runtime::{
@@ -138,7 +135,22 @@ pub fn expand<'gc>(cenv: &mut Cenv<'gc>, program: Value<'gc>) -> Result<TermRef<
                         kind: TermKind::PrimRef(program),
                     }))
                 }
-                None => Ok(late_variable_ref(cenv.ctx, program)),
+                // Code outside a boot linklet (`boot/main.scm`) has no import groups: the native
+                // primitives it names are looked up in the `(#%capy)` instance directly.
+                None if cenv.boot.is_none()
+                    && cenv
+                        .ctx
+                        .globals()
+                        .capy_instance()
+                        .variable(cenv.ctx, program)
+                        .is_some() =>
+                {
+                    Ok(cenv.ctx.allocate(Term {
+                        source: Lock::new(Value::new(false)),
+                        kind: TermKind::PrimRef(program),
+                    }))
+                }
+                None => Err(unbound_identifier(cenv, program)),
             },
         }
     } else if program.is_pair() {
@@ -389,32 +401,24 @@ fn expand_set<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc
             source,
         ));
     }
-    Ok(prim_call_term(
-        cenv.ctx,
-        sym_variable_set(cenv.ctx).into(),
-        &[late_variable_term(cenv.ctx, name), value],
-        source,
-    ))
+    Err(unbound_identifier(cenv, name))
 }
 
-/// The late-bound variable `name`, see [`crate::runtime::linklet::late_variable`].
-fn late_variable_term<'gc>(ctx: MutationContext<'gc>, name: Value<'gc>) -> TermRef<'gc> {
-    prim_call_term(
-        ctx,
-        Symbol::from_str(ctx, "late-variable").into(),
-        &[constant(ctx, name)],
-        Value::new(false),
-    )
-}
-
-/// A reference to the late-bound variable `name`, see [`late_variable_term`].
-fn late_variable_ref<'gc>(ctx: MutationContext<'gc>, name: Value<'gc>) -> TermRef<'gc> {
-    prim_call_term(
-        ctx,
-        sym_variable_ref(ctx).into(),
-        &[late_variable_term(ctx, name)],
-        Value::new(false),
-    )
+/// The error for a free identifier: a boot file must import the name from the file that
+/// defines it, or reach it through a hook set by that file.
+fn unbound_identifier<'gc>(cenv: &Cenv<'gc>, name: Value<'gc>) -> Error<'gc> {
+    let place = match cenv.boot.as_ref() {
+        Some(boot) => format!("boot linklet {}", boot.key()),
+        None => "boot code".to_string(),
+    };
+    Box::new(CompileError {
+        message: format!(
+            "{place}: free identifier {name}; import it from the boot file that defines it \
+             (a `|#%require|` spec), or call it through a hook that file installs"
+        ),
+        irritants: vec![name],
+        sourcev: Value::new(false),
+    })
 }
 
 /// A top-level definition: a variable of the current module, or while
@@ -682,20 +686,12 @@ fn expand_and<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc
 
     let false_branch = constant(cenv.ctx, Value::new(false));
 
+    // `(if a b #f)`, as psyntax expands `and`: the value of a test is never the result, so it
+    // needs no variable. The inline knowns of a boot file (expander/boot_knowns.rs) depend on
+    // this expander and psyntax making the same terms.
     for expr in it {
         let test_term = expand(cenv, expr)?;
-        let temp_lvar = fresh_lvar(cenv.ctx, Symbol::from_str(cenv.ctx, "and-tmp").into());
-
-        let if_branch = if_term(cenv.ctx, lref(cenv.ctx, temp_lvar), result, false_branch);
-
-        result = let_term(
-            cenv.ctx,
-            LetStyle::Let,
-            Array::from_slice(cenv.ctx, [temp_lvar]),
-            Array::from_slice(cenv.ctx, [test_term]),
-            if_branch,
-            datum_sourcev(cenv.ctx, form),
-        );
+        result = if_term(cenv.ctx, test_term, result, false_branch);
     }
 
     Ok(result)
@@ -1860,6 +1856,17 @@ fn expand_clause<'gc>(
         }
     } else {
         let test_form = expand(cenv, test)?;
+        let arrow = body.is_pair()
+            && body.car().is::<Symbol>()
+            && body.car() == Symbol::from_str(cenv.ctx, "=>").into();
+        // A clause with a body tests the value and drops it: `(if test body rest)`, as psyntax
+        // expands it. Only `(test)` and `(test => f)` use the value and bind it. The inline
+        // knowns of a boot file (expander/boot_knowns.rs) depend on the two expanders making
+        // the same terms.
+        if !arrow && !body.is_null() {
+            let lbody = expand_body(cenv, body, datum_sourcev(cenv.ctx, form))?;
+            return Ok(if_term(cenv.ctx, test_form, lbody, else_branch));
+        }
         let binding = fresh_lvar(cenv.ctx, Symbol::from_str(cenv.ctx, "cond-test-tmp").into());
 
         let lbody = if body.is_pair()

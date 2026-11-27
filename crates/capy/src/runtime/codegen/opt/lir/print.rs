@@ -79,6 +79,8 @@ impl Display for FloatOp {
             FloatOp::Sub => "sub",
             FloatOp::Mul => "mul",
             FloatOp::Div => "div",
+            FloatOp::Min => "min",
+            FloatOp::Max => "max",
         })
     }
 }
@@ -124,6 +126,7 @@ impl Display for LirInst {
             LirInst::CeilingF64 { dst, src } => write!(f, "{dst} = ceiling.f64 {src}"),
             LirInst::TruncateF64 { dst, src } => write!(f, "{dst} = truncate.f64 {src}"),
             LirInst::SqrtF64 { dst, src } => write!(f, "{dst} = sqrt.f64 {src}"),
+            LirInst::AbsF64 { dst, src } => write!(f, "{dst} = abs.f64 {src}"),
             LirInst::UntagChar { dst, src } => write!(f, "{dst} = untag.char {src}"),
             LirInst::Guard { test, src, exit } => {
                 write!(f, "guard {test}")?;
@@ -164,10 +167,93 @@ impl Display for LirInst {
             LirInst::BoxInt64 { dst, src } => {
                 write!(f, "{dst} = box.int64 {src}")
             }
-            LirInst::UnboxBigInt64 { dst, obj, exit } => {
-                write!(f, "{dst} = unbox.bigint64 {obj} [{exit}]")
+            LirInst::Int32Wrapping { op, dst, lhs, rhs } => {
+                write!(f, "{dst} = int.{op}.wrap {lhs}, {rhs}")
+            }
+            LirInst::Bitwise {
+                op,
+                wide,
+                dst,
+                lhs,
+                rhs,
+            } => write!(
+                f,
+                "{dst} = {}.{} {lhs}, {rhs}",
+                match op {
+                    BitOp::And => "and",
+                    BitOp::Or => "or",
+                    BitOp::Xor => "xor",
+                },
+                if *wide { "i64" } else { "i32" }
+            ),
+            LirInst::ShiftImm {
+                op,
+                wide,
+                amount,
+                dst,
+                src,
+            } => write!(
+                f,
+                "{dst} = {}.{} {src}, {amount}",
+                match op {
+                    ShiftKind::Shl => "shl",
+                    ShiftKind::Sar => "sar",
+                    ShiftKind::Shr => "shr",
+                    ShiftKind::Rotr => "rotr",
+                },
+                if *wide { "i64" } else { "i32" }
+            ),
+            LirInst::ShlOvf {
+                amount,
+                dst,
+                src,
+                exit,
+            } => write!(f, "{dst} = shl.i32.ovf {src}, {amount} [{exit}]"),
+            LirInst::ShiftReg {
+                op,
+                dst,
+                src,
+                count,
+            } => write!(
+                f,
+                "{dst} = {}.i32 {src}, {count}",
+                match op {
+                    ShiftKind::Shl => "shl",
+                    ShiftKind::Sar => "sar",
+                    ShiftKind::Shr => "shr",
+                    ShiftKind::Rotr => "rotr",
+                }
+            ),
+            LirInst::ShlOvfReg {
+                dst,
+                src,
+                count,
+                exit,
+            } => write!(f, "{dst} = shl.i32.ovf {src}, {count} [{exit}]"),
+            LirInst::TagChar { dst, src } => write!(f, "{dst} = tag.char {src}"),
+            LirInst::LoadBytes {
+                elem,
+                dst,
+                base,
+                index,
+            } => write!(
+                f,
+                "{dst} = load.{}{}{} {base}[{index}]",
+                if elem.signed { "s" } else { "u" },
+                elem.bytes * 8,
+                if elem.big_endian { ".be" } else { "" }
+            ),
+            LirInst::UnboxBigInt64 {
+                dst,
+                obj,
+                exit,
+                unsigned,
+            } => {
+                let kind = if *unsigned { "u64" } else { "bigint64" };
+                write!(f, "{dst} = unbox.{kind} {obj} [{exit}]")
             }
             LirInst::IntCmp { cmp, dst, lhs, rhs } => write!(f, "{dst} = icmp.{cmp} {lhs}, {rhs}"),
+            LirInst::Select { dst, cond, a, b } => write!(f, "{dst} = select {cond}, {a}, {b}"),
             LirInst::FloatArith { op, dst, lhs, rhs } => write!(f, "{dst} = f64.{op} {lhs}, {rhs}"),
             LirInst::FloatCmp { cmp, dst, lhs, rhs } => {
                 write!(f, "{dst} = fcmp.{cmp} {lhs}, {rhs}")
@@ -281,6 +367,7 @@ impl Display for LirInst {
                 src_lo,
                 src_hi,
             } => write!(f, "{dst} = box.int128 ({src_lo}, {src_hi})"),
+            LirInst::BoxUInt64 { dst, src } => write!(f, "{dst} = box.u64 {src}"),
             LirInst::LoadFree {
                 dst,
                 closure,
@@ -314,6 +401,17 @@ impl Display for LirInst {
             LirInst::StoreByte { base, index, src } => {
                 write!(f, "store.byte {base}[{index}], {src}")
             }
+            LirInst::StoreBytes {
+                elem,
+                base,
+                index,
+                src,
+            } => write!(
+                f,
+                "store.bytes{}{} {base}[{index}], {src}",
+                elem.bytes * 8,
+                if elem.big_endian { ".be" } else { "" }
+            ),
             LirInst::SlotGet {
                 dst,
                 obj,
@@ -344,7 +442,13 @@ impl Display for LirInst {
                 write_vregs(f, args)?;
                 write!(f, ") [{safepoint}]")
             }
-            LirInst::Poll { safepoint } => write!(f, "poll [{safepoint}]"),
+            LirInst::Poll { safepoint, lazy } => {
+                write!(f, "poll [{safepoint}]")?;
+                if let Some(exit) = lazy {
+                    write!(f, " lazy {exit}")?;
+                }
+                Ok(())
+            }
         }
     }
 }

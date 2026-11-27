@@ -40,6 +40,10 @@ pub enum GuardKind {
     Return,
     /// An explicit `Terminator::Deopt` in the IR.
     Explicit,
+    /// A lazy deopt: a return into, or a helper return in, a unit whose
+    /// assumptions broke while the frame was live. Not a speculation failure,
+    /// so it is not counted in the exit profile.
+    Lazy,
 }
 
 impl GuardKind {
@@ -61,6 +65,7 @@ impl GuardKind {
             GuardKind::Call => "call",
             GuardKind::Return => "return",
             GuardKind::Explicit => "explicit",
+            GuardKind::Lazy => "lazy",
         }
     }
 }

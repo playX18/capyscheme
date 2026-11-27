@@ -3,15 +3,19 @@ use crate::bytecode::{def, verify};
 use crate::heap::{Gc, Global, Trace, Visitor, mmtk::util::Address, sync::monitor::Monitor};
 use crate::runtime::{
     MutationContext,
-    record::{RTD_OPAQUE, RTD_SEALED, Rcd, Rtd},
     objectmodel::*,
+    record::{RTD_OPAQUE, RTD_SEALED, Rcd, Rtd},
     vm::syntax::Syntax,
 };
 use flate2::read::GzDecoder;
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     io::{self, BufReader, Cursor, Read},
 };
+
+/// Cap on up-front allocation driven by a length read from the input.
+const PREALLOC: usize = 4096;
 
 pub struct Reader<'gc, R: io::Read> {
     pub ctx: MutationContext<'gc>,
@@ -20,19 +24,30 @@ pub struct Reader<'gc, R: io::Read> {
     options: LoadOptions,
     roots: Global<crate::Rootable!(Roots<'_>)>,
     pub reference_map: HashMap<u32, Address>,
+    /// Digest of everything read after the magic, checked against the trailer.
+    hasher: Sha256,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LoadOptions {
     pub debug_entries: bool,
+    /// Return a program image as a program datum (see [`super::program_datum`]) instead of
+    /// building its code blocks. The code is not verified.
+    pub program_datum: bool,
 }
 
 impl LoadOptions {
     pub const NORMAL: Self = Self {
         debug_entries: false,
+        program_datum: false,
     };
     pub const DEBUG: Self = Self {
         debug_entries: true,
+        program_datum: false,
+    };
+    pub const PROGRAM_DATUM: Self = Self {
+        debug_entries: false,
+        program_datum: true,
     };
 
     /// Options from the `fasl_debug` flag (`CAPY_FASL_DEBUG`).
@@ -131,18 +146,36 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
     pub fn read8(&mut self) -> io::Result<u8> {
         let mut buf = [0; 1];
         self.reader.read_exact(&mut buf)?;
+        self.hasher.update(buf);
         Ok(buf[0])
     }
 
     pub fn read32(&mut self) -> io::Result<u32> {
         let mut buf = [0; 4];
         self.reader.read_exact(&mut buf)?;
+        self.hasher.update(buf);
         Ok(u32::from_le_bytes(buf))
+    }
+
+    /// Reads exactly `len` bytes. The buffer grows with the bytes that are
+    /// really there, so a corrupt length cannot force a huge allocation.
+    fn read_bytes(&mut self, len: usize) -> io::Result<Vec<u8>> {
+        let mut buf = Vec::with_capacity(len.min(PREALLOC));
+        (&mut self.reader).take(len as u64).read_to_end(&mut buf)?;
+        if buf.len() != len {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "FASL length exceeds the remaining input",
+            ));
+        }
+        self.hasher.update(&buf);
+        Ok(buf)
     }
 
     pub fn read64(&mut self) -> io::Result<u64> {
         let mut buf = [0; 8];
         self.reader.read_exact(&mut buf)?;
+        self.hasher.update(buf);
         Ok(u64::from_le_bytes(buf))
     }
 
@@ -175,8 +208,7 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
             let key = match tag {
                 FASL_TAG_SYMBOL => {
                     let len = self.read32()? as usize;
-                    let mut buf = vec![0; len];
-                    self.reader.read_exact(&mut buf)?;
+                    let buf = self.read_bytes(len)?;
                     let str = std::str::from_utf8(&buf).map_err(|_| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
@@ -188,8 +220,7 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
                 }
                 FASL_TAG_UNINTERNED_SYMBOL => {
                     let len = self.read32()? as usize;
-                    let mut buf = vec![0; len];
-                    self.reader.read_exact(&mut buf)?;
+                    let buf = self.read_bytes(len)?;
                     let str = std::str::from_utf8(&buf).map_err(|_| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
@@ -204,8 +235,7 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
                 }
                 FASL_TAG_STR => {
                     let len = self.read32()? as usize;
-                    let mut buf = vec![0u8; len];
-                    self.reader.read_exact(&mut buf)?;
+                    let buf = self.read_bytes(len)?;
                     let str = std::str::from_utf8(&buf).map_err(|_| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
@@ -303,7 +333,7 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
 
             _x @ FASL_TAG_VECTOR => {
                 let count = self.read32()? as usize;
-                let mut vec = Vec::with_capacity(count);
+                let mut vec = Vec::with_capacity(count.min(PREALLOC));
 
                 for _ in 0..count {
                     vec.push(self.read_value()?);
@@ -313,7 +343,7 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
 
             _x @ FASL_TAG_TUPLE => {
                 let count = self.read32()? as usize;
-                let mut vec = Vec::with_capacity(count);
+                let mut vec = Vec::with_capacity(count.min(PREALLOC));
 
                 for _ in 0..count {
                     vec.push(self.read_value()?);
@@ -323,15 +353,14 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
 
             _x @ FASL_TAG_BVECTOR => {
                 let count = self.read64()? as usize;
-                let mut buf = vec![0u8; count];
-                self.reader.read_exact(&mut buf)?;
+                let buf = self.read_bytes(count)?;
                 Ok(Value::new(ByteVector::from_slice(self.ctx, &buf, true)))
             }
 
             _x @ FASL_TAG_BIGINT => {
                 let negative = self.read8()? != 0;
                 let count = self.read32()? as usize;
-                let mut digits = Vec::with_capacity(count);
+                let mut digits = Vec::with_capacity(count.min(PREALLOC));
 
                 for _ in 0..count {
                     digits.push(self.read64()?);
@@ -489,7 +518,6 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
             ));
         }
 
-        const PREALLOC: usize = 4096;
         let count = self.read32()? as usize;
         let mut specs: Vec<ReadCode<'gc>> = Vec::with_capacity(count.min(PREALLOC));
         for _ in 0..count {
@@ -561,6 +589,48 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
         let entry = self.read32()? as usize;
         if entry >= specs.len() {
             return Err(invalid("FASL entry code block index out of range"));
+        }
+
+        if self.options.program_datum {
+            let owned: Vec<program_datum::OwnedCode<'gc>> = specs
+                .into_iter()
+                .map(|spec| program_datum::OwnedCode {
+                    code: spec.code,
+                    pool: spec.pool,
+                    metadata_counts: spec.metadata_counts.to_vec(),
+                    constants: spec
+                        .constants
+                        .into_iter()
+                        .map(|constant| match constant {
+                            ReadConst::Value(value) => ConstSpec::Value(value),
+                            ReadConst::Code(index) => ConstSpec::Code(index),
+                            ReadConst::Cell(id) => ConstSpec::Cell(id),
+                        })
+                        .collect(),
+                    arity: spec.arity,
+                    frame_size: spec.frame_size,
+                    metadata: spec.metadata,
+                    spans: spec.spans,
+                    srcmap: spec
+                        .srcmap
+                        .into_iter()
+                        .map(|(start, len, flags, span)| SrcRun {
+                            start,
+                            len,
+                            flags,
+                            span,
+                        })
+                        .collect(),
+                })
+                .collect();
+            let program = program_datum::OwnedProgram {
+                codes: owned,
+                entry: entry as u32,
+            };
+            if program_datum::verify_enabled() {
+                program_datum::verify_program(&program).map_err(invalid)?;
+            }
+            return program.with_spec(|spec| program_datum::program_to_datum(self.ctx, spec));
         }
 
         for spec in &specs {
@@ -655,11 +725,48 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
         Ok(())
     }
 
+    /// Skips the directory section, if any, of the header after the compression byte.
+    fn read_directory_section(&mut self) -> io::Result<Option<Vec<u8>>> {
+        match self.read8()? {
+            0 => Ok(None),
+            FASL_TAG_DIRECTORY => {
+                let len = self.read32()? as usize;
+                let bytes = self.read_bytes(len)?;
+                Ok(Some(bytes))
+            }
+            tag => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unknown FASL header section {tag}"),
+            )),
+        }
+    }
+
+    pub fn read_directory(mut self) -> io::Result<Option<Value<'gc>>> {
+        use std::io::BufRead;
+        if self.reader.fill_buf()?.starts_with(b"#!") {
+            self.reader.read_until(b'\n', &mut Vec::new())?;
+        }
+        self.read_header()?;
+        self.read8()?;
+        self.read8()?;
+        match self.read_directory_section()? {
+            Some(bytes) => Reader::new(self.ctx, Cursor::new(bytes)).read().map(Some),
+            None => Ok(None),
+        }
+    }
+
     pub fn read(mut self) -> io::Result<Value<'gc>> {
         self.read_header()?;
         let compression = self.read8()?;
+        let _flags = self.read8()?;
+        self.read_directory_section()?;
         self.read_lites()?;
         let payload = self.read_payload(compression)?;
+        let mut stored_digest = [0u8; FASL_DIGEST_LEN];
+        self.reader.read_exact(&mut stored_digest)?;
+        if self.hasher.clone().finalize().as_slice() != stored_digest {
+            return Err(invalid("FASL checksum mismatch: the image is corrupt"));
+        }
         let mut trailing = [0u8; 1];
         if self.reader.read(&mut trailing)? != 0 {
             return Err(io::Error::new(
@@ -690,6 +797,7 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
             options,
             roots,
             reference_map: HashMap::new(),
+            hasher: Sha256::new(),
         }
     }
 
@@ -700,14 +808,15 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
     fn read_payload(&mut self, compression: u8) -> io::Result<Vec<u8>> {
         let uncompressed_size = self.read32()? as usize;
         let stored_size = self.read32()? as usize;
-        let mut stored = vec![0; stored_size];
-        self.reader.read_exact(&mut stored)?;
+        let stored = self.read_bytes(stored_size)?;
         let payload = match compression {
             FASL_COMPRESSION_NONE => stored,
             FASL_COMPRESSION_GZIP => {
-                let mut decoder = GzDecoder::new(Cursor::new(stored));
-                let mut payload = Vec::with_capacity(uncompressed_size);
-                decoder.read_to_end(&mut payload)?;
+                let decoder = GzDecoder::new(Cursor::new(stored));
+                let mut payload = Vec::with_capacity(uncompressed_size.min(PREALLOC));
+                decoder
+                    .take(uncompressed_size as u64 + 1)
+                    .read_to_end(&mut payload)?;
                 payload
             }
             _ => {
@@ -743,5 +852,70 @@ impl<'gc, R: io::Read> Reader<'gc, R> {
             ));
         }
         Ok(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::writer::Writer;
+    use super::*;
+    use crate::runtime::Scheme;
+
+    fn image(ctx: MutationContext<'_>) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let datum = Value::cons(
+            ctx,
+            Value::new(1),
+            Value::cons(ctx, Value::new(2), Value::null()),
+        );
+        Writer::new(ctx, &mut bytes).write(datum).unwrap();
+        bytes
+    }
+
+    fn read(ctx: MutationContext<'_>, bytes: &[u8]) -> io::Result<()> {
+        Reader::new(ctx, Cursor::new(bytes.to_vec()))
+            .read()
+            .map(|_| ())
+    }
+
+    #[test]
+    fn round_trip_and_flipped_byte() {
+        Scheme::new_uninit().enter(|ctx| {
+            let bytes = image(ctx);
+            read(ctx, &bytes).unwrap();
+            // flip a byte of the payload (before the 32-byte digest)
+            let mut bad = bytes.clone();
+            let at = bad.len() - FASL_DIGEST_LEN - 2;
+            bad[at] ^= 0x55;
+            assert!(read(ctx, &bad).is_err());
+            // flip a byte of the digest
+            let mut bad = bytes;
+            let last = bad.len() - 1;
+            bad[last] ^= 1;
+            assert!(read(ctx, &bad).is_err());
+        });
+    }
+
+    #[test]
+    fn truncated_input_is_an_error() {
+        Scheme::new_uninit().enter(|ctx| {
+            let bytes = image(ctx);
+            for len in [0, 4, 8, 10, bytes.len() / 2, bytes.len() - 1] {
+                assert!(read(ctx, &bytes[..len]).is_err(), "length {len}");
+            }
+        });
+    }
+
+    #[test]
+    fn huge_length_does_not_allocate() {
+        Scheme::new_uninit().enter(|ctx| {
+            // magic, no compression, no flags, a directory claiming 4 GiB - 1 bytes
+            let mut bytes = FASL_MAGIC.to_vec();
+            bytes.extend_from_slice(&[0, 0, FASL_TAG_DIRECTORY]);
+            bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+            bytes.extend_from_slice(&[1, 2, 3]);
+            let err = read(ctx, &bytes).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        });
     }
 }

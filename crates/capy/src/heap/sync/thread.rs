@@ -542,7 +542,8 @@ impl Thread {
             "Thread must be in InNative state after entering native, got: {:?}",
             thread.get_exec_status()
         );
-        // TODO(GC): Use a CAS loop instead of asserting single-threaded access
+        // `status_word.update` is a CAS loop, so a concurrent request bit set by another thread
+        // is not lost by the state change above.
     }
 
     fn attempt_leave_native_no_block() -> bool {
@@ -631,11 +632,30 @@ impl Thread {
 
             if new_state == ThreadState::MutatingToBlock {
                 if !asynchronous {
+                    // Watchdog: a thread that has not parked after a second is running a long
+                    // native primitive or a loop without a poll. Say which, every five seconds.
+                    let waited_since = std::time::Instant::now();
+                    let mut reported = 0;
                     while ba.has_block_request_with_token(self, token)
                         && !ba.is_blocked(self)
                         && !self.is_about_to_terminate()
                     {
                         guard.wait_for(Duration::from_secs(1));
+                        let waited = waited_since.elapsed().as_secs();
+                        if waited >= 1
+                            && (waited - 1) / 5 >= reported
+                            && ba.has_block_request_with_token(self, token)
+                            && !ba.is_blocked(self)
+                        {
+                            reported = (waited - 1) / 5 + 1;
+                            log::warn!(
+                                "stop-the-world has waited {waited}s for thread {:p} (state {:?}, \
+                                 about to terminate: {}); it has not reached a safepoint",
+                                self as *const Self,
+                                self.get_exec_status(),
+                                self.is_about_to_terminate(),
+                            );
+                        }
                     }
 
                     if self.is_about_to_terminate() {
@@ -963,6 +983,8 @@ impl Thread {
     }
 }
 
+// SAFETY: every field is an atomic, a lock, or only touched by the owning OS thread. `native_data`
+// is read by other threads only under `monitor` (see its doc).
 unsafe impl Send for Thread {}
 unsafe impl Sync for Thread {}
 

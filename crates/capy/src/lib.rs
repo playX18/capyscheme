@@ -21,8 +21,12 @@
 
 //! CapyScheme: R6RS/R7RS Scheme compiler and runtime.
 
+#[cfg(windows)]
+compile_error!("capy does not support Windows: the interpreter and the JIT need a Unix target");
+
 pub mod api;
 pub(crate) mod bytecode;
+#[cfg(feature = "bootstrap")]
 pub(crate) mod compiler;
 pub(crate) mod expander;
 pub(crate) mod frontend;

@@ -53,7 +53,9 @@ use super::PassOutcome;
 use super::forward::def_inst;
 use super::simplify::insert_before;
 use crate::runtime::codegen::opt::ir::func::{Block, Func, Value, ValueDef};
-use crate::runtime::codegen::opt::ir::inst::{Cmp, Constant, Edge, Inst, Op, Repr, Terminator};
+use crate::runtime::codegen::opt::ir::inst::{
+    BitOp, Cmp, Constant, Edge, Inst, Op, Repr, ShiftKind, Terminator,
+};
 use crate::runtime::codegen::opt::ir::types::Type;
 use crate::runtime::objectmodel::Value as SchemeValue;
 
@@ -483,6 +485,15 @@ impl<'a> Analysis<'a> {
                 }
                 state
             }
+            Op::CheckBound { len, raw: is_raw } => {
+                let index = if is_raw { raw(memo, 0) } else { state_of(memo, 0) };
+                let top = len as i64 - 1;
+                match index {
+                    State::Bottom => State::Bottom,
+                    State::Range { lo, hi } => State::range(lo.max(0), hi.min(top)),
+                    _ => State::range(0, top),
+                }
+            }
             // The low word keeps the number when it fits `i32`; otherwise the
             // result is anywhere in the type.
             Op::Int64ToInt32 => match raw(memo, 0) {
@@ -492,7 +503,7 @@ impl<'a> Analysis<'a> {
                 }
                 _ => State::Top,
             },
-            Op::CheckBigIntFits64 => State::I64,
+            Op::CheckBigIntFits64 | Op::CheckU64 => State::I64,
             Op::LoadRationalComponent { .. }
             | Op::LoadRationalComponentWide { .. }
             | Op::Int128Low
@@ -509,6 +520,61 @@ impl<'a> Analysis<'a> {
             Op::AddI64Ovf => arith(Arith::Add, raw(memo, 0), raw(memo, 1), Type::Int64, false),
             Op::SubI64Ovf => arith(Arith::Sub, raw(memo, 0), raw(memo, 1), Type::Int64, false),
             Op::MulI64Ovf => arith(Arith::Mul, raw(memo, 0), raw(memo, 1), Type::Int64, false),
+            Op::AddI32 => arith(Arith::Add, raw(memo, 0), raw(memo, 1), Type::Int32, true),
+            Op::SubI32 => arith(Arith::Sub, raw(memo, 0), raw(memo, 1), Type::Int32, true),
+            Op::MulI32 => arith(Arith::Mul, raw(memo, 0), raw(memo, 1), Type::Int32, true),
+            Op::ShlI32Ovf(n) => arith(
+                Arith::Mul,
+                raw(memo, 0),
+                State::range(1i64 << n, 1i64 << n),
+                Type::Int32,
+                false,
+            ),
+            // A mask by a non-negative value bounds the result by that value,
+            // whatever the other operand is.
+            Op::BitI32(BitOp::And) | Op::BitI64(BitOp::And) => match (raw(memo, 0), raw(memo, 1)) {
+                (State::Bottom, _) | (_, State::Bottom) => State::Bottom,
+                (State::Range { lo: 0.., hi: a }, State::Range { lo: 0.., hi: b }) => {
+                    State::range(0, a.min(b))
+                }
+                (State::Range { lo: 0.., hi }, _) | (_, State::Range { lo: 0.., hi }) => {
+                    State::range(0, hi)
+                }
+                _ => State::Top,
+            },
+            Op::ShiftI32(ShiftKind::Shr, n) => State::range(0, i64::from(u32::MAX >> n)),
+            Op::ShiftI64(ShiftKind::Shr, n) if n > 0 => State::range(0, (u64::MAX >> n) as i64),
+            // A count known to be in `0..32` is not masked; the extremes of
+            // the result come from the extremes of both operands.
+            Op::ShiftI32Var(ShiftKind::Sar) => match (raw(memo, 0), raw(memo, 1)) {
+                (State::Bottom, _) | (_, State::Bottom) => State::Bottom,
+                (
+                    State::Range { lo, hi },
+                    State::Range {
+                        lo: c0 @ 0..=31,
+                        hi: c1 @ 0..=31,
+                    },
+                ) => State::range((lo >> c0).min(lo >> c1), (hi >> c0).max(hi >> c1)),
+                _ => State::Top,
+            },
+            Op::ShiftI32(ShiftKind::Sar, n) | Op::ShiftI64(ShiftKind::Sar, n) => {
+                match raw(memo, 0) {
+                    State::Bottom => State::Bottom,
+                    State::Range { lo, hi } => State::range(lo >> n, hi >> n),
+                    State::Top => State::Top,
+                }
+            }
+            // A word is a raw 64-bit pattern (a u64 lane value when unsigned).
+            Op::LoadBytevector(elem) if elem.bytes == 8 => State::I64,
+            Op::LoadBytevector(elem) => {
+                let bits = u32::from(elem.bytes) * 8;
+                if elem.signed {
+                    State::range(-(1i64 << (bits - 1)), (1i64 << (bits - 1)) - 1)
+                } else {
+                    State::range(0, (1i64 << bits) - 1)
+                }
+            }
+            Op::LoadBytevectorU8 => State::range(0, 255),
             Op::QuotI32 | Op::RemI32 | Op::ModI32 | Op::QuotI64 | Op::RemI64 | Op::ModI64 => {
                 division(data.op, result_ty, raw(memo, 0), raw(memo, 1))
             }
@@ -1141,6 +1207,17 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
                     };
                     if analysis.bounds_proof(block, vector, index) {
                         guards.push((inst, Repr::Int32, 1));
+                    }
+                }
+                // A tagged index known to be in `0..len` needs no check.
+                Op::CheckBound { len, raw: false } => {
+                    let Some(&index) = args.first() else { continue };
+                    if func.value_type(index) == Type::Any
+                        && analysis
+                            .range_of(block, index)
+                            .is_some_and(|(lo, hi)| lo >= 0 && hi < len as i64)
+                    {
+                        guards.push((inst, Repr::Int32, 0));
                     }
                 }
                 Op::AddI64Ovf | Op::SubI64Ovf | Op::MulI64Ovf => {

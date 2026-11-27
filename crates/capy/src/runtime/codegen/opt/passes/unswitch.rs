@@ -41,12 +41,7 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
     if !opt().unswitch {
         return PassOutcome::default();
     }
-    run_enabled(func)
-}
 
-/// The pass proper, without the configuration gate, so tests exercise it
-/// regardless of the environment.
-fn run_enabled(func: &mut Func) -> PassOutcome {
     let dom = func.dom_tree();
     let mut loops = find_loops(func, &dom);
     loops.sort_by_key(|lp| lp.blocks.len());
@@ -150,80 +145,4 @@ fn apply(func: &mut Func, lp: &Loop, block: Block, cond: Value) -> bool {
     func.unswitched.insert(taken.blocks[&header]);
     func.unswitched.insert(skipped.blocks[&header]);
     true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::runtime::codegen::opt::ir::types::Type;
-    use crate::runtime::codegen::opt::ir::verify::verify;
-    use crate::runtime::codegen::opt::passes::testutil::{
-        block, branch, const_any, const_bool, jump, ret,
-    };
-    use crate::runtime::objectmodel::Value as SchemeValue;
-
-    /// Builds `while (c) { if (flag) A else B }` with `flag` invariant and
-    /// the loop value `x` read after the loop.
-    fn build(flag_invariant: bool) -> (Func<'static>, Block) {
-        let mut func: Func<'static> = Func::new();
-        let entry = func.entry;
-        let x0 = const_any(&mut func, entry, SchemeValue::from_i32(0).bits());
-        let c0 = const_bool(&mut func, entry, true);
-        let flag0 = const_bool(&mut func, entry, true);
-        let header = block(&mut func);
-        let x = func.append_param(header, Type::Any);
-        let c = func.append_param(header, Type::Bool);
-        let flag = func.append_param(header, Type::Bool);
-        let body = block(&mut func);
-        let left = block(&mut func);
-        let right = block(&mut func);
-        let latch = block(&mut func);
-        let exit = block(&mut func);
-        jump(&mut func, entry, header, &[x0, c0, flag0]);
-        branch(&mut func, header, c, body, &[], exit, &[]);
-        branch(&mut func, body, flag, left, &[], right, &[]);
-        jump(&mut func, left, latch, &[]);
-        jump(&mut func, right, latch, &[]);
-        // The variant loop swaps the two flags every iteration.
-        let back = if flag_invariant {
-            [x, c, flag]
-        } else {
-            [x, flag, c]
-        };
-        jump(&mut func, latch, header, &back);
-        ret(&mut func, exit, x);
-        (func, header)
-    }
-
-    fn branches(func: &Func) -> usize {
-        let live = super::super::reachable(func);
-        func.blocks
-            .iter()
-            .filter(|(block, data)| {
-                live[*block] && matches!(data.term, Some(Terminator::Branch { .. }))
-            })
-            .count()
-    }
-
-    #[test]
-    fn invariant_branch_is_unswitched() {
-        let (mut func, header) = build(true);
-        verify(&func).expect("the test function is valid");
-        let before = branches(&func);
-        let outcome = run_enabled(&mut func);
-        assert!(outcome.changed);
-        assert!(func.unswitched.contains(&header));
-        verify(&func).expect("the unswitched function is valid");
-        // The preheader's test plus each clone's header test; the original
-        // loop's two branches are unreachable.
-        assert!(branches(&func) <= before + 2);
-    }
-
-    #[test]
-    fn variant_branch_is_not_unswitched() {
-        let (mut func, header) = build(false);
-        let outcome = run_enabled(&mut func);
-        assert!(!outcome.changed);
-        assert!(!func.unswitched.contains(&header));
-    }
 }

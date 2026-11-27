@@ -436,6 +436,9 @@ define_flags! {
     gc_pacing: Enum("off", "tax"), "CAPY_GC_PACING", Some("--gc-pacing"), "", "gc",
         "Mutator allocation pacing during concurrent marking; overrides the pacing of the --gc-heuristic preset. tax = Shenandoah-style bounded stalls.";
 
+    gc_log: Bool, "CAPY_GC_LOG", Some("--gc-log"), "0", "gc",
+        "Log a summary of every garbage collection and of the trigger decisions (log target `capy::gc`) to the error stream. Off by default; `--log-trace` also turns it on.";
+
     gc_max_heap: Size, "CAPY_GC_MAX_HEAP", Some("--gc-max-heap"), "2G", "gc",
         "Maximum heap size with optional K/M/G suffix (e.g. 2G). The value shown as the default is applied only when the variable is actually set; when it is unset the heap grows to fit MMTk's default cap (0.5 * physical RAM), not 2G.";
 
@@ -517,6 +520,12 @@ define_flags! {
     gc_overhead_window: Usize(1, None), "CAPY_GC_OVERHEAD_WINDOW", Some("--gc-overhead-window"), "3", "gc",
         "overhead sizing: number of recent full GCs averaged.";
 
+    gc_stress: Usize(0, None), "CAPY_GC_STRESS", Some("--gc-stress"), "0", "gc",
+        "GC stress: request a full collection every N allocations that reach the runtime (0 = off). Gives out no allocation window and makes the JIT allocate through the runtime, so every allocation is counted; use a moving plan (MMTK_PLAN=SemiSpace) to make stale pointers fault.";
+
+    stack_limit: Size, "CAPY_STACK_LIMIT", Some("--stack-limit"), "0", "gc",
+        "Largest live Scheme stack of one thread, in bytes, before a deeper call raises a `stack overflow` assertion violation (0 = a quarter of CAPY_GC_MAX_HEAP). The check runs when a call needs a new stack segment, so the limit is rounded up to a segment (512 KiB).";
+
     gc_plan: Text, "MMTK_PLAN", Some("--gc-plan"), "", "gc",
         "MMTk GC plan: StickyImmix, ConcurrentImmix, MarkSweep, Immix, SemiSpace, GenImmix or GenCopy (default ConcurrentImmix).";
 
@@ -593,8 +602,14 @@ define_flags! {
     opt_predicate: Bool, "CAPY_OPT_PREDICATE", Some("--opt-predicate"), "0", "jit",
         "Optimizing tier: loop predication. A counted loop that indexes an invariant vector with its counter gets one preheader test (start >= 0, bound <= length) that deopts to the loop entry, and its per-iteration bounds checks are dropped. Off by default.";
 
+    opt_pea: Bool, "CAPY_OPT_PEA", Some("--opt-pea"), "1", "jit",
+        "Optimizing tier: partial escape analysis. An allocation that escapes on some paths only is moved to those paths, objects that never escape are replaced by their fields, and virtual objects that meet at a join merge into one. Replaces the sroa and cells passes; 0 runs those instead. On by default.";
+
     opt_unroll_all: Bool, "CAPY_OPT_UNROLL_ALL", Some("--opt-unroll-all"), "0", "jit",
         "Optimizing tier: replicate small innermost loops that the counted 2x unroller does not handle, keeping every exit test, so the copies chain into one longer iteration. Off by default.";
+
+    opt_unroll_full: Bool, "CAPY_OPT_UNROLL_FULL", Some("--opt-unroll-full"), "1", "jit",
+        "Optimizing tier: fully unroll an innermost loop whose counter runs from a constant to a constant bound (at most 96 iterations and 6144 instructions), so the counter is a constant in every copy and the index arithmetic and bounds checks fold. On by default.";
 
     opt_layout: Bool, "CAPY_OPT_LAYOUT", Some("--opt-layout"), "0", "jit",
         "Optimizing tier: reorder blocks for fallthrough using static loop weights. Off by default.";
@@ -605,8 +620,8 @@ define_flags! {
     opt_evict: Bool, "CAPY_OPT_EVICT", None, "0", "jit",
         "Optimizing tier: let linear scan evict a cheaper active piece when no register is free, instead of spilling the incoming one. Experimental: it costs more moves than it saves.";
 
-    opt_generics: Bool, "CAPY_OPT_GENERICS", Some("--opt-generics"), "0", "jit",
-        "Optimizing tier: devirtualize a generic accessor call through the descriptor's slot cache, guarded by class identity, layout stamp and the epoch seqlock. Off by default.";
+    opt_generics: Bool, "CAPY_OPT_GENERICS", Some("--opt-generics"), "1", "jit",
+        "Optimizing tier: devirtualize a generic accessor call through the descriptor's slot cache, guarded by class identity, layout stamp and the epoch seqlock, and method-cache and constant-argument calls, guarded by the generic's change watchpoint. On by default.";
 
     opt_align: Text, "CAPY_OPT_ALIGN", Some("--opt-align"), "loop64", "jit",
         "Optimizing tier: block alignment, as `kindNN` pairs separated by commas (`loop`, `switch`; NN bytes, 0 disables). Loop headers get a cache line by default.";
@@ -622,6 +637,18 @@ define_flags! {
 
     opt_stress_deopt: Usize(0, None), "CAPY_OPT_STRESS_DEOPT", Some("--opt-stress-deopt"), "0", "jit",
         "Optimizing tier: deoptimize at every n-th guard (0 disables).";
+
+    opt_lazy_deopt: Bool, "CAPY_OPT_LAZY_DEOPT", Some("--opt-lazy-deopt"), "1", "jit",
+        "Optimizing tier: evict activations of an invalidated unit lazily, by patching the return addresses of its frames to per-call-site deopt stubs, instead of checking the unit's invalid word after every call. On by default.";
+
+    opt_stress_lazy_deopt: Usize(0, None), "CAPY_OPT_STRESS_LAZY_DEOPT", Some("--opt-stress-lazy-deopt"), "0", "jit",
+        "Optimizing tier: at every n-th yield or watchpoint helper return in Tier 2 code, invalidate the running unit as a broken assumption would, so its frames leave through lazy deopts (0 disables).";
+
+    jit_queue_depth: Usize(1, None), "CAPY_JIT_QUEUE_DEPTH", Some("--jit-queue-depth"), "256", "jit",
+        "Pending JIT compiles per worker before submit evicts the oldest job. Evictions are counted in CAPY_JIT_STATS. At 64, `fib` and `nqueens` of the r7rs suite evicted about 400 jobs each; at 256 they evict none, with the same run time.";
+
+    opt_compile_budget_ms: Usize(0, None), "CAPY_OPT_COMPILE_BUDGET_MS", Some("--opt-compile-budget-ms"), "0", "jit",
+        "Optimizing tier: a unit whose compile took longer than this many milliseconds is discarded and the code block stays on baseline, counted as the bailout reason `compile budget` (0, the default, disables the budget).";
 
     opt_max_spills: Usize(0, None), "CAPY_OPT_MAX_SPILLS", Some("--opt-max-spills"), "0", "jit",
         "Optimizing tier install quality guard: reject a unit whose register allocation needs more than this many spill slots, leaving the code block on baseline (0, the default, disables the budget).";
@@ -643,6 +670,9 @@ define_flags! {
 
     template_op_stats: Bool, "CAPY_TEMPLATE_OP_STATS", Some("--template-op-stats"), "0", "engine",
         "Count executed opcodes in the template interpreter (emitted at generation time) and report at exit.";
+
+    template_fail: Bool, "CAPY_TEMPLATE_FAIL", Some("--template-fail"), "0", "engine",
+        "Test hook: make generating the template interpreter image fail, so the runtime falls back to the Rust interpreter without JIT.";
 
     template_bail: Text, "CAPY_TEMPLATE_BAIL", Some("--template-bail"), "", "engine",
         "Comma-separated opcode names forced to bail to the Rust engine.";
@@ -668,11 +698,17 @@ define_flags! {
     load_compiled_path: Text, "CAPY_LOAD_COMPILED_PATH", None, "", "engine",
         "Colon-separated directories prepended to the compiled-file load path.";
 
+    libmap: Path, "CAPY_LIBMAP", Some("--libmap"), "", "engine",
+        "Library map to install as the library resolver: a FASL data file that maps library keys to compiled files (see pkgs/std/src/capy/libmap.scm). Libraries it lists are loaded without searching the load path or checking their source; others use the load path. By default the toolchain's own `capy.libmap` next to its compiled files is used.";
+
     ic_log: Bool, "CAPY_IC_LOG", Some("--ic-log"), "0", "engine",
         "Log generic-dispatch slot-protocol fires (inline-cache invalidations). Toggles log target `capy::ic`.";
 
     rust_log: Text, "RUST_LOG", Some("--rust-log"), "", "engine",
         "Log filter in env_logger syntax (e.g. info, capy=debug); mmtk stays silent unless named.";
+
+    class_cpl: Enum("clos", "legacy"), "CAPY_CLASS_CPL", None, "clos", "engine",
+        "Class precedence list of Scheme classes: `clos` is the CLHS 4.3.5 topological sort, `legacy` the old depth-first merge of the supers' lists (for bisecting regressions).";
 
     compile_threads: Usize(0, None), "CAPY_COMPILE_THREADS", Some("--compile-threads"), "0", "engine",
         "Background compile service threads; 0 means one per core, at most 2.";
@@ -691,6 +727,12 @@ define_flags! {
 
     signal_preempt: Bool, "CAPY_SIGNAL_PREEMPT", Some("--signal-preempt"), "1", "sched",
         "Send SIGURG to preempt long-running threads. Set to 0 to rely on the cooperative flag alone.";
+
+    sni_check: Bool, "CAPY_SNI_CHECK", Some("--sni-check"), "0", "sni",
+        "Check native-extension references: abort, naming the handle, on a use of a deleted ref and on a delete of a ref that is not live.";
+
+    verify_bytecode: Bool, "CAPY_VERIFY_BYTECODE", Some("--verify-bytecode"), "0", "debug",
+        "Verify the bytecode of a program before it is written to a FASL image and when a program datum is read (always on in debug builds). Programs read from an image are always verified.";
 }
 
 #[allow(clippy::disallowed_methods)]

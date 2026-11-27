@@ -2,7 +2,8 @@
 
 use crate::heap::Gc;
 use crate::heap::object::{ClassId, builtin_class_ids};
-use crate::runtime::codegen::opt::ir::func::ClassDep;
+use crate::runtime::codegen::opt::ir::func::{ClassDep, ClassDepKind};
+use crate::runtime::codegen::opt::ir::frame_state::FrameState;
 use crate::runtime::codegen::opt::ir::func::GenericDep;
 use crate::runtime::codegen::opt::ir::func::Value as IrValue;
 use crate::runtime::codegen::opt::ir::func::ValueDef;
@@ -130,6 +131,11 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 pc, next, callee, block, generic, first_arg, argc, values, site,
             );
         }
+        if let Some(flow) =
+            self.sole_method_call(pc, next, callee, block, generic, first_arg, argc, values, site)?
+        {
+            return Ok(Some(flow));
+        }
         let argc_usize = argc as usize;
         // Fall back to cursor cache.
         let method_entries = generic.method_cache_entries(argc_usize);
@@ -190,7 +196,10 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 .iter()
                 .map(|&(class0, class1, body)| (class0, class1, body, None))
                 .collect();
-            let parts = self.poly_call(callee, &args, argc, &chain, values, next)?;
+            let parts = {
+                let frame = self.site_call_frame(site, next)?;
+                self.poly_call(callee, &args, argc, &chain, values, frame)?
+            };
             self.finish_parts(site, next, &parts)?;
             return Ok(Some(Flow::Next));
         }
@@ -205,7 +214,8 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 Type::Closure(None),
                 Some(frame),
             );
-            self.call_body(body, None, &args, argc, values, next)?
+            let frame = self.site_call_frame(site, next)?;
+            self.call_body(body, None, &args, argc, values, frame)?
         } else if shapes == 1 {
             let (class0, class1, body) = entries[0];
             let checked0 = self.check_class(args[0], ClassRef::from_class_id(class0), frame);
@@ -215,7 +225,8 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             }
             let body_block = closure_block(body);
             let body = self.value_const(body);
-            self.call_body(body, body_block, &checked, argc, values, next)?
+            let frame = self.site_call_frame(site, next)?;
+            self.call_body(body, body_block, &checked, argc, values, frame)?
         } else {
             unreachable!("a single shape is the arm above")
         };
@@ -224,7 +235,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
     }
 
     /// The Scheme value of an operand that is a constant, if it is one.
-    fn constant_value(&self, value: IrValue) -> Option<SchemeValue<'gc>> {
+    pub(super) fn constant_value(&self, value: IrValue) -> Option<SchemeValue<'gc>> {
         let ValueDef::Inst(inst) = self.func.value_def(value) else {
             return None;
         };
@@ -238,6 +249,75 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             }
             _ => None,
         }
+    }
+
+    /// A call of a generic whose only method applies to every argument: one
+    /// primary method, without `next-method`, specialized on `<top>` at
+    /// every position. Every call runs its body, whatever the classes, so
+    /// the site calls the body directly, without the class tests or the
+    /// method lookup its cache would need, and depends on the generic's
+    /// epoch, which changes with its method set.
+    #[allow(clippy::too_many_arguments)]
+    fn sole_method_call(
+        &mut self,
+        pc: usize,
+        next: usize,
+        callee: IrValue,
+        block: Gc<'gc, CodeBlock<'gc>>,
+        generic: Gc<'gc, GenericDescriptor<'gc>>,
+        first_arg: u32,
+        argc: u32,
+        values: ReturnValues,
+        site: super::ResultSite,
+    ) -> Result<Option<Flow>, String> {
+        let flags = generic.flags();
+        if flags.custom_dfun() || flags.has_eql() {
+            return Ok(None);
+        }
+        let epoch = generic.epoch();
+        if epoch & 1 != 0 {
+            return Ok(None);
+        }
+        let methods = generic.methods();
+        let [method] = methods.as_slice() else {
+            return Ok(None);
+        };
+        let method = *method;
+        let top = ClassId::new(builtin_class_ids::TOP);
+        let method_flags = method.flags();
+        if method.role() != MethodRole::Primary
+            || !method_flags.no_next()
+            || method_flags.slot_reader()
+            || method_flags.slot_writer()
+            || method_flags.boot_slot_protocol()
+            || method.required_arg_count() != argc as usize
+            || method.specializers().iter().any(|&s| Some(s) != top)
+            || (0..argc as usize).any(|position| method.eql_at(position).is_some())
+        {
+            return Ok(None);
+        }
+        let Some(body_block) = closure_block(method.body()) else {
+            return Ok(None);
+        };
+        // The epoch is read before the method list: a method added since
+        // makes the install fail.
+        if generic.epoch() != epoch || !self.depend_on_generic(generic, epoch) {
+            return Ok(None);
+        }
+        let frame = self.frame(pc, pc)?;
+        let code: CodeRef = self.code_ref_value(SchemeValue::from(block));
+        self.value_op(
+            Op::CheckCode(code),
+            &[callee],
+            Type::Closure(Some(code)),
+            Some(frame),
+        );
+        let args = self.regs(first_arg..first_arg + argc)?;
+        let body = self.value_const(method.body());
+        let frame = self.site_call_frame(site, next)?;
+        let result = self.call_body(body, Some(body_block), &args, argc, values, frame)?;
+        self.finish_result(site, next, result)?;
+        Ok(Some(Flow::Next))
     }
 
     /// Fold constant-argument generic call.
@@ -303,7 +383,8 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             Some(frame),
         );
         let body = self.value_const(method.body());
-        let result = self.call_body(body, Some(body_block), &args, argc, values, next)?;
+        let frame = self.site_call_frame(site, next)?;
+        let result = self.call_body(body, Some(body_block), &args, argc, values, frame)?;
         self.finish_result(site, next, result)?;
         Ok(Some(Flow::Next))
     }
@@ -395,7 +476,8 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         }
         let body_block = closure_block(emf);
         let body = self.value_const(emf);
-        let result = self.call_body(body, body_block, &checked, argc, values, next)?;
+        let frame = self.site_call_frame(site, next)?;
+        let result = self.call_body(body, body_block, &checked, argc, values, frame)?;
         self.finish_result(site, next, result)?;
         Ok(Some(Flow::Next))
     }
@@ -500,6 +582,11 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             }
         }
 
+        // The befores, the primary and the afters are not the site's result:
+        // baseline cannot resume after one of them, so their frames are the
+        // return point's without returned values, and the check after the
+        // dispatch stays.
+        let inner = self.frame(next, next)?;
         for body in befores {
             let body_block = closure_block(body);
             let body_value = self.value_const(body);
@@ -509,7 +596,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 &checked,
                 argc,
                 ReturnValues::Ignore,
-                next,
+                inner,
             )?;
         }
 
@@ -522,7 +609,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             &checked,
             argc,
             ReturnValues::TakeRest(0),
-            next,
+            inner,
         )?;
         let count = self.value_op(Op::ReturnedCount(0), &[result], Type::Int32, None);
         let addr = self.value_op(Op::ReturnedAddr(0), &[result], Type::Int64, None);
@@ -559,7 +646,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 &checked,
                 argc,
                 ReturnValues::Ignore,
-                next,
+                inner,
             )?;
         }
 
@@ -583,7 +670,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         let edge = self.func.edge(done, &[kept_value, zero]);
         self.terminate(Terminator::Jump(edge));
         self.cur = respread;
-        let spread_frame = self.frame(next, next)?;
+        let spread_frame = self.site_call_frame(site, next)?;
         let spread_value = self.value_const(spread);
         let spread_call = self.value_op(
             Op::CallGeneric(values),
@@ -653,7 +740,10 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 .iter()
                 .map(|&(class0, class1, body, lead)| (class0, class1, body, Some(lead)))
                 .collect();
-            let parts = self.poly_call(callee, &args, argc, &chain, values, next)?;
+            let parts = {
+                let frame = self.site_call_frame(site, next)?;
+                self.poly_call(callee, &args, argc, &chain, values, frame)?
+            };
             self.finish_parts(site, next, &parts)?;
             return Ok(Some(Flow::Next));
         }
@@ -667,7 +757,10 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         let body_block = closure_block(body);
         let body = self.value_const(body);
         let result =
-            self.call_body_led(body, body_block, &checked, argc, values, next, Some(lead))?;
+            {
+                let frame = self.site_call_frame(site, next)?;
+                self.call_body_led(body, body_block, &checked, argc, values, frame, Some(lead))?
+            };
         self.finish_result(site, next, result)?;
         Ok(Some(Flow::Next))
     }
@@ -706,9 +799,9 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         args: &[IrValue],
         argc: u32,
         values: ReturnValues,
-        next: usize,
+        frame: FrameState,
     ) -> Result<IrValue, String> {
-        self.call_body_led(body, block, args, argc, values, next, None)
+        self.call_body_led(body, block, args, argc, values, frame, None)
     }
 
     /// Call body with lead next.
@@ -720,10 +813,9 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         args: &[IrValue],
         argc: u32,
         values: ReturnValues,
-        next: usize,
+        frame: FrameState,
         lead: Option<SchemeValue<'gc>>,
     ) -> Result<IrValue, String> {
-        let frame = self.frame(next, next)?;
         let next_arg = match lead {
             Some(lead) => self.value_const(lead),
             None => self.bits(SchemeValue::VALUE_FALSE as u64),
@@ -748,7 +840,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         argc: u32,
         entries: &[(u32, u32, SchemeValue<'gc>, Option<SchemeValue<'gc>>)],
         values: ReturnValues,
-        next: usize,
+        frame: FrameState,
     ) -> Result<Vec<IrValue>, String> {
         let join = self.func.new_block();
         let mut params = vec![self.func.append_param(join, Type::Any)];
@@ -783,7 +875,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             self.cur = body_block;
             let block = closure_block(body);
             let body_value = self.value_const(body);
-            let result = self.call_body_led(body_value, block, args, argc, values, next, lead)?;
+            let result = self.call_body_led(body_value, block, args, argc, values, frame, lead)?;
             let parts = self.call_parts(result, values)?;
             let edge = self.func.edge(join, &parts);
             self.terminate(Terminator::Jump(edge));
@@ -792,7 +884,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         self.cur = test;
         let mut operands = vec![callee];
         operands.extend_from_slice(args);
-        let frame = self.frame(next, next)?;
         let result = self.value_op(Op::CallGeneric(values), &operands, Type::Any, Some(frame));
         let parts = self.call_parts(result, values)?;
         let edge = self.func.edge(join, &parts);
@@ -939,7 +1030,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             .func
             .class_deps
             .iter()
-            .any(|dep| dep.class == value && !dep.subtree)
+            .any(|dep| dep.class == value && dep.kind == ClassDepKind::Layout)
         {
             return;
         }
@@ -947,7 +1038,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             class: value,
             id: class.id().bits(),
             stamp: class.layout_stamp(),
-            subtree: false,
+            kind: ClassDepKind::Layout,
         });
     }
 
@@ -958,7 +1049,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             .func
             .class_deps
             .iter()
-            .find(|dep| dep.subtree && dep.class == value)
+            .find(|dep| dep.kind == ClassDepKind::Subtree && dep.class == value)
         {
             return dep.stamp == stamp;
         }
@@ -966,7 +1057,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             class: value,
             id: class.id().bits(),
             stamp,
-            subtree: true,
+            kind: ClassDepKind::Subtree,
         });
         true
     }

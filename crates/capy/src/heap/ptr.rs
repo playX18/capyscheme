@@ -32,6 +32,9 @@ pub struct Gc<'gc, T: 'gc> {
     pd: Invariant<'gc>,
 }
 
+// SAFETY: a `Gc` is a pointer into the collected heap, which is shared by every mutator thread.
+// The pointee decides whether sharing is sound, hence the `T: Send` / `T: Sync` bounds, and the
+// collector (not the pointer) controls its lifetime.
 unsafe impl<'gc, T: Send> Send for Gc<'gc, T> {}
 unsafe impl<'gc, T: Sync> Sync for Gc<'gc, T> {}
 

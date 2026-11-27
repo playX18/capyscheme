@@ -1,8 +1,8 @@
 //! Pending exception API (throw / check / occurred / clear / describe).
 
 use super::env::{SCM_REF_NULL, ScmRef, SniEnv, env_mut, ref_value};
-use crate::runtime::sni::exception;
 use crate::runtime::objectmodel::Value;
+use crate::runtime::sni::exception;
 use crate::runtime::vm::exceptions::make_assertion_violation;
 
 /// Install a pending assertion violation for a type-confused argument.

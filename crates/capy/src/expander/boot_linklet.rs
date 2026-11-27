@@ -2,7 +2,7 @@
 //!
 //! A file whose leading forms are `(|#%require| spec ...)` and/or
 //! `(|#%provide| all-defined | sym ...)` is expanded as one linklet named
-//! `(<dir> <file>)`, for example `lib/boot/prim.scm` is `(boot prim)`.
+//! `(<dir> <file>)`, for example `pkgs/core/src/boot/prim.scm` is `(boot prim)`.
 //! Free identifiers resolve to the file's own exports, then to its imports.
 //! Anything else is a compile error.
 
@@ -13,6 +13,7 @@ use std::{
 
 use crate::{
     expander::{
+        boot_knowns::boot_knowns,
         cenv::Cenv,
         core::{CompileError, Error, LVarRef, TermRef, constant, expand, fresh_lvar, linklet_term},
         datum_sourcev,
@@ -36,7 +37,7 @@ pub enum Exports<'gc> {
 
 /// The leading `#%require` and `#%provide` forms of a file.
 pub struct BootHeader<'gc> {
-    /// Import specs: `key`, `(only key sym ...)` or `(late key sym ...)`.
+    /// Import specs: `key` or `(only key sym ...)`.
     pub requires: Vec<Value<'gc>>,
     pub exports: Exports<'gc>,
 }
@@ -57,8 +58,6 @@ pub struct BootLinklet<'gc> {
     defined: HashSet<Value<'gc>>,
     export_order: Vec<Value<'gc>>,
     export_slots: HashMap<Value<'gc>, LVarRef<'gc>>,
-    /// Keys of the `(late key sym ...)` imports, see [`BootLinklet::finish`].
-    late_keys: Vec<Value<'gc>>,
 }
 
 fn list_to_vec<'gc>(mut list: Value<'gc>) -> Vec<Value<'gc>> {
@@ -233,12 +232,15 @@ impl<'gc> BootLinklet<'gc> {
             defined: defined.into_iter().collect(),
             export_order: Vec::new(),
             export_slots: HashMap::new(),
-            late_keys: Vec::new(),
         };
         for sym in explicit {
             linklet.export_slot(ctx, sym);
         }
         linklet
+    }
+
+    pub fn key(&self) -> Value<'gc> {
+        self.key
     }
 
     fn export_slot(&mut self, ctx: MutationContext<'gc>, sym: Value<'gc>) -> LVarRef<'gc> {
@@ -306,9 +308,11 @@ impl<'gc> BootLinklet<'gc> {
         let imports = Value::list_from_slice(ctx, groups);
         let exports = Value::list_from_slice(ctx, &self.export_order);
 
-        let mut meta = Value::list_from_slice(ctx, &self.late_keys);
-        meta = Value::cons(ctx, Value::new(false), meta);
-        meta = Value::cons(ctx, Symbol::from_str(ctx, "#%boot").into(), meta);
+        // `(#%boot key knowns)`, KEY being #f: the body runs in the core environment.
+        let boot_sym: Value<'gc> = Symbol::from_str(ctx, "#%boot").into();
+        let exported = |sym: Value<'gc>| self.defined.contains(&sym) && self.is_exported(sym);
+        let knowns = boot_knowns(ctx, self.key, body, &exported);
+        let meta = list!(ctx, boot_sym, Value::new(false), knowns);
 
         let mut slots = self.import_slots.clone();
         slots.extend(self.export_order.iter().map(|sym| self.export_slots[sym]));
@@ -356,18 +360,8 @@ pub fn expand_linklet<'gc>(
     let mut groups = vec![import_group(ctx, capy_key, None, Value::new(false))?];
 
     let only_sym: Value<'gc> = Symbol::from_str(ctx, "only").into();
-    let late_sym: Value<'gc> = Symbol::from_str(ctx, "late").into();
     for spec in header.requires.iter().copied() {
-        if spec.is_pair() && spec.car() == late_sym {
-            // `(late key sym ...)`: the names come from a key that may not be
-            // instantiated yet, so the registry is not consulted. The loader
-            // hands out placeholder instances for such keys.
-            let items = list_to_vec(spec.cdr());
-            let Some((&group_key, syms)) = items.split_first() else {
-                return Err(boot_error(ctx, spec, "empty (late ...) import".to_string()));
-            };
-            groups.push((group_key, syms.to_vec()));
-        } else if spec.is_pair() && spec.car() == only_sym {
+        if spec.is_pair() && spec.car() == only_sym {
             let items = list_to_vec(spec.cdr());
             let Some((&group_key, syms)) = items.split_first() else {
                 return Err(boot_error(ctx, spec, "empty (only ...) import".to_string()));
@@ -375,16 +369,6 @@ pub fn expand_linklet<'gc>(
             groups.push(import_group(ctx, group_key, Some(syms.to_vec()), spec)?);
         } else {
             groups.push(import_group(ctx, spec, None, spec)?);
-        }
-    }
-
-    let mut late_keys: Vec<Value<'gc>> = Vec::new();
-    for spec in header.requires.iter().copied() {
-        if spec.is_pair() && spec.car() == late_sym {
-            let key = spec.cdr().car();
-            if !late_keys.iter().any(|k| k.r5rs_equal(key)) {
-                late_keys.push(key);
-            }
         }
     }
 
@@ -398,8 +382,6 @@ pub fn expand_linklet<'gc>(
         header.exports,
         defined,
     )));
-
-    cenv.boot.as_mut().expect("set above").late_keys = late_keys;
 
     let body = if forms.is_empty() {
         constant(ctx, Value::undefined())

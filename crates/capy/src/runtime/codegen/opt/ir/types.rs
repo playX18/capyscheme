@@ -100,6 +100,13 @@ pub enum Type {
 }
 
 impl Type {
+    pub fn is_tagged(self) -> bool {
+        !matches!(
+            self,
+            Type::Int32 | Type::Int64 | Type::Int128 | Type::Double | Type::Bool
+        )
+    }
+
     pub fn is_subtype_of(self, other: Type) -> bool {
         match (self, other) {
             (a, b) if a == b => true,

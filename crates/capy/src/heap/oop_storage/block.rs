@@ -457,12 +457,12 @@ impl Block {
     /// Merge new allocation bits. Only one thread allocates from a block at a time,
     /// but releasers may clear bits concurrently.
     pub fn atomic_add_allocated(&self, add: u64) {
-        let sum = self.allocated_bitmask.fetch_add(add, Ordering::Relaxed) + add;
+        let sum = self.allocated_bitmask.fetch_add(add, Ordering::AcqRel) + add;
         debug_assert_eq!(sum & add, add, "some bits already present");
     }
 
     pub fn allocate(&self) -> *mut Value<'static> {
-        let allocated = self.allocated_bitmask();
+        let allocated = self.allocated_bitmask.load(Ordering::Acquire);
         debug_assert!(!is_full_bitmask(allocated));
         let index = (!allocated).trailing_zeros();
         self.atomic_add_allocated(self.bitmask_for_index(index));
@@ -471,7 +471,7 @@ impl Block {
 
     /// Allocate all remaining free entries, returns the bitmask of newly taken bits.
     pub fn allocate_all(&self) -> u64 {
-        let new_allocated = !self.allocated_bitmask();
+        let new_allocated = !self.allocated_bitmask.load(Ordering::Acquire);
         debug_assert_ne!(new_allocated, 0);
         self.atomic_add_allocated(new_allocated);
         new_allocated
@@ -516,11 +516,13 @@ impl Block {
                 "releasing unallocated entries"
             );
             let new_value = old_allocated ^ releasing;
+            // Release: the caller cleared the entries just before, that store
+            // must be visible to whoever allocates them next.
             match self.allocated_bitmask.compare_exchange_weak(
                 old_allocated,
                 new_value,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
+                Ordering::AcqRel,
+                Ordering::Acquire,
             ) {
                 Ok(_) => break,
                 Err(fetched) => old_allocated = fetched,

@@ -2,6 +2,7 @@
 
 use crate::heap::Gc;
 use crate::heap::object::{ClassId, builtin_class_ids};
+use crate::runtime::objectmodel::Symbol;
 use crate::runtime::objectmodel::class::hooks::{
     PrimitiveSlotBoundHook, PrimitiveSlotRefHook, PrimitiveSlotSetHook,
 };
@@ -13,7 +14,6 @@ use crate::runtime::objectmodel::class::{
     generic_descriptor_from_value, try_scheme_instance,
 };
 use crate::runtime::objectmodel::class::{OP_REF, OP_SET, PROTOCOL_CUSTOM, PROTOCOL_PLAIN};
-use crate::runtime::objectmodel::Symbol;
 use crate::runtime::watchpoint::WatchpointSet;
 use crate::runtime::{MutationContext, objectmodel::Value};
 

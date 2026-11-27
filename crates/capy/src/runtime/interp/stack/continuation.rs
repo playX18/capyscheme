@@ -31,6 +31,19 @@ pub struct Continuation<'gc> {
     pub length: Cell<isize>,
     pub clength: Cell<isize>,
     pub return_address: Lock<Ra>,
+    /// The lazy-deopt epoch its frames were current with when they left the
+    /// live stack. Behind the global epoch, they may return into a unit
+    /// invalidated since, and a reinstatement patches them (see
+    /// `codegen::opt::deopt::lazy`).
+    pub lazy_epoch: Cell<u64>,
+}
+
+static FRAMES: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// Hold the frames lock. See [`FRAMES`].
+#[inline]
+pub(super) fn frames_lock() -> parking_lot::MutexGuard<'static, ()> {
+    FRAMES.lock()
 }
 
 extern "C" fn trace_continuation(obj: GcObject, visitor: &mut Visitor) {
@@ -41,30 +54,36 @@ extern "C" fn trace_continuation(obj: GcObject, visitor: &mut Visitor) {
         visitor.trace(continuation.segment.get_mut());
         visitor.trace(continuation.link.get_mut());
         visitor.trace(continuation.attachments.get_mut());
+        let _frames = frames_lock();
         if continuation.length.get() != SHOT_1_SHOT_FLAG {
             let base = continuation.stack.get();
+
+            let check_edges = crate::heap::collection::CHECK_EDGES;
+
+            let mut visit = |slot: Slot| {
+                if check_edges {
+                    let value = *slot;
+                    if !crate::runtime::root::is_traceable_root(value) {
+                        crate::heap::logging::ensure_max_level(log::LevelFilter::Error);
+                        log::error!(
+                            target: "capy::gc",
+                            "continuation bad slot at stack+{} ({:#x}) holds {:#x} \
+                             (clength={})",
+                            slot as usize - base as usize,
+                            slot as usize,
+                            value.bits(),
+                            continuation.clength.get(),
+                        );
+                    }
+                }
+                crate::runtime::root::trace_slot_guarded("continuation slot", slot, visitor);
+            };
+
             sweep_stack(
                 base,
                 continuation.clength.get(),
                 continuation.return_address.get(),
-                &mut |slot| {
-                    if crate::heap::collection::CHECK_EDGES {
-                        let value = *slot;
-                        if !crate::runtime::root::is_traceable_root(value) {
-                            crate::heap::logging::ensure_max_level(log::LevelFilter::Error);
-                            log::error!(
-                                target: "capy::gc",
-                                "continuation bad slot at stack+{} ({:#x}) holds {:#x} \
-                                 (clength={})",
-                                slot as usize - base as usize,
-                                slot as usize,
-                                value.bits(),
-                                continuation.clength.get(),
-                            );
-                        }
-                    }
-                    crate::runtime::root::trace_slot_guarded("continuation slot", slot, visitor);
-                },
+                &mut visit,
             );
         }
     }
@@ -110,6 +129,8 @@ impl<'gc> Continuation<'gc> {
                     length: Cell::new(0),
                     clength: Cell::new(0),
                     return_address: Lock::new(std::ptr::null()),
+                    // The frames come from the live stack, as current as it.
+                    lazy_epoch: Cell::new(ctx.tc().lazy_epoch.get()),
                 });
             Gc::from_gc_object(object)
         }
@@ -192,6 +213,8 @@ unsafe fn split<'gc>(ctx: MutationContext<'gc>, k: Gc<'gc, Continuation<'gc>>, s
             return_address(s),
             Value::new(false),
         );
+        // The lower frames are `k`'s, no more current than they were.
+        lower.lazy_epoch.set(k.lazy_epoch.get());
         // Before the stores: `k`'s frames below `s` move to `lower`, and a
         // snapshot-at-the-beginning barrier must see them still in `k`.
         let kw = Gc::write(ctx, k);
@@ -199,10 +222,13 @@ unsafe fn split<'gc>(ctx: MutationContext<'gc>, k: Gc<'gc, Continuation<'gc>>, s
         barrier::field!(kw, Continuation, link)
             .unlock()
             .set(lower.into());
-        k.length.set(n);
-        k.clength.set(n);
-        barrier::field!(kw, Continuation, stack).unlock().set(s);
-        set_return_address(s, markers::underflow());
+        {
+            let _frames = frames_lock();
+            k.length.set(n);
+            k.clength.set(n);
+            barrier::field!(kw, Continuation, stack).unlock().set(s);
+            set_return_address(s, markers::underflow());
+        }
     }
 }
 

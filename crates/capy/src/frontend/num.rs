@@ -97,10 +97,14 @@ impl Number {
             }
 
             Number::ExactRational(rational) => {
-                let numerator =
-                    crate::runtime::objectmodel::number::BigInt::from_num_bigint(ctx, rational.numer());
-                let denominator =
-                    crate::runtime::objectmodel::number::BigInt::from_num_bigint(ctx, rational.denom());
+                let numerator = crate::runtime::objectmodel::number::BigInt::from_num_bigint(
+                    ctx,
+                    rational.numer(),
+                );
+                let denominator = crate::runtime::objectmodel::number::BigInt::from_num_bigint(
+                    ctx,
+                    rational.denom(),
+                );
                 let nume = RNumber::BigInt(numerator).normalize_integer();
                 let denom = RNumber::BigInt(denominator).normalize_integer();
                 let rational = crate::runtime::objectmodel::number::Rational::new(ctx, nume, denom);

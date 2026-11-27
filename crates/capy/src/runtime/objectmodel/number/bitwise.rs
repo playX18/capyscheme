@@ -182,5 +182,4 @@ impl<'gc> Number<'gc> {
             _ => false,
         }
     }
-
 }

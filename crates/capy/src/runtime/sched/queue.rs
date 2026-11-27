@@ -49,11 +49,15 @@ pub(crate) const DYNAMIC_POOL_MAX: usize = 64;
 /// A pooled [`DynamicState`], valid until the next collection.
 pub(crate) struct PooledDynamic(pub(crate) DynamicState<'static>);
 
+// SAFETY: the pooled state is reached only through `Worker::dynamic_pool`'s mutex, and it holds
+// no thread-affine data (it is valid until the next collection, which clears the pools).
 unsafe impl Send for PooledDynamic {}
 
 /// A dead thread's header, parked on a free list until the next spawn.
 pub(crate) struct FreeG(pub(crate) Box<VirtualThread>);
 
+// SAFETY: a parked header belongs to a dead thread. It sits on a free list behind a lock until
+// the next spawn takes it, so no other thread holds a reference to it.
 unsafe impl Send for FreeG {}
 
 /// How many headers to move to the global list when a local list holds `len`.
@@ -620,5 +624,81 @@ impl Shared {
         for slot in &self.slots {
             slot.local.lock().for_each(&mut f);
         }
+    }
+}
+
+#[cfg(test)]
+mod level_queue_tests {
+    use super::*;
+
+    fn drain(q: &mut LevelQueue<u32>) -> Vec<u32> {
+        let mut out = Vec::new();
+        while let Some(x) = q.pop_best() {
+            out.push(x);
+        }
+        out
+    }
+
+    #[test]
+    fn serves_urgent_levels_first_and_fifo_within_one() {
+        let mut q = LevelQueue::new();
+        q.push(10, 2, false);
+        q.push(11, 2, false);
+        q.push(20, 0, false);
+        q.push(12, 2, true); // the hot end of level 2
+        assert_eq!(q.len(), 4);
+        assert_eq!(q.mask(), 0b101);
+        assert_eq!(drain(&mut q), vec![20, 12, 10, 11]);
+        assert_eq!((q.len(), q.mask()), (0, 0));
+    }
+
+    #[test]
+    fn pop_worst_takes_the_least_urgent_level() {
+        let mut q = LevelQueue::new();
+        q.push(1, 0, false);
+        q.push(2, 1, false);
+        assert_eq!(q.pop_worst(), Some(2));
+        assert_eq!(q.mask(), 0b1);
+        assert_eq!(q.pop_worst(), Some(1));
+        assert_eq!(q.pop_worst(), None);
+    }
+
+    #[test]
+    fn out_of_range_level_is_clamped() {
+        let mut q = LevelQueue::new();
+        q.push(7, 200, false);
+        assert_eq!(q.len(), 1);
+        assert_eq!(q.pop_best(), Some(7));
+    }
+
+    #[test]
+    fn steal_half_takes_from_the_back_and_keeps_refused_items_in_order() {
+        let mut q = LevelQueue::new();
+        for x in 0..6 {
+            q.push(x, 0, false);
+        }
+        // Wants 3 of 6 from the back. 4 is refused and stays, so the third taken is 2.
+        let stolen = q.steal_half(|x| *x != 4);
+        assert_eq!(stolen, vec![5, 3, 2]);
+        assert_eq!(q.len(), 3);
+        assert_eq!(drain(&mut q), vec![0, 1, 4]);
+    }
+
+    #[test]
+    fn steal_half_on_empty_queue_is_empty() {
+        let mut q: LevelQueue<u32> = LevelQueue::new();
+        assert!(q.steal_half(|_| true).is_empty());
+    }
+
+    #[test]
+    fn rebucket_refiles_and_preserves_counts() {
+        let mut q = LevelQueue::new();
+        for x in 0..8 {
+            q.push(x, 0, false);
+        }
+        q.rebucket(|x| if x % 2 == 0 { 1 } else { 0 });
+        assert_eq!(q.len(), 8);
+        assert_eq!(q.mask(), 0b11);
+        assert_eq!(drain(&mut q), vec![1, 3, 5, 7, 0, 2, 4, 6]);
     }
 }

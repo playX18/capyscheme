@@ -236,6 +236,7 @@ pub fn emit_dispatch(masm: &mut Masm, map: Label) {
             loadb {t5}, [{pc}];
             jmp {slot};
         );
+
         let _ = map;
     }
     #[cfg(not(target_arch = "aarch64"))]
@@ -261,6 +262,7 @@ pub fn emit_dispatch_preloaded(masm: &mut Masm, map: Label) {
         onlineasm!(*masm.assembler();
             jmp {slot};
         );
+
         let _ = map;
     }
     #[cfg(not(target_arch = "aarch64"))]
@@ -364,6 +366,8 @@ pub fn emit_scheme_entry(masm: &mut Masm, enter: Label, map: Label) {
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
+        // x86-64 dispatches through the map label at every `emit_dispatch`; only
+        // aarch64 keeps the base in a register and needs it set here.
         let _ = map;
     }
     onlineasm!(*masm.assembler();
@@ -449,6 +453,8 @@ pub fn emit_bail_handler(masm: &mut Masm, bail: Extern, op: u8, _width: u8) {
         || op == def::OpcodeId::OpTailCall as u8
         || op == def::OpcodeId::OpCallSelf as u8
         || op == def::OpcodeId::OpTailCallSelf as u8
+        || op == def::OpcodeId::OpApply as u8
+        || op == def::OpcodeId::OpTailApply as u8
     {
         let md = regs::MD;
         onlineasm!(*masm.assembler();
@@ -1404,13 +1410,6 @@ pub enum SwitchSearchKind {
 
 /// A sparse switch-table search, emitted at the current position and
 /// entered with `call`
-///
-/// Convention: `T0` is the entries pointer, `T1` the count, `T2` the key
-/// (the low 32 bits for [`SwitchSearchKind::Int`], the masked hash for
-/// [`SwitchSearchKind::Sym`]). Returns with `T1` set to 1 and `T2` to the
-/// sign-extended displacement on a hit, `T1` set to 0 on a miss (the
-/// caller loads `default` itself, off the hot path). Clobbers `T0`..`T3`,
-/// every SABI register is preserved.
 pub fn emit_switch_search(masm: &mut Masm, kind: SwitchSearchKind) {
     let (search, hit, miss, greater) = (masm.label(), masm.label(), masm.label(), masm.label());
     masm.bind(search);

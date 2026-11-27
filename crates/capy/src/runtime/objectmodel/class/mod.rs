@@ -1,26 +1,30 @@
 use crate::runtime::MutationContext;
 
 pub(crate) mod builtin;
-pub(crate) mod ic;
+pub(crate) mod combination;
 pub(crate) mod descriptor;
 pub(crate) mod flags;
 pub(crate) mod generic;
 pub(crate) mod hooks;
+pub(crate) mod ic;
 pub(crate) mod instance;
+pub(crate) mod lock;
 mod ops;
 pub(crate) mod parse;
 pub(crate) mod slot;
+pub(crate) mod specializer;
 pub(crate) mod storage;
 pub(crate) mod table;
 
+pub use combination::MethodCombination;
 pub use descriptor::ClassDescriptor;
-pub use flags::{ClassCategory, ClassFlags};
+pub use flags::{ClassCategory, ClassFlags, LayoutFamily};
 pub use generic::{
     GenericDescriptor, GenericDispatchError, GenericFlags, GenericInvocation, MethodDescriptor,
     MethodFlags, NextMethodDescriptor, SLOT_PROTOCOL_GENERICS, fire_slot_protocol,
-    generic_descriptor_from_value, generic_procedure, is_slot_protocol_generic,
+    generic_descriptor_from_value, generic_procedure,
 };
-pub(crate) use generic::{OP_BOUND, OP_REF, OP_SET};
+pub(crate) use generic::{OP_BOUND, OP_REF, OP_SET, OP_UNBIND};
 pub use hooks::{PrimitiveLayoutHooks, PrimitiveOperationHooks};
 pub use instance::{
     SchemeInstance, compare_primitive_values, hash_primitive_value, print_primitive_value,
@@ -31,6 +35,7 @@ pub use slot::{
     SlotAccessError, SlotAccessorDefinition, SlotAccessorDescriptor, SlotDefinitionDescriptor,
     SlotDescriptor, SlotFlags, SlotInitError, SlotSpec,
 };
+pub use specializer::EqlSpecializer;
 pub use table::{
     ClassTable, ClassTableError, SchemeClassSpecError, class_table, init_builtin_classes,
     primitive_layout_hooks_for_class_id,
@@ -44,7 +49,7 @@ pub(crate) use descriptor::{
     slot_definition_list,
 };
 pub(crate) use ops::init_class_ops;
-pub(crate) use parse::parse_class_list;
+pub(crate) use parse::{parse_class_list, parse_specializer_list};
 pub(crate) use storage::registered_header_word as slot_storage_header_word;
 
 /// Whether `value` is the built-in `make-instance` procedure that the boot
@@ -66,5 +71,5 @@ pub(crate) fn is_make_instance_procedure<'gc>(
 }
 pub(crate) use table::{
     ClassListError, class_table_initialized, is_type_class_registered,
-    register_internal_type_class_if_ready,
+    register_internal_type_class_if_ready, registered_layout_family,
 };

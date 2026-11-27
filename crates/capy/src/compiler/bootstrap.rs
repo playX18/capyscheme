@@ -1,34 +1,18 @@
 use std::path::Path;
 
-use crate::compiler::LoweredProgram;
+use crate::compiler::direct::{SeedProgram, lower_term};
 use crate::runtime::{MutationContext, objectmodel::Value};
 
-#[cfg(feature = "bootstrap")]
 use crate::{
-    compiler::pipeline::lower_to_cps,
     expander::core::denotations,
     runtime::objectmodel::Str,
     runtime::vm::thunks::{make_io_error, make_lexical_violation},
 };
 
-#[cfg(not(feature = "bootstrap"))]
-pub fn compile_file<'gc>(
-    _: MutationContext<'gc>,
-    file: impl AsRef<Path>,
-    _: bool,
-) -> Result<LoweredProgram<'gc>, Value<'gc>> {
-    unreachable!(
-        "compile_file should not be called after bootstrap is complete, trying to compile: {}",
-        file.as_ref().display()
-    );
-}
-
-#[cfg(feature = "bootstrap")]
 pub fn compile_file<'gc>(
     ctx: MutationContext<'gc>,
     file: impl AsRef<Path>,
-    dump_graph: bool,
-) -> Result<LoweredProgram<'gc>, Value<'gc>> {
+) -> Result<SeedProgram<'gc>, Value<'gc>> {
     let file = file.as_ref();
 
     let file_in = std::fs::File::open(file).map_err(|e| {
@@ -79,7 +63,7 @@ pub fn compile_file<'gc>(
                         format!("{}: {err}", file.display()),
                     )
                 })?;
-        return lower_to_cps(ctx, il, true, dump_graph);
+        return lower_term(ctx, il);
     }
 
     let begin = env.denotations.denotation_of_begin;
@@ -94,5 +78,5 @@ pub fn compile_file<'gc>(
         make_lexical_violation(ctx, "compile-file", format!("{}: {err}", file.display()))
     })?;
 
-    lower_to_cps(ctx, il, true, dump_graph)
+    lower_term(ctx, il)
 }

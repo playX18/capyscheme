@@ -1,10 +1,6 @@
 //! Core virtual machine: call dispatch, stack management, and Scheme ↔ native transitions.
 
-use std::{
-    cell::Cell,
-    io::ErrorKind,
-    sync::atomic::Ordering,
-};
+use std::{cell::Cell, io::ErrorKind, sync::atomic::Ordering};
 
 use crate::heap::object::builtin_class_ids;
 use crate::runtime::interp::markers;
@@ -89,13 +85,14 @@ pub unsafe fn call_scheme_with_k<'gc>(
     rator: Value<'gc>,
     args: impl IntoIterator<Item = Value<'gc>>,
 ) -> ExecutionResult<'gc> {
-    if !is_procedure(rator) && !rator.is::<crate::runtime::objectmodel::class::GenericDescriptor>() {
+    if !is_procedure(rator) && !rator.is::<crate::runtime::objectmodel::class::GenericDescriptor>()
+    {
         return ExecutionResult::Err(rator);
     }
     #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
     if crate::runtime::codegen::template_image::runs_template(ctx) {
         // Install the generated markers before any frame below uses them.
-        crate::runtime::codegen::template_image::ensure_loaded();
+        let _ = crate::runtime::codegen::template_image::ensure_loaded();
     }
     let args: smallvec::SmallVec<[Value<'gc>; 8]> = args.into_iter().collect();
     // SAFETY: the activation record lives until `pop_activation` below, and

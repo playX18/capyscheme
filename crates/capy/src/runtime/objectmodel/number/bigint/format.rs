@@ -57,7 +57,6 @@ impl<'gc> fmt::Debug for BigInt<'gc> {
     }
 }
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Base {
     pub digit_space: &'static [char],

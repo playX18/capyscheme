@@ -701,4 +701,3 @@ impl<'gc> HamtTrie<'gc> {
         }
     }
 }
-

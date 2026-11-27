@@ -300,7 +300,8 @@ impl<'gc> Str<'gc> {
     /// Allocates a mutable string by repeating one character.
     pub fn from_char(mc: impl Into<Mutation<'gc>>, c: char, count: usize) -> Gc<'gc, Self> {
         let mc = mc.into();
-        if c as u32 <= 0xff {
+        // An empty string is always backed by the (narrow) null buffer.
+        if c as u32 <= 0xff || count == 0 {
             let buf = if count == 0 {
                 null_stringbuf(mc)
             } else {
@@ -350,11 +351,10 @@ impl<'gc> Str<'gc> {
     ) -> Gc<'gc, Self> {
         let mc = mc.into();
         let str = contents.as_ref();
-        let buf = if str.is_empty() {
-            null_stringbuf(mc)
-        } else {
-            Stringbuf::new(mc, str.chars().count(), true)
-        };
+        if str.is_empty() {
+            return Self::new(mc, "", read_only);
+        }
+        let buf = Stringbuf::new(mc, str.chars().count(), true);
 
         let chars = buf.wide_chars_mut();
         for (i, c) in str.chars().enumerate() {
@@ -365,7 +365,7 @@ impl<'gc> Str<'gc> {
             Self {
                 stringbuf: Lock::new(buf),
                 start: Cell::new(0),
-                length: str.len(),
+                length: str.chars().count(),
             },
             string_header_word(read_only),
         )
@@ -436,6 +436,37 @@ impl<'gc> Str<'gc> {
         }
     }
 
+    /// A fresh mutable string holding the characters of `a` then `b`. Two
+    /// narrow strings are joined byte for byte; anything else goes through
+    /// UTF-8.
+    pub fn concat2(mc: impl Into<Mutation<'gc>>, a: Gc<'gc, Self>, b: Gc<'gc, Self>) -> Gc<'gc, Self> {
+        let mc = mc.into();
+        let len = a.length + b.length;
+        if len == 0 {
+            return Self::new(mc, "", false);
+        }
+        if let (Some(x), Some(y)) = (a.chars(), b.chars()) {
+            let buf = Stringbuf::new(mc, len, false);
+            let chars = buf.chars_mut();
+            chars[..x.len()].copy_from_slice(x);
+            chars[x.len()..].copy_from_slice(y);
+            return mc.allocate_with(
+                Self {
+                    stringbuf: Lock::new(buf),
+                    start: Cell::new(0),
+                    length: len,
+                },
+                string_header_word(false),
+            );
+        }
+        let mut buffer = String::with_capacity(len * 4);
+        {
+            use std::fmt::Write as _;
+            write!(buffer, "{}{}", a, b).unwrap();
+        }
+        Self::new(mc, &buffer, false)
+    }
+
     pub fn substring(
         this: Gc<'gc, Self>,
         mc: impl Into<Mutation<'gc>>,
@@ -478,9 +509,13 @@ impl<'gc> Str<'gc> {
         let mc = mc.into();
         if Self::try_narrow(this, mc) {
             let chars = this.chars().expect("string buffer encoding matches branch");
-            // SAFETY: Pointer is valid for the given element count
-            let slice = unsafe { std::slice::from_raw_parts(chars.as_ptr(), this.len()) };
-            Some(std::str::from_utf8(slice).unwrap())
+            // Narrow strings are Latin-1; only the ASCII subset is valid UTF-8 as-is.
+            if chars.is_ascii() {
+                // SAFETY: ASCII bytes are valid UTF-8
+                Some(unsafe { std::str::from_utf8_unchecked(chars) })
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -638,6 +673,7 @@ impl<'gc> Str<'gc> {
         }
         if value as u32 > 0xff && this.is_narrow() {
             let new_buf = this.stringbuf.get().wide(mc);
+            new_buf.set_mutable(true);
             barrier::field!(Gc::write(mc, this), Self, stringbuf)
                 .unlock()
                 .set(new_buf);
@@ -654,8 +690,8 @@ impl<'gc> Str<'gc> {
     }
 
     pub fn contains_char(&self, c: char) -> bool {
-        if self.is_narrow() && c.is_ascii() {
-            self.chars().is_some_and(|chars| chars.contains(&(c as u8)))
+        if self.is_narrow() {
+            c as u32 <= 0xff && self.chars().is_some_and(|chars| chars.contains(&(c as u8)))
         } else {
             self.wide_chars().is_some_and(|chars| chars.contains(&c))
         }
@@ -770,10 +806,15 @@ fn compare_strings<'gc>(
     }
 }
 
+/// Decodes a narrow (Latin-1) string buffer; each byte is the code point U+0000..U+00FF.
+fn latin1_to_string(bytes: &[u8]) -> String {
+    bytes.iter().map(|&b| b as char).collect()
+}
+
 impl<'gc> std::fmt::Debug for Str<'gc> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(chars) = self.chars() {
-            write!(f, "{:?}", std::str::from_utf8(chars).unwrap())
+            write!(f, "{:?}", latin1_to_string(chars))
         } else if let Some(wide_chars) = self.wide_chars() {
             let mut str = std::string::String::new();
             for c in wide_chars {
@@ -789,7 +830,7 @@ impl<'gc> std::fmt::Debug for Str<'gc> {
 impl<'gc> std::fmt::Display for Str<'gc> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(chars) = self.chars() {
-            write!(f, "{}", std::str::from_utf8(chars).unwrap())
+            write!(f, "{}", latin1_to_string(chars))
         } else if let Some(wide_chars) = self.wide_chars() {
             let mut str = std::string::String::new();
             for c in wide_chars {
@@ -827,7 +868,7 @@ impl<'gc> Ord for Str<'gc> {
 impl<'gc> PartialEq<str> for Str<'gc> {
     fn eq(&self, other: &str) -> bool {
         if let Some(chars) = self.chars() {
-            return std::str::from_utf8(chars).expect("narrow string bytes are utf8") == other;
+            return latin1_to_string(chars) == other;
         }
 
         if let Some(wide_chars) = self.wide_chars() {
@@ -839,14 +880,14 @@ impl<'gc> PartialEq<str> for Str<'gc> {
 }
 
 impl<'gc> Hash for Str<'gc> {
+    // Equal strings hash equally whatever their buffer encoding: a substring of
+    // a wide string is wide even when it holds only ASCII.
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         if self.is_narrow() {
-            state.write_u8(0xde);
             for c in self.chars().expect("string buffer encoding matches branch") {
-                state.write_u8(*c);
+                state.write_u32(*c as u32);
             }
         } else {
-            state.write_u8(0xee);
             for c in self
                 .wide_chars()
                 .expect("string buffer encoding matches branch")

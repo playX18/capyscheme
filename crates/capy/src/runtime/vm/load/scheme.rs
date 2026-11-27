@@ -1,31 +1,30 @@
 use std::path::{Path, PathBuf};
 
-use crate::compiler::{
-    BackendDumpOptions, CompilationOptions, DumpArtifactsOptions, LoweredProgram,
-    begin_compilation_artifact, dump_lowered_program_artifacts, lower_expanded_to_cps,
-    merge_compile_dump_options, resolve_artifact_dump_path,
-};
 use crate::list;
 use crate::prelude::*;
 use crate::runtime::objectmodel::{Closure, Str, Symbol, Value};
-use crate::runtime::vm::base::scm_log_level;
-use crate::runtime::builtins::expand::TermConverter;
-use crate::runtime::vm::libraries::LIBRARY_COLLECTION;
+#[cfg(feature = "bootstrap")]
+use crate::runtime::vm::libraries;
 use crate::runtime::vm::thunks::make_io_error;
 #[cfg(feature = "bootstrap")]
 use crate::runtime::vm::thunks::make_lexical_violation;
 use capy_derive::scheme;
 
+#[cfg(feature = "bootstrap")]
+use super::artifact::LoadArtifact;
+#[cfg(feature = "bootstrap")]
+use super::compile::{
+    CompilationPhase, Unsaved, destination_artifact_for_current_policy, load_unsaved, take_unsaved,
+};
+#[cfg(feature = "bootstrap")]
+use super::compile::{ExpandedJob, compile_lowered_to_destination};
+use super::hash;
 use super::paths::{fallback_file_name, find_path_to};
 use super::{
-    artifact::LoadArtifact,
-    compile::{
-        CompilationPhase, ExpandedJob, Unsaved, compile_lowered_to_destination,
-        destination_artifact_for_current_policy, load_thunk_in_vicinity, load_unsaved,
-        take_unsaved,
-    },
+    compile::{load_thunk_candidates, load_thunk_in_vicinity},
     policy::set_fasl_debug_entries,
 };
+#[cfg(feature = "bootstrap")]
 use crate::runtime::compile_service::{self, Failure, JobInput};
 
 type LoadResult<'gc> = Result<Value<'gc>, Value<'gc>>;
@@ -56,28 +55,44 @@ pub(super) mod load_ops {
         result
     }
 
-    #[scheme(name = "%compile")]
-    pub fn compile(
+    /// `(%compile-seed expanded destination [load-thunk? [dump-selections [preprocessed]]])`:
+    /// compiles the expanded Scheme EXPANDED (the output of psyntax) to the artifact
+    /// DESTINATION with the seed emitter and returns its load thunk. Bootstrap builds only:
+    /// the installed runtime has no compiler here, `(core compiler)` does this in Scheme.
+    /// The trailing arguments are accepted for the callers of `%compile` and ignored.
+    #[scheme(name = "%compile-seed")]
+    pub fn compile_seed(
         expanded: Value<'gc>,
         destination: StringRef<'gc>,
         load_thunk: Option<bool>,
         dump_selections: Option<Value<'gc>>,
         preprocessed: Option<bool>,
     ) -> LoadResult<'gc> {
-        let dump_options = compile_dump_options(ctx, dump_selections);
-        let result = compile_expanded_to_destination(
-            ctx,
-            expanded,
-            destination.to_string().as_str(),
-            CompilationOptions {
-                backtraces: compile_backtraces_enabled(ctx),
-                ..CompilationOptions::default()
-            },
-            load_thunk.unwrap_or(true),
-            dump_options,
-            preprocessed.unwrap_or(false),
-        );
-        result
+        let _ = (dump_selections, preprocessed);
+        #[cfg(feature = "bootstrap")]
+        {
+            compile_expanded_to_destination(
+                ctx,
+                expanded,
+                destination.to_string().as_str(),
+                load_thunk.unwrap_or(true),
+            )
+        }
+        #[cfg(not(feature = "bootstrap"))]
+        {
+            let _ = (expanded, destination, load_thunk);
+            Err(make_io_error(
+                ctx,
+                "%compile-seed",
+                Str::new(
+                    ctx,
+                    "%compile-seed is not available in non-bootstrap builds",
+                    true,
+                )
+                .into(),
+                &[],
+            ))
+        }
     }
 
     /// Compiles the source file `source` to the artifact `destination` with the Rust boot
@@ -118,6 +133,57 @@ pub(super) mod load_ops {
         }
     }
 
+    /// `(%load-program-bytevector bv)`: the load thunk of the FASL code image in the
+    /// bytevector BV, what `%compile` returns with `load-thunk?` true. BV is the output of
+    /// `fasl-write->bytevector` on a program datum.
+    #[scheme(name = "%load-program-bytevector")]
+    pub fn load_program_bytevector(bv: Gc<'gc, ByteVector>) -> LoadResult<'gc> {
+        super::super::compile::load_unsaved(ctx, bv.as_slice(), Path::new("<bytevector>"))
+    }
+
+    /// `(%store-compiled-image bv path)`: writes the compiled image BV (the output of
+    /// `fasl-write->bytevector` on a program datum) to the artifact PATH, as `%compile` does:
+    /// extension, lock and atomic rename. Returns the path written, or #f when an image for
+    /// the compile cache cannot be stored (the caller then loads BV from memory).
+    #[scheme(name = "%store-compiled-image")]
+    pub fn store_compiled_image(bv: Gc<'gc, ByteVector>, path: StringRef<'gc>) -> LoadResult<'gc> {
+        match super::super::compile::store_compiled_image(
+            ctx,
+            path.to_string().as_str(),
+            bv.as_slice(),
+        )? {
+            Some(path) => Ok(Str::new(ctx, path.display().to_string(), true).into()),
+            None => Ok(Value::new(false)),
+        }
+    }
+
+    /// `(%bytecode-isa)`: the instruction set of `bytecode/def.rs` as an alist, see
+    /// `boundary::bytecode_isa`. `tools/gen-isa.scm` writes it to
+    /// `core/compiler/bytecode/isa.scm`.
+    #[scheme(name = "%bytecode-isa")]
+    pub fn bytecode_isa() -> LoadResult<'gc> {
+        super::super::boundary::bytecode_isa(ctx).map_err(|message| {
+            make_io_error(
+                ctx,
+                "%bytecode-isa",
+                Str::new(ctx, message, true).into(),
+                &[],
+            )
+        })
+    }
+
+    /// `(%primitive-table)`: what the compiler asks of each primitive, see
+    /// `boundary::primitive_table`.
+    #[scheme(name = "%primitive-table")]
+    pub fn primitive_table() -> Value<'gc> {
+        super::super::boundary::primitive_table(ctx)
+    }
+
+    /// `(try-load-thunk-in-vicinity filename resolve-relative [vicinity])`: the thunk of a
+    /// compiled file named by FILENAME, or for a source file the list
+    /// `(source full-source cache-artifact candidates)`: the artifact the source is compiled
+    /// to in the compile cache, and the existing artifacts that may hold its compiled form.
+    /// Which of them is fresh is for the caller to decide, see `fasl-needs-recompile?`.
     #[scheme(name = "try-load-thunk-in-vicinity")]
     pub fn scm_try_load_thunk_in_vicinity(
         filename: StringRef<'gc>,
@@ -126,9 +192,114 @@ pub(super) mod load_ops {
     ) -> LoadResult<'gc> {
         let filename = PathBuf::from(filename.as_gc_ref().to_string());
         let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_gc_ref().to_string()));
-        let result =
-            load_thunk_in_vicinity::<false>(ctx, filename, in_vicinity, resolve_relative, None);
+        let result = load_thunk_candidates(ctx, filename, in_vicinity, resolve_relative);
         result
+    }
+
+    /// `(%file-hash path)`: the hash of the bytes of the file, or `#f` when it cannot be read.
+    #[scheme(name = "%file-hash")]
+    pub fn file_hash(path: StringRef<'gc>) -> Value<'gc> {
+        match std::fs::read(path.to_string()) {
+            Ok(bytes) => Str::new(ctx, super::hash::hash_bytes(&bytes), true).into(),
+            Err(_) => Value::new(false),
+        }
+    }
+
+    /// `(%datum-hash datum)`: the hash of a datum, see `fasl` decls.
+    #[scheme(name = "%datum-hash")]
+    pub fn datum_hash(datum: Value<'gc>) -> Value<'gc> {
+        Str::new(ctx, super::hash::hash_datum(datum), true).into()
+    }
+
+    /// `(%compiler-id)`: the id of this compiler, see `compiler_id`.
+    #[scheme(name = "%compiler-id")]
+    pub fn compiler_id() -> Value<'gc> {
+        Str::new(ctx, super::hash::compiler_id(), true).into()
+    }
+
+    /// `(%fasl-directory path)`: the directory header of the FASL image `path` as
+    /// `fasl-read-directory` reads it, or `#f` when the file is missing, is not an image
+    /// of this compiler, or has no directory.
+    #[scheme(name = "%fasl-directory")]
+    pub fn fasl_directory(path: StringRef<'gc>) -> Value<'gc> {
+        use crate::runtime::fasl::Reader;
+        let result = std::fs::File::open(path.to_string())
+            .and_then(|file| Reader::new(ctx, file).read_directory());
+        match result {
+            Ok(Some(directory)) => directory,
+            _ => Value::new(false),
+        }
+    }
+
+    /// `(%file-newer? a b)`: whether the file `a` was modified after the file `b`. A missing
+    /// file counts as older than anything.
+    #[scheme(name = "%file-newer?")]
+    pub fn file_newer(a: StringRef<'gc>, b: StringRef<'gc>) -> bool {
+        let time = |path: StringRef<'gc>| {
+            std::fs::metadata(path.to_string())
+                .and_then(|metadata| metadata.modified())
+                .ok()
+        };
+        match (time(a), time(b)) {
+            (Some(a), Some(b)) => a > b,
+            (Some(_), None) => true,
+            _ => false,
+        }
+    }
+
+    /// `(%static-bundle-file? path)`: whether the file is a static bundle, the output of
+    /// `capyc --static`. A bundle carries its own boot linklets, so it cannot be loaded into
+    /// a booted image, see `%run-static-bundle`.
+    #[scheme(name = "%static-bundle-file?")]
+    pub fn static_bundle_file(path: StringRef<'gc>) -> bool {
+        use std::io::Read;
+        let mut head = Vec::new();
+        std::fs::File::open(path.to_string())
+            .and_then(|file| file.take(4096).read_to_end(&mut head))
+            .is_ok()
+            && crate::runtime::fasl::is_static_bundle_image(&head)
+    }
+
+    /// `(%run-static-bundle path args)`: runs the static bundle in a process of its own, as
+    /// `capy path args...` does, and returns its exit status. The standard streams are shared.
+    #[scheme(name = "%run-static-bundle")]
+    pub fn run_static_bundle_process(path: StringRef<'gc>, args: Value<'gc>) -> LoadResult<'gc> {
+        let mut command = std::process::Command::new(std::env::current_exe().map_err(|err| {
+            make_io_error(
+                ctx,
+                "%run-static-bundle",
+                Str::new(
+                    ctx,
+                    format!("cannot find the running executable: {err}"),
+                    true,
+                )
+                .into(),
+                &[],
+            )
+        })?);
+        command.arg(path.to_string());
+        let mut rest = args;
+        while rest.is_pair() {
+            command.arg(rest.car().downcast::<Str>().to_string());
+            rest = rest.cdr();
+        }
+        match command.status() {
+            Ok(status) => Ok(Value::new(status.code().unwrap_or(1))),
+            Err(err) => Err(make_io_error(
+                ctx,
+                "%run-static-bundle",
+                Str::new(ctx, format!("cannot run {}: {err}", path.to_string()), true).into(),
+                &[],
+            )),
+        }
+    }
+
+    /// `(%cache-artifact-path source)`: where the compile cache keeps the compiled form of
+    /// the source file `source`, the same file the loader looks in.
+    #[scheme(name = "%cache-artifact-path")]
+    pub fn cache_artifact_path(source: StringRef<'gc>) -> Value<'gc> {
+        let path = fallback_file_name(ctx, PathBuf::from(source.to_string()));
+        Str::new(ctx, path.to_string_lossy(), true).into()
     }
 
     #[scheme(name = "load-thunk-in-vicinity")]
@@ -229,7 +400,10 @@ pub(super) mod load_ops {
                     let after_call =
                         make_closure_continue_loading_k(ctx, [thunk, Value::current_k()]);
                     let program = Value::list_from_slice(ctx, program);
-                    call.call_with(k, &[program, env], after_call.into());
+                    // `k` also gets the path of the file, to hash its source: the decl of a
+                    // library in it is the same as when the file is compiled the usual way.
+                    let source = Value::from(Str::new(ctx, &file, true));
+                    call.call_with(k, &[program, env, source], after_call.into());
                     return Ok(Value::undefined());
                 }
 
@@ -382,11 +556,7 @@ fn scan_boot_requires<'gc>(ctx: MutationContext<'gc>, text: &str) -> Option<Valu
 }
 
 #[scheme(continuation)]
-pub(crate) fn continue_loading_k(
-    ir: Value<'gc>,
-    _cenv: Value<'gc>,
-    _unused: Value<'gc>,
-) -> LoadResult<'gc> {
+pub(crate) fn continue_loading_k(ir: Value<'gc>) -> LoadResult<'gc> {
     let rator = call.rator.downcast::<Closure>();
     let source_and_compiled_path = rator[1].get();
     let retk = rator[2].get();
@@ -396,15 +566,18 @@ pub(crate) fn continue_loading_k(
         .expect("Expected compiled path")
         .downcast::<Str>()
         .to_string();
-    let result = compile_expanded_to_destination(
-        ctx,
-        ir,
-        compiled_path.as_str(),
-        CompilationOptions::default(),
-        true,
-        DumpArtifactsOptions::default(),
-        false,
-    );
+    #[cfg(feature = "bootstrap")]
+    let result = compile_expanded_to_destination(ctx, ir, compiled_path.as_str(), true);
+    #[cfg(not(feature = "bootstrap"))]
+    let result: LoadResult<'gc> = {
+        let _ = (ir, compiled_path);
+        Err(make_io_error(
+            ctx,
+            "load",
+            Str::new(ctx, "the runtime has no built-in compiler", true).into(),
+            &[],
+        ))
+    };
 
     match result {
         // SAFETY: `retk` is the current-continuation token captured by
@@ -417,48 +590,25 @@ pub(crate) fn continue_loading_k(
     }
 }
 
-fn compile_backtraces_enabled<'gc>(ctx: MutationContext<'gc>) -> bool {
-    let _ = ctx;
-    false
-}
-
-/// Lower, compile and write `job` on a compile thread.
+/// Seed-compile and write `job` on a compile thread.
+#[cfg(feature = "bootstrap")]
 pub(crate) fn run_expanded_job<'gc>(
     ctx: MutationContext<'gc>,
     job: ExpandedJob<'gc>,
 ) -> Result<(), Failure<'gc>> {
-    begin_compilation_artifact(&job.destination.path);
-    let lowered = lower_expanded_scheme(
-        ctx,
-        job.expanded,
-        job.dump_options.dump_graph,
-        job.preprocessed,
-    )?;
-    let mut options = job.options;
-    configure_backend_dump_paths(
-        &mut options.backend_dumps,
-        &job.destination.path,
-        job.dump_options,
-    );
-    dump_lowered_program_artifacts(ctx, &job.destination.path, &lowered, job.dump_options);
-    compile_lowered_to_destination(
-        ctx,
-        lowered,
-        options,
-        &job.destination,
-        job.unsaved.as_ref(),
-    )?;
+    let mut converter = crate::runtime::builtins::expand::TermConverter::new(ctx);
+    let ir = converter.convert(job.expanded)?;
+    let lowered = crate::compiler::direct::lower_term(ctx, ir)?;
+    compile_lowered_to_destination(ctx, lowered, &job.destination, job.unsaved.as_ref())?;
     Ok(())
 }
 
+#[cfg(feature = "bootstrap")]
 fn compile_expanded_to_destination<'gc>(
     ctx: MutationContext<'gc>,
     expanded: Value<'gc>,
     destination: &str,
-    options: CompilationOptions,
     load_thunk: bool,
-    dump_options: DumpArtifactsOptions,
-    preprocessed: bool,
 ) -> LoadResult<'gc> {
     let _phase = CompilationPhase::new(ctx);
     let destination = destination_artifact_for_current_policy(destination);
@@ -466,9 +616,6 @@ fn compile_expanded_to_destination<'gc>(
     let job = ExpandedJob {
         expanded,
         destination: destination.clone(),
-        options,
-        dump_options: merge_compile_dump_options(dump_options),
-        preprocessed,
         unsaved: Some(unsaved.clone()),
     };
     let (ctx, outcome) = compile_service::run(ctx, JobInput::Expanded(job));
@@ -484,62 +631,12 @@ fn compile_expanded_to_destination<'gc>(
     }
 }
 
-fn compile_dump_options<'gc>(
-    ctx: MutationContext<'gc>,
-    dump_selections: Option<Value<'gc>>,
-) -> DumpArtifactsOptions {
-    let mut options = if scm_log_level(ctx) >= 5 {
-        DumpArtifactsOptions::trace()
-    } else {
-        DumpArtifactsOptions::default()
-    };
-    if let Some(mut selections) = dump_selections {
-        while selections.is_pair() {
-            let selection = selections.car();
-            if selection.is::<Symbol>() {
-                let name = selection.downcast::<Symbol>().to_string();
-                options.enable(&name);
-            }
-            selections = selections.cdr();
-        }
-    }
-    merge_compile_dump_options(options)
-}
-
-fn configure_backend_dump_paths(
-    options: &mut BackendDumpOptions,
-    destination: &Path,
-    dump_options: DumpArtifactsOptions,
-) {
-    if !dump_options.enabled {
-        return;
-    }
-    if dump_options.dump_bytecode {
-        options.bytecode = Some(resolve_artifact_dump_path(destination, ".bc.txt"));
-    }
-}
-
-fn lower_expanded_scheme<'gc>(
-    ctx: MutationContext<'gc>,
-    expanded: Value<'gc>,
-    dump_graph: bool,
-    preprocessed: bool,
-) -> Result<LoweredProgram<'gc>, Value<'gc>> {
-    let mut converter = TermConverter::new(ctx);
-    let ir = converter.convert(expanded)?;
-    // Raw expander output (not `preprocessed` by the Scheme pipeline of `(boot compiler)`) still
-    // holds unexpanded primitive calls, e.g. `$sc-dispatch` from `syntax-case`. That is the case
-    // for bootstrap and for static executables, which run the fallback file compiler.
-    // `lower_expanded_to_cps` ignores the flag for preprocessed input.
-    lower_expanded_to_cps(ctx, ir, true, dump_graph, preprocessed)
-}
-
+#[cfg(feature = "bootstrap")]
 fn load_compiled_library<'gc>(
     ctx: MutationContext<'gc>,
     compiled_artifact: &LoadArtifact,
 ) -> LoadResult<'gc> {
-    let libs = LIBRARY_COLLECTION.fetch(ctx);
-    libs.load(compiled_artifact, ctx).map_err(|err| {
+    libraries::load_artifact(ctx, compiled_artifact).map_err(|err| {
         make_io_error(
             ctx,
             "load",

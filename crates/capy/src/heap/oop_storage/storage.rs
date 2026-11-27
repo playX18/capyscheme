@@ -755,3 +755,105 @@ impl Drop for WithActiveArray<'_> {
         self.storage.relinquish_block_array(self.active_array);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    // Entries are plain memory here: no collector runs, so a slot never has to hold a heap value.
+
+    #[test]
+    fn allocate_release_round_trip() {
+        let storage = OopStorage::create_strong("test-roundtrip");
+        let a = storage.allocate().expect("slot");
+        assert_eq!(storage.allocation_status(a), EntryStatus::Allocated);
+        assert_eq!(storage.allocation_count(), 1);
+        unsafe { storage.release(a) };
+        assert_eq!(storage.allocation_count(), 0);
+        assert_eq!(storage.allocation_status(a), EntryStatus::Unallocated);
+    }
+
+    #[test]
+    fn slots_are_distinct_and_blocks_grow() {
+        let storage = OopStorage::create_strong("test-grow");
+        let slots: Vec<_> = (0..1000)
+            .map(|_| storage.allocate().expect("slot"))
+            .collect();
+        let mut sorted: Vec<usize> = slots.iter().map(|p| *p as usize).collect();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 1000, "no slot is handed out twice");
+        assert!(
+            storage.block_count() > 1,
+            "1000 slots need more than one block"
+        );
+        for p in slots {
+            unsafe { storage.release(p) };
+        }
+        assert_eq!(storage.allocation_count(), 0);
+    }
+
+    #[test]
+    fn foreign_pointer_is_invalid() {
+        let storage = OopStorage::create_strong("test-invalid");
+        let other = OopStorage::create_strong("test-other");
+        let theirs = other.allocate().expect("slot");
+        assert_eq!(storage.allocation_status(theirs), EntryStatus::Invalid);
+        assert_eq!(
+            storage.allocation_status(std::ptr::null()),
+            EntryStatus::Invalid
+        );
+        unsafe { other.release(theirs) };
+    }
+
+    #[test]
+    fn contended_allocate_and_release() {
+        let storage: Arc<Box<OopStorage>> = Arc::new(OopStorage::create_strong("test-contended"));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let storage = storage.clone();
+                std::thread::spawn(move || {
+                    let mut seen = Vec::new();
+                    for round in 0..200 {
+                        let mut held = Vec::new();
+                        for _ in 0..50 {
+                            held.push(storage.allocate().expect("slot"));
+                        }
+                        for p in &held {
+                            assert_eq!(storage.allocation_status(*p), EntryStatus::Allocated);
+                        }
+                        // Release half one by one, half in bulk.
+                        let bulk = held.split_off(25);
+                        for p in held {
+                            unsafe { storage.release(p) };
+                        }
+                        unsafe { storage.release_bulk(&bulk) };
+                        if round % 50 == 0 {
+                            seen.push(storage.delete_empty_blocks());
+                        }
+                    }
+                    seen.len()
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(storage.allocation_count(), 0, "every slot came back");
+    }
+
+    #[test]
+    fn bulk_allocate_hands_out_distinct_slots() {
+        let storage = OopStorage::create_strong("test-bulk");
+        let mut ptrs = [std::ptr::null_mut(); 64];
+        let n = storage.allocate_bulk(&mut ptrs);
+        assert!(n > 0);
+        let mut sorted: Vec<usize> = ptrs[..n].iter().map(|p| *p as usize).collect();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), n);
+        unsafe { storage.release_bulk(&ptrs[..n]) };
+        assert_eq!(storage.allocation_count(), 0);
+    }
+}

@@ -5,6 +5,7 @@
 
 use std::io;
 
+pub mod program_datum;
 pub mod reader;
 pub mod stats;
 pub mod writer;
@@ -39,6 +40,8 @@ pub const FASL_TAG_RCD: u8 = 23;
 // 24-27 are reserved
 pub const FASL_TAG_BEGIN: u8 = 28;
 pub const FASL_TAG_PROGRAM: u8 = 30;
+/// Marks the directory header section, see [`Writer::with_directory`].
+pub const FASL_TAG_DIRECTORY: u8 = 31;
 
 pub const FASL_COMPRESSION_NONE: u8 = 0;
 pub const FASL_COMPRESSION_GZIP: u8 = 1;
@@ -47,7 +50,16 @@ pub const FASL_COMPRESSION_GZIP: u8 = 1;
 pub const FASL_TAG_REF: u8 = 0xFF;
 pub const FASL_TAG_REF_INIT: u8 = 0xFE;
 
-pub const FASL_MAGIC: &[u8; 8] = b"CAPYFSL\0";
+/// The last byte is the layout version: 2 added the directory header section; 3 added the flags
+/// byte after the compression byte and the SHA-256 trailer over everything after the magic.
+pub const FASL_MAGIC: &[u8; 8] = b"CAPYFSL\x03";
+
+/// Offset of the compression byte after the magic; the flags byte follows it.
+const FASL_FLAGS_OFFSET: usize = FASL_MAGIC.len() + 1;
+/// Flags byte: the image is a static bundle (its directory names `(boot static)`).
+pub const FASL_FLAG_STATIC_BUNDLE: u8 = 1;
+/// Length of the digest trailer.
+pub const FASL_DIGEST_LEN: usize = 32;
 
 pub fn fasl_payload(bytes: &[u8]) -> &[u8] {
     if bytes.starts_with(b"#!")
@@ -60,6 +72,25 @@ pub fn fasl_payload(bytes: &[u8]) -> &[u8] {
 
 pub fn is_fasl_image(bytes: &[u8]) -> bool {
     fasl_payload(bytes).starts_with(FASL_MAGIC)
+}
+
+pub fn is_static_bundle_image(bytes: &[u8]) -> bool {
+    let payload = fasl_payload(bytes);
+    payload.starts_with(FASL_MAGIC)
+        && payload
+            .get(FASL_FLAGS_OFFSET)
+            .is_some_and(|flags| flags & FASL_FLAG_STATIC_BUNDLE != 0)
+}
+
+/// A run of bytecode bytes that came from one source span: the bytes
+/// `[start, start + len)` of a code block, carrying a span id into the block's span table
+/// (1-based, 0 = none) and `SRC_FLAG_*` flags.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SrcRun {
+    pub start: u32,
+    pub len: u32,
+    pub flags: u8,
+    pub span: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -80,7 +111,7 @@ pub struct CodeSpec<'a, 'gc> {
     /// Deduplicated span values referenced by [`CodeSpec::srcmap`].
     pub spans: &'a [crate::runtime::objectmodel::Value<'gc>],
     /// Source runs in increasing byte-offset order.
-    pub srcmap: &'a [crate::compiler::bytecode::lower::SrcRun],
+    pub srcmap: &'a [SrcRun],
 }
 
 pub struct ProgramSpec<'a, 'gc> {

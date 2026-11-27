@@ -26,6 +26,42 @@ pub fn is_allowed_plan(plan: PlanSelector) -> bool {
     )
 }
 
+/// The plan used when the requested one is not allowed.
+pub const FALLBACK_PLAN: PlanSelector = PlanSelector::ConcurrentImmix;
+
+/// Replace a disallowed plan in `builder` with [`FALLBACK_PLAN`] and warn. Runs before
+/// `MMTKBuilder::build`, which is when the plan is fixed. Returns whether it replaced the plan.
+pub fn apply_plan_fallback(builder: &mut mmtk::MMTKBuilder) -> bool {
+    let requested = *builder.options.plan;
+    if is_allowed_plan(requested) {
+        return false;
+    }
+    log::warn!("GC plan {requested:?} is not supported; falling back to {FALLBACK_PLAN:?}");
+    builder.options.plan.set(FALLBACK_PLAN);
+    true
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::*;
+
+    #[test]
+    fn disallowed_plan_falls_back_before_build() {
+        let mut builder = mmtk::MMTKBuilder::new_no_env_vars();
+        builder.options.plan.set(PlanSelector::PageProtect);
+        assert!(apply_plan_fallback(&mut builder));
+        assert_eq!(*builder.options.plan, FALLBACK_PLAN);
+    }
+
+    #[test]
+    fn allowed_plan_is_kept() {
+        let mut builder = mmtk::MMTKBuilder::new_no_env_vars();
+        builder.options.plan.set(PlanSelector::SemiSpace);
+        assert!(!apply_plan_fallback(&mut builder));
+        assert_eq!(*builder.options.plan, PlanSelector::SemiSpace);
+    }
+}
+
 pub fn validate_plan(plan: PlanSelector) {
     assert!(
         is_allowed_plan(plan),

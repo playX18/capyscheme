@@ -5,26 +5,29 @@ use std::{
 
 use flate2::{Compression as FlateCompression, write::GzEncoder};
 use im::HashSet;
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 
 use crate::heap::mmtk::util::Address;
 
 use crate::runtime::{
     MutationContext,
-    record::{RTD_OPAQUE, RTD_SEALED, Rcd, Rtd},
     objectmodel::{
         BigInt, ByteVector, Complex, HashTable, HashTableType, IntoValue, Keyword, Rational, Str,
         Symbol, Tuple, Value, Vector,
     },
+    record::{RTD_OPAQUE, RTD_SEALED, Rcd, Rtd},
     vm::syntax::Syntax,
 };
 
 use super::{
-    ConstSpec, FASL_COMPRESSION_GZIP, FASL_COMPRESSION_NONE, FASL_MAGIC, FASL_TAG_BIGINT,
-    FASL_TAG_BVECTOR, FASL_TAG_CHAR, FASL_TAG_COMPLEX, FASL_TAG_DLIST, FASL_TAG_F, FASL_TAG_FIXNUM,
-    FASL_TAG_FLONUM, FASL_TAG_IMMEDIATE, FASL_TAG_KEYWORD, FASL_TAG_LOOKUP, FASL_TAG_NIL,
-    FASL_TAG_PLIST, FASL_TAG_PROGRAM, FASL_TAG_RATIONAL, FASL_TAG_RCD, FASL_TAG_REF,
-    FASL_TAG_REF_INIT, FASL_TAG_RTD, FASL_TAG_STR, FASL_TAG_SYMBOL, FASL_TAG_SYNTAX, FASL_TAG_T,
-    FASL_TAG_TUPLE, FASL_TAG_UNINTERNED_SYMBOL, FASL_TAG_VECTOR, ProgramSpec, checked_u32_len,
+    ConstSpec, FASL_COMPRESSION_GZIP, FASL_COMPRESSION_NONE, FASL_FLAG_STATIC_BUNDLE, FASL_MAGIC,
+    FASL_TAG_BIGINT, FASL_TAG_BVECTOR, FASL_TAG_CHAR, FASL_TAG_COMPLEX, FASL_TAG_DIRECTORY,
+    FASL_TAG_DLIST, FASL_TAG_F, FASL_TAG_FIXNUM, FASL_TAG_FLONUM, FASL_TAG_IMMEDIATE,
+    FASL_TAG_KEYWORD, FASL_TAG_LOOKUP, FASL_TAG_NIL, FASL_TAG_PLIST, FASL_TAG_PROGRAM,
+    FASL_TAG_RATIONAL, FASL_TAG_RCD, FASL_TAG_REF, FASL_TAG_REF_INIT, FASL_TAG_RTD, FASL_TAG_STR,
+    FASL_TAG_SYMBOL, FASL_TAG_SYNTAX, FASL_TAG_T, FASL_TAG_TUPLE, FASL_TAG_UNINTERNED_SYMBOL,
+    FASL_TAG_VECTOR, ProgramSpec, checked_u32_len,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -55,26 +58,38 @@ pub struct Writer<'gc, W: Write> {
     pub stack: Vec<Value<'gc>>,
     pub reference_map: BTreeMap<Address, u32>,
     pub initmap: HashSet<Address>,
+    /// The first list scanned with each content, for the lists of symbols only.
+    symbol_lists: HashMap<Vec<Address>, Address>,
+    /// A list of symbols to the first scanned list with the same content, see `scan`.
+    aliases: HashMap<Address, Address>,
+    directory: Option<Value<'gc>>,
+    /// Digest of everything written after the magic, appended as the trailer.
+    hasher: Sha256,
 }
 
 impl<'gc, W: Write> Writer<'gc, W> {
     pub fn put8(&mut self, byte: u8) -> io::Result<()> {
+        self.hasher.update([byte]);
         self.writer.write_all(&[byte])
     }
 
     pub fn put16(&mut self, value: u16) -> io::Result<()> {
+        self.hasher.update(value.to_le_bytes());
         self.writer.write_all(&value.to_le_bytes())
     }
 
     pub fn put32(&mut self, value: u32) -> io::Result<()> {
+        self.hasher.update(value.to_le_bytes());
         self.writer.write_all(&value.to_le_bytes())
     }
 
     pub fn put64(&mut self, value: u64) -> io::Result<()> {
+        self.hasher.update(value.to_le_bytes());
         self.writer.write_all(&value.to_le_bytes())
     }
 
     pub fn put_many(&mut self, values: impl AsRef<[u8]>) -> io::Result<()> {
+        self.hasher.update(values.as_ref());
         self.writer.write_all(values.as_ref())
     }
 
@@ -104,8 +119,26 @@ impl<'gc, W: Write> Writer<'gc, W> {
         if self
             .reference_map
             .contains_key(&obj.as_cell_raw().to_address())
+            || self.aliases.contains_key(&obj.as_cell_raw().to_address())
         {
             return Ok(());
+        }
+
+        // Equal lists of symbols are written once. Whether two of them are the same object
+        // depends on where the compiler got them, a library key such as `(core flags)` from
+        // the source or from an environment created earlier in the process, so writing them
+        // by identity made the bytes of a file depend on what else that process had loaded.
+        if let Some(content) = symbol_list_content(obj) {
+            let addr = obj.as_cell_raw().to_address();
+            match self.symbol_lists.get(&content) {
+                Some(&first) => {
+                    self.aliases.insert(addr, first);
+                    return Ok(());
+                }
+                None => {
+                    self.symbol_lists.insert(content, addr);
+                }
+            }
         }
 
         let ref_id = self.reference_map.len() as u32;
@@ -235,17 +268,19 @@ impl<'gc, W: Write> Writer<'gc, W> {
             return Ok(());
         }
 
-        if self.initmap.contains(&obj.as_cell_raw().to_address()) {
-            let ref_id = self.reference_map[&obj.as_cell_raw().to_address()];
+        let addr = obj.as_cell_raw().to_address();
+        let addr = self.aliases.get(&addr).copied().unwrap_or(addr);
+        if self.initmap.contains(&addr) {
+            let ref_id = self.reference_map[&addr];
             self.put8(FASL_TAG_REF)?;
             self.put32(ref_id)?;
             return Ok(());
         }
 
-        self.initmap.insert(obj.as_cell_raw().to_address());
+        self.initmap.insert(addr);
 
         self.put8(FASL_TAG_REF_INIT)?;
-        let ix = self.reference_map[&obj.as_cell_raw().to_address()];
+        let ix = self.reference_map[&addr];
         self.put32(ix)?;
 
         if obj.is_pair() {
@@ -454,6 +489,12 @@ impl<'gc, W: Write> Writer<'gc, W> {
         }
         self.put_header()?;
         self.put8(compression.tag())?;
+        self.put8(if self.names_static_bundle() {
+            FASL_FLAG_STATIC_BUNDLE
+        } else {
+            0
+        })?;
+        self.put_directory()?;
         self.put_lites()?;
         let mut payload = Vec::new();
         {
@@ -462,8 +503,52 @@ impl<'gc, W: Write> Writer<'gc, W> {
             writer.writer.flush()?;
         }
         self.put_payload(compression, &payload)?;
+        let digest = self.hasher.clone().finalize();
+        self.writer.write_all(&digest)?;
         self.writer.flush()?;
         Ok(())
+    }
+
+    /// Records `directory`, a plain datum, in a header section that
+    /// [`Reader::read_directory`] reads without loading the code.
+    pub fn with_directory(mut self, directory: Option<Value<'gc>>) -> Self {
+        self.directory = directory;
+        self
+    }
+
+    /// Whether the directory names its first linklet `(boot static)`, the name of a static
+    /// bundle, as opposed to a compiled library or program.
+    fn names_static_bundle(&self) -> bool {
+        let Some(directory) = self.directory else {
+            return false;
+        };
+        let key = if directory.is_pair() && directory.car().is_pair() {
+            directory.car()
+        } else {
+            directory
+        };
+        let is_symbol = |value: Value<'gc>, name: &str| {
+            value
+                .try_as::<Symbol>()
+                .is_some_and(|symbol| symbol.to_string() == name)
+        };
+        key.is_pair()
+            && is_symbol(key.car(), "boot")
+            && key.cdr().is_pair()
+            && is_symbol(key.cdr().car(), "static")
+    }
+
+    /// The directory section: a flag byte, then for [`FASL_TAG_DIRECTORY`] the datum as a
+    /// length-prefixed standalone FASL value, which shares nothing with the image.
+    fn put_directory(&mut self) -> io::Result<()> {
+        let Some(directory) = self.directory else {
+            return self.put8(0);
+        };
+        let mut bytes = Vec::new();
+        Writer::new(self.ctx, &mut bytes).write(directory)?;
+        self.put8(FASL_TAG_DIRECTORY)?;
+        self.put32(checked_u32_len(bytes.len())?)?;
+        self.put_many(bytes)
     }
 
     fn scan_program(&mut self, spec: &ProgramSpec<'_, 'gc>) -> io::Result<()> {
@@ -562,6 +647,10 @@ impl<'gc, W: Write> Writer<'gc, W> {
             stack: Vec::new(),
             reference_map: self.reference_map.clone(),
             initmap: HashSet::new(),
+            symbol_lists: HashMap::new(),
+            aliases: self.aliases.clone(),
+            directory: None,
+            hasher: Sha256::new(),
         }
     }
 
@@ -590,6 +679,24 @@ impl<'gc, W: Write> Writer<'gc, W> {
             stack: Vec::new(),
             reference_map: BTreeMap::new(),
             initmap: HashSet::new(),
+            symbol_lists: HashMap::new(),
+            aliases: HashMap::new(),
+            directory: None,
+            hasher: Sha256::new(),
         }
     }
+}
+
+/// The addresses of the elements of OBJ when it is a proper list of symbols, or `None`.
+fn symbol_list_content<'gc>(mut obj: Value<'gc>) -> Option<Vec<Address>> {
+    let mut content = Vec::new();
+    while obj.is_pair() {
+        let item = obj.car();
+        if !item.is::<Symbol>() {
+            return None;
+        }
+        content.push(item.as_cell_raw().to_address());
+        obj = obj.cdr();
+    }
+    (obj.is_null() && !content.is_empty()).then_some(content)
 }

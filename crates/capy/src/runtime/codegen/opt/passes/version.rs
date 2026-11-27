@@ -29,7 +29,7 @@ use super::loops::{
     Loop, ensure_preheader, find_loops, header_param_invariant, inst_blocks, outside_used_values,
 };
 use crate::runtime::codegen::jit::config::opt;
-use crate::runtime::codegen::opt::ir::frame_state::{FrameState, FrameStateData};
+use crate::runtime::codegen::opt::ir::frame_state::{FrameState, FrameStateData, VirtualObject};
 use crate::runtime::codegen::opt::ir::func::{Block, Func, Value, ValueDef};
 use crate::runtime::codegen::opt::ir::inst::{Edge, Inst, Op, Repr, Terminator};
 use crate::runtime::codegen::opt::ir::types::Type;
@@ -503,6 +503,15 @@ impl FrameCloner {
             .iter()
             .map(|&(reg, value)| (reg, resolve(values, value)))
             .collect();
+        let virtuals = data
+            .virtuals
+            .iter()
+            .map(|object| VirtualObject {
+                alias: resolve(values, object.alias),
+                kind: object.kind,
+                fields: object.fields.iter().map(|&f| resolve(values, f)).collect(),
+            })
+            .collect();
         let parent = data
             .parent
             .map(|parent| self.clone_frame(func, values, parent));
@@ -516,6 +525,7 @@ impl FrameCloner {
             returned: data.returned,
             rest: data.rest,
             inline_site: data.inline_site,
+            virtuals,
         });
         self.memo.insert(frame, cloned);
         cloned

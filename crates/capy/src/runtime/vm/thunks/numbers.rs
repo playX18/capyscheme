@@ -3,8 +3,8 @@ use crate::runtime::objectmodel::{IntoValue, Number};
 use crate::runtime::vm::thunk_raise;
 use crate::runtime::{
     MutationContext,
-    objectmodel::{Str, Symbol, Value},
     builtins::debug::print_stacktraces_impl,
+    objectmodel::{Str, Symbol, Value},
 };
 use std::cmp::Ordering;
 
@@ -196,7 +196,11 @@ pub fn number_le<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -
         );
     };
 
-    (Number::compare(ctx, a, b) != Some(Ordering::Greater)).into()
+    matches!(
+        Number::compare(ctx, a, b),
+        Some(Ordering::Less | Ordering::Equal)
+    )
+    .into()
 }
 
 pub fn number_ge<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
@@ -224,7 +228,11 @@ pub fn number_ge<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -
         );
     };
 
-    (Number::compare(ctx, a, b) != Some(Ordering::Less)).into()
+    matches!(
+        Number::compare(ctx, a, b),
+        Some(Ordering::Greater | Ordering::Equal)
+    )
+    .into()
 }
 
 pub fn number_plus<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) -> Value<'gc> {
@@ -336,7 +344,9 @@ pub fn number_div<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) 
         );
     };
 
-    if b.is_zero() && b.is_exact() {
+    // R6RS 11.7.4.3: only an exact dividend over an exact zero is an error;
+    // `(/ 1.0 0)` is `+inf.0` and `(/ 0.0 0)` is `+nan.0`.
+    if b.is_zero() && b.is_exact() && a.is_exact() {
         thunk_raise(
             ctx,
             make_assertion_violation(
@@ -361,11 +371,7 @@ pub fn number_div<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>, b: Value<'gc>) 
 /// `Number::quotient` and its siblings have no reduction for those domains;
 /// before this check they reached `unreachable!` and aborted the process
 /// rather than raising a Scheme condition.
-fn integer_operand<'gc>(
-    ctx: MutationContext<'gc>,
-    name: &str,
-    value: Value<'gc>,
-) -> Number<'gc> {
+fn integer_operand<'gc>(ctx: MutationContext<'gc>, name: &str, value: Value<'gc>) -> Number<'gc> {
     let Some(number) = value.number() else {
         thunk_raise(
             ctx,
@@ -478,6 +484,20 @@ pub fn inexact_to_exact<'gc>(ctx: MutationContext<'gc>, n: Value<'gc>) -> Value<
             ),
         );
     };
+    // A NaN or an infinity has no exact counterpart.
+    if let Number::Flonum(f) = n
+        && !f.is_finite()
+    {
+        thunk_raise(
+            ctx,
+            make_assertion_violation(
+                ctx,
+                Symbol::from_str(ctx, "inexact->exact").into(),
+                Str::new(ctx, "no exact representation", true).into(),
+                &[n.into_value(ctx)],
+            ),
+        );
+    }
     n.to_exact(ctx).into_value(ctx)
 }
 

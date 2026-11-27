@@ -7,8 +7,8 @@ use crate::{
     prelude::*,
     runtime::{
         MutationContext,
-        prelude::*,
         objectmodel::{Boxed, Closure, Str, Symbol, Tuple, Value},
+        prelude::*,
         variable::Variable,
     },
 };
@@ -298,6 +298,46 @@ pub mod base_ops {
             list = list.cdr();
         }
         Value::new(false)
+    }
+
+    /// `(procedure-arity-mask proc)`: the arity mask of a procedure, bit `n` set when it takes
+    /// `n` arguments and all the bits from `k` up (a negative number) when it takes `k` or more.
+    /// `#f` when the procedure is not a closure, takes a mask that does not fit a fixnum, or has
+    /// several clauses (`case-lambda`).
+    #[scheme(name = "procedure-arity-mask")]
+    pub fn procedure_arity_mask(proc: Value<'gc>) -> Value<'gc> {
+        if !proc.is::<Closure>() {
+            return Value::new(false);
+        }
+        let closure: Gc<'gc, Closure<'gc>> = proc.downcast();
+        let code_block = closure.code_block;
+        if code_block.is_native() {
+            // the closure of a native takes any number of arguments, its arity is in its properties
+            let key = ctx.intern("arity-mask");
+            let mut list = closure.meta.get();
+            while list.is_pair() {
+                let entry = list.car();
+                if entry.is_pair() && entry.car().bits() == key.bits() {
+                    return entry.cdr();
+                }
+                list = list.cdr();
+            }
+            return Value::new(false);
+        }
+        let arity = code_block.arity;
+        if arity.is_multi() {
+            return Value::new(false);
+        }
+        let fixed = arity.fixed_arity();
+        if fixed >= 30 {
+            return Value::new(false);
+        }
+        let mask = if arity.is_variadic() {
+            -(1i32 << fixed)
+        } else {
+            1i32 << fixed
+        };
+        Value::new(mask)
     }
 
     #[scheme(name = "set-procedure-properties!")]

@@ -234,15 +234,27 @@ pub(crate) unsafe extern "C" fn capy_opt_generic_method(
     }
 }
 
-/// Runs a pending safepoint on the mutator and returns.
+/// Runs a pending safepoint on the mutator and returns. The yieldpoint runs
+/// the thread's handshakes, so a lazy-deopt eviction patches this stack
+/// here; the poll then tests its own unit's invalid word.
 ///
 /// # Safety
 ///
-/// Called only from a Tier 2 yieldpoint
-pub(crate) unsafe extern "C" fn capy_opt_yield(th: *const ()) {
+/// Called only from a Tier 2 yieldpoint, with `owner` the owner word of the
+/// unit's image and the poll's frame parked.
+pub(crate) unsafe extern "C" fn capy_opt_yield(th: *const (), owner: *const u8) {
     // SAFETY: `th` is the mutator context the emitter passes.
     let ctx: MutationContext<'_> = unsafe { MutationContext::from_ptr(th) };
     yieldpoint_block(ctx);
+    // SAFETY: the poll parked a callee frame on its return address, whose
+    // header gives the optimized frame below it.
+    unsafe {
+        let parked = ctx.tc().stack.fp.get();
+        let ra = crate::runtime::interp::stack::return_address(parked);
+        if let Some(size) = crate::runtime::interp::stack::caller_frame_size(parked, ra) {
+            super::deopt::lazy::stress_tick(ctx, owner, parked.sub(size));
+        }
+    }
 }
 
 /// Collects the `count` words at `from` into a fresh vector: the extra
@@ -380,16 +392,26 @@ pub(crate) unsafe extern "C" fn capy_opt_rest_list(
 /// # Safety
 ///
 /// `th` is the current mutator's context, and `var` a variable.
+///
+/// A write that breaks an assumption of the calling unit itself (`owner` is
+/// its image's owner word) deopts: the unit must not continue. The exit
+/// resumes baseline at the `variable-set`, which stores the same value again
+/// and fires nothing, since the variable already holds it.
 pub(crate) unsafe extern "C" fn capy_opt_variable_set(
     th: *const (),
     var: u64,
     value: u64,
+    owner: *const u8,
 ) -> OptReturn {
     // SAFETY: `th` is the mutator context the emitter passes.
     unsafe {
         let ctx: MutationContext<'_> = MutationContext::from_ptr(th);
         let var = Value::from_raw(var).downcast::<crate::runtime::variable::Variable>();
         var.set(ctx, Value::from_raw(value));
+        super::deopt::lazy::stress_tick(ctx, owner, ctx.tc().stack.fp.get());
+        if super::deopt::lazy::assumption_broken(owner) {
+            return OptReturn::DEOPT;
+        }
     }
     OptReturn::ok(0)
 }
@@ -654,4 +676,207 @@ pub(crate) unsafe extern "C" fn capy_opt_string_set(
         return OptReturn::DEOPT;
     }
     OptReturn::ok(Value::undefined().bits())
+}
+
+/// The list-ref position `index` of `list`, if it is a pair.
+fn nth_pair<'gc>(list: Value<'gc>, index: usize) -> Option<Value<'gc>> {
+    let mut cursor = list;
+    for _ in 0..index {
+        if !cursor.is_pair() {
+            return None;
+        }
+        cursor = cursor.cdr();
+    }
+    cursor.is_pair().then_some(cursor)
+}
+
+/// `(list-ref list index)`. A non-fixnum or negative index, or a list with no
+/// pair at `index`, deopts, and baseline raises the error.
+///
+/// # Safety
+///
+/// Called from Tier 2 code.
+pub(crate) unsafe extern "C" fn capy_opt_list_ref(
+    _th: *const (),
+    list: u64,
+    index: u64,
+) -> OptReturn {
+    let index = Value::from_raw(index);
+    let Some(i) = index.int32().filter(|&i| i >= 0) else {
+        return OptReturn::DEOPT;
+    };
+    match nth_pair(Value::from_raw(list), i as usize) {
+        Some(pair) => OptReturn::ok(pair.car().bits()),
+        None => OptReturn::DEOPT,
+    }
+}
+
+/// `(list-head list n)`: a fresh copy of the first `n` elements. The walk
+/// that checks the list is long enough runs before the first allocation, so
+/// a deopt leaves nothing behind.
+///
+/// # Safety
+///
+/// `th` is the current mutator's context, called from Tier 2 code. It
+/// allocates without collecting.
+pub(crate) unsafe extern "C" fn capy_opt_list_head(th: *const (), list: u64, n: u64) -> OptReturn {
+    // SAFETY: `th` is the mutator context the emitter passes.
+    let ctx: MutationContext<'_> = unsafe { MutationContext::from_ptr(th) };
+    let list = Value::from_raw(list);
+    let Some(n) = Value::from_raw(n).int32().filter(|&n| n >= 0) else {
+        return OptReturn::DEOPT;
+    };
+    if n == 0 {
+        return OptReturn::ok(Value::null().bits());
+    }
+    let mut cursor = list;
+    for _ in 0..n {
+        if !cursor.is_pair() {
+            return OptReturn::DEOPT;
+        }
+        cursor = cursor.cdr();
+    }
+    let head = Value::cons(ctx, list.car(), Value::null());
+    let mut tail = head;
+    let mut cursor = list.cdr();
+    for _ in 1..n {
+        let cell = Value::cons(ctx, cursor.car(), Value::null());
+        tail.set_cdr(ctx, cell);
+        tail = cell;
+        cursor = cursor.cdr();
+    }
+    OptReturn::ok(head.bits())
+}
+
+/// `(string=? a b)` for two strings; anything else deopts.
+///
+/// # Safety
+///
+/// Called from Tier 2 code.
+pub(crate) unsafe extern "C" fn capy_opt_string_eq(_th: *const (), a: u64, b: u64) -> OptReturn {
+    let (Some(a), Some(b)) = (
+        Value::from_raw(a).try_as::<Str>(),
+        Value::from_raw(b).try_as::<Str>(),
+    ) else {
+        return OptReturn::DEOPT;
+    };
+    // Two buffers of one encoding compare as slices; mixed encodings take the
+    // general comparison.
+    let equal = match (a.chars(), b.chars()) {
+        (Some(x), Some(y)) => x == y,
+        _ => match (a.wide_chars(), b.wide_chars()) {
+            (Some(x), Some(y)) => x == y,
+            _ => *a == *b,
+        },
+    };
+    OptReturn::ok(Value::new(equal).bits())
+}
+
+/// `(string-append a b)` for two strings.
+///
+/// # Safety
+///
+/// `th` is the current mutator's context, called from Tier 2 code. It
+/// allocates without collecting.
+pub(crate) unsafe extern "C" fn capy_opt_string_append(
+    th: *const (),
+    a: u64,
+    b: u64,
+) -> OptReturn {
+    // SAFETY: `th` is the mutator context the emitter passes.
+    let ctx: MutationContext<'_> = unsafe { MutationContext::from_ptr(th) };
+    let (Some(a), Some(b)) = (
+        Value::from_raw(a).try_as::<Str>(),
+        Value::from_raw(b).try_as::<Str>(),
+    ) else {
+        return OptReturn::DEOPT;
+    };
+    OptReturn::ok(Value::from(Str::concat2(ctx, a, b)).bits())
+}
+
+/// `(substring string start end)`. A bad operand or range deopts.
+///
+/// # Safety
+///
+/// `th` is the current mutator's context, called from Tier 2 code. It
+/// allocates without collecting.
+pub(crate) unsafe extern "C" fn capy_opt_substring(
+    th: *const (),
+    s: u64,
+    start: u64,
+    end: u64,
+) -> OptReturn {
+    // SAFETY: `th` is the mutator context the emitter passes.
+    let ctx: MutationContext<'_> = unsafe { MutationContext::from_ptr(th) };
+    let Some(s) = Value::from_raw(s).try_as::<Str>() else {
+        return OptReturn::DEOPT;
+    };
+    let Some(start) = Value::from_raw(start).int32().filter(|&i| i >= 0) else {
+        return OptReturn::DEOPT;
+    };
+    let Some(end) = Value::from_raw(end).int32().filter(|&i| i >= 0) else {
+        return OptReturn::DEOPT;
+    };
+    let end = end as usize;
+    let start = start as usize;
+    if start > end || end > s.len() {
+        return OptReturn::DEOPT;
+    }
+    OptReturn::ok(Value::from(Str::substring(s, ctx, start, end)).bits())
+}
+
+/// `(list->vector list)` for a proper list; anything else deopts.
+///
+/// # Safety
+///
+/// `th` is the current mutator's context, called from Tier 2 code. It
+/// allocates without collecting.
+pub(crate) unsafe extern "C" fn capy_opt_list_to_vector(th: *const (), list: u64) -> OptReturn {
+    // SAFETY: `th` is the mutator context the emitter passes.
+    let ctx: MutationContext<'_> = unsafe { MutationContext::from_ptr(th) };
+    let list = Value::from_raw(list);
+    let Some(len) = proper_length(list) else {
+        return OptReturn::DEOPT;
+    };
+    let vector = Vector::new::<false>(ctx, len, Value::null());
+    let mut cursor = list;
+    for index in 0..len {
+        crate::heap::Gc::write(ctx, vector)[index]
+            .unlock()
+            .set(cursor.car());
+        cursor = cursor.cdr();
+    }
+    OptReturn::ok(Value::from(vector).bits())
+}
+
+/// `(vector->list vector)`.
+///
+/// # Safety
+///
+/// `th` is the current mutator's context, called from Tier 2 code. It
+/// allocates without collecting.
+pub(crate) unsafe extern "C" fn capy_opt_vector_to_list(th: *const (), vec: u64) -> OptReturn {
+    // SAFETY: `th` is the mutator context the emitter passes.
+    let ctx: MutationContext<'_> = unsafe { MutationContext::from_ptr(th) };
+    let Some(vec) = Value::from_raw(vec).try_as::<Vector>() else {
+        return OptReturn::DEOPT;
+    };
+    let mut list = Value::null();
+    for i in (0..vec.len()).rev() {
+        list = Value::cons(ctx, vec[i].get(), list);
+    }
+    OptReturn::ok(list.bits())
+}
+
+/// `(char-whitespace? c)` for a character, `#t` or `#f`.
+///
+/// # Safety
+///
+/// Called from Tier 2 code.
+pub(crate) unsafe extern "C" fn capy_opt_char_whitespace(_th: *const (), ch: u64) -> OptReturn {
+    let ch = Value::from_raw(ch);
+    if !ch.is_char() {
+        return OptReturn::DEOPT;
+    }
+    OptReturn::ok(Value::new(ch.char().is_whitespace()).bits())
 }

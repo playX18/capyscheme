@@ -9,16 +9,17 @@ use crate::{
     prelude::{IntoValue, NativeFn, PROCEDURES},
     runtime::{
         fluids::DynamicState,
-        global::{VmState, VM_STATE},
+        global::{VM_STATE, VmState},
         interp::stack::{Ip, Slot, StackState},
-        root::trace_root_guarded,
         //image::{ALLOWED_GC, AllowedGc, reader::ImageReader},
-        linklet::{LibraryInstance, Linklet, instantiate_linklet, registry_register, root_registry},
-        prelude::VariableRef,
-        objectmodel::{
-            Closure, ReturnCode, Str, Symbol, Value, Vector, init_symbols, init_weak_sets,
-            init_weak_tables,
+        linklet::{
+            LibraryInstance, Linklet, instantiate_linklet, registry_register_new, root_registry,
         },
+        objectmodel::{
+            Closure, ReturnCode, Str, Symbol, Value, init_symbols, init_weak_sets, init_weak_tables,
+        },
+        prelude::VariableRef,
+        root::trace_root_guarded,
         vm::{
             ExecutionResult, base::program_arguments_fluid, control::ContinuationMarks,
             load::load_thunk_in_vicinity, threading::ThreadObject,
@@ -34,7 +35,6 @@ use std::{
 };
 
 /// Historical name of [`Mutation`], kept so call sites need not change.
-
 mod context;
 mod engine;
 mod mutation;

@@ -5,7 +5,7 @@ use core::mem::offset_of;
 use onlineasm::onlineasm;
 
 use crate::bytecode::def::{
-    MV_IGNORE, OpCall, OpCallSelf, OpReturn, OpReturnPoint, OpReturnPointValues,
+    MV_IGNORE, OpApply, OpCall, OpCallSelf, OpReturn, OpReturnPoint, OpReturnPointValues,
     OpReturnPointValuesRest, OpReturnValues, OpTailCall, OpTailCallSelf,
 };
 use crate::runtime::codegen::masm::{Masm, RuntimeExtern};
@@ -273,6 +273,38 @@ pub fn op_tail_call<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     } else {
         context.control(masm, SlowPath::CallSlow);
     }
+}
+
+/// `apply`: a `call` whose callee frame the slow path fills: the template only
+/// stages the return point and leaves, `capy_call_slow` spreads the list and
+/// enters the callee.
+pub fn op_apply<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
+    let sfp = regs::SFP;
+    match context.operand(masm, OpApply::OPERAND_BASE, OpApply::SIGNED_BASE) {
+        Operand::Immediate(base) => {
+            onlineasm!(*masm.assembler();
+                move {tmp::T0}, {base};
+            );
+        }
+        Operand::Register(r) => {
+            if r != tmp::T0 {
+                onlineasm!(*masm.assembler();
+                    move {tmp::T0}, {r};
+                );
+            }
+        }
+    }
+    let frame = masm.assembler().mem_indexed(sfp, tmp::T0, 8, 0);
+    onlineasm!(*masm.assembler();
+        leap {tmp::T1}, {frame};
+    );
+    context.call_return_point(masm, tmp::T1);
+    context.control(masm, SlowPath::CallSlow);
+}
+
+/// `tail-apply`: see [`op_apply`].
+pub fn op_tail_apply<C: TemplateContext>(_masm: &mut Masm, context: &mut C) {
+    context.control(_masm, SlowPath::CallSlow);
 }
 
 pub fn op_call_self<C: TemplateContext>(masm: &mut Masm, context: &mut C) {

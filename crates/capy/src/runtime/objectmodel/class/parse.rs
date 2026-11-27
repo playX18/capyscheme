@@ -1,5 +1,6 @@
 use super::descriptor::ClassDescriptor;
 use super::slot::SlotSpec;
+use super::specializer::EqlSpecializer;
 use super::table::{ClassListError, SchemeClassSpecError};
 use crate::runtime::{MutationContext, objectmodel::Value};
 
@@ -180,6 +181,44 @@ pub(crate) fn parse_class_list<'gc>(
         cursor = cursor.cdr();
     }
     Ok(ids)
+}
+
+/// One element of a method's specializer list: the class part (the class,
+/// or the class of an eql object) and the eql object, `Value::empty()` for
+/// a class specializer.
+pub(crate) struct ParsedSpecializer<'gc> {
+    pub(crate) class: ClassId,
+    pub(crate) eql: Value<'gc>,
+}
+
+/// Parse the specializer list of `add-method!`: each element is a class or
+/// an `eql-specializer`.
+pub(crate) fn parse_specializer_list<'gc>(
+    values: Value<'gc>,
+) -> Result<Vec<ParsedSpecializer<'gc>>, ClassListError<'gc>> {
+    let mut cursor = values;
+    let mut parsed = Vec::new();
+    while !cursor.is_null() {
+        if !cursor.is_pair() {
+            return Err(ClassListError::NotList(cursor));
+        }
+        let value = cursor.car();
+        if let Some(class) = value.try_as::<ClassDescriptor>() {
+            parsed.push(ParsedSpecializer {
+                class: class.id(),
+                eql: Value::empty(),
+            });
+        } else if let Some(eql) = value.try_as::<EqlSpecializer>() {
+            parsed.push(ParsedSpecializer {
+                class: eql.class_id(),
+                eql: eql.object(),
+            });
+        } else {
+            return Err(ClassListError::NotClass(value));
+        }
+        cursor = cursor.cdr();
+    }
+    Ok(parsed)
 }
 
 pub(crate) fn parse_scheme_class_shape<'gc>(

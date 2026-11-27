@@ -352,8 +352,6 @@ pub fn op_switch_symbol<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
 }
 
 pub fn op_loop_hint<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
-    // The mask operand only matters to the stack walker, the fast path is
-    // the yield poll plus, when the JIT is on, the heat bump.
     let (yield_slow, hot_slow) = (masm.label(), masm.label());
     masm.yieldpoint_check(tmp::T0, yield_slow, true);
     masm.maybe_hot_check_step(

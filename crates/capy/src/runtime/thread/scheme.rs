@@ -63,7 +63,10 @@ impl Scheme {
         let runtime = t.elapsed();
         let scm = if should_init { scm.boot() } else { scm };
         if std::env::var_os("CAPY_STARTUP_DEBUG").is_some() {
-            eprintln!("startup: new_runtime {runtime:?}, boot {:?}", t.elapsed() - runtime);
+            eprintln!(
+                "startup: new_runtime {runtime:?}, boot {:?}",
+                t.elapsed() - runtime
+            );
         }
         scm
     }
@@ -98,6 +101,10 @@ impl Scheme {
     /// Creates the mutator and runs the one-time process init. The flag tells whether this
     /// call did that init, which is the one that has to boot.
     fn new_runtime() -> (Self, bool) {
+        // The main thread's `ThreadObject` is allocated below, before `init_once`. A collection
+        // can trace it as soon as it exists (always under `CAPY_GC_HEURISTIC=eager`), and
+        // that needs the layout hooks of classes owned by higher layers.
+        crate::runtime::registry::register_builtin_hooks();
         let mut should_init = false;
 
         // if VM is not initialized yet, we need to run init code
@@ -242,24 +249,49 @@ impl Scheme {
             let _boot_hold = crate::runtime::codegen::jit::BootHold::hold();
 
             let t = std::time::Instant::now();
-            let thunk = load_thunk_in_vicinity::<true>(ctx, "boot/main.scm", None::<&str>, false, None)
-                .expect("Failed to load boot/main.scm");
+            let thunk =
+                load_thunk_in_vicinity::<true>(ctx, "boot/main.scm", None::<&str>, false, None)
+                    .expect("Failed to load boot/main.scm");
             if std::env::var_os("CAPY_STARTUP_DEBUG").is_some() {
                 eprintln!("startup: load boot/main {:?}", t.elapsed());
             }
             let t = std::time::Instant::now();
 
-            match crate::runtime::sni::call_function(ctx, thunk, []) {
-                ExecutionResult::Ok(_) => {}
-                ExecutionResult::Err(err) => {
-                    // Fatal and final: make sure the message is visible
-                    // even under default-off logging before exiting.
-                    crate::heap::logging::ensure_max_level(log::LevelFilter::Error);
-                    log::error!(target: crate::heap::logging::BOOT_LOG_TARGET, "Failed to boot: {err}");
-                    crate::heap::sync::thread::Thread::begin_process_exit();
-                    std::process::exit(1);
+            let boot_fatal = |msg: &dyn std::fmt::Display| -> ! {
+                // Fatal and final: make sure the message is visible
+                // even under default-off logging before exiting.
+                crate::heap::logging::ensure_max_level(log::LevelFilter::Error);
+                log::error!(target: crate::heap::logging::BOOT_LOG_TARGET, "Failed to boot: {msg}");
+                crate::heap::sync::thread::Thread::begin_process_exit();
+                std::process::exit(1);
+            };
+            // `boot/main.scm` is a boot linklet that imports only `(#%capy)`: its load thunk
+            // returns the linklet, which is instantiated against the primitives and run, as a
+            // static bundle is. A bare program (the output of the seed emitter) has run already
+            // when its thunk returns.
+            let ran = match crate::runtime::sni::call_function(ctx, thunk, []) {
+                ExecutionResult::Ok(value) if value.is::<Linklet>() => {
+                    let linklet = value.downcast::<Linklet>();
+                    let target = LibraryInstance::new(ctx, linklet.name, false);
+                    let reg = root_registry(ctx);
+                    let capy = ctx.globals().capy_instance();
+                    let slots = instantiate_linklet(ctx, reg, linklet, &[capy], target)
+                        .unwrap_or_else(|bad| {
+                            boot_fatal(&format_args!(
+                                "boot/main imports an unbound primitive {bad}"
+                            ))
+                        });
+                    registry_register_new(ctx, reg, linklet.name, target);
+                    crate::runtime::sni::call_function(ctx, linklet.body, slots)
                 }
+                other => other,
+            };
+            if let ExecutionResult::Err(err) = ran {
+                boot_fatal(&err);
             }
+            // The boot allocates before the collector has every class's hooks, so stress
+            // collections start here.
+            crate::heap::mutator::arm_gc_stress();
             if std::env::var_os("CAPY_STARTUP_DEBUG").is_some() {
                 eprintln!("startup: run boot/main {:?}", t.elapsed());
             }
@@ -321,34 +353,26 @@ fn run_static_bundle<'gc>(ctx: MutationContext<'gc>, bytes: &[u8], args: &[Strin
         .read()
         .unwrap_or_else(|err| static_fatal(format_args!("cannot read static bundle: {err}")));
 
-    let parts = match crate::runtime::sni::call_function(ctx, thunk, []) {
-        ExecutionResult::Ok(value) if value.is::<Vector>() => value,
-        ExecutionResult::Ok(_) => static_fatal("not a static bundle"),
+    let linklet = match crate::runtime::sni::call_function(ctx, thunk, []) {
+        ExecutionResult::Ok(value) if value.is::<Linklet>() => value.downcast::<Linklet>(),
+        ExecutionResult::Ok(_) => static_fatal("not a static bundle: expected a linklet"),
         ExecutionResult::Err(err) => static_fatal(err),
     };
-    let parts = parts.downcast::<Vector>();
-    let [head, name, imports, exports, body, meta] = parts.as_slice() else {
-        static_fatal("not a static bundle: expected a linklet")
-    };
-    if *head != ctx.intern("#%linklet") {
-        static_fatal("not a static bundle: expected a linklet")
-    }
-
-    let linklet = Linklet::new(ctx, *name, *imports, *exports, *body, *meta);
-    let target = LibraryInstance::new(ctx, *name, false);
+    let (name, body) = (linklet.name, linklet.body);
+    let target = LibraryInstance::new(ctx, name, false);
     let reg = root_registry(ctx);
     let capy = ctx.globals().capy_instance();
     let slots = instantiate_linklet(ctx, reg, linklet, &[capy], target)
         .unwrap_or_else(|bad| static_fatal(format_args!("static bundle: unbound import {bad}")));
 
-    registry_register(ctx, reg, *name, target);
+    registry_register_new(ctx, reg, name, target);
 
     let argv = args.iter().rev().fold(Value::null(), |tail, arg| {
         Value::cons(ctx, Str::new(ctx, arg, true).into(), tail)
     });
     program_arguments_fluid(ctx).set(ctx, argv);
 
-    match crate::runtime::sni::call_function(ctx, *body, slots) {
+    match crate::runtime::sni::call_function(ctx, body, slots) {
         ExecutionResult::Ok(_) => {}
         ExecutionResult::Err(err) => static_fatal(err),
     }

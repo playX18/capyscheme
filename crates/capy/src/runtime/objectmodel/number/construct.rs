@@ -68,5 +68,4 @@ impl<'gc> Number<'gc> {
 
         Self::BigInt(BigInt::from_i64(ctx, n as _))
     }
-
 }

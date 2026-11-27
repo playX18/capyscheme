@@ -108,11 +108,15 @@ pub(crate) struct OptConfig {
     /// From `CAPY_OPT_UNROLL_ALL`: replicate small innermost loops that are
     /// not counted.
     pub(crate) unroll_all: bool,
+    pub(crate) unroll_full: bool,
     /// From `CAPY_OPT_SPEC_HOIST`: hoist invariant guards out of conditional
     /// loop blocks, deopting to the loop entry.
     pub(crate) spec_hoist: bool,
     /// From `CAPY_OPT_PREDICATE`: loop predication of bounds checks.
     pub(crate) predicate: bool,
+    /// From `CAPY_OPT_PEA`: partial escape analysis in place of `sroa` and
+    /// `cells`.
+    pub(crate) pea: bool,
     /// From `CAPY_OPT_LAYOUT`: reorder blocks after allocation for
     /// fallthrough, using static loop weights
     pub(crate) layout: bool,
@@ -122,7 +126,9 @@ pub(crate) struct OptConfig {
     pub(crate) regallocs: Vec<RegAllocKind>,
     /// From `CAPY_OPT_EVICT`: linear scan may evict a cheaper active piece.
     pub(crate) evict: bool,
-    /// Always true in debug builds.
+    /// Verify after every pass: debug builds or `CAPY_OPT_VERIFY=1`.
+    /// The IR is always verified once after building and the LIR once after
+    /// lowering, in every build; a failure falls back to baseline code.
     pub(crate) verify: bool,
     /// Stage names whose IR/LIR is written to `CAPY_JIT_DUMP_DIR`.
     pub(crate) dump: Vec<String>,
@@ -131,6 +137,12 @@ pub(crate) struct OptConfig {
     pub(crate) annotate: bool,
     /// Deoptimize at every n-th guard
     pub(crate) stress_deopt: usize,
+    /// From `CAPY_OPT_LAZY_DEOPT`: evict invalidated activations by patching
+    /// their return addresses rather than with post-call checks.
+    pub(crate) lazy_deopt: bool,
+    /// From `CAPY_OPT_STRESS_LAZY_DEOPT`: invalidate the running unit at
+    /// every n-th yield or watchpoint helper return.
+    pub(crate) stress_lazy_deopt: usize,
 }
 
 /// Parses `CAPY_OPT_REGALLOC` into the allocator list. Unknown or duplicate
@@ -178,8 +190,10 @@ impl OptConfig {
             version: flags::opt_version(),
             unswitch: flags::opt_unswitch(),
             unroll_all: flags::opt_unroll_all(),
+            unroll_full: flags::opt_unroll_full(),
             spec_hoist: flags::opt_spec_hoist(),
             predicate: flags::opt_predicate(),
+            pea: flags::opt_pea(),
             layout: flags::opt_layout(),
             regallocs: parse_regalloc(flags::opt_regalloc().unwrap_or("greedy")),
             evict: flags::opt_evict(),
@@ -187,6 +201,8 @@ impl OptConfig {
             dump,
             annotate: flags::opt_annotate(),
             stress_deopt: flags::opt_stress_deopt(),
+            lazy_deopt: flags::opt_lazy_deopt(),
+            stress_lazy_deopt: flags::opt_stress_lazy_deopt(),
         };
         config
     }
@@ -233,6 +249,13 @@ pub(crate) static OPT_INSTALLS: std::sync::atomic::AtomicU64 = std::sync::atomic
 pub(crate) static OPT_ENTRIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Deoptimizing exits taken from Tier 2 code (`capy_opt_deopt`).
 pub(crate) static OPT_DEOPTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Of those, lazy exits: frames of an invalidated unit leaving at a shadow
+/// return point or after a watchpoint helper.
+pub(crate) static OPT_LAZY_DEOPTS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+/// Return addresses replaced by shadow ones by lazy deopt.
+pub(crate) static OPT_LAZY_PATCHES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 /// Objects rebuilt from remat descriptors during deopt.
 pub(crate) static OPT_REMAT_OBJECTS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
@@ -244,6 +267,71 @@ pub(crate) static OPT_OSR_REFUSED_INVALID: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 /// Tier 2 builds that failed (a pass, the verifier, lowering or emission).
 pub(crate) static OPT_BUILD_FAILURES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+/// Why Tier 2 builds failed, with how often: the reason with its program counter and numbers
+/// removed, so that the same refusal at different places is one row.
+static BAILOUTS: std::sync::Mutex<Vec<(String, u64)>> = std::sync::Mutex::new(Vec::new());
+
+/// The reason of a failed build without what varies between sites: a leading `pc N: ` and every
+/// run of digits (`#`).
+pub(crate) fn bailout_reason(message: &str) -> String {
+    let message = message
+        .strip_prefix("pc ")
+        .and_then(|rest| rest.split_once(": ").map(|(_, reason)| reason))
+        .unwrap_or(message);
+    let mut out = String::with_capacity(message.len());
+    let mut in_digits = false;
+    for c in message.chars() {
+        if c.is_ascii_digit() {
+            if !in_digits {
+                out.push('#');
+            }
+            in_digits = true;
+        } else {
+            in_digits = false;
+            out.push(c);
+        }
+    }
+    out
+}
+
+static EVICTIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Counts one queued compile dropped because the queue was full.
+pub(crate) fn record_eviction() {
+    EVICTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Queued compiles dropped so far because the queue was full.
+pub(crate) fn evictions() -> u64 {
+    EVICTIONS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Counts one Tier 2 build that failed with `message`.
+pub(crate) fn record_bailout(message: &str) {
+    let reason = bailout_reason(message);
+    let mut table = BAILOUTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match table.iter_mut().find(|(known, _)| *known == reason) {
+        Some((_, count)) => *count += 1,
+        None => table.push((reason, 1)),
+    }
+}
+
+/// The bailout reasons with their counts, the most frequent first.
+pub(crate) fn bailouts() -> Vec<(String, u64)> {
+    let mut rows = BAILOUTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    rows
+}
+
+/// Code-memory spans that could not be released when an image was dropped. A nonzero count is a
+/// leak of executable memory.
+pub(crate) static CODE_RELEASE_FAILURES: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 /// Wall time inside `OptimizingCompiler::build`, in microseconds.
 pub(crate) static OPT_BUILD_MICROS: std::sync::atomic::AtomicU64 =
@@ -265,14 +353,17 @@ extern "C" fn print_jit_stats() {
         target: crate::heap::logging::STATS_LOG_TARGET,
         "jit stats: {compiles} compiles, {hit} resume hit, {miss} resume miss, \
          {uncompiled} resume uncompiled, {helper} helper slow paths, {control} control slow paths, \
-         {stubs} math stubs"
+         {stubs} math stubs, {} code release failures",
+        CODE_RELEASE_FAILURES.load(Relaxed)
     );
     log::info!(
         target: crate::heap::logging::STATS_LOG_TARGET,
-        "tier 2 stats: {} installs, {} entries, {} deopt exits, {} OSR transfers ({} refused invalid), {} remat objects, {} build failures",
+        "tier 2 stats: {} installs, {} entries, {} deopt exits ({} lazy, {} return addresses patched), {} OSR transfers ({} refused invalid), {} remat objects, {} build failures",
         OPT_INSTALLS.load(Relaxed),
         OPT_ENTRIES.load(Relaxed),
         OPT_DEOPTS.load(Relaxed),
+        OPT_LAZY_DEOPTS.load(Relaxed),
+        OPT_LAZY_PATCHES.load(Relaxed),
         OPT_OSR.load(Relaxed),
         OPT_OSR_REFUSED_INVALID.load(Relaxed),
         OPT_REMAT_OBJECTS.load(Relaxed),
@@ -303,6 +394,10 @@ extern "C" fn print_jit_stats() {
         "{}",
         crate::runtime::codegen::opt::build::calls::report()
     );
+    log::info!(target: crate::heap::logging::STATS_LOG_TARGET, "jit queue evictions: {}", evictions());
+    for (reason, count) in bailouts().iter().take(20) {
+        log::info!(target: crate::heap::logging::STATS_LOG_TARGET, "tier 2 bailout: {count:>6} {reason}");
+    }
     // Per-site deopt totals: the guard kind, the call site and the inlined
     // code block, so an inlined exit can be told apart from a root one.
     for line in crate::runtime::codegen::opt::deopt::exits::report_exit_sites() {
@@ -346,4 +441,37 @@ pub(crate) fn template_interpreter() -> &'static TemplateInterpreterAddresses {
             values_error: addr("values_error"),
         }
     })
+}
+
+#[cfg(test)]
+mod bailout_tests {
+    use super::*;
+
+    #[test]
+    fn the_reason_loses_the_pc_and_the_numbers() {
+        assert_eq!(
+            bailout_reason("pc 12: OpCall has 3 arguments"),
+            "OpCall has # arguments"
+        );
+        assert_eq!(bailout_reason("no pc here 7"), "no pc here #");
+    }
+
+    #[test]
+    fn counts_group_by_reason_and_sort_by_frequency() {
+        record_bailout("pc 1: bailout-test-b at 10");
+        record_bailout("pc 2: bailout-test-a at 11");
+        record_bailout("pc 3: bailout-test-a at 12");
+        let rows = bailouts();
+        let a = rows
+            .iter()
+            .position(|(r, _)| r == "bailout-test-a at #")
+            .unwrap();
+        let b = rows
+            .iter()
+            .position(|(r, _)| r == "bailout-test-b at #")
+            .unwrap();
+        assert_eq!(rows[a].1, 2);
+        assert_eq!(rows[b].1, 1);
+        assert!(a < b);
+    }
 }

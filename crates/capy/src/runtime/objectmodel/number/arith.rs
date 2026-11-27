@@ -1339,5 +1339,4 @@ impl<'gc> Number<'gc> {
 
         Self::exp(ctx, Self::mul(ctx, rhs, Self::log(ctx, lhs)))
     }
-
 }

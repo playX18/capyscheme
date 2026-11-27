@@ -358,5 +358,4 @@ impl<'gc> Number<'gc> {
             }
         }
     }
-
 }

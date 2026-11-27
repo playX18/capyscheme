@@ -1,77 +1,8 @@
 //! Scalar replacement of aggregates (SROA) and escape analysis.
-//!
-//! # Escape analysis
-//!
-//! Every fresh allocation (`AllocPair`, `AllocClosure`, `AllocEnv`,
-//! `AllocVector`, `AllocTuple`, `AllocInstance`) is a candidate. An object's
-//! identity is followed through `CheckClass` and `CheckCode`, whose results
-//! are guarded aliases of their operand. The analysis is field-sensitive: each
-//! field has its own access set, so mutating one field does not make another
-//! escape.
-//!
-//! A candidate is `NoEscape` when every use is one of:
-//!
-//! - a field load or store on the candidate itself (a pair field, an env slot,
-//!   a closure free variable, a vector element with a **constant** index, a
-//!   tuple field, or the vector/tuple length word);
-//! - a class or code check the fresh object always passes;
-//! - a type test or `eq?` that the analysis can fold;
-//! - a write barrier on an initialization store;
-//! - another eligible allocation that names it as a field (the object is then
-//!   pinned on the heap, because a marker cannot be written into a live
-//!   object);
-//! - a frame state, but only when the object is never mutated after it is
-//!   built: it is then rebuilt with `Op::Remat` at every exit.
-//!
-//! A candidate is `ArgEscape` when it is passed to a call, and
-//! `GlobalEscape` when it is returned, stored into another object or cell, or
-//! flows through a block parameter. There is no pure-primitive effect summary
-//! yet (Workstream 8), so **every** non-inlined call argument escapes,
-//! including primitive calls. An object that is named by a frame state after a
-//! mutation is also kept on the heap because one remat descriptor cannot name
-//! two field versions.
-//!
-//! # Scalar replacement
-//!
-//! - **Heap objects** (`remat`): a non-escaping, unmutated object that a frame
-//!   state names becomes an `Op::Remat` marker whose operands are its initial
-//!   fields. The stack map turns that into a `DeoptLoc::Materialize` and a
-//!   `RematDesc` per exit, and the deopt runtime rebuilds the object. Field
-//!   loads are forwarded, stores and barriers dropped.
-//! - **Eliminated objects**: a non-escaping object that no frame state names
-//!   is removed entirely. Its fields become SSA values. When the object is
-//!   mutated, a forward dataflow over the dominated region carries the current
-//!   version of every field across blocks; a join where the versions differ
-//!   gets a fresh block parameter and each incoming edge passes its version.
-//!   This is the SSA versioning across blocks.
-//! - **Vectors** are scalar-replaced only with a non-negative constant
-//!   element index below the static length. A vector accessed with any other
-//!   index stays on the heap, but its class check and any barrier on a fresh
-//!   initialization store are still removed (they cannot fail).
-//! - **Tuples and instances**: `AllocTuple`/`AllocInstance` are the allocation
-//!   shapes the records/classes milestone reuses. Tuple fields behave like
-//!   vector elements with a static index. An instance has no static slot
-//!   access op yet, so a slot load/store keeps it on the heap.
-//!
-//! # Identity and mutation
-//!
-//! A fresh object has a unique identity. `eq?` of an SROA'd object with itself
-//! folds to `#t`; with anything else it folds to `#f` (the object does not
-//! escape, so no other SSA value can name it). Mutations are versioned through
-//! the dataflow above, so each load sees the value of the last store on its
-//! path. Objects used as fields of other allocations stay on the heap, which
-//! keeps `eq?` of the field value a real object comparison.
-//!
-//! Representation selection ([`repr`](super::repr)) runs after this pass, so
-//! a scalarized numeric field may become an `Int64`/`Double` block parameter
-//! when all its uses allow it. A remat descriptor still records the field's
-//! location (`UnboxedI64`/`UnboxedDouble` or a tagged register/slot), and the
-//! deopt runtime rebuilds the tagged value, so unboxing does not break the
-//! remat contract.
 
 use std::collections::{HashMap, HashSet};
 
-use cranelift_entity::{EntityList, EntityRef, SecondaryMap};
+use cranelift_entity::{EntityList, SecondaryMap};
 
 use super::simplify::edges_mut;
 
@@ -79,29 +10,11 @@ use super::{PassOutcome, Subst, replace_uses};
 use crate::runtime::codegen::opt::ir::frame_state::FrameState;
 use crate::runtime::codegen::opt::ir::func::{Block, DomTree, Func, Value, ValueDef};
 use crate::runtime::codegen::opt::ir::inst::{
-    Constant, Inst, MemoryRegion, Op, PrimRef, RematKind, Terminator,
+    Constant, Inst, MemoryRegion, Op, RematKind, Terminator,
 };
 use crate::runtime::codegen::opt::ir::types::{ClassRef, CodeRef, Type};
 use crate::runtime::objectmodel::Value as SchemeValue;
 use crate::runtime::prims::def::Primitive;
-
-fn is_eq_prim(prim: PrimRef) -> bool {
-    prim.index() as u16 == Primitive::IsEq.id()
-}
-
-fn eq_root(func: &Func, value: Value) -> Option<Inst> {
-    object_of(func, value)
-}
-
-fn const_bits(func: &Func, value: Value) -> Option<u64> {
-    match func.value_def(value) {
-        ValueDef::Inst(inst) => match func.insts[inst].op {
-            Op::Const(Constant::Bits(bits)) => Some(bits),
-            _ => None,
-        },
-        ValueDef::Param { .. } => None,
-    }
-}
 
 fn eq_foldable(func: &Func, args: &[Value]) -> bool {
     if args.len() != 2 {
@@ -109,16 +22,15 @@ fn eq_foldable(func: &Func, args: &[Value]) -> bool {
     }
     let rooted = args
         .iter()
-        .filter(|&&arg| eq_root(func, arg).is_some())
+        .filter(|&&arg| object_of(func, arg).is_some())
         .count();
     let immediates = args
         .iter()
-        .filter(|&&arg| const_bits(func, arg).is_some())
+        .filter(|&&arg| func.const_bits_of(arg).is_some())
         .count();
     rooted == 2 || (rooted == 1 && immediates == 1)
 }
 
-/// The allocation shape of a candidate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Shape {
     Pair,
@@ -130,8 +42,6 @@ enum Shape {
 }
 
 impl Shape {
-    /// The builtin class id the allocation header carries, when it is a
-    /// builtin class. An instance names its own class.
     fn class_id(self) -> u32 {
         match self {
             Shape::Pair => ClassRef::PAIR.class_id(),
@@ -144,7 +54,6 @@ impl Shape {
     }
 }
 
-/// Where a field-like access lands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FieldPos {
     /// A data field, indexed from zero.
@@ -168,22 +77,15 @@ struct Candidate {
     value: Value,
     shape: Shape,
     kind: RematKind,
-    /// The object's initial fields, as the allocation operands.
     fields: Vec<Value>,
-    /// A frame state names the object (or an alias of it).
-    frame_named: bool,
-    /// A store writes one of its fields after allocation.
+    frame_referenced: bool,
     mutated: bool,
-    /// A use the analysis cannot model; the object must stay on the heap.
     unsupported: bool,
-    /// An allocation that names this object as a field.
     parents: Vec<Inst>,
     escape: Escape,
 }
 
-/// The outcome of the field dataflow for one candidate.
 struct Flow {
-    /// The field versions on entry to a block.
     in_state: HashMap<Block, Vec<Option<Value>>>,
 }
 
@@ -203,7 +105,7 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
         return PassOutcome::default();
     }
     let users = collect_users(func);
-    let named_by_frame = frame_named_values(func);
+    let referenced_by_frame = frame_referenced_values(func);
     let reserved = reserved_blocks(func);
 
     // 1. Discover candidates.
@@ -231,7 +133,7 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
                 shape,
                 kind,
                 fields,
-                frame_named: false,
+                frame_referenced: false,
                 mutated: false,
                 unsupported: false,
                 parents: Vec::new(),
@@ -243,7 +145,6 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
         return PassOutcome::default();
     }
 
-    // Reject shapes the deopt rebuild cannot reproduce with a tagged field.
     for candidate in &mut candidates {
         if candidate
             .fields
@@ -257,14 +158,10 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
 
     // 2. Escape analysis: classify every use of every candidate.
     for candidate in &mut candidates {
-        analyze_uses(func, &dom, &rpo, &users, &named_by_frame, candidate);
+        analyze_uses(func, &dom, &rpo, &users, &referenced_by_frame, candidate);
         work += func.insts.len();
     }
 
-    // A candidate named as a field of another allocation stays on the heap:
-    // a marker has no runtime value, so it cannot be written into a live
-    // object. Keeping it also keeps `eq?` on the field value a real object
-    // comparison.
     for candidate in &mut candidates {
         if !candidate.parents.is_empty() {
             candidate.unsupported = true;
@@ -283,11 +180,9 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
         if candidates[i].unsupported {
             continue;
         }
-        let frame_named = candidates[i].frame_named;
+        let frame_referenced = candidates[i].frame_referenced;
         let mutated = candidates[i].mutated;
-        if frame_named {
-            // A mutated object named by a frame needs two different field
-            // versions at one descriptor; keep it on the heap.
+        if frame_referenced {
             if !mutated {
                 remat[i] = true;
                 rewrite.push(i);
@@ -298,8 +193,7 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
             rewrite.push(i);
             continue;
         }
-        // The object is eliminated and mutated: solve for the field version
-        // at every load, adding block parameters at joins.
+
         match solve_flow(func, &dom, &reserved, &candidates[i]) {
             Some(flow) => match state_map(func, &dom, &rpo, &flow, &candidates[i]) {
                 Some(map) => {
@@ -308,9 +202,7 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
                 }
                 None => failed.push(i),
             },
-            // The flow could not be expressed (a join at an OSR header, for
-            // example). Leave the object on the heap; any parameters it added
-            // carry placeholder values and are harmless.
+            // The flow could not be expressed: leave object on the heap
             None => failed.push(i),
         }
     }
@@ -361,9 +253,7 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
         consts.extend(plan.consts);
     }
 
-    // 4. Fold reads of an object that no longer exists: `eq?`, the type
-    //    tests and the vector length. A marker cannot be read by an
-    //    instruction, and an eliminated object has no runtime value.
+    // 4. Fold reads of an object that no longer exists: `eq?`, type tests and length ops.
     let mut sroa_values: HashMap<Value, usize> = HashMap::new();
     for &i in &applied {
         sroa_values.insert(candidates[i].value, i);
@@ -372,9 +262,6 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
     fold_reads(func, &rpo, &mut subst, &mut dead, &sroa_values, &candidates);
     changed |= dead.len() != folds_before;
 
-    // 5. A fresh object always passes a matching class or code check, even
-    //    when it is not scalar-replaced. This is the "remove checks where
-    //    provable" case for vectors with a non-constant index.
     let cleanup_before = dead.len();
     cleanup_checks(func, &rpo, &mut subst, &mut dead);
     changed |= dead.len() != cleanup_before;
@@ -383,7 +270,7 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
         return PassOutcome::default();
     }
 
-    // 6. Apply the const rewrites and one substitution sweep.
+    // 5. Apply the const rewrites and one substitution sweep.
     for (inst, constant) in consts {
         if dead.contains(&inst) {
             continue;
@@ -422,7 +309,6 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
     }
 }
 
-/// The allocation shape of `inst`, and the marker that rebuilds it.
 fn shape_and_kind(func: &Func, inst: Inst) -> Option<(Shape, RematKind)> {
     let args = func.args(inst).len() as u32;
     match func.insts[inst].op {
@@ -442,8 +328,6 @@ fn shape_and_kind(func: &Func, inst: Inst) -> Option<(Shape, RematKind)> {
     }
 }
 
-/// The allocation instruction `value` names, looking through class and code
-/// checks. `None` for a value that is not a fresh allocation.
 fn object_of(func: &Func, value: Value) -> Option<Inst> {
     let mut cur = value;
     for _ in 0..64 {
@@ -464,8 +348,7 @@ fn object_of(func: &Func, value: Value) -> Option<Inst> {
     None
 }
 
-/// Every value any frame state names (registers and closures).
-fn frame_named_values(func: &Func) -> HashSet<Value> {
+fn frame_referenced_values(func: &Func) -> HashSet<Value> {
     let mut out = HashSet::new();
     for (_, frame) in func.frames.iter() {
         out.insert(frame.closure);
@@ -499,8 +382,6 @@ fn reserved_blocks(func: &Func) -> HashSet<Block> {
     out
 }
 
-/// The field a `Load`/`Store` field word names, or `None` when the shape has
-/// no such field.
 fn field_pos(shape: Shape, field: u32) -> Option<FieldPos> {
     match shape {
         Shape::Pair => (field < 2).then_some(FieldPos::Data(field as usize)),
@@ -515,8 +396,6 @@ fn field_pos(shape: Shape, field: u32) -> Option<FieldPos> {
     }
 }
 
-/// The constant index behind an element access: a tagged or raw fixnum
-/// constant, or the result of a `CheckIndex` on one.
 fn checked_index(func: &Func, value: Value) -> Option<i32> {
     if let Some(n) = const_fixnum(func, value) {
         return Some(n);
@@ -541,8 +420,6 @@ fn const_fixnum(func: &Func, value: Value) -> Option<i32> {
     }
 }
 
-/// Every result a `CheckIndex` feeds: only element accesses on the same fresh
-/// vector with a constant, in-range index.
 fn check_index_users_ok(
     func: &Func,
     users: &HashMap<Value, Vec<Inst>>,
@@ -563,8 +440,7 @@ fn check_index_users_ok(
         })
 }
 
-/// Whether a frame state (or one of its parents) names the candidate.
-fn frame_names(func: &Func, frame: Option<FrameState>, alloc: Inst) -> bool {
+fn frame_refs(func: &Func, frame: Option<FrameState>, alloc: Inst) -> bool {
     let mut cur = frame;
     while let Some(fs) = cur {
         let data = &func.frames[fs];
@@ -581,15 +457,12 @@ fn frame_names(func: &Func, frame: Option<FrameState>, alloc: Inst) -> bool {
     false
 }
 
-/// Classifies every use of `candidate`. Sets its escape class, and whether any
-/// use the pass cannot model (or a mutation after a frame) forces it onto the
-/// heap.
 fn analyze_uses(
     func: &Func,
     dom: &DomTree,
     rpo: &[Block],
     users: &HashMap<Value, Vec<Inst>>,
-    named_by_frame: &HashSet<Value>,
+    referenced_by_frame: &HashSet<Value>,
     candidate: &mut Candidate,
 ) {
     let alloc = candidate.alloc;
@@ -620,8 +493,6 @@ fn analyze_uses(
                             region: MemoryRegion::Heap,
                         } => match field_pos(candidate.shape, field) {
                             Some(FieldPos::Data(_)) => {}
-                            // The length word folds to an Int32 constant; any
-                            // other result type would need a box.
                             Some(FieldPos::Length)
                                 if inst_data
                                     .result
@@ -688,7 +559,7 @@ fn analyze_uses(
                                     checked_index(func, args[1])
                                         .is_some_and(|n| n >= 0 && (n as u32) < len)
                                         && inst_data.result.is_some_and(|result| {
-                                            !named_by_frame.contains(&result)
+                                            !referenced_by_frame.contains(&result)
                                                 && check_index_users_ok(
                                                     func, users, result, alloc, len,
                                                 )
@@ -714,11 +585,7 @@ fn analyze_uses(
                         | Op::TestHeap
                         | Op::TestCode(_)
                         | Op::EqBits => {}
-                        Op::CallPrim { prim, .. } if is_eq_prim(prim) => {}
-                        // A call observes the object itself, not just its
-                        // fields. The allocation must stay on the heap: a
-                        // marker (or a removed allocation) has no runtime
-                        // value to pass as the argument.
+                        Op::CallPrim { prim, .. } if prim.is(Primitive::IsEq) => {}
                         Op::CallPrim { .. } | Op::CallOp(_) => {
                             unsupported(candidate, Escape::ArgEscape)
                         }
@@ -748,14 +615,14 @@ fn analyze_uses(
                         | Op::AllocTuple
                         | Op::AllocInstance { .. } => candidate.parents.push(inst),
                         Op::EqBits => {}
-                        Op::CallPrim { prim, .. } if is_eq_prim(prim) => {}
+                        Op::CallPrim { prim, .. } if prim.is(Primitive::IsEq) => {}
                         _ => unsupported(candidate, Escape::ArgEscape),
                     },
                 }
             }
             if let Some(frame) = inst_data.frame {
-                if frame_names(func, Some(frame), alloc) {
-                    candidate.frame_named = true;
+                if frame_refs(func, Some(frame), alloc) {
+                    candidate.frame_referenced = true;
                     if !dom.dominates(candidate.block, block) {
                         unsupported(candidate, Escape::GlobalEscape);
                     }
@@ -802,8 +669,7 @@ fn analyze_uses(
             }
             Terminator::Jump(_) | Terminator::Deopt { .. } | Terminator::Unreachable => {}
         }
-        // Any edge argument is a block-parameter flow, which a marker cannot
-        // name (a marker has no edge value). Keep such an object on the heap.
+
         for edge in term.edges() {
             if func
                 .edge_args(&edge)
@@ -814,8 +680,8 @@ fn analyze_uses(
             }
         }
         if let Terminator::TailCall { frame, .. } | Terminator::Deopt { frame } = term {
-            if frame_names(func, Some(*frame), alloc) {
-                candidate.frame_named = true;
+            if frame_refs(func, Some(*frame), alloc) {
+                candidate.frame_referenced = true;
                 if !dom.dominates(candidate.block, block) {
                     unsupported(candidate, Escape::GlobalEscape);
                 }
@@ -824,8 +690,6 @@ fn analyze_uses(
     }
 }
 
-/// Whether `inst` stores into the candidate. Returns the field index and the
-/// stored value.
 fn store_to(func: &Func, inst: Inst, candidate: &Candidate) -> Option<(usize, Value)> {
     let data = &func.insts[inst];
     let args = func.args(inst);
@@ -857,13 +721,6 @@ fn store_to(func: &Func, inst: Inst, candidate: &Candidate) -> Option<(usize, Va
 }
 
 /// The field version dataflow over the region the allocation dominates.
-///
-/// Every field starts at its allocation operand. A store updates its field.
-/// At a join where the incoming versions differ, a block parameter carries
-/// the merged value and each edge passes its predecessor's version. The
-/// function's entry and OSR blocks are not extended (their parameters are an
-/// entry ABI), so a merge there aborts the flow and the candidate stays on
-/// the heap.
 fn solve_flow(
     func: &mut Func,
     dom: &DomTree,
@@ -882,9 +739,7 @@ fn solve_flow(
         return None;
     }
     let preds = func.predecessors();
-    // Pre-flight checks. They abort before any parameter is added, so a
-    // failed candidate never grows the IR from one pipeline round to the
-    // next.
+
     let has_join = blocks.iter().any(|&block| {
         block != candidate.block
             && preds[block]
@@ -893,6 +748,7 @@ fn solve_flow(
                 .count()
                 > 1
     });
+
     for &block in &blocks {
         if block == candidate.block {
             continue;
@@ -909,6 +765,7 @@ fn solve_flow(
             return None;
         }
     }
+
     if has_join {
         let reserved_join = blocks.iter().any(|&block| {
             block != candidate.block
@@ -920,26 +777,26 @@ fn solve_flow(
                     > 1
         });
         if reserved_join {
-            // A merge at the entry or an OSR block would need a parameter
-            // that the entry ABI does not pass.
             return None;
         }
+
         let raw = candidate
             .fields
             .iter()
-            .any(|&v| !is_tagged(func.value_type(v)))
+            .any(|&v| !func.value_type(v).is_tagged())
             || blocks.iter().any(|&block| {
                 func.blocks[block].insts.iter().any(|&inst| {
                     store_to(func, inst, candidate)
-                        .is_some_and(|(_, v)| !is_tagged(func.value_type(v)))
+                        .is_some_and(|(_, v)| !func.value_type(v).is_tagged())
                 })
             });
+
         if raw {
-            // A block parameter keeps the tagged representation. A raw field
-            // at a join would need a box this pass does not build.
+            // TODO: build mutable box
             return None;
         }
     }
+
     let mut in_state: HashMap<Block, Vec<Option<Value>>> = HashMap::new();
     let mut out_state: HashMap<Block, Vec<Option<Value>>> = HashMap::new();
     let mut phi: HashMap<(Block, usize), Value> = HashMap::new();
@@ -988,27 +845,29 @@ fn solve_flow(
                         }
                     }
                     if !ok {
-                        // A path reaches this block without initializing the
-                        // field, which dominance should have ruled out.
                         return None;
                     }
+
                     let first = values[0];
+
                     if values.iter().all(|&v| v == first) {
                         merged[field] = Some(first);
                         continue;
                     }
+
                     if let Some(&param) = phi.get(&(block, field)) {
                         merged[field] = Some(param);
                         continue;
                     }
+
                     if reserved.contains(&block) {
                         return None;
                     }
-                    // The parameter keeps the tagged representation, which is
-                    // what representation selection starts from.
-                    if values.iter().any(|&v| !is_tagged(func.value_type(v))) {
+
+                    if values.iter().any(|&v| !func.value_type(v).is_tagged()) {
                         return None;
                     }
+
                     let param = func.append_param(block, Type::Any);
                     let pos = func.params(block).len() - 1;
                     phi.insert((block, field), param);
@@ -1019,10 +878,12 @@ fn solve_flow(
                 }
                 merged
             };
+
             if in_state.get(&block) != Some(&incoming) {
                 in_state.insert(block, incoming.clone());
                 changed = true;
             }
+
             let mut state = incoming;
             let insts = func.blocks[block].insts.clone();
             for inst in insts {
@@ -1047,7 +908,7 @@ fn solve_flow(
     if !converged {
         return None;
     }
-    // Fill the actual edge arguments of every parameter the flow added.
+
     for (&(block, field), &_param) in &phi {
         let pos = phi_pos[&(block, field)];
         for &pred in &preds[block] {
@@ -1063,16 +924,6 @@ fn solve_flow(
     Some(Flow { in_state })
 }
 
-/// Whether a type is a tagged Scheme word (not a raw flag or number).
-fn is_tagged(ty: Type) -> bool {
-    !matches!(
-        ty,
-        Type::Int32 | Type::Int64 | Type::Int128 | Type::Double | Type::Bool
-    )
-}
-
-/// Extends every edge into `block` with one more argument, at position `pos`,
-/// filled with a placeholder defined in the predecessor.
 fn extend_edges(
     func: &mut Func,
     block: Block,
@@ -1103,8 +954,6 @@ fn extend_edges(
     }
 }
 
-/// A tagged constant defined in `block`, for an edge argument that no
-/// dataflow value can fill (an unreachable predecessor).
 fn placeholder(func: &mut Func, block: Block) -> Value {
     func.push_inst(
         block,
@@ -1116,7 +965,6 @@ fn placeholder(func: &mut Func, block: Block) -> Value {
     .expect("a constant has a result")
 }
 
-/// Sets argument `pos` of every edge `pred -> block`.
 fn set_edge_arg(func: &mut Func, pred: Block, block: Block, pos: usize, value: Value) {
     let Some(mut term) = func.blocks[pred].term.take() else {
         return;
@@ -1138,8 +986,6 @@ fn set_edge_arg(func: &mut Func, pred: Block, block: Block, pos: usize, value: V
     func.blocks[pred].term = Some(term);
 }
 
-/// The field versions just before every use of a mutated, eliminated
-/// candidate. `None` when a use lies outside the solved region.
 fn state_map(
     func: &Func,
     dom: &DomTree,
@@ -1183,8 +1029,6 @@ fn state_map(
     Some(out)
 }
 
-/// Plans the rewrite of one candidate's uses. `state_at` is `None` for an
-/// unmutated object (its fields are the allocation operands).
 fn plan_rewrite(
     func: &Func,
     candidate: &Candidate,
@@ -1286,21 +1130,14 @@ fn plan_rewrite(
                         | Op::TestCode(_)
                         | Op::EqBits => {}
                         Op::CallPrim { prim, .. }
-                            if is_eq_prim(prim) && eq_foldable(func, &args) => {}
-                        // A call observes the object itself; a candidate with
-                        // such a use is never rewritten (analyze_uses rejects
-                        // it), so this is defensive.
+                            if prim.is(Primitive::IsEq) && eq_foldable(func, &args) => {}
                         Op::CallPrim { .. } | Op::CallOp(_) => ok = false,
                         _ => ok = false,
                     },
                     _ => match data.op {
-                        // A rewritten candidate is never the value stored
-                        // into another object: such a use made it a field of
-                        // an allocation, which keeps it on the heap.
                         Op::EqBits => {}
-                        // Same fold guarantee as above, for the later operand.
                         Op::CallPrim { prim, .. }
-                            if is_eq_prim(prim) && eq_foldable(func, &args) => {}
+                            if prim.is(Primitive::IsEq) && eq_foldable(func, &args) => {}
                         _ => ok = false,
                     },
                 }
@@ -1313,8 +1150,6 @@ fn plan_rewrite(
     Some(plan)
 }
 
-/// Folds `eq?`, the type tests and the vector length when the operand names an
-/// object that no longer exists.
 fn fold_reads(
     func: &mut Func,
     rpo: &[Block],
@@ -1353,14 +1188,14 @@ fn fold_reads(
                     subst.add(result, value);
                     dead.insert(inst);
                 }
-                Op::CallPrim { prim, .. } if is_eq_prim(prim) => {
+                Op::CallPrim { prim, .. } if prim.is(Primitive::IsEq) => {
                     let [a, b] = resolved.as_slice() else {
                         continue;
                     };
-                    let truth = match (eq_root(func, *a), eq_root(func, *b)) {
+                    let truth = match (object_of(func, *a), object_of(func, *b)) {
                         (Some(ia), Some(ib)) => ia == ib,
-                        (Some(_), None) if const_bits(func, *b).is_some() => false,
-                        (None, Some(_)) if const_bits(func, *a).is_some() => false,
+                        (Some(_), None) if func.const_bits_of(*b).is_some() => false,
+                        (None, Some(_)) if func.const_bits_of(*a).is_some() => false,
                         _ => continue,
                     };
                     let result = match data.result {
@@ -1419,10 +1254,6 @@ fn fold_reads(
     }
 }
 
-/// Drops a class or code check on any fresh allocation when the fresh object
-/// necessarily passes it. This is independent of whether the object is
-/// scalar-replaced, so it also removes the class check of a vector with a
-/// dynamic index (whose elements stay on the heap).
 fn cleanup_checks(func: &mut Func, rpo: &[Block], subst: &mut Subst, dead: &mut HashSet<Inst>) {
     let mut fresh: HashMap<Inst, Shape> = HashMap::new();
     let mut edge_values: HashSet<Value> = HashSet::new();
@@ -1448,9 +1279,6 @@ fn cleanup_checks(func: &mut Func, rpo: &[Block], subst: &mut Subst, dead: &mut 
                 continue;
             };
             if subst.contains(result) || edge_values.contains(&result) {
-                // An edge argument's type must stay a subtype of the target
-                // parameter, and the check result may be more refined than
-                // the object's own type. Leave that case alone.
                 continue;
             }
             let args = func.args(inst);
@@ -1494,8 +1322,6 @@ fn fold_bool(func: &mut Func, block: Block, before: Inst, truth: bool) -> Value 
     insert_before(func, block, before, Op::TestInt32, &[c], Type::Bool)
 }
 
-/// Pushes an instruction and moves it in front of `before`. The instruction
-/// arena is append-only; only the block's order changes.
 fn insert_before(
     func: &mut Func,
     block: Block,

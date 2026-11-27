@@ -7,6 +7,8 @@ use std::rc::Rc;
 
 use cranelift_entity::{EntityList, EntityRef, ListPool, PrimaryMap, SecondaryMap, entity_impl};
 
+use crate::runtime::codegen::opt::ir::inst::Constant;
+
 use super::frame_state::{FrameState, FrameStateData};
 use super::inst::{Edge, Inst, InstData, Op, Terminator};
 use super::types::{CodeRef, CodeSource, Type};
@@ -169,6 +171,11 @@ pub struct Func<'gc> {
     pub peeled: HashSet<Block>,
     pub unrolled: HashSet<Block>,
     pub spec_blocked: HashSet<u32>,
+    /// The allocations whose object has no other reference before an OSR
+    /// entry: computed on the builder's output, where every bytecode branch
+    /// is still in the graph (`passes::osralias`). Passes never add to it; an
+    /// instruction a pass copies is a new instruction and is not in it.
+    pub osr_unaliased: HashSet<Inst>,
     dom_cache: RefCell<Option<DomCache>>,
     dom_scratch: Cell<Vec<u32>>,
 }
@@ -204,13 +211,38 @@ pub struct ClassDep<'gc> {
     /// The class id the descriptor was looked up by.
     pub id: u32,
     /// Its layout stamp at build time, or, for a subtree dependency, its
-    /// subclass stamp (see `subtree`).
+    /// subclass stamp.
     pub stamp: u32,
-    /// Subtree flag.
-    pub subtree: bool,
+    /// What the unit assumed about the class.
+    pub kind: ClassDepKind,
+}
+
+/// What a [`ClassDep`] assumed, and so which of the class's watchpoint sets
+/// the installed unit registers with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClassDepKind {
+    /// The descriptor stays the current one for its id, with this layout:
+    /// its redefinition set.
+    Layout,
+    /// The unit knows every descendant of the class: its subclass set.
+    Subtree,
+    /// The stock method alone answers slot protocol operation `op` (`OP_REF`
+    /// or `OP_SET`) for instances of the class, so a slot access may read or
+    /// write the storage directly: its slot-protocol set. The protocol has
+    /// no stamp, so the installer decides the question again under the
+    /// current set before registering on it.
+    Protocol(usize),
 }
 
 impl<'gc> Func<'gc> {
+    /// Whether the unit depends on an assumption that a watchpoint can break
+    /// while one of its frames is live: a folded global, a class layout or a
+    /// generic's method set. Only then must live frames be evicted when the
+    /// unit is invalidated.
+    pub fn may_invalidate(&self) -> bool {
+        !self.deps.is_empty() || !self.class_deps.is_empty() || !self.generic_deps.is_empty()
+    }
+
     /// The table constant of heap `value`, interned.
     pub fn heap_constant(&mut self, value: crate::runtime::objectmodel::Value<'gc>) -> u32 {
         let index = match self.heap_constants.iter().position(|&b| b == value) {
@@ -274,6 +306,7 @@ impl<'gc> Func<'gc> {
             peeled: HashSet::new(),
             unrolled: HashSet::new(),
             spec_blocked: HashSet::new(),
+            osr_unaliased: HashSet::new(),
             dom_cache: RefCell::new(None),
             dom_scratch: Cell::new(Vec::new()),
         }
@@ -321,6 +354,17 @@ impl<'gc> Func<'gc> {
         debug_assert_eq!(pushed, inst);
         self.blocks[block].insts.push(inst);
         result
+    }
+
+    pub fn push_i64(&mut self, block: Block, n: i64) -> Value {
+        self.push_inst(
+            block,
+            Op::Const(Constant::Int64(n)),
+            &[],
+            Some(Type::Int64),
+            None,
+        )
+        .unwrap()
     }
 
     pub fn set_terminator(&mut self, block: Block, term: Terminator) {
@@ -510,6 +554,31 @@ impl<'gc> Func<'gc> {
         idom[self.entry] = None;
 
         DomTree { idom, rpo_num, rpo }
+    }
+
+    pub fn const_bits_of(&self, value: Value) -> Option<u64> {
+        match self.value_def(value) {
+            ValueDef::Inst(inst) => match self.insts[inst].op {
+                Op::Const(Constant::Bits(bits)) => Some(bits),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn retarget(&mut self, block: Block, from: Block, to: Block) {
+        let Some(mut term) = self.blocks[block].term.take() else {
+            return;
+        };
+
+        term.for_each_edge_mut(|edge| {
+            if edge.block == from {
+                edge.block = to;
+            }
+            true
+        });
+
+        self.blocks[block].term = Some(term);
     }
 }
 

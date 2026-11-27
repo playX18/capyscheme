@@ -1,22 +1,25 @@
 //! Runtime system: value representation, virtual machine, and thread management.
 
+pub(crate) mod builtins;
+pub(crate) mod code;
 #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub(crate) mod code_memory;
 #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub(crate) mod codegen;
-pub(crate) mod code;
+#[cfg(feature = "bootstrap")]
 pub(crate) mod compile_service;
 pub(crate) mod conditions;
 pub(crate) mod fasl;
 pub(crate) mod fluids;
-pub(crate) mod gc_stats;
 #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub(crate) mod frame;
+pub(crate) mod gc_stats;
 pub(crate) mod gdb_jit;
 pub mod global;
 pub(crate) mod hooks;
 pub(crate) mod interp;
 pub(crate) mod linklet;
+pub mod objectmodel;
 pub(crate) mod prims;
 pub(crate) mod profile;
 pub(crate) mod record;
@@ -29,8 +32,6 @@ pub(crate) mod service;
 pub mod sni;
 pub(crate) mod stats;
 pub mod thread;
-pub(crate) mod builtins;
-pub mod objectmodel;
 pub(crate) mod variable;
 pub mod vm;
 pub mod vmthread;
@@ -79,6 +80,7 @@ pub(crate) fn init<'gc>(mc: MutationContext<'gc>) {
     vm::load::init_load_path(mc);
     vm::load::init_load(mc);
     builtins::arith::init(mc);
+    builtins::random::init(mc);
     variable::variable_ops::register(mc);
     record_ops::record_ops::register(mc);
     hooks::hooks_ops::register(mc);
@@ -98,7 +100,6 @@ pub(crate) fn init<'gc>(mc: MutationContext<'gc>) {
     builtins::persistent_set::init_persistent_set(mc);
     vm::syntax::init_syntax(mc);
     builtins::memoize::init_memoize(mc);
-    builtins::expand::init_expand(mc);
     vm::ffi::init_ffi(mc);
     vm::dl::init_dl(mc);
     vm::threading::init_threading(mc);
@@ -118,10 +119,10 @@ pub mod prelude {
 
     pub use super::global::GlobalSlot;
     pub use super::interp::stack::Slot;
+    pub use super::objectmodel::*;
     pub use super::root::{RootScope, RootStack, Rooted, with_rooted_native};
     pub use super::sni;
     pub use super::thread::MutationContext;
-    pub use super::objectmodel::*;
     pub use super::vm::{self, NativeCall, call_scheme};
     pub use crate::heap::Gc;
     pub use crate::heap::Trace;

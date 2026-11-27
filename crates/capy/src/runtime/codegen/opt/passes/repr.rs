@@ -1,49 +1,4 @@
 //! Representation selection.
-//!
-//! Flonum code builds `box.double` of every intermediate and `check.double`
-//! of every operand. The checks of a boxed value are folded away by
-//! [`typeprop`](super::typeprop), but two things keep the boxes alive: frame
-//! states that name the boxed register, and block parameters (loop-carried
-//! values) that stay tagged. This pass removes both.
-//!
-//! 1. Typed block parameters. A tagged parameter becomes a raw `Double` (or
-//!    `Int32`) when every incoming edge supplies that representation, or the
-//!    block guards it. An edge argument is supplied raw when it is the
-//!    result of `box.double`, a flonum constant, or another typed parameter.
-//!    Any other edge argument gets a `check.double` on the edge, which is
-//!    allowed only when the block starts with a guard on the parameter or
-//!    every iteration of its loop runs one (see "Edge guards"). The guards
-//!    inside the block that this satisfies are dropped. A use that needs a
-//!    tagged value (a call argument, a store, a return, an edge to a tagged
-//!    parameter) gets a `box.double` at the start of its block.
-//!    An unguarded parameter is typed only when none of its uses is tagged.
-//!    The selection is a fixed point over the parameters: a parameter is
-//!    typed when all of its incoming types agree, and the assumption that a
-//!    cycle of parameters is typed is kept unless an edge refutes it.
-//!
-//! 2. Raw frame states. A frame register that holds `box.double(x)`,
-//!    `box.int32(x)` or `box.int64(x)` names `x` instead. The deopt metadata
-//!    records the raw location (`DeoptLoc::UnboxedDouble` / `UnboxedI32` /
-//!    `UnboxedI64`), and the deopt runtime tags or reboxes the value when it
-//!    rebuilds the baseline frame. Boxing a flonum or an int32 never
-//!    allocates; an int64 that leaves i32 is reboxed by allocating a one-limb
-//!    bignum in the deopt runtime, under the non-collecting slow-path
-//!    contract. The boxes that only frames used are then dead.
-//!
-//! With range facts, an `Int64` candidate parameter is kept raw even
-//! when it has a tagged use, provided the range analysis proves every value
-//! it can take fits `i32`. The `box.int64` at that use is then a pure tag
-//! (it can neither allocate a bignum nor deopt), so the parameter does not
-//! have to fall back to the tagged representation.
-//!
-//! Edge guards. A guard on the edge into block `B` deopts before `B` runs,
-//! with the frame state of `B`'s first deopting instruction, whose
-//! parameters are replaced by the edge's arguments. That is the state at the
-//! start of `B` when nothing before the instruction has an effect. Baseline
-//! resumes at that pc and runs the whole block itself, so the only change is
-//! that the guard fails earlier than it would have. When the guard sits in a
-//! later block of `B`'s loop, it is hoisted only if that block dominates
-//! every latch of the loop (every full iteration runs it).
 
 use std::collections::{HashMap, HashSet};
 
@@ -53,7 +8,9 @@ use super::simplify::edges_mut;
 use super::{PassOutcome, Subst, range, reachable, replace_uses};
 use crate::runtime::codegen::opt::ir::frame_state::{FrameState, FrameStateData};
 use crate::runtime::codegen::opt::ir::func::{Block, DomTree, Func, Value, ValueData, ValueDef};
-use crate::runtime::codegen::opt::ir::inst::{Constant, Inst, InstData, Op, Repr, Terminator};
+use crate::runtime::codegen::opt::ir::inst::{
+    Constant, Inst, InstData, Op, RematKind, Repr, Terminator,
+};
 use crate::runtime::codegen::opt::ir::types::Type;
 use crate::runtime::objectmodel::Value as SchemeValue;
 
@@ -134,6 +91,7 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
     let mut work = func.insts.len();
     changed |= select_params(func, &mut work);
     changed |= raw_frames(func, &mut work);
+    changed |= sink_u64_boxes(func, &mut work);
     PassOutcome { changed, work }
 }
 
@@ -272,7 +230,10 @@ fn find_entry_frame(
     let mut cur = Some(frame);
     while let Some(fs) = cur {
         let data = &func.frames[fs];
-        if data.returned.is_some() {
+        // Only the innermost frame resumes with returned values; a caller
+        // frame's `returned` (the call an inlined body runs for) is not read
+        // by the deopt.
+        if fs == frame && data.returned.is_some() {
             return None;
         }
         let ok = |v: Value| -> bool {
@@ -552,6 +513,11 @@ fn tagged_uses(func: &Func, cx: &Ctx) -> HashMap<Value, Vec<Block>> {
                 if op == Op::CheckIndex && cx.ty.get(&arg) == Some(&Ty::I64) {
                     continue;
                 }
+                if matches!(op, Op::CheckBound { raw: false, .. })
+                    && cx.ty.get(&arg) == Some(&Ty::I64)
+                {
+                    continue;
+                }
                 out.entry(arg).or_default().push(block);
             }
         }
@@ -597,16 +563,8 @@ fn tagged_uses(func: &Func, cx: &Ctx) -> HashMap<Value, Vec<Block>> {
 fn subst_frame(func: &mut Func, frame: FrameState, map: &HashMap<Value, Value>) -> FrameState {
     let data = func.frames[frame].clone();
     let parent = data.parent.map(|p| subst_frame(func, p, map));
-    let new = FrameStateData {
-        closure: map.get(&data.closure).copied().unwrap_or(data.closure),
-        registers: data
-            .registers
-            .iter()
-            .map(|&(r, v)| (r, map.get(&v).copied().unwrap_or(v)))
-            .collect(),
-        parent,
-        ..data
-    };
+    let mut new = FrameStateData { parent, ..data };
+    new.map_values(|v| map.get(&v).copied().unwrap_or(v));
     func.push_frame(new)
 }
 
@@ -808,6 +766,13 @@ fn apply(func: &mut Func, cx: &mut Ctx, selected: &[(Block, usize, Value, Ty)], 
                 func.insts[inst].op = Op::CheckIndexRaw;
                 continue;
             }
+            if let Op::CheckBound { len, raw: false } = op
+                && args.len() == 1
+                && sel_ty.get(&args[0]) == Some(&Ty::I64)
+            {
+                func.insts[inst].op = Op::CheckBound { len, raw: true };
+                continue;
+            }
             if !args.iter().any(|a| sel_ty.contains_key(a)) {
                 continue;
             }
@@ -964,7 +929,8 @@ fn raw_frames(func: &mut Func, work: &mut usize) -> bool {
         for (_, value) in new.iter_mut() {
             *work += 1;
             if let ValueDef::Inst(def) = func.value_def(*value) {
-                if matches!(func.insts[def].op, Op::Box(_)) {
+                // A two-limb value has no deopt location, so its box stays.
+                if matches!(func.insts[def].op, Op::Box(repr) if repr != Repr::Int128) {
                     *value = func.args(def)[0];
                 }
             }
@@ -972,6 +938,62 @@ fn raw_frames(func: &mut Func, work: &mut usize) -> bool {
         if new != regs {
             func.frames[fs].registers = new;
             changed = true;
+        }
+    }
+    changed
+}
+
+/// Turns every `box.u64` that only frame states and remat markers name into a
+/// `Remat(RematKind::U64)` marker, so the word is boxed only when a deopt
+/// rebuilds the frame. A signed raw value needs no marker (`raw_frames` puts
+/// the raw word in the frame); an unsigned one does, because the deopt runtime
+/// must read the word as unsigned.
+fn sink_u64_boxes(func: &mut Func, work: &mut usize) -> bool {
+    let live = reachable(func);
+    let mut boxes = HashSet::new();
+    for block in func.blocks.keys() {
+        if !live[block] {
+            continue;
+        }
+        for &inst in &func.blocks[block].insts {
+            if func.insts[inst].op == Op::BoxU64 {
+                boxes.extend(func.insts[inst].result);
+            }
+        }
+    }
+    if boxes.is_empty() {
+        return false;
+    }
+    for block in func.blocks.keys() {
+        if !live[block] {
+            continue;
+        }
+        for &inst in &func.blocks[block].insts {
+            *work += 1;
+            if matches!(func.insts[inst].op, Op::Remat(_)) {
+                continue;
+            }
+            for arg in func.args(inst) {
+                boxes.remove(arg);
+            }
+        }
+        if let Some(term) = &func.blocks[block].term {
+            for value in func.terminator_uses(term) {
+                boxes.remove(&value);
+            }
+        }
+    }
+    let mut changed = false;
+    for block in func.blocks.keys() {
+        if !live[block] {
+            continue;
+        }
+        for &inst in &func.blocks[block].insts {
+            let data = &mut func.insts[inst];
+            if data.op == Op::BoxU64 && data.result.is_some_and(|r| boxes.contains(&r)) {
+                data.op = Op::Remat(RematKind::U64);
+                changed = true;
+            }
         }
     }
     changed

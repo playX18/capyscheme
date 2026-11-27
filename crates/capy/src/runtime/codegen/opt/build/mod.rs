@@ -1,6 +1,7 @@
 //! Bytecode to SSA.
 
 mod arith;
+mod bits;
 pub(crate) mod calls;
 mod generics;
 mod inline;
@@ -9,6 +10,7 @@ pub mod liveness;
 mod object;
 pub mod profile;
 mod records;
+mod text;
 
 use crate::runtime::interp::profile::ValueShape;
 use cranelift_entity::{EntityList, EntityRef};
@@ -41,6 +43,15 @@ use crate::utils::flags;
 use liveness::Liveness;
 
 /// The registers a block's abstract state maps to IR values.
+/// The arguments of the `apply` site being lowered, which the registers do
+/// not hold: reading register `start + i` gives `values[i]`.
+struct ApplySite {
+    start: u32,
+    values: Vec<Value>,
+    /// A call of the procedure `apply`, not of the site's callee.
+    opaque: bool,
+}
+
 type Regs = Vec<Option<Value>>;
 
 /// Lowers `code_block`'s bytecode to SSA, with no speculation.
@@ -93,15 +104,16 @@ pub fn build<'gc>(
     )?
     .run()?;
     prune_checks(&mut func);
+    if config.lazy_deopt {
+        drop_lazy_checks(&mut func);
+    }
     func.spec_blocked = code_block.blocked_pcs().into_iter().collect();
 
     if config.dump.iter().any(|stage| stage == "build") {
         dump(&func, &label);
     }
-    if config.verify {
-        verify(&func)
-            .map_err(|errors| format!("builder produced invalid IR: {}", errors.join("; ")))?;
-    }
+    verify(&func)
+        .map_err(|errors| format!("builder produced invalid IR: {}", errors.join("; ")))?;
 
     Ok(func)
 }
@@ -134,6 +146,132 @@ fn prune_checks(func: &mut Func) {
     }
     // A frame no instruction names would still count as a use of its
     // registers, which keeps their values from being scalar replaced.
+    for inst in dead {
+        if let Some(frame) = func.insts[inst].frame {
+            func.frames[frame].registers.clear();
+        }
+    }
+}
+
+/// What an instruction does to the unit's invalidation, for
+/// [`drop_lazy_checks`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FirePoint {
+    /// Runs no other code and fires no watchpoint.
+    No,
+    /// May invalidate the unit, and leaves lazily if it did: a frame call
+    /// whose return point has a shadow, a yieldpoint whose slow path tests
+    /// the unit, a variable write whose helper reports it.
+    Lazy,
+    /// May invalidate the unit and does not leave by itself.
+    Eager,
+}
+
+fn fire_point(func: &Func, inst: Inst) -> FirePoint {
+    use crate::runtime::codegen::opt::ir::frame_state::ReturnedValues;
+    let data = &func.insts[inst];
+    match data.op {
+        Op::CallKnown(..) | Op::CallGeneric(_) => {
+            let returns_here = data.frame.is_some_and(|frame| {
+                matches!(
+                    func.frames[frame].returned,
+                    Some(ReturnedValues { count: None, .. })
+                )
+            });
+            if returns_here {
+                FirePoint::Lazy
+            } else {
+                FirePoint::Eager
+            }
+        }
+        Op::Safepoint => FirePoint::Lazy,
+        Op::CallOp(helper) if helper == Helper::VariableSet.helper_ref() => FirePoint::Lazy,
+        Op::CallPrim { prim, .. }
+            if Primitive::from_id(prim.index() as u16) == Some(Primitive::VariableSet) =>
+        {
+            FirePoint::Eager
+        }
+        _ => FirePoint::No,
+    }
+}
+
+/// Removes the `CheckNotInvalid` guards whose work lazy deopt does. A check
+/// covers what may have invalidated the unit since the check before it on
+/// every path. It stays when one of those may not leave by itself (a frame
+/// call whose return point no shadow describes: a call a generic dispatch
+/// makes besides the one whose result is the call's); otherwise every
+/// invalidation it would see has already made the frame leave. The checks
+/// of OSR entries stay: they guard the transfer itself.
+fn drop_lazy_checks(func: &mut Func) {
+    if !func.may_invalidate() {
+        return;
+    }
+    let mut preds: cranelift_entity::SecondaryMap<Block, Vec<Block>> =
+        cranelift_entity::SecondaryMap::new();
+    for (block, data) in func.blocks.iter() {
+        if let Some(term) = &data.term {
+            for edge in term.edges() {
+                if !preds[edge.block].contains(&block) {
+                    preds[edge.block].push(block);
+                }
+            }
+        }
+    }
+    let mut position: HashMap<Inst, (Block, usize)> = HashMap::new();
+    for (block, data) in func.blocks.iter() {
+        for (index, &inst) in data.insts.iter().enumerate() {
+            position.insert(inst, (block, index));
+        }
+    }
+    /// Blocks a single check's walk visits before it keeps the check.
+    const WALK_LIMIT: usize = 256;
+    let checks: Vec<Inst> = position
+        .keys()
+        .copied()
+        .filter(|&inst| {
+            func.insts[inst].op == Op::CheckNotInvalid && !func.osr_checks.contains(&inst)
+        })
+        .collect();
+    let mut dead = HashSet::new();
+    for check in checks {
+        let (block, index) = position[&check];
+        // Walk back from the check to the checks before it, through every
+        // predecessor, and look at what may invalidate the unit on the way.
+        let mut covered = true;
+        let mut seen: HashSet<Block> = HashSet::new();
+        let mut work: Vec<(Block, usize)> = vec![(block, index)];
+        let mut visited = 0;
+        'walk: while let Some((block, end)) = work.pop() {
+            visited += 1;
+            if visited > WALK_LIMIT {
+                covered = false;
+                break;
+            }
+            for &inst in func.blocks[block].insts[..end].iter().rev() {
+                if func.insts[inst].op == Op::CheckNotInvalid {
+                    continue 'walk;
+                }
+                if fire_point(func, inst) == FirePoint::Eager {
+                    covered = false;
+                    break 'walk;
+                }
+            }
+            for &pred in &preds[block] {
+                if seen.insert(pred) {
+                    work.push((pred, func.blocks[pred].insts.len()));
+                }
+            }
+        }
+        if covered {
+            dead.insert(check);
+        }
+    }
+    if dead.is_empty() {
+        return;
+    }
+    for block in func.blocks.keys().collect::<Vec<_>>() {
+        func.blocks[block].insts.retain(|inst| !dead.contains(inst));
+    }
     for inst in dead {
         if let Some(frame) = func.insts[inst].frame {
             func.frames[frame].registers.clear();
@@ -178,7 +316,7 @@ fn bytecode_returns_one_value(code: &[u8]) -> bool {
         pc += len;
         match ins {
             Instruction::OpReturnValues(op) if op.count.0 != 1 => return false,
-            Instruction::OpTailCall(_) => return false,
+            Instruction::OpTailCall(_) | Instruction::OpTailApply(_) => return false,
             _ => {}
         }
     }
@@ -248,8 +386,9 @@ struct PendingMv {
 #[derive(Clone, Copy)]
 enum ResultSite {
     /// A plain call: the result goes to `dst` and the return point at `next`
-    /// reads it.
-    Normal { dst: u32 },
+    /// reads it. `base` is the return point's frame base, where a deopt on
+    /// return puts the callee's values.
+    Normal { dst: u32, base: u32 },
     /// A call followed by `return_point_forward`: the result lands in
     /// `r[base + 2]` and the entry at `mv_pc` continues when it takes one
     /// value.
@@ -359,6 +498,12 @@ struct Builder<'s, 'gc> {
     /// The mutation scope this build runs in. The class table is looked up
     /// through it when an inline instance allocation is considered.
     ctx: MutationContext<'gc>,
+    /// The names of the variable cells of the root registry, for the JIT
+    /// log. Filled on the first log line that names a cell.
+    var_names: Option<HashMap<u64, String>>,
+    /// The variable cell each folded constant was read from, so a log line
+    /// about a call through it can name the global.
+    folded_from: HashMap<Value, SchemeValue<'gc>>,
     /// The root's buffer: its constants and pool. Never moves.
     buffer: &'s CodeBuffer<'gc>,
     code: &'s [u8],
@@ -421,6 +566,9 @@ struct Builder<'s, 'gc> {
     /// register 1, while the rest of those moves are lowered. See
     /// [`Self::frame`].
     tail_setup: Option<(usize, Regs)>,
+    /// The `apply` site being lowered, whose arguments the registers do not
+    /// hold. See [`ApplySite`].
+    apply: Option<ApplySite>,
     /// Whether the exit profile forbids speculation at a pc.
     blocked: &'s dyn Fn(usize) -> bool,
     /// Whether `variable-ref` of a constant variable folds its value.
@@ -649,10 +797,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
 
         let entry = func.entry;
         if is_case {
-            // The entry loads the union of every clause's frame registers,
-            // then a shared rest vector and a selector. Its `Switch` sends
-            // the selector to the clause block, passing that clause's
-            // parameters.
             let mut union: Vec<u32> = Vec::new();
             for (index, (start, _, rest)) in case_ranges.iter().enumerate() {
                 let block = live
@@ -777,6 +921,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             state: Vec::new(),
             pc: 0,
             tail_setup: None,
+            apply: None,
             blocked,
             fold,
             check_invalid,
@@ -787,6 +932,8 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             free_cells,
             entry_closure: None,
             label,
+            var_names: None,
+            folded_from: HashMap::new(),
         })
     }
 
@@ -906,6 +1053,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                     returned: None,
                     rest: None,
                     inline_site: None,
+                    virtuals: Vec::new(),
                 });
                 self.func
                     .push_inst(osr, Op::CheckNotInvalid, &[], None, Some(frame));
@@ -1390,6 +1538,8 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 self.lower_tail_call(pc, op.argc.0)?;
                 Ok(Flow::Terminated)
             }
+            Instruction::OpApply(op) => self.lower_apply(ins, pc, len, false, op.argc.0, op.base.0),
+            Instruction::OpTailApply(op) => self.lower_apply(ins, pc, len, true, op.argc.0, 0),
             Instruction::OpTailCallSelf(op) => {
                 // The frame is reused and the entry runs again, so the new
                 // arguments are the current values of the argument registers.
@@ -1462,9 +1612,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 Ok(Flow::Next)
             }
 
-            // The entry glue collected the extra arguments into the rest
-            // vector and stored their count in `cnt`; both are entry
-            // parameters. A self tail call would need to collect again.
             Instruction::OpEnterRest(op) => match self.rest {
                 Some(rest) if pc == 0 && op.cnt.0 == rest.cnt && op.base.0 == rest.base => {
                     Ok(Flow::Next)
@@ -1472,24 +1619,15 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 _ => Err(self.unsupported(ins, "is not the first instruction")),
             },
             Instruction::OpReturnPointForward(_) => self.lower_forward(ins, pc, len),
-            Instruction::OpReturnPointValues(op) => {
-                // Reached only when the entry takes the one value that
-                // continued from the forward; the call put it in `r[base+2]`.
-                // A call that took several values left them in `r[base+2..]`.
-                match self.pending_return.take() {
-                    Some(at)
-                        if at == pc
-                            && (op.nvals.0 == 1
-                                || self.mv_taken.take() == Some((pc, op.nvals.0))) =>
-                    {
-                        Ok(Flow::Next)
-                    }
-                    _ => {
-                        Err(self
-                            .unsupported(ins, "is a multiple-value entry no call continues into"))
-                    }
+            Instruction::OpReturnPointValues(op) => match self.pending_return.take() {
+                Some(at)
+                    if at == pc
+                        && (op.nvals.0 == 1 || self.mv_taken.take() == Some((pc, op.nvals.0))) =>
+                {
+                    Ok(Flow::Next)
                 }
-            }
+                _ => Err(self.unsupported(ins, "is a multiple-value entry no call continues into")),
+            },
             Instruction::OpReturnPointValuesRest(op) => {
                 // Reached when a call took the callee's values: the fixed
                 // ones are in `r[base + 2..]`, the extra count goes into the
@@ -1715,8 +1853,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 self.lower_int_switch(pc, op.table.0, key)
             }
             Instruction::OpSwitchSymbol(op) => {
-                // The helper maps the symbol to its table entry, which is a
-                // case index for an int32 switch. Non-symbols deopt.
                 let frame = self.frame(pc, pc)?;
                 let src = self.reg(op.src.0)?;
                 let table = self.table_address(op.table.0);
@@ -1746,13 +1882,9 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 Ok(Flow::Next)
             }
             Instruction::OpVectorRefMul(op) => {
-                // The frame keeps the registers from before the instruction,
-                // so a failing guard deopts and baseline runs all of it.
                 let frame = self.frame(pc, pc)?;
                 let value = self.vector_ref(frame, op.vector.0, op.index.0)?;
                 self.set(op.vdst.0, value)?;
-                // A site that exited too often, or has no single shape, takes
-                // the generic path (see `arith.rs`).
                 let plan = self.arith_plan(pc);
                 let (lhs, rhs) = (self.reg(op.lhs.0)?, self.reg(op.rhs.0)?);
                 let product = self.binary_value(plan, Arith::Mul, lhs, rhs, frame);
@@ -1811,11 +1943,8 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 Ok(Flow::Next)
             }
 
-            // A site that has an inline entry gets the inline check (object.rs).
             Instruction::OpGetSlot(op) if self.get_slot_warm(op) => self.lower_get_slot(pc, op),
             Instruction::OpPutSlot(op) if self.put_slot_warm(op) => self.lower_put_slot(pc, op),
-            // The hit path runs in the helper. A miss deopts before the
-            // instruction, so baseline does the lookup and fills the cache.
             Instruction::OpGetSlot(op) => {
                 let frame = self.frame(pc, pc)?;
                 let obj = self.reg(op.obj.0)?;
@@ -1954,9 +2083,48 @@ impl<'s, 'gc> Builder<'s, 'gc> {
 
     /// Records a specialized call's single result at `site` and leaves the
     /// return point pending at `next`.
+    fn finish_value(&mut self, site: ResultSite, next: usize, value: Value) -> Result<(), String> {
+        let ResultSite::Taken {
+            first_value,
+            mv_pc,
+            base,
+            values,
+            wants_list,
+        } = site
+        else {
+            return self.finish_result(site, next, value);
+        };
+        self.set(first_value, value)?;
+        if let ReturnValues::TakeRest(_) = values {
+            let extra = self.const_i32(0);
+            let list = wants_list.then(|| self.bits(SchemeValue::VALUE_NULL as u64));
+            self.mv_rest = Some((extra, list));
+        }
+        self.pending_return = Some(next);
+        self.pending_mv = Some(PendingMv {
+            mv_pc,
+            base,
+            result: value,
+            continues: true,
+        });
+        self.mv_taken = Some((mv_pc, 1));
+        Ok(())
+    }
+
+    /// Whether a site can take a specialized call's single value: any site
+    /// but a taken one that wants a value count other than one.
+    fn takes_one(site: ResultSite) -> bool {
+        match site {
+            ResultSite::Taken { values, .. } => {
+                matches!(values, ReturnValues::Take(1) | ReturnValues::TakeRest(1))
+            }
+            _ => true,
+        }
+    }
+
     fn finish_result(&mut self, site: ResultSite, next: usize, value: Value) -> Result<(), String> {
         match site {
-            ResultSite::Normal { dst } => {
+            ResultSite::Normal { dst, .. } => {
                 self.set(dst, value)?;
                 self.pending_return = Some(next);
             }
@@ -2027,6 +2195,133 @@ impl<'s, 'gc> Builder<'s, 'gc> {
     /// `first_arg..first_arg + argc`. The return point after it must be the
     /// next instruction, since a call with several results is not lowered.
     #[allow(clippy::too_many_arguments)]
+    /// Whether the `apply` site being lowered is the opaque form: a call of
+    /// the procedure `apply` itself, which nothing about the profiled callee
+    /// of the site applies to.
+    fn apply_opaque(&self) -> bool {
+        self.apply.as_ref().is_some_and(|site| site.opaque)
+    }
+
+    /// The elements of `list` when it is a chain of pairs that this block
+    /// allocated just before, with nothing but the chain and this site using
+    /// them, so no call, store or loop can have changed them since.
+    fn known_list(&self, list: Value) -> Option<Vec<Value>> {
+        const MAX_SPREAD: usize = 32;
+        let block = &self.func.blocks[self.cur];
+        let mut elems = Vec::new();
+        let mut pairs = Vec::new();
+        let mut current = list;
+        loop {
+            let ValueDef::Inst(inst) = self.func.value_def(current) else {
+                return None;
+            };
+            match self.func.insts[inst].op {
+                Op::Const(Constant::Bits(bits)) if bits == SchemeValue::VALUE_NULL as u64 => break,
+                Op::AllocPair if block.insts.contains(&inst) => {
+                    let args = self.func.args(inst);
+                    elems.push(args[0]);
+                    pairs.push(current);
+                    current = args[1];
+                    if elems.len() > MAX_SPREAD {
+                        return None;
+                    }
+                }
+                _ => return None,
+            }
+        }
+        // Each pair is used once: the cdr of the one before, or the site.
+        for &inst in &block.insts {
+            let args = self.func.args(inst);
+            for (index, &pair) in pairs.iter().enumerate() {
+                let allowed = match self.func.insts[inst].result {
+                    // The allocation of the pair before this one.
+                    Some(result) if index > 0 && result == pairs[index - 1] => 1,
+                    _ => 0,
+                };
+                let uses = args.iter().filter(|&&arg| arg == pair).count();
+                if uses > allowed {
+                    return None;
+                }
+            }
+        }
+        Some(elems)
+    }
+
+    /// Lowers `(apply f a ... lst)`: `argc` counts the list. In callee frame
+    /// `base` for a call, in registers `1..` for a tail call.
+    fn lower_apply(
+        &mut self,
+        ins: &Instruction,
+        pc: usize,
+        len: usize,
+        tail: bool,
+        argc: u32,
+        base: u32,
+    ) -> Result<Flow, String> {
+        let callee_reg = if tail { 1 } else { base + 1 };
+        let first_arg = callee_reg + 1;
+        let fixed = argc - 1;
+        let callee = self.reg(callee_reg)?;
+        let fixed_args = self.regs(first_arg..first_arg + fixed)?;
+        let list = self.reg(first_arg + fixed)?;
+
+        // The elements are known: the call is the call of the callee with
+        // them as arguments, which can inline. A callee that is not a
+        // procedure takes the generic path's error from baseline.
+        if !(self.blocked)(pc)
+            && let Some(elems) = self.known_list(list)
+        {
+            let mut args = fixed_args.clone();
+            args.extend(elems);
+            let argc = args.len() as u32;
+            let frame = self.frame(pc, pc)?;
+            self.check_class(callee, ClassRef::CLOSURE, frame);
+            self.apply = Some(ApplySite {
+                start: first_arg,
+                values: args,
+                opaque: false,
+            });
+            let flow = if tail {
+                self.lower_tail_call(pc, argc).map(|()| Flow::Terminated)
+            } else {
+                self.lower_call(ins, pc, len, callee_reg, first_arg, argc, false)
+            };
+            self.apply = None;
+            return flow;
+        }
+
+        // Otherwise a call of the procedure `apply` with the same arguments:
+        // it spreads the list and raises what the site would.
+        let Some(apply) = self.ctx.try_hook(crate::runtime::hooks::Hook::Apply) else {
+            return Err(self.unsupported(ins, "the runtime has no apply hook"));
+        };
+        let apply = self.value_const(apply);
+        let mut values = vec![apply, callee];
+        values.extend(fixed_args);
+        values.push(list);
+        if tail {
+            let frame = self.frame(pc, pc)?;
+            let args = EntityList::from_slice(&values[1..], &mut self.func.pool);
+            self.terminate(Terminator::TailCall {
+                callee: apply,
+                args,
+                frame,
+                check: None,
+            });
+            return Ok(Flow::Terminated);
+        }
+        let opaque_argc = values.len() as u32 - 1;
+        self.apply = Some(ApplySite {
+            start: callee_reg,
+            values,
+            opaque: true,
+        });
+        let flow = self.lower_call(ins, pc, len, callee_reg, first_arg, opaque_argc, false);
+        self.apply = None;
+        flow
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn lower_call(
         &mut self,
         ins: &Instruction,
@@ -2039,14 +2334,15 @@ impl<'s, 'gc> Builder<'s, 'gc> {
     ) -> Result<Flow, String> {
         let next = pc + len;
         calls::site(self_call);
-        let (dst, values, point_len) = match Instruction::decode_slice(self.code, next) {
+        let (dst, values, point_len, point_base) = match Instruction::decode_slice(self.code, next)
+        {
             Some((Instruction::OpReturnPoint(point), _, point_len)) => {
                 let values = if point.mv.0 == MV_ERROR {
                     ReturnValues::Error
                 } else {
                     ReturnValues::Ignore
                 };
-                (point.dst.0, values, point_len)
+                (point.dst.0, values, point_len, point.frame.0)
             }
             Some((Instruction::OpReturnPointForward(forward), _, forward_len)) => {
                 return self.lower_forward_call(
@@ -2082,7 +2378,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             return Err(self.unsupported(ins, "return point has several predecessors"));
         }
 
-        if !self_call {
+        if !self_call && !self.apply_opaque() {
             // Record accessors, mutators and predicates are native closures
             // whose code-block metadata has the RTD and field. Lower to direct ops
             if let Some(flow) = self.try_record_call(
@@ -2091,7 +2387,10 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 callee_reg,
                 first_arg,
                 argc,
-                ResultSite::Normal { dst },
+                ResultSite::Normal {
+                    dst,
+                    base: point_base,
+                },
             )? {
                 return Ok(flow);
             }
@@ -2112,11 +2411,14 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 first_arg,
                 argc,
                 values,
-                ResultSite::Normal { dst },
+                ResultSite::Normal {
+                    dst,
+                    base: point_base,
+                },
             )? {
                 return Ok(flow);
             }
-            let call_frame = self.frame(next, next)?;
+            let call_frame = self.return_point_frame(next, point_base)?;
             if let Some(result) = self.try_inline(
                 pc,
                 next,
@@ -2135,7 +2437,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         let mut operands = vec![self.reg(callee_reg)?];
         operands.extend(self.regs(first_arg..first_arg + argc)?);
 
-        let frame = self.frame(next, next)?;
+        let frame = self.return_point_frame(next, point_base)?;
 
         let direct = if self_call {
             None
@@ -2143,6 +2445,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             self.direct_callee(operands[0], argc)
                 .or_else(|| self.direct_profile_callee(pc, operands[0], argc))
         };
+        let direct = if self.apply_opaque() { None } else { direct };
         calls::call(self_call || direct.is_some());
         let op = if self_call {
             Op::CallKnown(root(), values)
@@ -2157,6 +2460,36 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         self.pending_return = Some(next);
         self.speculate_return(next, next + point_len, result)?;
         Ok(Flow::Next)
+    }
+
+    /// The frame of a call whose return point is at `point`, with the callee
+    /// frame at register `base`: the state baseline resumes the return point
+    /// in when a callee returns there, with the values in the callee frame and
+    /// their count in `AC`. A lazy deopt of the call's return resumes there.
+    /// The frame of a call that produces the result of `site` itself (not
+    /// one of several calls a dispatch makes): the frame an ordinary call
+    /// at the site gets, so a deopt on its return resumes baseline at the
+    /// return point with the callee's values, and the unit needs no check
+    /// after the call (see `drop_lazy_checks`).
+    pub(super) fn site_call_frame(
+        &mut self,
+        site: ResultSite,
+        next: usize,
+    ) -> Result<FrameState, String> {
+        match site {
+            ResultSite::Normal { base, .. } => self.return_point_frame(next, base),
+            ResultSite::Forward { mv_pc, base, .. } | ResultSite::Taken { mv_pc, base, .. } => {
+                let frame = self.frame(mv_pc, next)?;
+                self.func.frames[frame].returned = Some(ReturnedValues { base, count: None });
+                Ok(frame)
+            }
+        }
+    }
+
+    fn return_point_frame(&mut self, point: usize, base: u32) -> Result<FrameState, String> {
+        let frame = self.frame(point, point)?;
+        self.func.frames[frame].returned = Some(ReturnedValues { base, count: None });
+        Ok(frame)
     }
 
     /// Speculates on what the return point before `after` saw returned.
@@ -2185,11 +2518,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         Ok(())
     }
 
-    /// A call followed by `return_point_forward` and a multiple-value entry
-    /// at `pc + len + forward_len`. One value returns to the forward and
-    /// lands in `r[base + 2]`, the first of the callee's values. Any other
-    /// count reaches the entry address, which exits to baseline there with
-    /// the callee's values and `AC` (the call's `Forward` return point).
     #[allow(clippy::too_many_arguments)]
     fn lower_forward_call(
         &mut self,
@@ -2258,7 +2586,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             return Err(self.unsupported(ins, "return point has several predecessors"));
         }
 
-        if !self_call && taking && shape.nvals >= 1 {
+        if !self_call && !self.apply_opaque() && taking && shape.nvals >= 1 {
             let site = ResultSite::Taken {
                 first_value,
                 mv_pc,
@@ -2266,13 +2594,18 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 values: mode,
                 wants_list,
             };
+            // Record procedures and the recognized natives return exactly
+            // one value, which the site takes like a generic call's.
+            if let Some(flow) = self.try_record_call(pc, next, callee_reg, first_arg, argc, site)? {
+                return Ok(flow);
+            }
             if let Some(flow) =
                 self.try_generic_call(pc, next, callee_reg, first_arg, argc, mode, site)?
             {
                 return Ok(flow);
             }
         }
-        if !self_call && !taking {
+        if !self_call && !self.apply_opaque() && !taking {
             let site = ResultSite::Forward {
                 first_value,
                 mv_pc,
@@ -2335,7 +2668,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 return Ok(Flow::Next);
             }
         }
-        if !self_call && taking {
+        if !self_call && !self.apply_opaque() && taking {
             // The body returns the entry's values to a block of their own.
             let call_frame = self.frame(mv_pc, next)?;
             self.func.frames[call_frame].returned = Some(ReturnedValues { base, count: None });
@@ -2376,7 +2709,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         let mut operands = vec![self.reg(callee_reg)?];
         operands.extend(self.regs(first_arg..first_arg + argc)?);
 
-        let direct = if self_call {
+        let direct = if self_call || self.apply_opaque() {
             None
         } else {
             self.direct_callee(operands[0], argc)
@@ -2397,7 +2730,8 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             && let Some(code) = known
             && self.returns_one_value(code)
         {
-            let frame = self.frame(next, next)?;
+            // The forward passes one value on, which the callee always returns.
+            let frame = self.return_point_frame(next, base)?;
             let op = Op::CallKnown(code, ReturnValues::Error);
             if let Some((_, checked)) = direct {
                 operands[0] = checked;
@@ -2471,9 +2805,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         Ok(Flow::Next)
     }
 
-    /// The `return_point_forward` after a call: the single value continues at
-    /// the entry when it takes one value, otherwise baseline runs the entry
-    /// with the value in `r[base + 2]` and a count of one.
     fn lower_forward(&mut self, ins: &Instruction, pc: usize, len: usize) -> Result<Flow, String> {
         let pending = match (self.pending_return.take(), self.pending_mv.take()) {
             (Some(at), Some(pending)) if at == pc && pending.mv_pc == pc + len => pending,
@@ -2498,12 +2829,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         Ok(Flow::Terminated)
     }
 
-    /// The variadic entry that the rest instruction at the current pc reads:
-    /// it must name the register that holds the count and, when it takes
-    /// one, the rest area's base.
     fn rest_of(&self, ins: &Instruction, cnt: u32, base: Option<u32>) -> Result<RestInfo, String> {
-        // An ordinary variadic entry has one rest area; a case-lambda clause
-        // has its own, selected by the pc of the instruction.
         let rest = self.rest.or_else(|| {
             self.case_ranges
                 .iter()
@@ -2516,8 +2842,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         }
     }
 
-    /// The code block a closure or guard names. A nested block is named by
-    /// its pool constant, and each one gets one entry in `func.codes`.
+    /// The code block a closure or guard names.
     fn code_ref(&mut self, pool_index: u32) -> CodeRef {
         let source = CodeSource::Pool(pool_index);
         if let Some((code, _)) = self.func.codes.iter().find(|(_, s)| **s == source) {
@@ -2529,12 +2854,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
     /// The code block named by its heap value, for a callee known from a
     /// folded global.
     fn code_ref_value(&mut self, value: SchemeValue<'gc>) -> CodeRef {
-        // The code block this unit compiles for is `CodeRef` 0; naming it
-        // directly lets a self call enter this unit's entry with a plain
-        // jump (see `enter_known`). The inline chain holds code blocks, not
-        // closures, and its last entry is the block this builder lowers: the
-        // root at depth 0, the callee in a nested build (whose `CodeRef` 0
-        // the splice maps to the callee's own entry).
         if self.inline.chain.last() == Some(&value) {
             return root();
         }
@@ -2545,9 +2864,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         self.func.codes.push(source)
     }
 
-    /// Whether the code block `code` returns exactly one value on every
-    /// path, so a call to it needs no value-count exit. Decided once per code
-    /// block from its bytecode ([`bytecode_returns_one_value`]).
     fn returns_one_value(&mut self, code: CodeRef) -> bool {
         if let Some(&known) = self.single_valued.get(&code) {
             return known;
@@ -2570,13 +2886,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             && bytecode_returns_one_value(value.downcast::<CodeBlock<'gc>>().buffer.code())
     }
 
-    /// The direct-call target for `callee`, when it is a constant folded
-    /// from a global: the callee's code and the callee guarded by
-    /// `CheckCode`, which deopts before the call at `self.pc` when the
-    /// value in the register is not that closure. Only a bytecode callee
-    /// whose fixed arity is the call's argument count qualifies; anything
-    /// else (variadic, native, another code block) keeps the generic call,
-    /// which raises the same errors baseline would.
     fn direct_callee(&mut self, callee: Value, argc: u32) -> Option<(CodeRef, Value)> {
         let ValueDef::Inst(inst) = self.func.value_def(callee) else {
             return None;
@@ -2606,12 +2915,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         Some((code, checked))
     }
 
-    /// The direct-call target for a monomorphic call site, from the call
-    /// profile. The profile names the callee code block the site entered
-    /// last; `CheckCode` deopts before the call when the runtime value is
-    /// another closure, so the profile is only a hint. A bytecode callee of
-    /// this call's fixed arity qualifies; variadic and native callees keep
-    /// the generic call, which performs the arity and class protocol.
     fn direct_profile_callee(
         &mut self,
         pc: usize,
@@ -2638,8 +2941,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         Some((code, checked))
     }
 
-    /// Deopts before the instruction unless `value` is an instance of
-    /// `class`. The result is `value`, refined to the class.
     fn check_class(&mut self, value: Value, class: ClassRef, frame: FrameState) -> Value {
         self.value_op(
             Op::CheckClass(class),
@@ -2649,10 +2950,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         )
     }
 
-    /// Calls the primitive `prim` on `args` through its direct wrapper, as
-    /// the baseline's `prim_direct` does. A failing call deopts before the
-    /// instruction, so `frame` holds the registers from before it. `ins`
-    /// names the instruction in the error when the call has no direct wrapper.
     fn prim_call(
         &mut self,
         ins: &Instruction,
@@ -2670,18 +2967,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         Ok(self.value_op(op, args, Type::Any, Some(frame)))
     }
 
-    /// `dst = prim(lhs, rhs)`.
-    /// The write barrier of a store of `value` into `obj`, emitted *before*
-    /// the store. Under the SATB barrier (ConcurrentImmix) the slow path
-    /// enqueues the fields `obj` holds when it runs, so it must see the value
-    /// being overwritten; a barrier after the store loses that value and the
-    /// collector can free an object that is still reachable. The barrier logs
-    /// `obj` for the collector, which a store of an immediate needs not do: the
-    /// stored word holds no reference to a heap object. A boxed int32, double
-    /// or boolean and an immediate constant are immediates (a flonum is
-    /// NaN-boxed, not a cell). `Box(Repr::Int64)` and `Box(Repr::Int128)` are
-    /// not: a value wider than i32 becomes a one- or two-limb `BIGINT`, which
-    /// is a heap reference and needs the barrier.
     fn write_barrier(&mut self, obj: Value, value: Value) {
         if let ValueDef::Inst(inst) = self.func.value_def(value) {
             if matches!(
@@ -2785,8 +3070,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         Ok(Flow::Next)
     }
 
-    /// The element `index` of `vector`, which is a checked vector. Deopts
-    /// before the instruction when the index is out of bounds.
     fn vector_index(
         &mut self,
         frame: FrameState,
@@ -2797,7 +3080,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         Ok(self.value_op(Op::CheckIndex, &[vector, index], Type::Int32, Some(frame)))
     }
 
-    /// The element of vector register `vector` at register `index`.
     fn vector_ref(&mut self, frame: FrameState, vector: u32, index: u32) -> Result<Value, String> {
         let vector = self.reg(vector)?;
         let vector = self.check_class(vector, ClassRef::VECTOR, frame);
@@ -2805,9 +3087,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         Ok(self.value_op(Op::LoadElement, &[vector, index], Type::Any, None))
     }
 
-    /// The address of a pool table or metadata entry. Both live in the
-    /// non-moving code buffer, which the unit keeps alive, so the address is
-    /// a plain constant.
     fn table_address(&mut self, pool_index: u32) -> Value {
         self.konst(Constant::Block {
             code: root(),
@@ -2816,8 +3095,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         })
     }
 
-    /// The address of a metadata entry, computed from the code buffer's
-    /// metadata area by `entry`.
     fn metadata_address(&mut self, entry: impl FnOnce(*mut u8) -> u64) -> Value {
         let md = self.buffer.metadata();
         let offset = entry(md) as usize - md as usize;
@@ -2828,9 +3105,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         })
     }
 
-    /// Ends the block with a symbol switch whose case index is `key`, an
-    /// int32 entry index into the table at pool index `table`. Each entry
-    /// index is one case, so its target is the entry's displacement.
     fn lower_symbol_switch(&mut self, pc: usize, table: u32, key: Value) -> Result<Flow, String> {
         let (default, entries) = self.symbol_switch_table(pc, table as usize)?;
         let default = self.edge_to(default)?;
@@ -2842,15 +3116,11 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             value: key,
             cases,
             default,
-            // The helper maps a hit to the entry index, and entry indices are
-            // consecutive from zero, so the index switch is always dense.
             density: SwitchDensity::Dense { min: 0 },
         });
         Ok(Flow::Terminated)
     }
 
-    /// The default target and the targets of each entry of the symbol switch
-    /// table at pool index `table`, as pcs. The layout is `switch_symbol_probe`'s.
     fn symbol_switch_table(&self, pc: usize, table: usize) -> Result<(usize, Vec<usize>), String> {
         let pool = self.buffer.pool();
         let word = |index: usize| -> Result<u32, String> {
@@ -2871,8 +3141,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         Ok((default, entries))
     }
 
-    /// Ends the block with a switch on the int32 `key`, following the
-    /// displacements of the switch table at pool index `table`.
     fn lower_int_switch(&mut self, pc: usize, table: u32, key: Value) -> Result<Flow, String> {
         let (default, cases, density) = self.int_switch_table(pc, table as usize)?;
         let default = self.edge_to(default)?;
@@ -2889,9 +3157,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         Ok(Flow::Terminated)
     }
 
-    /// The default target, the `(key, target)` cases and the key layout of a
-    /// fixnum or char switch table, as pcs. Mirrors the interpreter's
-    /// `switch_int_disp`.
     fn int_switch_table(
         &self,
         pc: usize,
@@ -2930,9 +3195,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         Ok((default, cases, density))
     }
 
-    /// Lowers a primitive call through its direct wrapper. A failing
-    /// primitive deopts before the instruction, so the frame keeps the
-    /// registers live before it.
     fn lower_prim(
         &mut self,
         ins: &Instruction,
@@ -2950,6 +3212,21 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             self.set(dst, result)?;
             return Ok(Flow::Next);
         }
+        // `variable-set!` stores through the helper, as `variable-set` does,
+        // which deopts lazily when the write breaks this unit's own
+        // assumption. A non-variable deopts first, and baseline raises.
+        if args.len() == 2 && Primitive::from_id(prim as u16) == Some(Primitive::VariableSet) {
+            let cell = self.check_class(operands[0], ClassRef::VARIABLE, frame);
+            let _ = self.value_op(
+                Op::CallOp(Helper::VariableSet.helper_ref()),
+                &[cell, operands[1]],
+                Type::Any,
+                Some(frame),
+            );
+            let result = self.undef();
+            self.set(dst, result)?;
+            return Ok(Flow::Next);
+        }
         if let Some(result) = self.inline_prim(prim, &operands, frame) {
             self.set(dst, result)?;
             return Ok(Flow::Next);
@@ -2963,8 +3240,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         Ok(Flow::Next)
     }
 
-    /// The constant fixnum `value` is, if it is the result of a constant
-    /// load.
     fn fixnum_constant(&self, value: Value) -> Option<i32> {
         match self.func.value_def(value) {
             ValueDef::Inst(inst) => match self.func.insts[inst].op {
@@ -2976,15 +3251,12 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         }
     }
 
-    /// A primitive that Tier 2 lowers without a call, as the baseline's
-    /// templates do: the total predicates, constants, and a constant-size
-    /// vector allocation. Returns the register value, or `None` to call the
-    /// primitive. None of these can fail, so none needs the frame, except the
-    /// helper calls, whose nonzero status deopts before the call (baseline
-    /// raises from the pc).
     fn inline_prim(&mut self, prim: u32, operands: &[Value], frame: FrameState) -> Option<Value> {
         use Primitive as P;
         let prim = Primitive::from_id(prim as u16)?;
+        if let Some(value) = self.inline_bits_prim(prim, operands, frame) {
+            return Some(value);
+        }
         let flag = |this: &mut Self, flag: Value| this.bool_value(flag);
         Some(match (prim, operands) {
             (P::Unspec, []) => self.undef(),
@@ -3033,11 +3305,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             (P::IsSymbol, &[x]) => self.class_predicate(x, ClassRef::SYMBOL),
             (P::IsString, &[x]) => self.class_predicate(x, ClassRef::STRING),
             (P::IsTuple, &[x]) => self.class_predicate(x, ClassRef::TUPLE),
-            // `make-vector` of a small constant size, with the fill given or
-            // undefined: the same object the primitive makes. A runtime size
-            // takes the inline allocate-and-fill path, which deopts to the
-            // primitive on a non-fixnum/negative/too-large size and on the
-            // allocator's slow path.
             (P::MakeVector, [size]) | (P::MakeVector, [size, _]) => {
                 let fill = match operands.get(1) {
                     Some(&fill) => fill,
@@ -3058,6 +3325,15 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                     )
                 }
             }
+            // A list of known length is a chain of pairs, which escape
+            // analysis can remove.
+            (P::List, elements) if elements.len() <= 32 => {
+                let mut list = self.bits(SchemeValue::VALUE_NULL as u64);
+                for &element in elements.iter().rev() {
+                    list = self.value_op(Op::AllocPair, &[element, list], Type::Pair, None);
+                }
+                list
+            }
             (P::Vector, elements) if elements.len() <= MAX_INLINE_VECTOR => {
                 self.value_op(Op::AllocVector, elements, Type::Vector, None)
             }
@@ -3073,9 +3349,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 Type::Any,
                 Some(frame),
             ),
-            // The primitive fast paths the baseline template already emits.
-            // Each one matches the baseline's type checks and deopts to
-            // baseline (rather than emitting an error path) on anything else.
+
             (P::IsBoolean, &[x]) => {
                 let test = self.value_op(Op::TestBoolean, &[x], Type::Bool, None);
                 flag(self, test)
@@ -3088,9 +3362,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 let test = self.value_op(Op::TestNumber, &[x], Type::Bool, None);
                 flag(self, test)
             }
-            // `exact?`, `inexact?` and `exact-integer?`: a fixnum and a flonum
-            // answer inline; every other value (heap numbers included) takes
-            // the primitive, whose answer is baseline's.
+
             (P::IsExact, &[x]) => {
                 let yes = self.bits(SchemeValue::VALUE_TRUE as u64);
                 let no = self.bits(SchemeValue::VALUE_FALSE as u64);
@@ -3106,8 +3378,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 let no = self.bits(SchemeValue::VALUE_FALSE as u64);
                 self.fixnum_or_flonum_answer(P::IsExactInteger, x, yes, no, frame)
             }
-            // `integer?`: a fixnum answers inline; a flonum or any other value
-            // takes the primitive (a flonum's answer depends on its value).
+
             (P::IsInteger, &[x]) => {
                 let (join, result) = self.join_block(Type::Any);
                 let slow = self.func.new_block();
@@ -3123,9 +3394,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 self.cur = join;
                 result
             }
-            // `exact->inexact`: a fixnum converts exactly, a flonum is its own
-            // inexact value, and a heap number takes the primitive (which
-            // rounds it to a double).
+
             (P::ExactToInexact, &[x]) => {
                 let (join, result) = self.join_block(Type::Any);
                 let maybe_flonum = self.func.new_block();
@@ -3150,9 +3419,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 self.cur = join;
                 result
             }
-            // Only identical bits are known to be equivalent without the
-            // primitive: fixnums are canonical, chars are not numbers, and
-            // every other mixed case goes to `Value::eqv` through the call.
+
             (P::IsEqv, &[x, y]) => {
                 let (join, result) = self.join_block(Type::Any);
                 let same = self.func.new_block();
@@ -3163,9 +3430,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 let yes = self.bits(SchemeValue::VALUE_TRUE as u64);
                 self.jump_with(join, &[yes]);
                 self.cur = different;
-                // A character is neither a cell nor a number, so with
-                // different bits it is not equivalent to anything (the same
-                // answer the baseline gives without calling).
+
                 let check_y = self.func.new_block();
                 let slow = self.func.new_block();
                 let no = self.func.new_block();
@@ -3183,22 +3448,16 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 self.cur = join;
                 result
             }
-            // `floor`, `ceiling` and `truncate`: a fixnum is its own answer,
-            // a flonum takes the inline floating-point rounding the baseline
-            // emits, and anything else (bignums, rationals) takes the
-            // primitive.
+
             (P::Floor, &[x]) => self.float_round_fast(P::Floor, Op::FloorF64, x, frame),
             (P::Ceiling, &[x]) => self.float_round_fast(P::Ceiling, Op::CeilingF64, x, frame),
             (P::Truncate, &[x]) => self.float_round_fast(P::Truncate, Op::TruncateF64, x, frame),
-            // `char->integer`: the check deopts on a non-character, exactly as
-            // the wrapper raises from the instruction.
+
             (P::CharToInteger, &[x]) => {
                 let code = self.value_op(Op::CheckChar, &[x], Type::Int32, Some(frame));
                 self.value_op(Op::Box(Repr::Int32), &[code], Type::Any, None)
             }
-            // Tuple access: class check, then the same length word, bounds
-            // test and data offset a vector uses (tuple data starts one word
-            // in, like vector data). A failing check deopts to baseline.
+
             (P::TupleRef, &[tuple, index]) => {
                 let tuple = self.check_class(tuple, ClassRef::TUPLE, frame);
                 let index =
@@ -3218,7 +3477,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 self.effect_op(Op::StoreElement, &[tuple, index, value], None);
                 self.undef()
             }
-            // `car` and `cdr`: a checked pair, then the first or second word.
+
             (P::Car, &[pair]) => {
                 let pair = self.check_class(pair, ClassRef::PAIR, frame);
                 self.value_op(
@@ -3243,8 +3502,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                     None,
                 )
             }
-            // Vector primitives: the same checks as the `vector-ref`,
-            // `vector-set!` and `vector-length` bytecodes.
+
             (P::VectorRef, &[vector, index]) => {
                 let vector = self.check_class(vector, ClassRef::VECTOR, frame);
                 let index =
@@ -3264,17 +3522,9 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 let len = self.value_op(Op::VectorLength, &[vector], Type::Int32, Some(frame));
                 self.value_op(Op::Box(Repr::Int32), &[len], Type::Any, None)
             }
-            // `sqrt` on a flonum: the hardware square root, boxed. Anything
-            // else deopts, so baseline runs the instruction (and raises on a
-            // non-number), exactly like the baseline's flonum fast path.
+
             (P::Sqrt, &[x]) => self.flonum_sqrt_fast(x, frame),
-            // Bytevectors. The primitive fast paths accept both bytevector
-            // classes; `bytevector-length` reads the length word (deopting
-            // when it leaves int32, as the baseline slow path boxes a bignum),
-            // and the u8 accessors check the same fixnum index against that
-            // length. The store's value must be a fixnum in `0..=255`; every
-            // other case deopts before the instruction so baseline performs
-            // the same check and raises the same error.
+
             (P::BytevectorLength, &[bv]) => {
                 let bv = self.check_bytevector(bv, frame);
                 let len = self.value_op(Op::VectorLength, &[bv], Type::Int32, Some(frame));
@@ -3293,9 +3543,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 self.effect_op(Op::StoreBytevectorU8, &[bv, index, value], None);
                 self.undef()
             }
-            // `string-length` reads the length word of a checked string. The
-            // baseline fast path does exactly this (payload word
-            // `STRING_LENGTH / 8`), then boxes the int32.
+
             (P::StringLength, &[x]) => {
                 let string = self.check_class(x, ClassRef::STRING, frame);
                 let len = self.value_op(
@@ -3309,9 +3557,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 );
                 self.value_op(Op::Box(Repr::Int32), &[len], Type::Any, None)
             }
-            // `string-ref`: class check, the same unsigned bounds check as a
-            // vector but against the string's length word, then a narrow
-            // character load. A wide string deopts inside the load.
+
             (P::StringRef, &[x, index]) => {
                 let string = self.check_class(x, ClassRef::STRING, frame);
                 let index = self.value_op(
@@ -3322,10 +3568,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 );
                 self.value_op(Op::StringRef, &[string, index], Type::Any, Some(frame))
             }
-            // `string-set!`: the same class and bounds checks as `string-ref`,
-            // then a helper store. The helper deopts on an immutable or shared
-            // string and on a wide character in a narrow buffer, so baseline
-            // raises or detaches exactly as the primitive does.
+
             (P::StringSet, &[x, index, value]) => {
                 let string = self.check_class(x, ClassRef::STRING, frame);
                 let index = self.value_op(
@@ -3341,10 +3584,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                     Some(frame),
                 )
             }
-            // R6RS fixnum operations: both operands must be fixnums. The
-            // fast path unboxes them, performs the checked operation and
-            // boxes the result; anything else (a non-fixnum, or an overflow)
-            // deopts to baseline, which runs the primitive and raises.
+
             (P::FxAdd, &[a, b]) => self.fx_arith(P::FxAdd, Op::AddI32Ovf, a, b, frame),
             (P::FxSub, &[a, b]) => self.fx_arith(P::FxSub, Op::SubI32Ovf, a, b, frame),
             (P::FxMul, &[a, b]) => self.fx_arith(P::FxMul, Op::MulI32Ovf, a, b, frame),
@@ -3356,19 +3596,14 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             (P::FxZero, &[x]) => self.fx_predicate(P::FxZero, Cmp::Eq, x, frame),
             (P::FxPositive, &[x]) => self.fx_predicate(P::FxPositive, Cmp::Gt, x, frame),
             (P::FxNegative, &[x]) => self.fx_predicate(P::FxNegative, Cmp::Lt, x, frame),
-            // `zero?`: a fixnum and a flonum answer inline; every other value
-            // (bignums, rationals, non-numbers) takes the primitive.
             (P::IsZero, &[x]) => self.number_zero_fast(P::IsZero, x, frame),
-            // `even?`/`odd?`: a fixnum answers from its remainder by two;
-            // bignums, flonums and non-numbers take the primitive.
             (P::IsEven, &[x]) => self.number_parity_fast(P::IsEven, x, frame),
             (P::IsOdd, &[x]) => self.number_parity_fast(P::IsOdd, x, frame),
             _ => return None,
         })
     }
 
-    /// The primitive `prim` on `args`, as the direct wrapper call. Used for
-    /// the part of an inlined fast path that has no inline lowering.
+    /// The primitive `prim` on `args`, as the direct wrapper call. .
     fn prim_value(&mut self, prim: Primitive, args: &[Value], frame: FrameState) -> Value {
         let op = Op::CallPrim {
             prim: PrimRef::new(prim.id() as usize),
@@ -3382,12 +3617,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         self.value_op(Op::Const(Constant::Int32(value)), &[], Type::Int32, None)
     }
 
-    /// `fx+`, `fx-` and `fx*` on two fixnums: unbox to the runtime int32
-    /// lane, run the checked operation and tag the result. A non-fixnum or an
-    /// overflow deopts to baseline, which runs the primitive and raises
-    /// exactly as it would have. The int32 lane matters: the int64 lane's
-    /// box would turn an out-of-range result into a bignum instead of
-    /// raising.
+    /// `fx+`, `fx-` and `fx*` on two fixnums
     fn fx_arith(
         &mut self,
         prim: Primitive,
@@ -3396,6 +3626,12 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         b: Value,
         frame: FrameState,
     ) -> Value {
+        if self.may_speculate() {
+            let raw_a = self.fixnum_operand(a, frame);
+            let raw_b = self.fixnum_operand(b, frame);
+            let value = self.value_op(op, &[raw_a, raw_b], Type::Int32, Some(frame));
+            return self.value_op(Op::Box(Repr::Int32), &[value], Type::Any, None);
+        }
         let (join, result) = self.join_block(Type::Any);
         let test_b = self.func.new_block();
         let ok = self.func.new_block();
@@ -3427,6 +3663,12 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         b: Value,
         frame: FrameState,
     ) -> Value {
+        if self.may_speculate() {
+            let raw_a = self.fixnum_operand(a, frame);
+            let raw_b = self.fixnum_operand(b, frame);
+            let test = self.value_op(Op::CmpI32(cmp), &[raw_a, raw_b], Type::Bool, None);
+            return self.bool_value(test);
+        }
         let (join, result) = self.join_block(Type::Any);
         let test_b = self.func.new_block();
         let ok = self.func.new_block();
@@ -3449,9 +3691,14 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         result
     }
 
-    /// `fxzero?`, `fxpositive?` and `fxnegative?`: a fixnum compares with
-    /// zero; anything else deopts to the primitive.
+    /// `fxzero?`, `fxpositive?` and `fxnegative?`
     fn fx_predicate(&mut self, prim: Primitive, cmp: Cmp, x: Value, frame: FrameState) -> Value {
+        if self.may_speculate() {
+            let raw = self.fixnum_operand(x, frame);
+            let zero = self.const_i32(0);
+            let test = self.value_op(Op::CmpI32(cmp), &[raw, zero], Type::Bool, None);
+            return self.bool_value(test);
+        }
         let (join, result) = self.join_block(Type::Any);
         let ok = self.func.new_block();
         let slow = self.func.new_block();
@@ -3470,9 +3717,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         result
     }
 
-    /// `zero?`: a fixnum compares with zero, a flonum with `0.0`, and every
-    /// other value takes the primitive (which handles bignums, rationals and
-    /// errors).
     fn number_zero_fast(&mut self, prim: Primitive, x: Value, frame: FrameState) -> Value {
         let (join, result) = self.join_block(Type::Any);
         let maybe_double = self.func.new_block();
@@ -3774,6 +4018,18 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         }
     }
 
+    /// `name in (library)` for a variable cell, for the JIT log, or its
+    /// printed form when no instance of the root registry binds it.
+    fn variable_label(&mut self, variable: SchemeValue<'gc>) -> String {
+        let names = self.var_names.get_or_insert_with(|| {
+            crate::runtime::linklet::root_registry(self.ctx).variable_names()
+        });
+        names
+            .get(&variable.bits())
+            .cloned()
+            .unwrap_or_else(|| format!("{variable}"))
+    }
+
     /// The constant that reading the variable `var` yields, when `var` is a
     /// bound variable constant.
     fn fold_variable(&mut self, var: Value) -> Option<Value> {
@@ -3798,8 +4054,8 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         if current == SchemeValue::undefined() {
             return None;
         }
-        // A set that fired once stays invalid, so a variable that changes is
-        // not folded again.
+        // A fired set is replaced by a fresh one (`Variable::fire_watch`), so
+        // this one is invalid only while that fire runs.
         if let Some(set) = variable_ref.watch.get() {
             if set.is_invalid() {
                 return None;
@@ -3830,16 +4086,22 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             Some(old) if old.value != dep.value => return None,
             Some(_) => {}
             None => {
-                log::info!(
-                    target: crate::heap::logging::JIT_LOG_TARGET,
-                    "  opt: folded variable {} = {}",
-                    variable,
-                    current
-                );
+                if log::log_enabled!(target: crate::heap::logging::JIT_LOG_TARGET, log::Level::Info)
+                {
+                    let name = self.variable_label(variable);
+                    log::info!(
+                        target: crate::heap::logging::JIT_LOG_TARGET,
+                        "  opt: folded variable {name} = {} in {}",
+                        inline::value_label(current),
+                        self.label
+                    );
+                }
                 self.func.deps.push(dep)
             }
         }
-        Some(self.value_const(current))
+        let value = self.value_const(current);
+        self.folded_from.insert(value, variable);
+        Some(value)
     }
 
     /// The constant that reading the global through free variable `index`
@@ -3977,6 +4239,12 @@ impl<'s, 'gc> Builder<'s, 'gc> {
 
     /// The register `r`, or an error when it has no value on this path.
     fn reg(&self, r: u32) -> Result<Value, String> {
+        if let Some(site) = &self.apply
+            && r >= site.start
+            && let Some(&value) = site.values.get((r - site.start) as usize)
+        {
+            return Ok(value);
+        }
         self.state
             .get(r as usize)
             .copied()
@@ -4029,7 +4297,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             Instruction::OpLoadConstant(op) => op.dst.0 == 1,
             Instruction::OpLoadImmediate(op) => op.dst.0 == 1,
             Instruction::OpLoadRaw(op) => op.dst.0 == 1,
-            Instruction::OpTailCall(_) => return,
+            Instruction::OpTailCall(_) | Instruction::OpTailApply(_) => return,
             _ => {
                 self.tail_setup = None;
                 return;
@@ -4045,6 +4313,15 @@ impl<'s, 'gc> Builder<'s, 'gc> {
     /// at the setup's first write of register 1 (see
     /// [`Self::note_tail_setup`]).
     fn frame(&mut self, state_pc: usize, live_pc: usize) -> Result<FrameState, String> {
+        // A frame holds the registers the bytecode has, not the spread
+        // arguments of an `apply` site.
+        let apply = self.apply.take();
+        let frame = self.frame_with_setup(state_pc, live_pc);
+        self.apply = apply;
+        frame
+    }
+
+    fn frame_with_setup(&mut self, state_pc: usize, live_pc: usize) -> Result<FrameState, String> {
         let Some((at, regs)) = self.tail_setup.clone() else {
             return self.frame_here(state_pc, live_pc);
         };
@@ -4101,6 +4378,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             returned: None,
             rest,
             inline_site: None,
+            virtuals: Vec::new(),
         }))
     }
 
@@ -4185,11 +4463,44 @@ const MAX_PACKED_PRIM_ARGS: usize = 32;
 /// code and does not write a variable cell; `variable-set!` is the one
 /// exception (the builder normally routes it through `Helper::VariableSet`,
 /// but a primitive call site can still name it).
+///
+/// The hash table and fluid primitives are leaf helpers: they hash and compare
+/// in Rust, never run Scheme code and never capture a continuation, so their
+/// effects are exact (`MAY_CALL` is absent). That keeps the objects around
+/// them from being materialized (`passes/pea.rs`) and lets loads and fluid
+/// reads move across the ones that do not write.
 fn prim_effects(prim: u32) -> Effects {
-    if Primitive::from_id(prim as u16) == Some(Primitive::VariableSet) {
-        Effects::for_call()
-    } else {
-        Effects::for_primitive()
+    use crate::runtime::codegen::opt::ir::inst::{EffectFlags, MemoryRanges, SemanticEffects};
+    match Primitive::from_id(prim as u16) {
+        Some(Primitive::VariableSet) => Effects::for_call(),
+        Some(Primitive::HashRef2 | Primitive::HashRef3 | Primitive::HashContains) => {
+            Effects::read(MemoryRegion::Heap, SemanticEffects::UNKNOWN).checked()
+        }
+        Some(Primitive::HashPlain) => Effects::read(MemoryRegion::Heap, SemanticEffects::UNKNOWN),
+        Some(Primitive::HashPut | Primitive::HashTrySet) => Effects {
+            flags: EffectFlags::CONTROL_DEPENDENT
+                .union(EffectFlags::READS_MUTABLE)
+                .union(EffectFlags::MAY_RAISE)
+                .union(EffectFlags::ALLOCATES),
+            depends_on: SemanticEffects::UNKNOWN,
+            causes: SemanticEffects::UNKNOWN.union(SemanticEffects::TYPE_CHECK),
+            reads: MemoryRanges::region(MemoryRegion::Heap),
+            writes: MemoryRanges::region(MemoryRegion::Heap),
+        },
+        Some(Primitive::FluidRef) => {
+            Effects::read(MemoryRegion::Runtime, SemanticEffects::FLUID).checked()
+        }
+        Some(Primitive::FluidSet) => Effects {
+            flags: EffectFlags::CONTROL_DEPENDENT
+                .union(EffectFlags::READS_MUTABLE)
+                .union(EffectFlags::MAY_RAISE)
+                .union(EffectFlags::ALLOCATES),
+            depends_on: SemanticEffects::FLUID,
+            causes: SemanticEffects::FLUID.union(SemanticEffects::TYPE_CHECK),
+            reads: MemoryRanges::region(MemoryRegion::Runtime),
+            writes: MemoryRanges::region(MemoryRegion::Runtime),
+        },
+        _ => Effects::for_primitive(),
     }
 }
 
@@ -4268,4 +4579,43 @@ fn opcode_name(ins: &Instruction) -> String {
         .chars()
         .take_while(|c| c.is_alphanumeric() || *c == '_')
         .collect()
+}
+
+#[cfg(test)]
+mod hash_fluid_effects_tests {
+    use super::*;
+    use crate::runtime::codegen::opt::ir::inst::EffectFlags;
+
+    /// The hash and fluid helpers never call Scheme, so a `CallPrim` of
+    /// one is not a continuation hazard for escape analysis.
+    #[test]
+    fn hash_and_fluid_prims_do_not_call() {
+        for prim in [
+            Primitive::HashRef2,
+            Primitive::HashRef3,
+            Primitive::HashContains,
+            Primitive::HashPut,
+            Primitive::HashTrySet,
+            Primitive::HashPlain,
+            Primitive::FluidRef,
+            Primitive::FluidSet,
+        ] {
+            let effects = prim_effects(prim.id() as u32);
+            assert!(
+                !effects.flags.contains(EffectFlags::MAY_CALL),
+                "{prim:?} must not be marked MAY_CALL"
+            );
+        }
+    }
+
+    /// Mutating helpers must write; readers must not.
+    #[test]
+    fn writers_write_and_readers_do_not() {
+        for prim in [Primitive::HashRef2, Primitive::HashContains, Primitive::HashPlain, Primitive::FluidRef] {
+            assert!(prim_effects(prim.id() as u32).writes.is_empty(), "{prim:?}");
+        }
+        for prim in [Primitive::HashPut, Primitive::HashTrySet, Primitive::FluidSet] {
+            assert!(!prim_effects(prim.id() as u32).writes.is_empty(), "{prim:?}");
+        }
+    }
 }

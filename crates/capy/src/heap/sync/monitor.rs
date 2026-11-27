@@ -155,6 +155,10 @@ impl<T> ReentrantMonitor<T> {
         self.mutex.lock()
     }
 
+    pub fn try_lock(&self) -> Option<parking_lot::ReentrantMutexGuard<'_, T>> {
+        self.mutex.try_lock()
+    }
+
     pub fn get_mut(&mut self) -> &mut T {
         self.mutex.get_mut()
     }

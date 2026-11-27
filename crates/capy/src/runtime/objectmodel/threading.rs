@@ -1,8 +1,8 @@
 //! Heap objects for threads and synchronization.
 
 use super::*;
-use crate::heap::object::{ClassId, builtin_class_ids, class_header_word};
 use crate::heap::cell::Lock;
+use crate::heap::object::{ClassId, builtin_class_ids, class_header_word};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize};
 
@@ -29,7 +29,6 @@ unsafe impl Trace for Condition {
     }
 }
 
-
 pub struct Mutex {
     pub(crate) reentrant: bool,
     pub(crate) state: parking_lot::Mutex<MutexState>,
@@ -48,7 +47,6 @@ pub(crate) struct MutexState {
 pub(crate) fn mutex_header_word() -> u64 {
     class_header_word(ClassId::new(builtin_class_ids::MUTEX).expect("builtin class id is nonzero"))
 }
-
 
 unsafe impl Trace for Mutex {
     // SAFETY: All GC-reachable fields are traced via `visitor`
@@ -120,7 +118,6 @@ pub(crate) fn thread_object_header_word() -> u64 {
     class_header_word(ClassId::new(builtin_class_ids::THREAD).expect("builtin class id is nonzero"))
 }
 
-
 unsafe impl<'gc> Trace for ThreadObject<'gc> {
     // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::heap::Visitor) {
@@ -160,5 +157,3 @@ unsafe impl<'gc> ClassTagged for ThreadObject<'gc> {
 
     const TYPE_NAME: &'static str = "thread";
 }
-
-

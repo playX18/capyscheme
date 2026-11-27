@@ -1,9 +1,6 @@
-//! Global CFG effect analysis.
+//! Effect facts of the primitives, reported by `%primitive-table`.
 
-use super::{BlockId, Instruction, Procedure, Terminator, ValueId};
-use crate::runtime::prims::def::Primitive;
-use std::collections::HashMap;
-
+use super::def::Primitive;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(transparent)]
 pub struct MemoryRanges(u16);
@@ -19,6 +16,11 @@ pub enum MemoryRegion {
 }
 
 impl MemoryRanges {
+    /// The raw bit set, one bit per [`MemoryRegion`].
+    pub const fn bits(self) -> u16 {
+        self.0
+    }
+
     pub const NONE: Self = Self(0);
     pub const TOP: Self = Self((1 << (MemoryRegion::Unknown as u8 + 1)) - 1);
 
@@ -53,6 +55,11 @@ pub struct EffectFlags(u16);
 
 impl EffectFlags {
     pub const NONE: Self = Self(0);
+
+    /// The raw bit set.
+    pub const fn bits(self) -> u16 {
+        self.0
+    }
     pub const TERMINAL: Self = Self(1 << 0);
     pub const EXITS_SIDEWAYS: Self = Self(1 << 1);
     pub const CONTROL_DEPENDENT: Self = Self(1 << 2);
@@ -83,6 +90,11 @@ pub struct SemanticEffects(u32);
 
 impl SemanticEffects {
     pub const NONE: Self = Self(0);
+
+    /// The raw bit set.
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
     pub const MUTABLE_LEXICAL: Self = Self(1 << 0);
     pub const FLUID: Self = Self(1 << 2);
     pub const DEFINITE_BAILOUT: Self = Self(1 << 3);
@@ -316,120 +328,6 @@ impl Effects {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct BlockEffects {
-    pub instructions: Vec<Effects>,
-    pub terminator: Effects,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct ProcedureEffects {
-    pub blocks: HashMap<BlockId, BlockEffects>,
-}
-
-/// Runs the on-demand pass and returns one effect fact per CFG instruction and
-/// terminator.  No procedure-wide summary is inferred here: callers that need
-/// interprocedural information can build it explicitly from these facts.
-pub fn analyze_procedure(procedure: &Procedure<'_>) -> ProcedureEffects {
-    let blocks = procedure
-        .blocks
-        .iter()
-        .map(|block| {
-            (
-                block.id,
-                BlockEffects {
-                    instructions: block
-                        .instructions
-                        .iter()
-                        .map(|instruction| instruction_effects(instruction))
-                        .collect(),
-                    terminator: terminator_effects(&block.terminator),
-                },
-            )
-        })
-        .collect();
-    ProcedureEffects { blocks }
-}
-
-/// Removes definitions whose values are unused and whose instructions have no
-/// observable effects, including pure allocations of fresh objects.
-pub fn eliminate_dead_instructions(mut procedure: Procedure<'_>) -> Procedure<'_> {
-    loop {
-        let mut uses = HashMap::<ValueId, usize>::new();
-        for block in &procedure.blocks {
-            for instruction in &block.instructions {
-                for operand in instruction.uses() {
-                    if let super::Operand::Local(value) = operand {
-                        *uses.entry(value).or_default() += 1;
-                    }
-                }
-            }
-            for operand in block.terminator.uses() {
-                if let super::Operand::Local(value) = operand {
-                    *uses.entry(value).or_default() += 1;
-                }
-            }
-        }
-
-        let mut changed = false;
-        for block in &mut procedure.blocks {
-            block.instructions.retain(|instruction| {
-                let effects = instruction_effects(instruction);
-                let removable = instruction
-                    .def()
-                    .is_some_and(|value| uses.get(&value).copied().unwrap_or(0) == 0)
-                    && (effects.effect_free() || effects.allocation_only());
-                changed |= removable;
-                !removable
-            });
-        }
-        if !changed {
-            return procedure;
-        }
-    }
-}
-
-pub fn instruction_effects(instruction: &Instruction<'_>) -> Effects {
-    match instruction {
-        Instruction::Assign { .. } | Instruction::Const { .. } => Effects::pure(),
-        Instruction::MakeClosure { .. }
-        | Instruction::MakeCaseClosure { .. }
-        | Instruction::MakeEnv { .. }
-        | Instruction::RestToList { .. } => Effects::allocate(),
-        Instruction::EnvRef { .. }
-        | Instruction::ClosureRef { .. }
-        | Instruction::CacheRef { .. } => {
-            Effects::read(MemoryRegion::Heap, SemanticEffects::UNKNOWN)
-        }
-        Instruction::EnvSet { .. }
-        | Instruction::ClosureSet { .. }
-        | Instruction::CacheSet { .. } => {
-            Effects::write(MemoryRegion::Heap, SemanticEffects::UNKNOWN)
-        }
-        Instruction::PrimCall { prim, .. } => primitive_effects(*prim),
-        Instruction::RestRef { .. }
-        | Instruction::RestLength { .. }
-        | Instruction::RestPredicate { .. } => {
-            Effects::read(MemoryRegion::Heap, SemanticEffects::UNKNOWN).checked()
-        }
-        Instruction::Receive { .. } => Effects::pure(),
-        Instruction::ReceiveRest { .. } => Effects::allocate(),
-    }
-}
-
-pub fn terminator_effects(terminator: &Terminator<'_>) -> Effects {
-    match terminator {
-        Terminator::Raise { .. } => Effects::raise(),
-        Terminator::Call { .. } | Terminator::TailCall { .. } | Terminator::Return { .. } => {
-            Effects::for_call()
-        }
-        Terminator::Jump { .. }
-        | Terminator::Branch { .. }
-        | Terminator::BranchPrim { .. }
-        | Terminator::Switch { .. } => Effects::pure(),
-    }
-}
-
 pub fn primitive_effects(primitive: Primitive) -> Effects {
     match primitive {
         Primitive::IsProcedure
@@ -593,9 +491,6 @@ pub fn primitive_effects(primitive: Primitive) -> Effects {
         }
         Primitive::CacheRef => Effects::read(MemoryRegion::Runtime, SemanticEffects::UNKNOWN),
         Primitive::CacheSet => Effects::write(MemoryRegion::Runtime, SemanticEffects::UNKNOWN),
-        Primitive::CovHit | Primitive::CovRegister => {
-            Effects::write(MemoryRegion::Runtime, SemanticEffects::UNKNOWN)
-        }
         // Slot access reads or writes memory and may run Scheme through
         // its slow path (`slot-unbound`, `slot-missing`, MOP methods), so
         // it is never dead even when its result is unused.
@@ -638,6 +533,34 @@ pub fn primitive_effects(primitive: Primitive) -> Effects {
             causes: SemanticEffects::TYPE_CHECK,
             flags: EffectFlags::MAY_RAISE,
             ..Effects::pure()
+        },
+        // The hash table and fluid primitives run no Scheme code: the table kinds they
+        // accept hash and compare in Rust. They read or write table storage in the heap
+        // (and may allocate entries), and raise on a non-table argument.
+        Primitive::HashRef2 | Primitive::HashRef3 | Primitive::HashContains => {
+            Effects::read(MemoryRegion::Heap, SemanticEffects::UNKNOWN).checked()
+        }
+        Primitive::HashPlain => Effects::read(MemoryRegion::Heap, SemanticEffects::UNKNOWN),
+        Primitive::HashPut | Primitive::HashTrySet => Effects {
+            flags: EffectFlags::CONTROL_DEPENDENT
+                .union(EffectFlags::READS_MUTABLE)
+                .union(EffectFlags::MAY_RAISE)
+                .union(EffectFlags::ALLOCATES),
+            depends_on: SemanticEffects::UNKNOWN,
+            causes: SemanticEffects::UNKNOWN.union(SemanticEffects::TYPE_CHECK),
+            reads: MemoryRanges::region(MemoryRegion::Heap),
+            writes: MemoryRanges::region(MemoryRegion::Heap),
+        },
+        Primitive::FluidRef => Effects::read(MemoryRegion::Runtime, SemanticEffects::FLUID).checked(),
+        Primitive::FluidSet => Effects {
+            flags: EffectFlags::CONTROL_DEPENDENT
+                .union(EffectFlags::READS_MUTABLE)
+                .union(EffectFlags::MAY_RAISE)
+                .union(EffectFlags::ALLOCATES),
+            depends_on: SemanticEffects::FLUID,
+            causes: SemanticEffects::FLUID.union(SemanticEffects::TYPE_CHECK),
+            reads: MemoryRanges::region(MemoryRegion::Runtime),
+            writes: MemoryRanges::region(MemoryRegion::Runtime),
         },
         Primitive::Length => Effects::read(
             MemoryRegion::Heap,

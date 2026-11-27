@@ -71,6 +71,8 @@ pub fn emit_template<C: TemplateContext>(masm: &mut Masm, context: &mut C, op: O
         OpcodeId::OpLoopHint => control::op_loop_hint(masm, context),
         OpcodeId::OpCall => call::op_call(masm, context),
         OpcodeId::OpTailCall => call::op_tail_call(masm, context),
+        OpcodeId::OpApply => call::op_apply(masm, context),
+        OpcodeId::OpTailApply => call::op_tail_apply(masm, context),
         OpcodeId::OpCallSelf => call::op_call_self(masm, context),
         OpcodeId::OpTailCallSelf => call::op_tail_call_self(masm, context),
         OpcodeId::OpReturn => call::op_return(masm, context),

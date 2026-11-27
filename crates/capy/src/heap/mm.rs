@@ -36,19 +36,27 @@ impl mmtk::vm::ReferenceGlue<MemoryManager> for ReferenceGlue {
     type FinalizableType = ObjectReference;
 
     fn clear_referent(_new_reference: ObjectReference) {
-        unreachable!()
+        unreachable!(
+            "MMTk reference processing is unused: weak references are handled by the VM weak-processing pass"
+        )
     }
 
     fn get_referent(_object: ObjectReference) -> Option<ObjectReference> {
-        unreachable!()
+        unreachable!(
+            "MMTk reference processing is unused: weak references are handled by the VM weak-processing pass"
+        )
     }
 
     fn set_referent(_reff: ObjectReference, _referent: ObjectReference) {
-        unreachable!()
+        unreachable!(
+            "MMTk reference processing is unused: weak references are handled by the VM weak-processing pass"
+        )
     }
 
     fn enqueue_references(_references: &[ObjectReference], _tls: mmtk::util::VMWorkerThread) {
-        unreachable!()
+        unreachable!(
+            "MMTk reference processing is unused: weak references are handled by the VM weak-processing pass"
+        )
     }
 }
 
@@ -63,8 +71,11 @@ fn get_random_mmap_addr() -> Address {
 
     raw_addr
 }
+/// True when `[addr, addr + size)` is not mapped. `msync` fails with `ENOMEM` for a range that
+/// has an unmapped page, which is the usual probe for a free range; on non-Unix targets the
+/// answer is always false, so the caller keeps looking.
 #[cfg(feature = "aslr")]
-fn is_address_maybe_mmaped(addr: Address, size: usize) -> bool {
+fn is_range_unmapped(addr: Address, size: usize) -> bool {
     #[cfg(unix)]
     {
         unsafe {
@@ -103,7 +114,7 @@ pub fn vm_layout(builder: &mut MMTKBuilder) {
         loop {
             let start = get_random_mmap_addr().align_down(BYTES_IN_CHUNK);
 
-            if !is_address_maybe_mmaped(start, size) {
+            if !is_range_unmapped(start, size) {
                 continue;
             }
 

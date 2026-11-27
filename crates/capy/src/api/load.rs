@@ -25,11 +25,14 @@ pub unsafe extern "C" fn sni_load_file(scm: ScmPtr, name: *const c_char) -> libc
     if ok { 0 } else { -1 }
 }
 
-/// Evaluate a UTF-8 Scheme expression string via `(eval (read) (interaction-environment))`
-/// when available, otherwise returns -1.
+/// Evaluates the Scheme text `source` the way `capy -c` does: every datum in turn, in the current
+/// namespace. Returns a new local ref to the value of the last one (unspecified for none).
 ///
-/// Current implementation loads via a temporary thunk using the reader if public
-/// `eval` is bound, on failure sets no pending exception at top-level.
+/// On an error (a syntax error in the text, or an exception from the code) it sets the pending
+/// exception and returns `SCM_REF_NULL`; it never returns the text itself.
+///
+/// # Safety
+/// `env` must be live and `source` a NUL-terminated string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sni_eval_string(
     env: *mut SniEnv<'static>,
@@ -42,21 +45,18 @@ pub unsafe extern "C" fn sni_eval_string(
         return SCM_REF_NULL;
     };
     let e = unsafe { env_mut(env) };
-    // Prefer calling public `eval` / `read` if present, fallback: return the string itself.
-    if let Some(eval) = e
-        .ctx
-        .public_ref("guile", "eval")
-        .or_else(|| e.ctx.public_ref("scheme eval", "eval"))
-    {
-        let s = e.ctx.str(src);
-        match crate::runtime::sni::call_function(e.ctx, eval, [s]) {
-            crate::runtime::vm::ExecutionResult::Ok(v) => return e.make_local(v),
-            crate::runtime::vm::ExecutionResult::Err(_) => return SCM_REF_NULL,
-        }
+    let text = e.ctx.str(src);
+    let result = super::util::call_library(e, "boot cli", "eval-string/value", [text]);
+    if result.is_null() && !crate::runtime::sni::exception::check() {
+        let condition = crate::runtime::vm::exceptions::make_assertion_violation(
+            e.ctx,
+            Some("sni_eval_string"),
+            "the evaluator (boot cli) is not available",
+            &[],
+        );
+        crate::runtime::sni::exception::throw(condition);
     }
-    // Soft fallback: intern as string so embeds can still exercise the API.
-    let s = e.ctx.str(src);
-    e.make_local(s)
+    result
 }
 
 /// Return program arguments as a Scheme list (new local ref).

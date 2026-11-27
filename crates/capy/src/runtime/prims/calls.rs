@@ -7,7 +7,10 @@ use crate::heap::barrier;
 use crate::heap::object::builtin_class_ids;
 use crate::runtime::MutationContext;
 use crate::runtime::interp::slow;
-use crate::runtime::objectmodel::{ByteVector, Pair, Str, Tuple, Value, Vector};
+use crate::runtime::fluids::Fluid;
+use crate::runtime::objectmodel::{
+    ByteVector, ClassTagged, HashTable, HashTableType, Pair, Str, Tuple, Value, Vector, WeakTable,
+};
 use crate::runtime::variable::Variable;
 use crate::runtime::vm::exceptions::RaiseKind;
 use crate::runtime::vm::thunks;
@@ -461,11 +464,11 @@ pub(crate) unsafe fn prim_make_box<'gc>(
 }
 
 #[inline(always)]
-pub(crate) unsafe fn prim_late_variable<'gc>(
+pub(crate) unsafe fn prim_capy_variable<'gc>(
     ctx: MutationContext<'gc>,
     a: Value<'gc>,
 ) -> PrimResult<'gc> {
-    Ok(thunks::late_variable(ctx, a))
+    Ok(thunks::capy_variable(ctx, a))
 }
 
 #[inline(always)]
@@ -732,7 +735,7 @@ pub(crate) unsafe fn prim_vector_length<'gc>(
     ctx: MutationContext<'gc>,
     a: Value<'gc>,
 ) -> PrimResult<'gc> {
-    Ok(thunks::length(ctx, a))
+    Ok(thunks::vector_length(ctx, a))
 }
 
 #[inline(always)]
@@ -1290,6 +1293,198 @@ pub(crate) unsafe fn prim_string_set<'gc>(
     c: Value<'gc>,
 ) -> PrimResult<'gc> {
     Ok(thunks::string_set(ctx, a, b, c))
+}
+
+/// Raises the violation a native procedure raises when argument `pos` (zero-based) of
+/// `args` is not a `T`: the same `who`, message and irritants as the argument conversion
+/// of a `#[scheme]` function.
+#[cold]
+#[inline(never)]
+fn wrong_argument_type<'gc>(
+    ctx: MutationContext<'gc>,
+    who: &str,
+    expected: &str,
+    pos: usize,
+    args: &[Value<'gc>],
+) -> ! {
+    let found = args[pos];
+    let message = format!("expected {expected}, but found, got {found}, as argument {}", pos + 1);
+    // Like the procedures' `wrong_argument_violation`: one irritant, the list of all
+    // arguments, and none for a single argument.
+    let list;
+    let irritants: &[Value<'gc>] = if args.len() < 2 {
+        &[]
+    } else {
+        list = [args.iter().rev().fold(Value::null(), |tail, &arg| Value::cons(ctx, arg, tail))];
+        &list
+    };
+    crate::runtime::vm::thunk_raise(
+        ctx,
+        thunks::make_assertion_violation(
+            ctx,
+            crate::runtime::objectmodel::Symbol::from_str(ctx, who).into(),
+            Str::new(ctx, &message, true).into(),
+            irritants,
+        ),
+    )
+}
+
+#[inline(always)]
+fn hash_table_arg<'gc>(
+    ctx: MutationContext<'gc>,
+    who: &str,
+    args: &[Value<'gc>],
+) -> Gc<'gc, HashTable<'gc>> {
+    let table = args[0];
+    if table.is::<HashTable>() {
+        table.downcast::<HashTable>()
+    } else {
+        wrong_argument_type(ctx, who, <HashTable as ClassTagged>::TYPE_NAME, 0, args)
+    }
+}
+
+#[inline(always)]
+fn fluid_arg<'gc>(ctx: MutationContext<'gc>, who: &str, args: &[Value<'gc>]) -> Gc<'gc, Fluid<'gc>> {
+    let fluid = args[0];
+    if fluid.is::<Fluid>() {
+        fluid.downcast::<Fluid>()
+    } else {
+        wrong_argument_type(ctx, who, <Fluid as ClassTagged>::TYPE_NAME, 0, args)
+    }
+}
+
+/// The table `core-hash-ref` and `core-hash-contains?` read directly, when `table` is one
+/// the procedures handle without running Scheme: a table of a built-in kind (a string table
+/// needs a string key) or a weak table. Generic tables, bad keys and non-tables are left to
+/// the procedures, which call handlers or raise.
+#[inline(always)]
+fn plain_lookup<'gc>(table: Value<'gc>, key: Value<'gc>) -> bool {
+    if table.is::<HashTable>() {
+        match table.downcast::<HashTable>().typ() {
+            HashTableType::Generic(_) => false,
+            HashTableType::String => key.is::<Str>(),
+            _ => true,
+        }
+    } else {
+        table.is::<WeakTable>()
+    }
+}
+
+#[inline(always)]
+pub(crate) unsafe fn prim_hash_plain<'gc>(
+    _ctx: MutationContext<'gc>,
+    a: Value<'gc>,
+    b: Value<'gc>,
+) -> PrimResult<'gc> {
+    Ok(Value::new(plain_lookup(a, b)))
+}
+
+#[inline(always)]
+fn lookup<'gc>(
+    ctx: MutationContext<'gc>,
+    who: &str,
+    args: &[Value<'gc>],
+) -> Option<Value<'gc>> {
+    let table = args[0];
+    let key = args[1];
+    if table.is::<WeakTable>() {
+        table.downcast::<WeakTable>().get(ctx, key)
+    } else {
+        hash_table_arg(ctx, who, args).get(ctx, key)
+    }
+}
+
+/// `(core-hash-ref table key)`: `#f` when `key` is absent. Reached only when
+/// `%core-hash-plain?` holds.
+#[inline(always)]
+pub(crate) unsafe fn prim_hash_ref2<'gc>(
+    ctx: MutationContext<'gc>,
+    a: Value<'gc>,
+    b: Value<'gc>,
+) -> PrimResult<'gc> {
+    Ok(lookup(ctx, "core-hash-ref", &[a, b]).unwrap_or(Value::new(false)))
+}
+
+/// `(core-hash-ref table key default)`.
+#[inline(always)]
+pub(crate) unsafe fn prim_hash_ref3<'gc>(
+    ctx: MutationContext<'gc>,
+    a: Value<'gc>,
+    b: Value<'gc>,
+    c: Value<'gc>,
+) -> PrimResult<'gc> {
+    Ok(lookup(ctx, "core-hash-ref", &[a, b, c]).unwrap_or(c))
+}
+
+#[inline(always)]
+pub(crate) unsafe fn prim_hash_contains<'gc>(
+    ctx: MutationContext<'gc>,
+    a: Value<'gc>,
+    b: Value<'gc>,
+) -> PrimResult<'gc> {
+    Ok(Value::new(lookup(ctx, "core-hash-contains?", &[a, b]).is_some()))
+}
+
+#[inline(always)]
+pub(crate) unsafe fn prim_hash_put<'gc>(
+    ctx: MutationContext<'gc>,
+    a: Value<'gc>,
+    b: Value<'gc>,
+    c: Value<'gc>,
+) -> PrimResult<'gc> {
+    let table = hash_table_arg(ctx, "core-hash-put!", &[a, b, c]);
+    table.put(ctx, b, c);
+    Ok(Value::undefined())
+}
+
+/// The plain cases of `core-hash-set!`: a mutable table of a built-in kind, or a weak table
+/// with a heap key. Returns `#t` when it stored the entry, and `#f` without touching the
+/// table for everything else (generic tables call Scheme handlers, bad arguments raise),
+/// which the caller leaves to the procedure.
+#[inline(always)]
+pub(crate) unsafe fn prim_hash_try_set<'gc>(
+    ctx: MutationContext<'gc>,
+    a: Value<'gc>,
+    b: Value<'gc>,
+    c: Value<'gc>,
+) -> PrimResult<'gc> {
+    if a.is::<HashTable>() {
+        let table = a.downcast::<HashTable>();
+        match table.typ() {
+            HashTableType::Generic(_) => return Ok(Value::new(false)),
+            HashTableType::String if !b.is::<Str>() => return Ok(Value::new(false)),
+            _ => {}
+        }
+        if !table.is_mutable() {
+            return Ok(Value::new(false));
+        }
+        table.put(ctx, b, c);
+        return Ok(Value::new(true));
+    }
+    if a.is::<WeakTable>() && b.is_cell() {
+        a.downcast::<WeakTable>().put(ctx, b, c);
+        return Ok(Value::new(true));
+    }
+    Ok(Value::new(false))
+}
+
+#[inline(always)]
+pub(crate) unsafe fn prim_fluid_ref<'gc>(ctx: MutationContext<'gc>, a: Value<'gc>) -> PrimResult<'gc> {
+    let fluid = fluid_arg(ctx, "fluid-ref", &[a]);
+    Ok(fluid.get(ctx))
+}
+
+/// `(fluid-set! fluid value)`: returns the old value.
+#[inline(always)]
+pub(crate) unsafe fn prim_fluid_set<'gc>(
+    ctx: MutationContext<'gc>,
+    a: Value<'gc>,
+    b: Value<'gc>,
+) -> PrimResult<'gc> {
+    let fluid = fluid_arg(ctx, "fluid-set!", &[a, b]);
+    let old = fluid.get(ctx);
+    fluid.set(ctx, b);
+    Ok(old)
 }
 
 #[inline(always)]
@@ -2055,7 +2250,7 @@ macro_rules! prim_entry_fixed0 {
                             mutator.state().exit_value.set(irritant);
                             PrimDirectReturn {
                                 value: 0,
-                                error: kind.code() as u64,
+                                error: kind.status() as u64,
                             }
                         }
                     }
@@ -2102,7 +2297,7 @@ macro_rules! prim_entry_fixed1 {
                             mutator.state().exit_value.set(irritant);
                             PrimDirectReturn {
                                 value: 0,
-                                error: kind.code() as u64,
+                                error: kind.status() as u64,
                             }
                         }
                     }
@@ -2149,7 +2344,7 @@ macro_rules! prim_entry_fixed2 {
                             mutator.state().exit_value.set(irritant);
                             PrimDirectReturn {
                                 value: 0,
-                                error: kind.code() as u64,
+                                error: kind.status() as u64,
                             }
                         }
                     }
@@ -2201,7 +2396,7 @@ macro_rules! prim_entry_fixed3 {
                             mutator.state().exit_value.set(irritant);
                             PrimDirectReturn {
                                 value: 0,
-                                error: kind.code() as u64,
+                                error: kind.status() as u64,
                             }
                         }
                     }
@@ -2241,7 +2436,7 @@ macro_rules! prim_entry_dynamic {
                             mutator.state().exit_value.set(irritant);
                             PrimDirectReturn {
                                 value: 0,
-                                error: kind.code() as u64,
+                                error: kind.status() as u64,
                             }
                         }
                     }
@@ -2329,7 +2524,7 @@ prim_tables! {
     (VariableRef => variable_ref(8): 1);
     (VariableSet => variable_set(9): 2);
     (MakeBox => make_box(10): 1);
-    (LateVariable => late_variable(11): 1);
+    (CapyVariable => capy_variable(11): 1);
     (IsVariable => is_variable(12): 1);
     (SetCar => set_car(13): 2);
     (SetCdr => set_cdr(14): 2);
@@ -2532,5 +2727,13 @@ prim_tables! {
     (PtrF64Set => ptr_f64_set(211): 3);
     (VectorLength => vector_length(212): 1);
     (MakeSyntaxTransformer => make_syntax_transformer(213): 3);
-    (StringSet => string_set(214): 3)
+    (StringSet => string_set(214): 3);
+    (HashRef2 => hash_ref2(215): 2);
+    (HashRef3 => hash_ref3(216): 3);
+    (HashContains => hash_contains(217): 2);
+    (HashPut => hash_put(218): 3);
+    (HashTrySet => hash_try_set(219): 3);
+    (HashPlain => hash_plain(220): 2);
+    (FluidRef => fluid_ref(221): 1);
+    (FluidSet => fluid_set(222): 2)
 }

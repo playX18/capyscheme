@@ -35,9 +35,8 @@ use super::licm::{entry_frame_in, entry_frame_of};
 use super::loops::{ensure_preheader, find_loops, header_param_invariant, inst_blocks, int_const};
 use super::unroll::{Counter, counter};
 use crate::runtime::codegen::jit::config::opt;
-use crate::runtime::codegen::opt::ir::frame_state::FrameState;
 use crate::runtime::codegen::opt::ir::func::{Block, Func, Value, ValueDef};
-use crate::runtime::codegen::opt::ir::inst::{Cmp, Constant, Inst, Op, Repr, Terminator};
+use crate::runtime::codegen::opt::ir::inst::{Cmp, Inst, Op, Repr, Terminator};
 use crate::runtime::codegen::opt::ir::types::{ClassRef, Type};
 
 pub(super) fn run(func: &mut Func) -> PassOutcome {
@@ -180,37 +179,42 @@ fn predicate_loop(func: &mut Func, lp: &super::loops::Loop) -> bool {
         start_entry
     } else {
         match int_const(func, start_entry) {
-            Some(n) => emit_const(func, pre, n),
-            None => emit(
-                func,
-                pre,
-                Op::CheckInt64,
-                &[start_entry],
-                Type::Int64,
-                Some(frame),
-            ),
+            Some(n) => func.push_i64(pre, n),
+            None => func
+                .push_inst(
+                    pre,
+                    Op::CheckInt64,
+                    &[start_entry],
+                    Some(Type::Int64),
+                    Some(frame),
+                )
+                .expect("must succeed"),
         }
     };
     let bound = in_pre(counter.bound);
-    let zero = emit_const(func, pre, 0);
+    let zero = func.push_i64(pre, 0);
     let mut tests: Vec<Value> = Vec::new();
-    tests.push(emit(
-        func,
-        pre,
-        Op::CmpI64(Cmp::Ge),
-        &[start, zero],
-        Type::Bool,
-        None,
-    ));
-    if relation == Cmp::Ne {
-        tests.push(emit(
-            func,
+    tests.push(
+        func.push_inst(
             pre,
-            Op::CmpI64(Cmp::Le),
-            &[start, bound],
-            Type::Bool,
+            Op::CmpI64(Cmp::Ge),
+            &[start, zero],
+            Some(Type::Bool),
             None,
-        ));
+        )
+        .unwrap(),
+    );
+    if relation == Cmp::Ne {
+        tests.push(
+            func.push_inst(
+                pre,
+                Op::CmpI64(Cmp::Le),
+                &[start, bound],
+                Some(Type::Bool),
+                None,
+            )
+            .unwrap(),
+        );
     }
     let mut seen: HashSet<Value> = HashSet::new();
     for check in &checks {
@@ -221,40 +225,46 @@ fn predicate_loop(func: &mut Func, lp: &super::loops::Loop) -> bool {
         let vector = if func.value_type(base) == Type::Heap(ClassRef::VECTOR) {
             base
         } else {
-            emit(
-                func,
+            func.push_inst(
                 pre,
                 Op::CheckClass(ClassRef::VECTOR),
                 &[base],
-                Type::Heap(ClassRef::VECTOR),
+                Some(Type::Heap(ClassRef::VECTOR)),
                 Some(frame),
             )
+            .unwrap()
         };
-        let length = emit(
-            func,
-            pre,
-            Op::VectorLength,
-            &[vector],
-            Type::Int32,
-            Some(frame),
+        let length = func
+            .push_inst(
+                pre,
+                Op::VectorLength,
+                &[vector],
+                Some(Type::Int32),
+                Some(frame),
+            )
+            .unwrap();
+        let tagged = func
+            .push_inst(pre, Op::Box(Repr::Int32), &[length], Some(Type::Any), None)
+            .unwrap();
+        let length = func
+            .push_inst(
+                pre,
+                Op::CheckInt64,
+                &[tagged],
+                Some(Type::Int64),
+                Some(frame),
+            )
+            .unwrap();
+        tests.push(
+            func.push_inst(
+                pre,
+                Op::CmpI64(Cmp::Le),
+                &[bound, length],
+                Some(Type::Bool),
+                None,
+            )
+            .unwrap(),
         );
-        let tagged = emit(func, pre, Op::Box(Repr::Int32), &[length], Type::Any, None);
-        let length = emit(
-            func,
-            pre,
-            Op::CheckInt64,
-            &[tagged],
-            Type::Int64,
-            Some(frame),
-        );
-        tests.push(emit(
-            func,
-            pre,
-            Op::CmpI64(Cmp::Le),
-            &[bound, length],
-            Type::Bool,
-            None,
-        ));
     }
 
     // pre: test1 -> test2 -> ... -> header; any failure deopts at entry.
@@ -295,32 +305,10 @@ fn predicate_loop(func: &mut Func, lp: &super::loops::Loop) -> bool {
     true
 }
 
-fn emit(
-    func: &mut Func,
-    block: Block,
-    op: Op,
-    args: &[Value],
-    ty: Type,
-    frame: Option<FrameState>,
-) -> Value {
-    func.push_inst(block, op, args, Some(ty), frame)
-        .expect("the operation has a result")
-}
-
-fn emit_const(func: &mut Func, block: Block, n: i64) -> Value {
-    emit(
-        func,
-        block,
-        Op::Const(Constant::Int64(n)),
-        &[],
-        Type::Int64,
-        None,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::codegen::opt::ir::inst::Constant;
     use crate::runtime::codegen::opt::ir::verify::verify;
     use crate::runtime::codegen::opt::passes::testutil::{block, branch, frame, jump, push, ret};
 

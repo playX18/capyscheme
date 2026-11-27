@@ -18,7 +18,7 @@ use capstone::arch::BuildsCapstone;
 
 use super::registry::{CompiledSnapshot, snapshot_of};
 use crate::bytecode::def::Instruction;
-use crate::compiler::bytecode::disasm::disassemble_insn;
+use crate::bytecode::disasm::disassemble_insn;
 use crate::heap::Gc;
 use crate::runtime::gdb_jit::{JitSymbol, build_symfile};
 use crate::runtime::objectmodel::{CodeBlock, CodeBlockKind};

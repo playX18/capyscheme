@@ -29,6 +29,18 @@ impl RaiseKind {
         self as usize
     }
 
+    /// The non-zero status that carries this kind through a primitive's
+    /// `(value, error)` return, where 0 means success: the code plus one,
+    /// because `AssertionViolation` has code 0.
+    pub const fn status(self) -> usize {
+        self as usize + 1
+    }
+
+    /// The kind a [`RaiseKind::status`] stands for.
+    pub fn from_status(status: usize) -> Option<Self> {
+        status.checked_sub(1).and_then(Self::from_code)
+    }
+
     pub fn from_code(code: usize) -> Option<Self> {
         match code {
             0 => Some(Self::AssertionViolation),
@@ -312,7 +324,9 @@ pub fn make_wrong_number_of_arguments_violation<'gc>(
         format!("procedure expected {} arguments, got {}", expected, got)
     };
     let meta = if subr.is::<crate::runtime::objectmodel::Closure>() {
-        subr.downcast::<crate::runtime::objectmodel::Closure>().meta.get()
+        subr.downcast::<crate::runtime::objectmodel::Closure>()
+            .meta
+            .get()
     } else {
         Value::new(false)
     };
@@ -439,12 +453,15 @@ fn make_raise_condition_impl<'gc>(
                 format!("procedure expected {} arguments, got {}", expected, got)
             };
             let meta = if subr.is::<crate::runtime::objectmodel::Closure>() {
-                subr.downcast::<crate::runtime::objectmodel::Closure>().meta.get()
+                subr.downcast::<crate::runtime::objectmodel::Closure>()
+                    .meta
+                    .get()
             } else {
                 Value::new(false)
             };
             let name = if subr.is::<crate::runtime::objectmodel::Closure>() {
-                subr.downcast::<crate::runtime::objectmodel::Closure>().name(ctx)
+                subr.downcast::<crate::runtime::objectmodel::Closure>()
+                    .name(ctx)
             } else {
                 None
             };

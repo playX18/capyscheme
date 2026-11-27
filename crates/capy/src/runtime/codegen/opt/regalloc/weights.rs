@@ -54,6 +54,7 @@ impl Weights {
                 };
 
                 let mut frame = frame_regs_of(func, exit, inst.safepoint());
+                frame.extend(super::intervals::poll_lazy_frame(func, inst));
 
                 record(
                     &mut frame,

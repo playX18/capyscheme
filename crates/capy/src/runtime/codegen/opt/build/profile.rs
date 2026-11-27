@@ -133,7 +133,12 @@ pub fn call_shape<'gc>(buffer: &CodeBuffer<'gc>, pc: usize) -> Option<CallShape<
     let insn = decode(buffer, pc);
     if !matches!(
         insn.op,
-        OpcodeId::OpCall | OpcodeId::OpTailCall | OpcodeId::OpCallSelf | OpcodeId::OpTailCallSelf
+        OpcodeId::OpCall
+            | OpcodeId::OpTailCall
+            | OpcodeId::OpCallSelf
+            | OpcodeId::OpTailCallSelf
+            | OpcodeId::OpApply
+            | OpcodeId::OpTailApply
     ) {
         return None;
     }
@@ -165,7 +170,12 @@ pub fn generic_emf_at<'gc>(buffer: &CodeBuffer<'gc>, pc: usize) -> Option<Generi
     let insn = decode(buffer, pc);
     if !matches!(
         insn.op,
-        OpcodeId::OpCall | OpcodeId::OpTailCall | OpcodeId::OpCallSelf | OpcodeId::OpTailCallSelf
+        OpcodeId::OpCall
+            | OpcodeId::OpTailCall
+            | OpcodeId::OpCallSelf
+            | OpcodeId::OpTailCallSelf
+            | OpcodeId::OpApply
+            | OpcodeId::OpTailApply
     ) {
         return None;
     }

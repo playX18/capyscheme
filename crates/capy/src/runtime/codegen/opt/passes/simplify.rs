@@ -1,5 +1,6 @@
 //! Constant folding on raw value bits, branch folding, removal of
-//! trivial block parameters, and block merging.
+//! trivial block parameters, block merging, and moving bitwise operations on
+//! u64 words from the signed lane to the u64 lane.
 
 use std::iter::once;
 
@@ -7,7 +8,9 @@ use cranelift_entity::{EntityList, SecondaryMap};
 
 use super::{PassOutcome, Subst, reachable, replace_uses};
 use crate::runtime::codegen::opt::ir::func::{Block, Func, Value, ValueDef};
-use crate::runtime::codegen::opt::ir::inst::{Cmp, Constant, Edge, Inst, Op, Repr, Terminator};
+use crate::runtime::codegen::opt::ir::inst::{
+    BitOp, Cmp, Constant, Edge, Inst, Op, Repr, ShiftKind, Terminator,
+};
 use crate::runtime::codegen::opt::ir::types::{ClassRef, Type};
 use crate::runtime::objectmodel::Value as SchemeValue;
 
@@ -37,6 +40,7 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
     changed |= merge_blocks(func, &mut subst);
     replace_uses(func, &subst);
     changed |= !subst.is_empty();
+    changed |= widen_u64_bits(func, &rpo);
 
     work += func.blocks.len();
     PassOutcome { changed, work }
@@ -187,7 +191,9 @@ fn known_test(func: &Func, op: Op, value: Value) -> Option<bool> {
     };
     match func.insts[def].op {
         Op::Box(Repr::Int32 | Repr::Double) | Op::BoolToValue => Some(false),
-        Op::Box(Repr::Int64 | Repr::Int128) => (class != ClassRef::BIGINT).then_some(false),
+        Op::Box(Repr::Int64 | Repr::Int128) | Op::BoxU64 => {
+            (class != ClassRef::BIGINT).then_some(false)
+        }
         Op::AllocPair => Some(class == ClassRef::PAIR),
         Op::AllocClosure(_) => Some(class == ClassRef::CLOSURE),
         Op::AllocVector => Some(class == ClassRef::VECTOR),
@@ -196,7 +202,8 @@ fn known_test(func: &Func, op: Op, value: Value) -> Option<bool> {
     }
 }
 
-/// Rewrites `ne false, x` (and its mirror) to `x` when `x` is a Bool flag.
+/// Rewrites `ne false, x` (and its mirror) to `x` when `x` is a Bool flag,
+/// and a `select` of one value or on a known condition to that value.
 /// The false operand is a comparison whose constant operands decide it; a
 /// Bool has no constant form, so the producer stays until DCE sees it unused.
 fn fold_bool_ops(func: &Func, subst: &mut Subst) -> bool {
@@ -206,6 +213,20 @@ fn fold_bool_ops(func: &Func, subst: &mut Subst) -> bool {
             let Some(result) = func.insts[inst].result else {
                 continue;
             };
+            // A select of one value, or on a known condition, is that value.
+            if func.insts[inst].op == Op::Select {
+                let args = func.args(inst);
+                let pick = if args[1] == args[2] {
+                    Some(args[1])
+                } else {
+                    eval_bool(func, args[0]).map(|c| if c { args[1] } else { args[2] })
+                };
+                if let Some(v) = pick {
+                    subst.add(result, v);
+                    changed = true;
+                }
+                continue;
+            }
             let ne = match func.insts[inst].op {
                 Op::CmpI32(Cmp::Ne) | Op::CmpI64(Cmp::Ne) => true,
                 _ => false,
@@ -350,6 +371,14 @@ fn fold_inst(func: &mut Func, inst: Inst) -> bool {
         Op::Box(Repr::Int64) => int64_const(func, args[0])
             .and_then(|n| i32::try_from(n).ok())
             .map(|n| Constant::Bits(SchemeValue::from_i32(n).bits())),
+        Op::BoxU64 => int64_const(func, args[0])
+            .and_then(|n| i32::try_from(n).ok())
+            .filter(|n| *n >= 0)
+            .map(|n| Constant::Bits(SchemeValue::from_i32(n).bits())),
+        Op::CheckU64 => bits_const(func, args[0])
+            .and_then(|bits| SchemeValue::from_raw(bits).int32())
+            .filter(|n| *n >= 0)
+            .map(|n| Constant::Int64(i64::from(n))),
         Op::Int64ToDouble => {
             int64_const(func, args[0]).map(|n| Constant::Double((n as f64).to_bits()))
         }
@@ -368,6 +397,59 @@ fn fold_inst(func: &mut Func, inst: Inst) -> bool {
                 _ => None,
             }
         }
+        Op::AddI32 | Op::SubI32 | Op::MulI32 | Op::BitI32(_) => {
+            let a = int32_const(func, args[0]);
+            let b = int32_const(func, args[1]);
+            match (a, b) {
+                (Some(a), Some(b)) => Some(Constant::Int32(match op {
+                    Op::AddI32 => a.wrapping_add(b),
+                    Op::SubI32 => a.wrapping_sub(b),
+                    Op::MulI32 => a.wrapping_mul(b),
+                    Op::BitI32(BitOp::And) => a & b,
+                    Op::BitI32(BitOp::Or) => a | b,
+                    _ => a ^ b,
+                })),
+                _ => None,
+            }
+        }
+        Op::BitI64(bit) => {
+            let a = int64_const(func, args[0]);
+            let b = int64_const(func, args[1]);
+            match (a, b) {
+                (Some(a), Some(b)) => Some(Constant::Int64(match bit {
+                    BitOp::And => a & b,
+                    BitOp::Or => a | b,
+                    BitOp::Xor => a ^ b,
+                })),
+                _ => None,
+            }
+        }
+        Op::ShiftI32(kind, n) => {
+            int32_const(func, args[0]).map(|a| Constant::Int32(shift_i32(kind, n, a)))
+        }
+        Op::ShiftI64(kind, n) => {
+            int64_const(func, args[0]).map(|a| Constant::Int64(shift_i64(kind, n, a)))
+        }
+        // An overflowing shift deopts, so only the exact case folds.
+        Op::ShlI32Ovf(n) => int32_const(func, args[0])
+            .and_then(|a| i32::try_from((a as i64) << n).ok())
+            .map(Constant::Int32),
+        Op::ShiftI32Var(kind) => match (int32_const(func, args[0]), int32_const(func, args[1])) {
+            (Some(a), Some(n)) => Some(Constant::Int32(shift_i32(kind, (n & 31) as u8, a))),
+            _ => None,
+        },
+        // A count outside `0..32` deopts, as does an overflow: only the exact
+        // case folds.
+        Op::ShlI32OvfVar => match (int32_const(func, args[0]), int32_const(func, args[1])) {
+            (Some(a), Some(n)) if (0..32).contains(&n) => {
+                i32::try_from((a as i64) << n).ok().map(Constant::Int32)
+            }
+            _ => None,
+        },
+        Op::CharFromCode => int32_const(func, args[0])
+            .and_then(|n| u32::try_from(n).ok())
+            .and_then(char::from_u32)
+            .map(|c| Constant::Bits(SchemeValue::from_char(c).bits())),
         // The total 64-bit operations cannot fail for any operands, so they
         // fold with wrapping semantics (the machine add/sub/mul).
         Op::AddI64 | Op::SubI64 | Op::MulI64 => {
@@ -706,4 +788,125 @@ fn merge_blocks(func: &mut Func, subst: &mut Subst) -> bool {
         }
     }
     changed
+}
+
+/// The value of [`Op::ShiftI32`] on a constant.
+pub(crate) fn shift_i32(kind: ShiftKind, n: u8, a: i32) -> i32 {
+    let n = u32::from(n) & 31;
+    match kind {
+        ShiftKind::Shl => a.wrapping_shl(n),
+        ShiftKind::Sar => a >> n,
+        ShiftKind::Shr => ((a as u32) >> n) as i32,
+        ShiftKind::Rotr => (a as u32).rotate_right(n) as i32,
+    }
+}
+
+/// The value of [`Op::ShiftI64`] on a constant.
+pub(crate) fn shift_i64(kind: ShiftKind, n: u8, a: i64) -> i64 {
+    let n = u32::from(n) & 63;
+    match kind {
+        ShiftKind::Shl => a.wrapping_shl(n),
+        ShiftKind::Sar => a >> n,
+        ShiftKind::Shr => ((a as u64) >> n) as i64,
+        ShiftKind::Rotr => (a as u64).rotate_right(n) as i64,
+    }
+}
+
+/// Moves a signed-lane bitwise operation on u64 words to the u64 lane.
+fn widen_u64_bits(func: &mut Func, rpo: &[Block]) -> bool {
+    let mut changed = false;
+    while widen_u64_bits_once(func, rpo) {
+        changed = true;
+    }
+    changed
+}
+
+fn widen_u64_bits_once(func: &mut Func, rpo: &[Block]) -> bool {
+    let mut uses: std::collections::HashMap<Value, u32> = std::collections::HashMap::new();
+    for &block in rpo {
+        for &inst in &func.blocks[block].insts {
+            for &arg in func.args(inst) {
+                *uses.entry(arg).or_default() += 1;
+            }
+            if let Some(frame) = func.insts[inst].frame {
+                for value in func.frame_values(frame) {
+                    *uses.entry(value).or_default() += 1;
+                }
+            }
+        }
+        if let Some(term) = &func.blocks[block].term {
+            for value in func.terminator_uses(term) {
+                *uses.entry(value).or_default() += 1;
+            }
+            if let Terminator::TailCall { frame, .. } | Terminator::Deopt { frame } = term {
+                for value in func.frame_values(*frame) {
+                    *uses.entry(value).or_default() += 1;
+                }
+            }
+        }
+    }
+    let used_once = |v: Value| uses.get(&v).copied() == Some(1);
+    let def = |func: &Func, v: Value| match func.value_def(v) {
+        ValueDef::Inst(inst) => Some(inst),
+        _ => None,
+    };
+    // The raw word behind operand `v`, with whether it may be at or above
+    // 2^63, and the guard to drop.
+    let word = |func: &Func, v: Value| -> Option<(Value, bool, Option<Inst>)> {
+        let inst = def(func, v)?;
+        match func.insts[inst].op {
+            Op::Const(Constant::Int64(n)) if n >= 0 => Some((v, false, None)),
+            Op::CheckBigIntFits64 => {
+                let boxed = func.args(inst)[0];
+                let source = def(func, boxed)?;
+                (func.insts[source].op == Op::BoxU64)
+                    .then(|| (func.args(source)[0], true, Some(inst)))
+            }
+            _ => None,
+        }
+    };
+    let mut rewrites = Vec::new();
+    for &block in rpo {
+        for &inst in &func.blocks[block].insts {
+            if func.insts[inst].op != Op::Box(Repr::Int64) {
+                continue;
+            }
+            let raw = func.args(inst)[0];
+            let Some(bit) = def(func, raw) else { continue };
+            if !matches!(func.insts[bit].op, Op::BitI64(_)) || !used_once(raw) {
+                continue;
+            }
+            let args = func.args(bit);
+            let (Some(a), Some(b)) = (word(func, args[0]), word(func, args[1])) else {
+                continue;
+            };
+            if !a.1 && !b.1 {
+                continue;
+            }
+            rewrites.push((inst, bit, [a.0, b.0], [a.2, b.2]));
+        }
+    }
+    // A guard goes once every use of its result is a rewritten operand;
+    // another user still reads the signed value it checks.
+    let mut dropped = std::collections::HashSet::new();
+    for (boxed, bit, operands, guards) in &rewrites {
+        func.insts[*bit].args = EntityList::from_slice(operands, &mut func.pool);
+        func.insts[*boxed].op = Op::BoxU64;
+        for guard in guards.iter().flatten() {
+            let result = func.insts[*guard].result.expect("a check has a result");
+            let count = uses.get_mut(&result).expect("the operand is a use");
+            *count -= 1;
+            if *count == 0 {
+                dropped.insert(*guard);
+            }
+        }
+    }
+    if !dropped.is_empty() {
+        for &block in rpo {
+            func.blocks[block]
+                .insts
+                .retain(|inst| !dropped.contains(inst));
+        }
+    }
+    !rewrites.is_empty()
 }

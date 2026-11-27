@@ -172,8 +172,7 @@ where
                 global_side_metadata_vm_base_address().as_usize(),
                 Ordering::Relaxed,
             );
-            #[cfg(feature = "bootstrap")]
-            {
+            if crate::utils::flags::gc_log() {
                 crate::heap::logging::set_gc_logging_enabled(true);
             }
         });
@@ -264,6 +263,40 @@ where
     }
 }
 
+/// `CAPY_GC_STRESS`, read once. Zero means off.
+pub fn gc_stress_interval() -> u64 {
+    static INTERVAL: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *INTERVAL.get_or_init(|| crate::utils::flags::gc_stress() as u64)
+}
+
+static STRESS_ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Start the stress collections, once the boot has run.
+pub fn arm_gc_stress() {
+    STRESS_ARMED.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// In stress mode, collect on every Nth allocation that reaches the runtime. The caller is
+/// mutating and may hold values the collector cannot see: that is what the mode looks for.
+#[inline(never)]
+fn stress_collect_if_due() {
+    let interval = gc_stress_interval();
+    if interval == 0 {
+        return;
+    }
+    if !STRESS_ARMED.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    if COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % interval != 0 {
+        return;
+    }
+    // `user_collect_garbage` runs in native code.
+    Thread::enter_native();
+    let _ = user_collect_garbage();
+    Thread::leave_native();
+}
+
 /// Run a user-requested GC collection while the thread is in native code.
 ///
 /// The caller must have already transitioned the thread out of the mutating world
@@ -311,11 +344,9 @@ pub struct Mutation<'gc> {
     _gc: PhantomData<&'gc ()>,
 }
 
-// SAFETY: the handle is a pointer to thread-local data that is only mutated by
-// the owning thread, cross-thread state in it is atomic. This matches the
-// `&Thread` it replaced.
-unsafe impl Send for Mutation<'_> {}
-unsafe impl Sync for Mutation<'_> {}
+// `Mutation` is deliberately neither `Send` nor `Sync`: it points at the owning thread's
+// `VirtualThread`, whose mutable state only that thread may touch. (A manual `unsafe impl` of
+// both used to be here and nothing needed it.)
 
 impl<'gc> Deref for Mutation<'gc> {
     type Target = SchemeState<'gc>;
@@ -665,6 +696,7 @@ impl<'gc> Mutation<'gc> {
         mut semantics: AllocationSemantics,
     ) -> UnpublishedAllocation {
         let _no_preempt = crate::runtime::sched::preempt::NoPreempt::enter();
+        stress_collect_if_due();
         if semantics == AllocationSemantics::Default
             && size + size_of::<HeapObjectHeader>() >= self.nd().max_non_los_alloc_bytes()
         {
@@ -700,11 +732,38 @@ impl<'gc> Mutation<'gc> {
             };
             self.refill_tlab();
 
-            if object_start.is_zero() {
-                panic!(
-                    "out of memory: MMTk could not allocate {bytes} bytes \
-                     (payload {size}, {semantics:?} space)"
+            let object_start = if object_start.is_zero() {
+                // Collect and try once more: the failure may be fragmentation or a limit that
+                // a full collection relieves.
+                Thread::enter_native();
+                let _ = user_collect_garbage();
+                Thread::leave_native();
+                self.flush_tlab();
+                let mutator = self.nd().mutator_unchecked();
+                let retried = mmtk::memory_manager::alloc_slow_with_options(
+                    mutator,
+                    bytes,
+                    alignment,
+                    offset,
+                    semantics,
+                    DEFAULT_ALLOC_OPTIONS,
                 );
+                self.refill_tlab();
+                retried
+            } else {
+                object_start
+            };
+
+            if object_start.is_zero() {
+                // The allocation functions cannot fail by signature, so there is nothing to
+                // unwind to. Say what happened and stop; a panic backtrace would hide it.
+                eprintln!(
+                    "capy: out of memory: could not allocate {bytes} bytes \
+                     (payload {size}, {semantics:?} space) after a full collection; \
+                     raise CAPY_GC_MAX_HEAP or free data"
+                );
+                crate::heap::sync::thread::Thread::begin_process_exit();
+                std::process::exit(137);
             }
 
             self.finish_unpublished_object_with_header(object_start, size, header_word, semantics)
@@ -770,6 +829,11 @@ impl<'gc> Mutation<'gc> {
     /// This function is safe only if TLAB is refilled *after* call into MMTKA API such as
     /// [`allocate_out_of_line`](Self::allocate_out_of_line).
     pub unsafe fn refill_tlab(&self) {
+        // Stress mode keeps the window inside MMTk, so every allocation reaches
+        // `allocate_out_of_line` and is counted.
+        if gc_stress_interval() != 0 {
+            return;
+        }
         let selector = mmtk::memory_manager::get_allocator_mapping(
             &super::GarbageCollector::get().mmtk,
             AllocationSemantics::Default,

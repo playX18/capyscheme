@@ -1,6 +1,6 @@
 //! Scheme-visible record type and record constructor descriptor primitives.
 //!
-//! These are the native counterparts of `lib/boot/records.scm`. Record
+//! These are the native counterparts of `pkgs/core/src/boot/records.scm`. Record
 //! instances are still tuples `[rtd, field...]`; only the descriptors are
 //! native objects.
 
@@ -524,7 +524,7 @@ pub mod record_ops {
     }
 
     /// Whether `obj` is a record instance: a tuple whose slot 0 is a record
-    /// type descriptor. Opaque types count, as in `lib/boot/records.scm`.
+    /// type descriptor. Opaque types count, as in `pkgs/core/src/boot/records.scm`.
     #[scheme(name = "record?")]
     pub fn is_record(obj: Value<'gc>) -> bool {
         is_record_value(obj)
@@ -536,6 +536,65 @@ pub mod record_ops {
             obj.downcast::<Tuple>()[0].get()
         } else {
             violation(call, "record-rtd", "expected a record, but got", obj)
+        }
+    }
+
+    #[scheme(name = "%record-ref-slow")]
+    pub fn record_ref_slow(obj: Value<'gc>, rtd: Value<'gc>, offset: usize) -> Value<'gc> {
+        let hook = ctx.hook(Hook::AssertionViolation);
+        let (who, message): (Value<'gc>, &str) = match record_rtd_of(obj) {
+            None => (
+                Value::new(Symbol::from_str(ctx, "record-accessor")),
+                "expected a record",
+            ),
+            Some(obj_rtd) => {
+                if rtd.is::<Rtd>() && obj_rtd.is_subtype_of(rtd.downcast::<Rtd>()) {
+                    let tuple = obj.downcast::<Tuple>();
+                    if offset < tuple.len() {
+                        return tuple[offset].get();
+                    }
+                }
+                (
+                    Str::new(ctx, "record accessor", true).into(),
+                    "invalid record type",
+                )
+            }
+        };
+        let message = Str::new(ctx, message, true).into();
+        if record_rtd_of(obj).is_none() {
+            call.tail(hook, &[who, message, obj])
+        } else {
+            call.tail(hook, &[who, message, obj, rtd])
+        }
+    }
+
+    /// The slow path of an inline record mutator, see `%record-ref-slow`.
+    #[scheme(name = "%record-set-slow!")]
+    pub fn record_set_slow(
+        obj: Value<'gc>,
+        value: Value<'gc>,
+        rtd: Value<'gc>,
+        offset: usize,
+    ) -> Value<'gc> {
+        let hook = ctx.hook(Hook::AssertionViolation);
+        let who: Value<'gc> = Str::new(ctx, "record mutator", true).into();
+        match record_rtd_of(obj) {
+            None => {
+                let message = Str::new(ctx, "expected a record", true).into();
+                call.tail(hook, &[who, message, obj])
+            }
+            Some(obj_rtd) => {
+                if rtd.is::<Rtd>() && obj_rtd.is_subtype_of(rtd.downcast::<Rtd>()) {
+                    let tuple = obj.downcast::<Tuple>();
+                    if offset < tuple.len() {
+                        Gc::write(ctx, tuple)[offset].unlock().set(value);
+                        return Value::undefined();
+                    }
+                }
+                let message =
+                    Str::new(ctx, "expected a record of the accessor's type", true).into();
+                call.tail(hook, &[who, message, obj, value])
+            }
         }
     }
 

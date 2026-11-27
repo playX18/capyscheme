@@ -1,6 +1,9 @@
 //! Instructions, terminators and the effect model.
 
-use cranelift_entity::{EntityList, entity_impl};
+use cranelift_entity::{EntityList, EntityRef, entity_impl};
+use smallvec::SmallVec;
+
+use crate::runtime::prims::def::Primitive;
 
 use super::frame_state::FrameState;
 use super::func::{Block, Value};
@@ -39,6 +42,10 @@ pub enum RematKind {
     /// mutable variable that no code can observe needs to exist again only
     /// when baseline resumes a deoptimized frame.
     Variable,
+    /// `[bits: Int64] -> exact integer`. The unsigned integer whose bit
+    /// pattern the raw word holds, for a sunk [`Op::BoxU64`]: a fixnum when
+    /// it fits, otherwise a one-limb bignum.
+    U64,
 }
 
 impl RematKind {
@@ -51,7 +58,7 @@ impl RematKind {
             RematKind::Vector { len } => len as usize,
             RematKind::Tuple { len } => len as usize,
             RematKind::Instance { slots, .. } => slots as usize,
-            RematKind::Variable => 1,
+            RematKind::Variable | RematKind::U64 => 1,
         }
     }
 }
@@ -60,6 +67,12 @@ impl RematKind {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PrimRef(u32);
 entity_impl!(PrimRef, "prim");
+
+impl PrimRef {
+    pub fn is(self, prim: Primitive) -> bool {
+        self.index() as u16 == prim as u16
+    }
+}
 
 /// A returning runtime helper, named by its index in the operation table.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -126,6 +139,57 @@ pub enum Helper {
     /// extras of a `return_point_values_rest` entry. It allocates without
     /// collecting, so the unrooted callee frame it reads stays valid.
     ValuesRest = 15,
+    /// `[list, index] -> Any`: `(list-ref list index)` for a fixnum index and
+    /// a list with a pair at that position. Anything else is the status.
+    ListRef = 16,
+    /// `[list, n] -> Any`: `(list-head list n)`, a fresh list of the first `n`
+    /// elements. A short list or a bad count is the status. It allocates.
+    ListHead = 17,
+    /// `[a, b] -> Any`: `(string=? a b)` for two strings. Anything else is the
+    /// status.
+    StringEq = 18,
+    /// `[a, b] -> Any`: `(string-append a b)` for two strings; a fresh string.
+    /// It allocates.
+    StringAppend = 19,
+    /// `[string, start, end] -> Any`: `(substring string start end)`. A bad range
+    /// or operand is the status. It allocates.
+    Substring = 20,
+    /// `[list] -> Any`: `(list->vector list)` for a proper list. It allocates.
+    ListToVector = 21,
+    /// `[vector] -> Any`: `(vector->list vector)`. It allocates.
+    VectorToList = 22,
+    /// `[char] -> Any`: `(char-whitespace? char)` as `#t`/`#f`, the slow path
+    /// for a non-ASCII character.
+    CharWhitespace = 23,
+}
+
+/// The effects of a call to `helper`. The list and string helpers are leaves
+/// of the runtime: they never run Scheme code, write no variable, and a
+/// failing check deopts before the instruction. Those that read only heap
+/// memory say so; those that allocate also write the heap region. Every other
+/// helper keeps the effects of a call.
+fn helper_effects(helper: HelperRef) -> Effects {
+    let is = |h: Helper| helper == h.helper_ref();
+    let reads = SemanticEffects::CAR
+        .union(SemanticEffects::CDR)
+        .union(SemanticEffects::VECTOR)
+        .union(SemanticEffects::STRING);
+    if is(Helper::ListRef) || is(Helper::StringEq) {
+        Effects::read(MemoryRegion::Heap, reads).checked()
+    } else if is(Helper::CharWhitespace) {
+        Effects::pure().checked()
+    } else if is(Helper::ListHead)
+        || is(Helper::StringAppend)
+        || is(Helper::Substring)
+        || is(Helper::ListToVector)
+        || is(Helper::VectorToList)
+    {
+        Effects::allocate()
+            .union(Effects::read(MemoryRegion::Heap, reads))
+            .checked()
+    } else {
+        Effects::for_call()
+    }
 }
 
 impl Helper {
@@ -203,6 +267,51 @@ pub enum ReturnValues {
     TakeRest(u32),
 }
 
+/// The operation of [`Op::BitI32`] and [`Op::BitI64`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BitOp {
+    And,
+    Or,
+    Xor,
+}
+
+/// The operation of [`Op::ShiftI32`] and [`Op::ShiftI64`]. The count is an
+/// immediate below the lane width.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ShiftKind {
+    /// Shift left, dropping the bits shifted out of the lane.
+    Shl,
+    /// Arithmetic (sign-filling) shift right.
+    Sar,
+    /// Logical (zero-filling) shift right of the lane's bit pattern.
+    Shr,
+    /// Rotate the lane's bit pattern right.
+    Rotr,
+}
+
+/// The integer element [`Op::LoadBytevector`] reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BvElem {
+    /// 1, 2, 4 or 8. An 8-byte element is the raw 64-bit pattern, whose
+    /// Scheme value is unsigned ([`Op::BoxU64`]) unless `signed`.
+    pub bytes: u8,
+    pub signed: bool,
+    pub big_endian: bool,
+}
+
+impl BvElem {
+    /// The IR type of the loaded value: an unsigned 32-bit element does not
+    /// fit the int32 lane.
+    pub fn result_type(self) -> crate::runtime::codegen::opt::ir::types::Type {
+        use crate::runtime::codegen::opt::ir::types::Type;
+        if self.bytes == 8 || (self.bytes == 4 && !self.signed) {
+            Type::Int64
+        } else {
+            Type::Int32
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Cmp {
     Eq,
@@ -249,6 +358,13 @@ pub enum Op {
     /// Accepting a fixnum lets one guard type an `Int64` loop parameter that
     /// may hold either representation (an accumulator that outgrows `i32`).
     CheckBigIntFits64,
+    /// `[v] -> Int64`. The unsigned 64-bit lane: deopts unless `v` is an
+    /// exact integer in `0..2^64` (a non-negative fixnum, or a non-negative
+    /// `BIGINT` of at most one limb), and yields its bit pattern. Values at or
+    /// above `2^63` read as negative i64s; only the u64 operations
+    /// ([`Op::BitI64`], the shifts, the total i64 arithmetic) and
+    /// [`Op::BoxU64`] may consume the result.
+    CheckU64,
     /// `[v] -> Double`. Deopts unless `v` is a flonum.
     CheckDouble,
     /// `[v] -> Int32`. Deopts unless `v` is a character. The result is the
@@ -279,6 +395,11 @@ pub enum Op {
     /// (an index or a fixnum conversion), instead of boxing it and untagging
     /// it again.
     Int64ToInt32,
+    /// `[v: Int64] -> Any`. Boxes the bit pattern `v` as an unsigned
+    /// integer: a fixnum below `2^31`, otherwise a one-limb `BIGINT`. It
+    /// allocates, as `Box(Repr::Int64)` does. When only frame states name it,
+    /// representation selection turns it into a `Remat(RematKind::U64)`.
+    BoxU64,
 
     /// `[a, b] -> Int32`. Deopts on overflow.
     AddI32Ovf,
@@ -295,6 +416,32 @@ pub enum Op {
     /// `[a, b] -> Int32`, modulo with the sign of `b`. Deopts when `b` is zero.
     ModI32,
 
+    /// `[a, b] -> Int32`. Total: the 32-bit two's-complement wrapping add.
+    AddI32,
+    /// `[a, b] -> Int32`. Total wrapping subtract.
+    SubI32,
+    /// `[a, b] -> Int32`. Total wrapping multiply (the low 32 bits).
+    MulI32,
+    /// `[a, b] -> Int32`. Total bitwise operation. Both operands are
+    /// sign-extended int32s, so the result is one too.
+    BitI32(BitOp),
+    /// `[a, b] -> Int64`. Total bitwise operation.
+    BitI64(BitOp),
+    /// `[a] -> Int32`. Total shift or rotate of the 32-bit pattern by an
+    /// immediate in `1..32`; the result is the sign-extended 32-bit pattern.
+    ShiftI32(ShiftKind, u8),
+    /// `[a] -> Int64`. Total shift or rotate by an immediate in `1..64`.
+    ShiftI64(ShiftKind, u8),
+    /// `[a] -> Int32`. `a << n` for an immediate `n` in `0..32`. Deopts
+    /// unless the exact product fits int32.
+    ShlI32Ovf(u8),
+    /// `[a, n] -> Int32`. Total shift or rotate of the 32-bit pattern of `a`
+    /// by the low five bits of the int32 `n`, which is how the machine
+    /// instructions read a register count.
+    ShiftI32Var(ShiftKind),
+    /// `[a, n] -> Int32`. `a << n` for an int32 `n`. Deopts unless `n` is in
+    /// `0..32` and the exact product fits int32.
+    ShlI32OvfVar,
     /// `[a, b] -> Int64`. Total: a two's-complement wrap cannot happen for
     /// two fixnum operands, and the wide lane treats it as the machine add.
     AddI64,
@@ -327,6 +474,11 @@ pub enum Op {
     MulF64,
     /// `[a, b] -> Double`
     DivF64,
+    /// `[a, b] -> Double`. `flmin`: NaN if either operand is NaN, and
+    /// -0.0 below +0.0, as AArch64 `fmin` computes it.
+    MinF64,
+    /// `[a, b] -> Double`. `flmax`, the counterpart of [`Op::MinF64`].
+    MaxF64,
     /// `[v: Double] -> Double`. The largest integral value not greater than
     /// `v`, as the baseline's `floor` flonum fast path computes it.
     FloorF64,
@@ -337,8 +489,14 @@ pub enum Op {
     /// `[v: Double] -> Double`. The hardware square root, as the baseline's
     /// `sqrt` flonum fast path computes it (libm's `sqrt` for a flonum).
     SqrtF64,
+    /// `[v: Double] -> Double`. The absolute value: clears the sign bit.
+    AbsF64,
     /// `[a, b] -> Bool`
     CmpI32(Cmp),
+    /// `[cond: Bool, a, b] -> ty`. `a` when `cond` holds, `b` otherwise,
+    /// without a branch. The operands are words of one general-purpose
+    /// representation (tagged, or a raw integer).
+    Select,
     /// `[a, b] -> Bool`
     CmpF64(Cmp),
     /// `[a, b] -> Bool`. Compares the raw bits of two values, as `eq?`.
@@ -451,6 +609,11 @@ pub enum Op {
     /// The vector is already class-checked. A counted loop can therefore keep
     /// its counter unboxed while indexing.
     CheckIndexRaw,
+    /// `[index] -> Int32`, or `[index: Int64] -> Int32` when `raw`. The
+    /// bounds check of [`Op::CheckIndex`] (or [`Op::CheckIndexRaw`]) against
+    /// a length known when compiling, with no vector: partial escape
+    /// analysis leaves it for an access to a virtual vector or tuple.
+    CheckBound { len: u32, raw: bool },
     /// `[vector, index: Int32] -> Any`. Reads element `index`. The index was
     /// checked by [`Op::CheckIndex`].
     LoadElement,
@@ -461,11 +624,24 @@ pub enum Op {
     /// `index`. The object is a class-checked bytevector and the index was
     /// checked by [`Op::CheckIndex`].
     LoadBytevectorU8,
+    /// `[bytevector, index: Int32] -> Int32 | Int64`. Reads the integer
+    /// element at byte offset `index`. The object is a class-checked
+    /// bytevector and `index..index + bytes` was bounds checked. See
+    /// [`BvElem::result_type`].
+    LoadBytevector(BvElem),
+    /// `[code: Int32] -> Any`. The character with code point `code`, which
+    /// was checked to be a Unicode scalar value.
+    CharFromCode,
     /// `[bytevector, index: Int32, v: Int32] -> none`. Writes the unsigned
     /// byte `v` at `index`. The object is a class-checked bytevector, the
     /// index was checked by [`Op::CheckIndex`], and `v` is a fixnum in
     /// `0..=255`.
     StoreBytevectorU8,
+    /// `[bytevector, index: Int32, v: Int32 | Int64] -> none`. Writes the low
+    /// `elem.bytes` bytes of `v` at byte offset `index`, in `elem`'s byte
+    /// order. The object is a class-checked bytevector, `index..index +
+    /// bytes` was bounds checked, and `v` was range checked.
+    StoreBytevector(BvElem),
 
     /// `[car, cdr] -> Pair`
     AllocPair,
@@ -569,6 +745,8 @@ impl Op {
             Op::CheckInt32
             | Op::CheckInt64
             | Op::CheckBigIntFits64
+            | Op::CheckU64
+            | Op::BoxU64
             | Op::CheckDouble
             | Op::CheckChar
             | Op::VectorLength
@@ -577,6 +755,10 @@ impl Op {
             | Op::Box(_)
             | Op::Unbox(_)
             | Op::Int64ToInt32
+            | Op::ShiftI32(..)
+            | Op::ShiftI64(..)
+            | Op::ShlI32Ovf(_)
+            | Op::CharFromCode
             | Op::LoadRationalComponent { .. }
             | Op::LoadRationalComponentWide { .. }
             | Op::Shl128(_)
@@ -595,6 +777,7 @@ impl Op {
             | Op::CeilingF64
             | Op::TruncateF64
             | Op::SqrtF64
+            | Op::AbsF64
             | Op::TestPair
             | Op::TestChar
             | Op::TestBoolean
@@ -608,20 +791,31 @@ impl Op {
             | Op::ReturnedValue(_)
             | Op::ReturnedCount(_)
             | Op::ReturnedAddr(_)
+            | Op::CheckBound { .. }
             | Op::SlotGet { .. } => Some(1),
             Op::CheckIndex
             | Op::CheckIndexRaw
             | Op::CheckStringIndex
             | Op::StringRef
             | Op::LoadElement
+            | Op::LoadBytevector(_)
             | Op::LoadBytevectorU8 => Some(2),
-            Op::StoreElement | Op::StoreBytevectorU8 => Some(3),
+            Op::StoreElement | Op::StoreBytevectorU8 | Op::StoreBytevector(_) | Op::Select => {
+                Some(3)
+            }
             Op::AddI32Ovf
             | Op::SubI32Ovf
             | Op::MulI32Ovf
+            | Op::ShiftI32Var(_)
+            | Op::ShlI32OvfVar
             | Op::QuotI32
             | Op::RemI32
             | Op::ModI32
+            | Op::AddI32
+            | Op::SubI32
+            | Op::MulI32
+            | Op::BitI32(_)
+            | Op::BitI64(_)
             | Op::AddI64
             | Op::SubI64
             | Op::MulI64
@@ -640,6 +834,8 @@ impl Op {
             | Op::SubF64
             | Op::MulF64
             | Op::DivF64
+            | Op::MinF64
+            | Op::MaxF64
             | Op::CmpI32(_)
             | Op::CmpF64(_)
             | Op::EqBits
@@ -675,6 +871,7 @@ impl Op {
                 | Op::WriteBarrier
                 | Op::StoreElement
                 | Op::StoreBytevectorU8
+                | Op::StoreBytevector(_)
                 | Op::SlotPut { .. }
                 | Op::Safepoint
         )
@@ -688,6 +885,7 @@ impl Op {
             Op::CheckInt32
                 | Op::CheckInt64
                 | Op::CheckBigIntFits64
+                | Op::CheckU64
                 | Op::CheckDouble
                 | Op::CheckChar
                 | Op::CheckClass(_)
@@ -696,6 +894,7 @@ impl Op {
                 | Op::VectorLength
                 | Op::CheckIndex
                 | Op::CheckIndexRaw
+                | Op::CheckBound { .. }
                 | Op::CheckStringIndex
                 | Op::LoadRationalComponent { .. }
                 | Op::LoadRationalComponentWide { .. }
@@ -705,6 +904,8 @@ impl Op {
                 | Op::AddI32Ovf
                 | Op::SubI32Ovf
                 | Op::MulI32Ovf
+                | Op::ShlI32Ovf(_)
+                | Op::ShlI32OvfVar
                 | Op::QuotI32
                 | Op::RemI32
                 | Op::ModI32
@@ -743,6 +944,15 @@ impl Op {
             | Op::Unbox(Repr::Int64)
             | Op::Unbox(Repr::Int128)
             | Op::Int64ToInt32
+            | Op::AddI32
+            | Op::SubI32
+            | Op::MulI32
+            | Op::BitI32(_)
+            | Op::BitI64(_)
+            | Op::ShiftI32(..)
+            | Op::ShiftI32Var(_)
+            | Op::ShiftI64(..)
+            | Op::CharFromCode
             | Op::AddI64
             | Op::SubI64
             | Op::MulI64
@@ -759,8 +969,11 @@ impl Op {
             | Op::SubF64
             | Op::MulF64
             | Op::DivF64
+            | Op::MinF64
+            | Op::MaxF64
             | Op::CmpI32(_)
             | Op::CmpF64(_)
+            | Op::Select
             | Op::EqBits
             | Op::TestInt32
             | Op::TestInt64
@@ -771,6 +984,7 @@ impl Op {
             | Op::CeilingF64
             | Op::TruncateF64
             | Op::SqrtF64
+            | Op::AbsF64
             | Op::TestPair
             | Op::TestChar
             | Op::TestBoolean
@@ -791,7 +1005,8 @@ impl Op {
             | Op::AllocInstance { .. }
             | Op::AllocRational
             | Op::Box(Repr::Int64)
-            | Op::Box(Repr::Int128) => Effects::allocate(),
+            | Op::Box(Repr::Int128)
+            | Op::BoxU64 => Effects::allocate(),
             Op::Unbox(Repr::Double) | Op::StringRef => {
                 Effects::read(MemoryRegion::Heap, SemanticEffects::NONE)
             }
@@ -807,10 +1022,13 @@ impl Op {
             | Op::VectorLength
             | Op::CheckIndex
             | Op::CheckIndexRaw
+            | Op::CheckBound { .. }
             | Op::CheckStringIndex
             | Op::AddI32Ovf
             | Op::SubI32Ovf
             | Op::MulI32Ovf
+            | Op::ShlI32Ovf(_)
+            | Op::ShlI32OvfVar
             | Op::QuotI32
             | Op::RemI32
             | Op::ModI32
@@ -822,7 +1040,7 @@ impl Op {
             | Op::ModI64
             | Op::Add128Ovf
             | Op::Sub128Ovf => guard,
-            Op::CheckBigIntFits64 => guard.union(Effects::read(
+            Op::CheckBigIntFits64 | Op::CheckU64 => guard.union(Effects::read(
                 MemoryRegion::Heap,
                 SemanticEffects::NONE,
             )),
@@ -835,8 +1053,12 @@ impl Op {
             Op::StoreElement => Effects::write(MemoryRegion::Heap, SemanticEffects::VECTOR),
             // Bytevector storage is separate from every other effect kind, so
             // these load and store no aliasing semantic state.
-            Op::LoadBytevectorU8 => Effects::read(MemoryRegion::Heap, SemanticEffects::NONE),
-            Op::StoreBytevectorU8 => Effects::write(MemoryRegion::Heap, SemanticEffects::NONE),
+            Op::LoadBytevectorU8 | Op::LoadBytevector(_) => {
+                Effects::read(MemoryRegion::Heap, SemanticEffects::NONE)
+            }
+            Op::StoreBytevectorU8 | Op::StoreBytevector(_) => {
+                Effects::write(MemoryRegion::Heap, SemanticEffects::NONE)
+            }
             Op::SlotGet { .. } => Effects::read(MemoryRegion::Heap, SemanticEffects::NONE).checked(),
             Op::SlotPut { .. } => Effects::write(MemoryRegion::Heap, SemanticEffects::NONE).checked(),
             Op::CheckNotInvalid => {
@@ -854,9 +1076,8 @@ impl Op {
             Op::StoreCell => Effects::write(MemoryRegion::Variables, SemanticEffects::VARIABLE),
             Op::StoreFree { .. } => Effects::write(MemoryRegion::Heap, SemanticEffects::NONE),
             Op::WriteBarrier => Effects::write(MemoryRegion::Heap, SemanticEffects::NONE),
-            Op::CallKnown(..) | Op::CallGeneric(_) | Op::CallOp(_) => {
-                Effects::for_call()
-            }
+            Op::CallOp(helper) => helper_effects(helper),
+            Op::CallKnown(..) | Op::CallGeneric(_) => Effects::for_call(),
             // A safepoint polls for the collector but runs no Scheme code:
             // the collector preserves every Scheme value, and finalization
             // runs on the service thread, never at the poll. It therefore
@@ -947,12 +1168,12 @@ pub enum Terminator {
 
 impl Terminator {
     /// The outgoing edges, in order.
-    pub fn edges(&self) -> Vec<Edge> {
+    pub fn edges(&self) -> SmallVec<[Edge; 2]> {
         match self {
-            Terminator::Jump(edge) => vec![*edge],
+            Terminator::Jump(edge) => smallvec::smallvec![*edge],
             Terminator::Branch {
                 then, otherwise, ..
-            } => vec![*then, *otherwise],
+            } => smallvec::smallvec![*then, *otherwise],
             Terminator::Switch { cases, default, .. } => cases
                 .iter()
                 .map(|&(_, edge)| edge)
@@ -962,7 +1183,100 @@ impl Terminator {
             | Terminator::ReturnMany { .. }
             | Terminator::TailCall { .. }
             | Terminator::Deopt { .. }
-            | Terminator::Unreachable => vec![],
+            | Terminator::Unreachable => smallvec::smallvec![],
+        }
+    }
+
+    pub fn edges_mut(&mut self) -> SmallVec<[&mut Edge; 2]> {
+        match self {
+            Terminator::Jump(edge) => smallvec::smallvec![edge],
+            Terminator::Branch {
+                then, otherwise, ..
+            } => smallvec::smallvec![then, otherwise],
+            Terminator::Switch { cases, default, .. } => cases
+                .iter_mut()
+                .map(|(_, edge)| edge)
+                .chain(std::iter::once(default))
+                .collect(),
+            Terminator::Return(_)
+            | Terminator::ReturnMany { .. }
+            | Terminator::TailCall { .. }
+            | Terminator::Deopt { .. }
+            | Terminator::Unreachable => smallvec::smallvec![],
+        }
+    }
+
+    /// Iterate each edge in terminator, same as [`edges`](Self::edges) but does not allocate vector.
+    pub fn for_each_edge(&self, f: impl Fn(&Edge) -> bool) {
+        match self {
+            Terminator::Jump(edge) => {
+                f(edge);
+            }
+            Terminator::Branch {
+                cond: _,
+                then,
+                otherwise,
+            } => {
+                if !f(then) {
+                    return;
+                }
+
+                f(otherwise);
+            }
+
+            Terminator::Switch {
+                value: _,
+                cases,
+                default,
+                density: _,
+            } => {
+                for (_, edge) in cases.iter() {
+                    if !f(edge) {
+                        return;
+                    }
+                }
+
+                f(default);
+            }
+
+            _ => (),
+        }
+    }
+
+    /// Iterate each edge in terminator, same as [`edges`](Self::edges) but does not allocate vector.
+    pub fn for_each_edge_mut(&mut self, mut f: impl FnMut(&mut Edge) -> bool) {
+        match self {
+            Terminator::Jump(edge) => {
+                f(edge);
+            }
+            Terminator::Branch {
+                cond: _,
+                then,
+                otherwise,
+            } => {
+                if !f(then) {
+                    return;
+                }
+
+                f(otherwise);
+            }
+
+            Terminator::Switch {
+                value: _,
+                cases,
+                default,
+                density: _,
+            } => {
+                for (_, edge) in cases.iter_mut() {
+                    if !f(edge) {
+                        return;
+                    }
+                }
+
+                f(default);
+            }
+
+            _ => (),
         }
     }
 }
@@ -1259,5 +1573,53 @@ impl Effects {
             || self.causes.overlaps(other.depends_on)
             || other.causes.overlaps(self.depends_on)
             || (self.flags.contains(EffectFlags::FENCE) && other.flags.contains(EffectFlags::FENCE))
+    }
+}
+
+#[cfg(test)]
+mod helper_tests {
+    use super::*;
+
+    #[test]
+    fn text_helpers_are_leaves_that_never_call_scheme() {
+        for helper in [
+            Helper::ListRef,
+            Helper::ListHead,
+            Helper::StringEq,
+            Helper::StringAppend,
+            Helper::Substring,
+            Helper::ListToVector,
+            Helper::VectorToList,
+            Helper::CharWhitespace,
+        ] {
+            let effects = Op::CallOp(helper.helper_ref()).effects();
+            assert!(!effects.flags.contains(EffectFlags::MAY_CALL), "{helper:?}");
+            assert!(!effects.flags.contains(EffectFlags::EXITS_SIDEWAYS), "{helper:?}");
+            // A failing operand deopts, so the call cannot be dropped.
+            assert!(!effects.effect_free(), "{helper:?}");
+            assert!(
+                !effects.writes.overlaps(MemoryRanges::region(MemoryRegion::Variables)),
+                "{helper:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn allocating_text_helpers_say_so() {
+        for helper in [Helper::ListHead, Helper::StringAppend, Helper::Substring] {
+            let effects = Op::CallOp(helper.helper_ref()).effects();
+            assert!(effects.flags.contains(EffectFlags::ALLOCATES), "{helper:?}");
+        }
+        for helper in [Helper::ListRef, Helper::StringEq, Helper::CharWhitespace] {
+            let effects = Op::CallOp(helper.helper_ref()).effects();
+            assert!(!effects.flags.contains(EffectFlags::ALLOCATES), "{helper:?}");
+            assert!(effects.writes.is_empty(), "{helper:?}");
+        }
+    }
+
+    #[test]
+    fn other_helpers_keep_the_effects_of_a_call() {
+        let effects = Op::CallOp(Helper::VariableSet.helper_ref()).effects();
+        assert_eq!(effects, Effects::for_call());
     }
 }

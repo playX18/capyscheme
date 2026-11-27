@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use smallvec::SmallVec;
 
 use super::descriptor::ClassDescriptor;
-use super::flags::{ClassCategory, ClassFlags};
+use super::flags::{ClassCategory, ClassFlags, LayoutFamily};
 use super::generic::generic_assertion_violation;
 use super::slot::{SlotAccessError, SlotAccessorDescriptor, SlotInitError};
 use super::storage::SlotStorage;
@@ -44,6 +44,27 @@ impl<'gc> SchemeInstance<'gc> {
                 ),
             },
             header_word,
+        )
+    }
+
+    /// An instance of `class` with every slot unbound: the class prototype,
+    /// see [`ClassDescriptor::prototype`].
+    pub(crate) fn allocate_unbound(
+        ctx: MutationContext<'gc>,
+        class: Gc<'gc, ClassDescriptor<'gc>>,
+    ) -> Gc<'gc, Self> {
+        debug_assert_eq!(class.category(), ClassCategory::Scheme);
+        ctx.allocate_with(
+            Self {
+                class,
+                storage: SlotStorage::with(
+                    ctx,
+                    class.layout_stamp(),
+                    class.slot_count(),
+                    |_, _| Value::empty(),
+                ),
+            },
+            class_header_word(class.id()),
         )
     }
 
@@ -348,7 +369,9 @@ pub fn try_scheme_instance<'gc>(
     value: Value<'gc>,
 ) -> Option<Gc<'gc, SchemeInstance<'gc>>> {
     let class = value.class(ctx)?;
-    if class.category() != ClassCategory::Scheme {
+    // A metaobject layout (a metaclass's instances are class descriptors) is
+    // not a `SchemeInstance` even though its class is a Scheme class.
+    if class.category() != ClassCategory::Scheme || class.layout_family() != LayoutFamily::None {
         return None;
     }
     // SAFETY: The pointer references a valid GC-managed object of the expected type
@@ -401,7 +424,8 @@ fn scheme_instance_class_for_primitive_value<'gc>(
     let table = super::table::CLASS_TABLE.get()?;
     // SAFETY: The table is guaranteed to be initialized before this point
     let class = unsafe { table.fetch_unchecked() }.lookup(class_id)?;
-    (class.category() == ClassCategory::Scheme).then_some(class)
+    (class.category() == ClassCategory::Scheme && class.layout_family() == LayoutFamily::None)
+        .then_some(class)
 }
 
 pub fn scheme_instance_allocate_hook<'gc>(
@@ -572,6 +596,7 @@ pub fn scheme_instance_slot_bound_hook<'gc>(
 pub(crate) fn invocable_scheme_class_options() -> super::table::DynamicClassOptions {
     use super::hooks::PrimitiveOperationHooks;
     super::table::DynamicClassOptions {
+        metaclass: None,
         primitive_operation_hooks: Some(PrimitiveOperationHooks::new(
             Some(invocable_scheme_instance_allocate_hook),
             Some(scheme_instance_print_hook),
@@ -583,4 +608,77 @@ pub(crate) fn invocable_scheme_class_options() -> super::table::DynamicClassOpti
         )),
         flags: Some(ClassFlags::scheme_applicable()),
     }
+}
+
+pub(crate) fn initargs_with_default_initargs<'gc>(
+    ctx: MutationContext<'gc>,
+    class: Gc<'gc, ClassDescriptor<'gc>>,
+    initargs: &[Value<'gc>],
+) -> Result<(Gc<'gc, ClassDescriptor<'gc>>, Vec<Value<'gc>>), Value<'gc>> {
+    use super::descriptor::{default_initarg_pairs, initarg_key};
+
+    let defaults = default_initarg_pairs(class.default_initargs());
+    let supplied = initargs
+        .chunks_exact(2)
+        .map(|pair| initarg_key(pair[0]))
+        .collect::<SmallVec<[Value<'gc>; 8]>>();
+    let missing = defaults
+        .iter()
+        .enumerate()
+        .filter(|(_, (key, _))| !supplied.contains(&initarg_key(*key)))
+        .map(|(index, _)| index)
+        .collect::<SmallVec<[usize; 8]>>();
+    if missing.is_empty() {
+        return Ok((class, initargs.to_vec()));
+    }
+
+    let mut frame = crate::runtime::sni::LocalFrame::push();
+    let class_slot = frame.new_local_ref(class.into()).as_ptr();
+    let mut pairs = Value::null();
+    for pair in initargs.chunks_exact(2) {
+        pairs = Value::cons(ctx, Value::cons(ctx, pair[0], pair[1]), pairs);
+    }
+    let pairs_slot = frame.new_local_ref(pairs).as_ptr();
+    // SAFETY (for both reloads): the slots live until `frame` drops, and hold
+    // the values the collector updates.
+    let reload = |slot: *mut Value<'static>| unsafe {
+        std::mem::transmute::<Value<'static>, Value<'gc>>(*slot)
+    };
+
+    for index in missing {
+        let thunk = defaults[index].1;
+        match crate::runtime::sni::call_function(ctx, thunk, []) {
+            crate::runtime::objectmodel::ExecutionResult::Ok(value) => {
+                // The key is read again: the class may have moved.
+                let class = reload(class_slot).downcast::<ClassDescriptor>();
+                let key = default_initarg_pairs(class.default_initargs())[index].0;
+                let updated = Value::cons(ctx, Value::cons(ctx, key, value), reload(pairs_slot));
+                // SAFETY: the slot is the frame's own root; see `reload`.
+                unsafe {
+                    *pairs_slot = std::mem::transmute::<Value<'gc>, Value<'static>>(updated);
+                }
+            }
+            crate::runtime::objectmodel::ExecutionResult::Err(error) => return Err(error),
+        }
+    }
+
+    // Walking the list from its head yields the most recent pair first, so
+    // collecting it into a vector and reversing gives the pairs in order.
+    let class = reload(class_slot).downcast::<ClassDescriptor>();
+    let mut recent_first = Vec::new();
+    let mut cursor = reload(pairs_slot);
+
+    while cursor.is_pair() {
+        let entry = cursor.car();
+        recent_first.push((entry.car(), entry.cdr()));
+        cursor = cursor.cdr();
+    }
+
+    let mut flat = Vec::with_capacity(recent_first.len() * 2);
+
+    for (key, value) in recent_first.into_iter().rev() {
+        flat.push(key);
+        flat.push(value);
+    }
+    Ok((class, flat))
 }

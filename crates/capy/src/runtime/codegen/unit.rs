@@ -158,8 +158,7 @@ pub(crate) struct ClassDependency<'gc> {
     pub(crate) class: crate::runtime::objectmodel::Value<'gc>,
     pub(crate) id: u32,
     pub(crate) stamp: u32,
-    /// Subtree flag.
-    pub(crate) subtree: bool,
+    pub(crate) kind: super::opt::ir::func::ClassDepKind,
 }
 
 /// Generic dependency.
@@ -189,6 +188,38 @@ pub(crate) struct OptInfo {
     pub(crate) generic_cold: bool,
     pub(crate) entry_jump: CodeOffset,
     pub(crate) reheal: CodeOffset,
+    /// The lazy return point of each Scheme call site, as (offset of the
+    /// call's return address, offset of its shadow return address), sorted
+    /// by the first. A frame whose callee would return into this unit after
+    /// it is invalidated has its return address replaced by the shadow one,
+    /// which carries the same header and deopts to baseline at the call's
+    /// return point. Empty when the unit has no dependency to break.
+    pub(crate) lazy_returns: Box<[(u32, u32)]>,
+}
+
+impl OptInfo {
+    /// The shadow return address for the return address `ra` of a call site
+    /// in the unit whose image starts at `base`, if the site has one.
+    pub(crate) fn shadow_for(&self, base: Address, ra: usize) -> Option<usize> {
+        let offset = u32::try_from(ra.checked_sub(base.as_usize())?).ok()?;
+        let index = self
+            .lazy_returns
+            .binary_search_by_key(&offset, |&(ra, _)| ra)
+            .ok()?;
+        Some(base.as_usize() + self.lazy_returns[index].1 as usize)
+    }
+
+    /// Whether `ra` is the shadow return address of one of this unit's
+    /// call sites.
+    pub(crate) fn is_shadow(&self, base: Address, ra: usize) -> bool {
+        let Some(offset) = ra
+            .checked_sub(base.as_usize())
+            .and_then(|o| u32::try_from(o).ok())
+        else {
+            return false;
+        };
+        self.lazy_returns.iter().any(|&(_, shadow)| shadow == offset)
+    }
 }
 
 /// One compiled procedure

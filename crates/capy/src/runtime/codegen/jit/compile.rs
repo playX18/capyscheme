@@ -267,6 +267,22 @@ fn install_optimized<'gc>(
     } = built;
     let opt: OptInfo = opt.ok_or_else(|| io::Error::other("an optimized build has no OptInfo"))?;
     let cold_generic = opt.generic_cold;
+    // `invalidate` retargets the entry jump with one live store that cannot be undone, so every
+    // condition it needs is checked here, before anything is published.
+    {
+        let entry = opt.entry_jump.get();
+        let base = loaded.base();
+        if encode_jump(base + opt.entry_jump, base + opt.reheal).is_none() {
+            return Err(io::Error::other(
+                "the re-heal stub is out of range of the entry jump",
+            ));
+        }
+        if entry % 4 != 0 || entry + 4 > loaded.span().size() {
+            return Err(io::Error::other(
+                "the entry jump is not a patchable word of the unit",
+            ));
+        }
+    }
     if code_block.machine.load(Acquire).is_none() {
         return Err(io::Error::other("no baseline unit to fall back to"));
     }
@@ -356,24 +372,33 @@ fn install_optimized<'gc>(
             .ok_or_else(|| io::Error::other("a class dependency names no class"))?;
         let current = crate::runtime::objectmodel::class::class_table(mutator).lookup(id);
 
-        let stamp_now = |class: &crate::runtime::objectmodel::class::ClassDescriptor| {
-            if dependency.subtree {
-                class.subclass_stamp()
-            } else {
-                class.layout_stamp()
+        use crate::runtime::codegen::opt::ir::func::ClassDepKind;
+        let stamp_now = |class: &crate::runtime::objectmodel::class::ClassDescriptor| match dependency
+            .kind
+        {
+            ClassDepKind::Subtree => class.subclass_stamp(),
+            ClassDepKind::Layout | ClassDepKind::Protocol(_) => class.layout_stamp(),
+        };
+        // A protocol assumption has no stamp: decide it again under the
+        // current set, which a change replaces before any later fill reads it.
+        let holds = |class| match dependency.kind {
+            ClassDepKind::Protocol(op) => {
+                crate::runtime::objectmodel::class::ic::protocol_is_plain(mutator, class, op)
             }
+            ClassDepKind::Layout | ClassDepKind::Subtree => true,
         };
         if current.map(|current| current.as_ptr()) != Some(class.as_ptr())
             || stamp_now(&class) != dependency.stamp
+            || !holds(class)
         {
             return Err(io::Error::other(
                 "a class that the unit specialized changed during the compile",
             ));
         }
-        let set = if dependency.subtree {
-            class.subclass_wp()
-        } else {
-            class.redefinition_wp()
+        let set = match dependency.kind {
+            ClassDepKind::Subtree => class.subclass_wp(),
+            ClassDepKind::Layout => class.redefinition_wp(),
+            ClassDepKind::Protocol(_) => class.slot_protocol_wp(),
         };
 
         let registered = crate::runtime::watchpoint::WatchpointSet::add(
@@ -382,7 +407,7 @@ fn install_optimized<'gc>(
             crate::runtime::watchpoint::Dependent::code(code_block, owner),
         );
         std::sync::atomic::fence(AcqRel);
-        if !registered || stamp_now(&class) != dependency.stamp {
+        if !registered || set.is_invalid() || stamp_now(&class) != dependency.stamp {
             return Err(io::Error::other(
                 "a class that the unit specialized was redefined during the compile",
             ));
@@ -520,14 +545,15 @@ pub(crate) fn invalidate_optimized<'gc>(
         }
     }
     let base = unit.image.base();
-    let word = encode_jump(base + opt.entry_jump, base + opt.reheal)
-        .expect("the re-heal stub is within a jump of the entry");
+    let word = encode_jump(base + opt.entry_jump, base + opt.reheal).expect(
+        "checked when the unit was installed: the re-heal stub is within a jump of the entry",
+    );
     let mut span = unit.image.span();
     // The one store that retargets the entry. A failure would leave the
     // entry running invalid code, so it is not recoverable.
     code_memory()
         .patch_live_u32(&mut span, opt.entry_jump.get(), word)
-        .expect("the entry jump is patchable");
+        .expect("checked when the unit was installed: the entry jump is a patchable word");
     retired
 }
 
@@ -741,7 +767,9 @@ pub(crate) fn compile_claimed<'gc>(
     id: usize,
 ) -> io::Result<()> {
     // Compiled code jumps into the interpreter image.
-    ensure_loaded();
+    if ensure_loaded().is_none() {
+        return Err(io::Error::other("no interpreter image to jump into"));
+    }
     let buffer = code_block.buffer;
     let label = Some(crate::runtime::objectmodel::proc::procedure_label(
         code_block,

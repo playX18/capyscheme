@@ -179,8 +179,6 @@ fn length_of(func: &Func, subst: &Subst, value: Value) -> Option<Value> {
     let args = func.args(inst);
     match func.insts[inst].op {
         Op::VectorLength => Some(object(func, subst, args[0])),
-        // `string-length` inlines to a raw load of the length word from a
-        // class-checked string.
         Op::Load { field, .. }
             if field == (crate::runtime::sabi::STRING_LENGTH / 8) as u32
                 && func.value_type(args[0]) == Type::Heap(ClassRef::STRING) =>
@@ -194,6 +192,7 @@ fn length_of(func: &Func, subst: &Subst, value: Value) -> Option<Value> {
         | Op::Unbox(Repr::Int64)
         | Op::Box(Repr::Int32)
         | Op::Box(Repr::Int64) => length_of(func, subst, args[0]),
+        // TODO: make CPS simply emit string-length primitives
         Op::CallPrim { prim, .. } => match Primitive::from_id(prim.index() as u16)? {
             Primitive::UsizeToValue => length_of(func, subst, args[0]),
             Primitive::Refptr => {

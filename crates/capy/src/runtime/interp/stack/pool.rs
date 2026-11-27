@@ -7,11 +7,17 @@ const CACHED_STACK_SEGMENT: usize = 2;
 
 /// Put the stack `[stack, stack + size)` of `segment`, which nothing uses,
 /// on the stack cache.
-unsafe fn cache_stack<'gc>(tc: &ThreadContext<'gc>, segment: Value<'gc>, stack: Slot<'gc>, size: usize) {
+unsafe fn cache_stack<'gc>(
+    tc: &ThreadContext<'gc>,
+    segment: Value<'gc>,
+    stack: Slot<'gc>,
+    size: usize,
+) {
     unsafe {
         if size <= CACHED_STACK_SEGMENT {
             return;
         }
+
         *stack.add(CACHED_STACK_SIZE) = Value::from_raw(size as u64);
         *stack.add(CACHED_STACK_LINK) = Value::from_raw(tc.stack.stack_cache.get() as u64);
         *stack.add(CACHED_STACK_SEGMENT) =
@@ -30,6 +36,9 @@ pub struct StackPool {
     len: Cell<usize>,
 }
 
+// SAFETY: a pool belongs to one scheduler worker (`Worker::stack_pool`), and only the thread
+// running on that worker pushes or takes stacks. The collector clears it with the world stopped
+// (`clear`), so the `Cell`s are never accessed concurrently.
 unsafe impl Sync for StackPool {}
 unsafe impl Send for StackPool {}
 
@@ -57,6 +66,7 @@ impl StackPool {
             if size <= CACHED_STACK_SEGMENT || self.len.get() >= STACK_POOL_CAP {
                 return;
             }
+
             *stack.add(CACHED_STACK_SIZE) = Value::from_raw(size as u64);
             *stack.add(CACHED_STACK_LINK) = Value::from_raw(self.head.get() as u64);
             *stack.add(CACHED_STACK_SEGMENT) =
@@ -77,6 +87,7 @@ impl StackPool {
             self.head
                 .set((*stack.add(CACHED_STACK_LINK)).bits() as usize as Slot<'static>);
             self.len.set(self.len.get() - 1);
+
             Some((*stack.add(CACHED_STACK_SEGMENT), stack, size))
         }
     }
@@ -97,6 +108,7 @@ pub unsafe fn retire_stacks<'gc>(tc: &ThreadContext<'gc>, pool: &StackPool) {
         while !cached.is_null() {
             let size = (*cached.add(CACHED_STACK_SIZE)).bits() as usize;
             let next = (*cached.add(CACHED_STACK_LINK)).bits() as usize as Slot;
+
             pool.put(*cached.add(CACHED_STACK_SEGMENT), cached, size);
             cached = next;
         }
@@ -151,6 +163,7 @@ pub(super) unsafe fn reset_scheme_stack<'gc>(ctx: MutationContext<'gc>, n: usize
             let next = (*x.add(CACHED_STACK_LINK)).bits() as usize as Slot;
             if m >= n {
                 n = m;
+
                 stack.segment.set(*x.add(CACHED_STACK_SEGMENT));
                 stack.scheme_stack.set(x);
                 // Smaller stacks before this one are dropped too.
@@ -184,6 +197,59 @@ pub fn ensure_stack<'gc>(ctx: MutationContext<'gc>) {
     }
     stack.sp.set(stack.scheme_stack.get());
     stack.stack_link.set(Value::new(false));
+}
+
+/// The most bytes of live Scheme stack a thread may use: `CAPY_STACK_LIMIT`, or a quarter of the
+/// heap limit when that is 0.
+fn stack_limit_bytes() -> usize {
+    static LIMIT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *LIMIT.get_or_init(|| match crate::utils::flags::stack_limit() {
+        0 => (crate::utils::flags::gc_max_heap() / 4).max(8 << 20),
+        bytes => bytes,
+    })
+}
+
+/// Bytes of live stack of this thread: the live segment up to `sp` and every continuation
+/// below it.
+///
+/// # Safety
+/// The stack state describes the live stack of the thread.
+unsafe fn live_stack_bytes<'gc>(ctx: MutationContext<'gc>) -> usize {
+    unsafe {
+        let stack = &ctx.tc().stack;
+        let mut slots = stack.sp.get().offset_from(stack.scheme_stack.get()).max(0) as usize;
+        let mut link = stack.stack_link.get();
+        while link.is::<Continuation>() {
+            let k = link.downcast::<Continuation>();
+            slots += k.clength.get().max(0) as usize;
+            link = k.link.get();
+        }
+        slots * std::mem::size_of::<usize>()
+    }
+}
+
+/// Whether the call that is about to take a new stack segment would pass the stack limit and
+/// should raise `stack overflow` instead. Returns the live bytes when so. One raise per descent:
+/// the handler runs on top of the deep stack, so it is not raised at again until the stack has
+/// dropped below half the limit.
+///
+/// # Safety
+/// The stack state describes the live stack of the thread.
+pub unsafe fn stack_overflow_due<'gc>(ctx: MutationContext<'gc>) -> Option<usize> {
+    unsafe {
+        let limit = stack_limit_bytes();
+        let bytes = live_stack_bytes(ctx);
+        let stack = &ctx.tc().stack;
+        if bytes < limit / 2 {
+            stack.overflow_raised.set(false);
+            return None;
+        }
+        if bytes > limit && !stack.overflow_raised.get() {
+            stack.overflow_raised.set(true);
+            return Some(bytes);
+        }
+        None
+    }
 }
 
 /// Continue on a new stack with
@@ -341,33 +407,43 @@ pub unsafe fn reify_cc<'gc>(
             }
             _ => Continuation::alloc(ctx),
         };
+        // The frames leave the live stack, as current as it is.
+        xp.lazy_epoch.set(ctx.tc().lazy_epoch.get());
         // Before the stores: a cached frame is an existing object (see
         // `split`).
         let wxp = Gc::write(ctx, xp);
-        barrier::field!(wxp, Continuation, return_address)
-            .unlock()
-            .set(ref_ret);
-        barrier::field!(wxp, Continuation, attachments)
-            .unlock()
-            .set(ctx.state().current_marks());
-        set_return_address(fp, markers::underflow());
-        barrier::field!(wxp, Continuation, link).unlock().set(td);
-        stack.stack_link.set(xp.into());
+        // `ctx.state().current_marks()` and the barriers below must not run
+        // under the frames lock, so the marks are read first. The lock covers
+        // every store a collector thread tracing `xp` could read: a cached
+        // frame is an old object, and it may be swept right now.
+        let marks = ctx.state().current_marks();
         let base = stack.scheme_stack.get();
-        stack.scheme_stack.set(fp);
-        barrier::field!(wxp, Continuation, stack).unlock().set(base);
-        barrier::field!(wxp, Continuation, segment)
-            .unlock()
-            .set(stack.segment.get());
         let n = fp.offset_from(base);
-        xp.length.set(if one_shot {
-            OPPORTUNISTIC_1_SHOT_FLAG
-        } else {
-            n
-        });
-        // clength will be 0 if we're reifying to hide a continuation
-        // link
-        xp.clength.set(n);
+        {
+            let _frames = frames_lock();
+            barrier::field!(wxp, Continuation, return_address)
+                .unlock()
+                .set(ref_ret);
+            barrier::field!(wxp, Continuation, attachments)
+                .unlock()
+                .set(marks);
+            set_return_address(fp, markers::underflow());
+            barrier::field!(wxp, Continuation, link).unlock().set(td);
+            barrier::field!(wxp, Continuation, stack).unlock().set(base);
+            barrier::field!(wxp, Continuation, segment)
+                .unlock()
+                .set(stack.segment.get());
+            xp.length.set(if one_shot {
+                OPPORTUNISTIC_1_SHOT_FLAG
+            } else {
+                n
+            });
+            // clength will be 0 if we're reifying to hide a continuation
+            // link
+            xp.clength.set(n);
+        }
+        stack.stack_link.set(xp.into());
+        stack.scheme_stack.set(fp);
         stack
             .scheme_stack_size
             .set(stack.scheme_stack_size.get() - n as usize);
@@ -453,6 +529,7 @@ pub unsafe fn call1cc<'gc>(ctx: MutationContext<'gc>, fp: Slot<'gc>, sp: Slot<'g
         set_return_address(new_fp, markers::underflow());
         stack.fp.set(new_fp);
         stack.sp.set(new_fp.add(live));
+
         xp.into()
     }
 }
@@ -493,11 +570,20 @@ unsafe fn nuate_help<'gc>(
                     .set(stack.scheme_stack_size.get() + td as usize);
                 stack.scheme_stack.set(k.stack.get());
                 stack.stack_link.set(k.link.get());
-                k.clength.set(0); // in case GC sees it
+                {
+                    // Before the first store into the frames: a collector thread
+                    // sweeping `k` finishes first, or sees no frames.
+                    let _frames = frames_lock();
+                    k.clength.set(0);
+                }
+
                 stack.cached_frame.set(k.into()); // save for fast immediate realloc
+
                 restore_attachments(ctx, k);
                 std::ptr::copy(values, CallFrame::create(sfp).arguments_ptr(), count);
-                return Some((sfp, k.return_address.get()));
+
+                let ra = reinstated(k, sfp, k.return_address.get(), k.stack.get());
+                return Some((sfp, ra));
             }
             true
         } else {
@@ -528,9 +614,14 @@ unsafe fn nuate_help<'gc>(
             // return through a continuation object.
             restore_attachments(ctx, k);
             // mark continuation shot
-            k.length.set(SHOT_1_SHOT_FLAG);
-            k.clength.set(SHOT_1_SHOT_FLAG);
-            return Some((fp, k.return_address.get()));
+            {
+                let _frames = frames_lock();
+                k.length.set(SHOT_1_SHOT_FLAG);
+                k.clength.set(SHOT_1_SHOT_FLAG);
+            }
+
+            let ra = reinstated(k, fp, k.return_address.get(), new_stack);
+            return Some((fp, ra));
         }
 
         // multishot: split if clength > underflow-limit, resize unless
@@ -546,7 +637,35 @@ unsafe fn nuate_help<'gc>(
         let fp = sfp.offset(td);
         std::ptr::copy(values, CallFrame::create(fp).arguments_ptr(), count);
         std::ptr::copy_nonoverlapping(k.stack.get(), sfp, td as usize);
-        Some((fp, k.return_address.get()))
+
+        Some((fp, reinstated(k, fp, k.return_address.get(), sfp)))
+    }
+}
+
+/// The frames of `k` are live again, from the one `ra` returns into (above
+/// `fp`'s) down to `bottom`. When `k` is behind the lazy-deopt epoch, its
+/// frames that return into an invalidated unit are patched, and so is `ra`.
+/// Returns the address to return to.
+///
+/// # Safety
+///
+/// The frames from `fp` down to `bottom` are intact and live on the current
+/// thread's stack, `fp[-1]` included, and `ra` returns into the top one.
+unsafe fn reinstated<'gc>(
+    k: Gc<'gc, Continuation<'gc>>,
+    fp: Slot<'gc>,
+    ra: Ra,
+    bottom: Slot<'gc>,
+) -> Ra {
+    use crate::runtime::codegen::opt::deopt::lazy;
+    if k.lazy_epoch.get() == lazy::LAZY_EPOCH.load(std::sync::atomic::Ordering::Acquire) {
+        return ra;
+    }
+    unsafe {
+        if let Some(size) = super::caller_frame_size(fp, ra) {
+            lazy::patch_reinstated(fp.sub(size), bottom);
+        }
+        lazy::lazy_return_address(ra)
     }
 }
 
@@ -746,4 +865,71 @@ pub unsafe fn backtrace<'gc>(ctx: MutationContext<'gc>, limit: usize) -> Vec<(Va
         }
     }
     frames
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+
+    /// A fake stack: plain memory the pool threads its links through.
+    fn fake_stack(slots: usize) -> Vec<Value<'static>> {
+        vec![Value::new(false); slots]
+    }
+
+    fn put(pool: &StackPool, stack: &mut [Value<'static>]) {
+        unsafe { pool.put(Value::new(true), stack.as_mut_ptr(), stack.len()) }
+    }
+
+    #[test]
+    fn small_stacks_are_not_kept() {
+        let pool = StackPool::new();
+        let mut small = fake_stack(CACHED_STACK_SEGMENT);
+        put(&pool, &mut small);
+        assert!(unsafe { pool.take(1) }.is_none());
+    }
+
+    #[test]
+    fn take_is_last_in_first_out_and_respects_the_minimum() {
+        let pool = StackPool::new();
+        let mut a = fake_stack(CACHED_STACK_SEGMENT + 10);
+        let mut b = fake_stack(CACHED_STACK_SEGMENT + 20);
+        put(&pool, &mut a);
+        put(&pool, &mut b);
+        // The head is b (20 extra slots): too small for a request above its size.
+        assert!(unsafe { pool.take(CACHED_STACK_SEGMENT + 21) }.is_none());
+        let (_, got, size) = unsafe { pool.take(CACHED_STACK_SEGMENT + 20) }.expect("b");
+        assert_eq!(got, b.as_mut_ptr());
+        assert_eq!(size, b.len());
+        let (_, got, _) = unsafe { pool.take(1) }.expect("a");
+        assert_eq!(got, a.as_mut_ptr());
+        assert!(unsafe { pool.take(1) }.is_none());
+    }
+
+    #[test]
+    fn the_pool_keeps_at_most_its_cap() {
+        let pool = StackPool::new();
+        let mut stacks: Vec<_> = (0..STACK_POOL_CAP + 5)
+            .map(|_| fake_stack(CACHED_STACK_SEGMENT + 4))
+            .collect();
+        for stack in &mut stacks {
+            put(&pool, stack);
+        }
+        let mut taken = 0;
+        while unsafe { pool.take(1) }.is_some() {
+            taken += 1;
+        }
+        assert_eq!(taken, STACK_POOL_CAP);
+    }
+
+    #[test]
+    fn clear_forgets_every_stack() {
+        let pool = StackPool::new();
+        let mut a = fake_stack(CACHED_STACK_SEGMENT + 4);
+        put(&pool, &mut a);
+        pool.clear();
+        assert!(unsafe { pool.take(1) }.is_none());
+        // And the pool is usable again afterwards.
+        put(&pool, &mut a);
+        assert!(unsafe { pool.take(1) }.is_some());
+    }
 }

@@ -2,7 +2,7 @@
 
 use cranelift_entity::SecondaryMap;
 
-use super::frame_state::FrameState;
+use super::frame_state::{FrameState, VirtualObject};
 use super::func::{Block, DomTree, Func, Value, ValueDef};
 use super::inst::{Inst, Op, Terminator};
 use super::types::Type;
@@ -32,6 +32,17 @@ struct Verifier<'a> {
     errors: Vec<String>,
 }
 
+/// Whether `inst` stores `value` into `obj`.
+fn stores_pair(func: &Func, inst: Inst, obj: Value, value: Value) -> bool {
+    let args = func.args(inst);
+    let stored = match func.insts[inst].op {
+        Op::Store { .. } | Op::StoreFree { .. } if args.len() == 2 => Some((args[0], args[1])),
+        Op::StoreElement if args.len() == 3 => Some((args[0], args[2])),
+        _ => None,
+    };
+    stored == Some((obj, value))
+}
+
 impl Verifier<'_> {
     fn check_barrier_order(&mut self, block: Block) {
         let func = self.func;
@@ -42,20 +53,26 @@ impl Verifier<'_> {
             }
             let barrier_args = func.args(inst);
             let (obj, value) = (barrier_args[0], barrier_args[1]);
+            // `gvn` can make the operands of two barriers the same values when a block stores
+            // one value into several fields of one object. A store of the same operands after
+            // this barrier is then the one it guards, and an earlier one is guarded by another
+            // barrier.
+            if insts[index + 1..]
+                .iter()
+                .take_while(|&&later| {
+                    let op = func.insts[later].op;
+                    op != Op::WriteBarrier && !op.is_call()
+                })
+                .any(|&later| stores_pair(func, later, obj, value))
+            {
+                continue;
+            }
             for &earlier in insts[..index].iter().rev() {
                 let op = func.insts[earlier].op;
                 if op == Op::WriteBarrier || op.is_call() {
                     break;
                 }
-                let args = func.args(earlier);
-                let stored = match op {
-                    Op::Store { .. } | Op::StoreFree { .. } if args.len() == 2 => {
-                        Some((args[0], args[1]))
-                    }
-                    Op::StoreElement if args.len() == 3 => Some((args[0], args[2])),
-                    _ => None,
-                };
-                if stored == Some((obj, value)) {
+                if stores_pair(func, earlier, obj, value) {
                     self.error(format!(
                         "write barrier {inst} follows its store {earlier} in {block}"
                     ));
@@ -216,7 +233,9 @@ impl Verifier<'_> {
         }
         if let Op::Remat(kind) = data.op {
             let args = func.args(inst);
-            if args.len() != kind.field_count() {
+            // A placeholder has no fields (frame states describe it) or all
+            // of them (its own descriptor).
+            if !args.is_empty() && args.len() != kind.field_count() {
                 self.error(format!(
                     "{inst} in {block} rebuilds {} with {} fields",
                     kind,
@@ -249,13 +268,119 @@ impl Verifier<'_> {
                 return;
             }
             let data = &func.frames[fs];
-            self.use_at(data.closure, block, index, "frame closure");
+            self.check_frame_value(block, index, frame, data.closure, "frame closure");
             for &(_, value) in &data.registers {
-                self.use_at(value, block, index, "frame register");
+                self.check_frame_value(block, index, frame, value, "frame register");
                 self.check_not_bool(value, block, "frame register");
+            }
+            for object in &data.virtuals {
+                self.check_virtual(block, index, frame, object);
             }
             cur = data.parent;
         }
+    }
+
+    /// A value named by the state `head` (the innermost frame of the chain).
+    /// An alias of the chain's virtual objects has no runtime value: it is
+    /// not read here, only rebuilt. Any other value must be defined before.
+    /// A placeholder without fields that no entry describes would be rebuilt
+    /// from nothing (F1).
+    fn check_frame_value(
+        &mut self,
+        block: Block,
+        index: usize,
+        head: Option<FrameState>,
+        value: Value,
+        what: &str,
+    ) {
+        let func = self.func;
+        if func.values.is_valid(value) {
+            if let Some(head) = head {
+                if func.virtual_of(head, value).is_some() {
+                    return;
+                }
+            }
+            if let ValueDef::Inst(inst) = func.value_def(value) {
+                if let Op::Remat(kind) = func.insts[inst].op {
+                    if func.args(inst).len() != kind.field_count() {
+                        self.error(format!(
+                            "{block} names the remat placeholder {value} as a {what}, which has no fields and no virtual object describes it"
+                        ));
+                    }
+                }
+            }
+        }
+        self.use_at(value, block, index, what);
+    }
+
+    /// One virtual object of a state: field count, field kinds, and that its
+    /// fields exist (or are aliases) here, with no cycle through aliases.
+    fn check_virtual(
+        &mut self,
+        block: Block,
+        index: usize,
+        head: Option<FrameState>,
+        object: &VirtualObject,
+    ) {
+        let func = self.func;
+        if object.fields.len() != object.kind.field_count() {
+            self.error(format!(
+                "{block} has a virtual object {} of kind {} with {} fields",
+                object.alias,
+                object.kind,
+                object.fields.len()
+            ));
+        }
+        if !func.values.is_valid(object.alias) {
+            self.error(format!(
+                "{block} has a virtual object whose alias is not a value: {}",
+                object.alias
+            ));
+            return;
+        }
+        if let ValueDef::Inst(inst) = func.value_def(object.alias) {
+            let data = &func.insts[inst];
+            // A placeholder never runs. Any other definition must be a real
+            // object that is still in a block, or the alias names nothing.
+            if !matches!(data.op, Op::Remat(_)) && self.pos[inst].is_none() {
+                self.error(format!(
+                    "{block} has a virtual object {} whose definition {inst} is in no block and is no remat placeholder",
+                    object.alias
+                ));
+            }
+        }
+        for &field in &object.fields {
+            self.check_frame_value(block, index, head, field, "virtual field");
+            self.check_not_bool(field, block, "virtual field");
+        }
+        if let Some(head) = head {
+            let mut seen = vec![object.alias];
+            if self.alias_cycle(head, &object.fields, &mut seen) {
+                self.error(format!(
+                    "{block} has a virtual object {} that contains itself",
+                    object.alias
+                ));
+            }
+        }
+    }
+
+    /// Whether following the fields through the chain's virtual objects
+    /// reaches an alias already on `seen`.
+    fn alias_cycle(&self, head: FrameState, fields: &[Value], seen: &mut Vec<Value>) -> bool {
+        for &field in fields {
+            if seen.contains(&field) {
+                return true;
+            }
+            if let Some(inner) = self.func.virtual_of(head, field) {
+                seen.push(field);
+                let cyclic = self.alias_cycle(head, &inner.fields.clone(), seen);
+                seen.pop();
+                if cyclic {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Checks that `value`, used at `index` in `block`, is defined before it.
@@ -385,6 +510,26 @@ mod tests {
         }
     }
 
+    /// One value stored into two fields of one object: `gvn` makes the operands of the two
+    /// barriers equal, and each barrier still precedes the store it guards.
+    #[test]
+    fn two_barriers_with_equal_operands_each_guard_their_store() {
+        let mut func: Func<'static> = Func::new();
+        let entry = func.entry;
+        let obj = func.append_param(entry, Type::Any);
+        let value = func.append_param(entry, Type::Any);
+        for field in [1, 2] {
+            func.push_inst(entry, Op::WriteBarrier, &[obj, value], None, None);
+            let store = Op::Store {
+                field,
+                region: MemoryRegion::Heap,
+            };
+            func.push_inst(entry, store, &[obj, value], None, None);
+        }
+        ret(&mut func, entry, value);
+        verify(&func).unwrap_or_else(|errors| panic!("{errors:?}"));
+    }
+
     #[test]
     fn a_barrier_after_its_store_is_rejected() {
         for store in stores() {
@@ -416,5 +561,138 @@ mod tests {
                 .expect("the store stays");
             assert!(barrier < stored, "{store:?}");
         }
+    }
+
+    /// A function whose entry ends in a deopt whose frame holds `registers`
+    /// and `virtuals`. `x` is the one parameter; `p` and `q` are remat
+    /// placeholders (`Pair`) defined in the entry.
+    fn deopt_with(
+        build: impl FnOnce(Value, Value, Value) -> (Vec<(u32, Value)>, Vec<VirtualObject>),
+    ) -> Func<'static> {
+        use crate::runtime::codegen::opt::ir::frame_state::FrameStateData;
+        use crate::runtime::codegen::opt::ir::inst::RematKind;
+        use crate::runtime::codegen::opt::ir::types::CodeRef;
+        use crate::runtime::codegen::opt::passes::testutil::push;
+        let mut func: Func<'static> = Func::new();
+        let entry = func.entry;
+        let x = func.append_param(entry, Type::Any);
+        let p = push(&mut func, entry, Op::Remat(RematKind::Pair), &[], Type::Any);
+        let q = push(&mut func, entry, Op::Remat(RematKind::Pair), &[], Type::Any);
+        let (registers, virtuals) = build(x, p, q);
+        let fs = func.push_frame(FrameStateData {
+            code: CodeRef::from_u32(0),
+            pc: 0,
+            closure: x,
+            registers,
+            parent: None,
+            call_base: None,
+            returned: None,
+            rest: None,
+            inline_site: None,
+            virtuals,
+        });
+        func.set_terminator(entry, Terminator::Deopt { frame: fs });
+        func
+    }
+
+    fn pair(alias: Value, fields: [Value; 2]) -> VirtualObject {
+        VirtualObject {
+            alias,
+            kind: crate::runtime::codegen::opt::ir::inst::RematKind::Pair,
+            fields: fields.to_vec(),
+        }
+    }
+
+    /// F1: an alias that a state names is described by the state's own
+    /// virtuals; the same state with the description is valid.
+    #[test]
+    fn a_described_alias_is_valid() {
+        let func = deopt_with(|x, p, _| (vec![(1, p)], vec![pair(p, [x, x])]));
+        verify(&func).unwrap_or_else(|errors| panic!("{errors:?}"));
+    }
+
+    /// F1: a placeholder that no virtual of the state describes would be
+    /// rebuilt from nothing.
+    #[test]
+    fn an_undescribed_placeholder_in_a_frame_is_rejected() {
+        let func = deopt_with(|_, p, _| (vec![(1, p)], Vec::new()));
+        let errors = verify(&func).expect_err("p has no fields and no virtual describes it");
+        assert!(
+            errors.iter().any(|e| e.contains("no virtual object describes")),
+            "{errors:?}"
+        );
+    }
+
+    /// A field of a virtual object is a value like any register: one that is
+    /// neither defined before the state nor a virtual of the same state is
+    /// rejected, whether it is a stray placeholder or a value from a block
+    /// that does not dominate.
+    #[test]
+    fn a_virtual_field_that_is_neither_defined_nor_virtual_is_rejected() {
+        // `q` is a placeholder; the state describes `p` only, and `p` holds `q`.
+        let func = deopt_with(|x, p, q| (vec![(1, p)], vec![pair(p, [x, q])]));
+        let errors = verify(&func).expect_err("q is not described");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("virtual field") || e.contains("no virtual object describes")),
+            "{errors:?}"
+        );
+
+        // A value defined in a block that does not dominate the state.
+        let mut func = deopt_with(|x, p, _| (vec![(1, p)], vec![pair(p, [x, x])]));
+        let side = func.new_block();
+        let stray = func
+            .push_inst(
+                side,
+                Op::Const(crate::runtime::codegen::opt::ir::inst::Constant::Bits(5)),
+                &[],
+                Some(Type::Any),
+                None,
+            )
+            .unwrap();
+        func.set_terminator(side, Terminator::Unreachable);
+        let entry = func.entry;
+        let Some(Terminator::Deopt { frame }) = func.blocks[entry].term else {
+            unreachable!()
+        };
+        func.frames[frame].virtuals[0].fields[1] = stray;
+        let errors = verify(&func).expect_err("a value from a block that does not dominate");
+        assert!(!errors.is_empty());
+    }
+
+    /// An entry that contains itself through other entries has no finite
+    /// description.
+    #[test]
+    fn an_alias_cycle_is_rejected() {
+        // p = (q . x), q = (p . x)
+        let func = deopt_with(|x, p, q| (vec![(1, p)], vec![pair(p, [q, x]), pair(q, [p, x])]));
+        let errors = verify(&func).expect_err("p and q contain each other");
+        assert!(
+            errors.iter().any(|e| e.contains("contains itself")),
+            "{errors:?}"
+        );
+        // An object that names itself.
+        let func = deopt_with(|x, p, _| (vec![(1, p)], vec![pair(p, [p, x])]));
+        let errors = verify(&func).expect_err("p contains p");
+        assert!(
+            errors.iter().any(|e| e.contains("contains itself")),
+            "{errors:?}"
+        );
+        // A chain without a cycle is fine.
+        let func = deopt_with(|x, p, q| (vec![(1, p)], vec![pair(p, [q, x]), pair(q, [x, x])]));
+        verify(&func).unwrap_or_else(|errors| panic!("{errors:?}"));
+    }
+
+    /// The wrong field count for a kind is rejected.
+    #[test]
+    fn a_virtual_with_the_wrong_field_count_is_rejected() {
+        let func = deopt_with(|x, p, _| {
+            let mut object = pair(p, [x, x]);
+            object.fields.pop();
+            (vec![(1, p)], vec![object])
+        });
+        let errors = verify(&func).expect_err("a pair has two fields");
+        assert!(errors.iter().any(|e| e.contains("fields")), "{errors:?}");
     }
 }

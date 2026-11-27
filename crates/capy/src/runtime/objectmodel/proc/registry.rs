@@ -1,6 +1,7 @@
 //! Registry and builders for native closures.
 
 use super::*;
+use std::sync::OnceLock;
 
 type StaticClosureMap<'gc> = HashMap<Address, Gc<'gc, Closure<'gc>>>;
 type RootedProcedureRegistry = crate::Rootable!(ProcedureRegistry<'_>);
@@ -19,6 +20,13 @@ pub struct ProcedureRegistry<'gc> {
     registered: Monitor<HashMap<Address, Gc<'gc, NativeProc>>>,
     static_closures: Monitor<StaticClosureMap<'gc>>,
     native_sites: Monitor<HashMap<Address, CachedNativeSite<'gc>>>,
+    /// Lock-free fast path for the `call/cc` family's reified continuations.
+    /// `%call/cc` and `%call/1cc` capture on hot paths (see `fibc`), and the
+    /// shared map's lock showed up in profiles. Each kind has a dedicated
+    /// slot, so no metadata-identity check is needed: the metadata global
+    /// for a kind is initialized once and never reassigned.
+    reified_cc_site: OnceLock<CachedNativeSite<'gc>>,
+    reified_1cc_site: OnceLock<CachedNativeSite<'gc>>,
 }
 
 /// Native callable ABI variants supported by Scheme closures.
@@ -222,6 +230,45 @@ impl<'gc> ProcedureRegistry<'gc> {
         closure
     }
 
+    /// Builds a reified-continuation closure like [`Self::make_cached_closure`]
+    /// but without taking any lock on hits: each of `%call/cc` and `%call/1cc`
+    /// has a dedicated slot, and the metadata global for a kind is
+    /// initialized once and never reassigned, so the identity check the
+    /// shared map needs is vacuous here. `meta` is only evaluated on the
+    /// first capture (it is already initialized by then in practice; a
+    /// racing initializer still yields an equivalent closure).
+    pub fn make_reified_closure<F>(
+        &self,
+        ctx: MutationContext<'gc>,
+        f: NativeFn<'gc>,
+        captured: [Value<'gc>; 3],
+        oneshot: bool,
+        meta: F,
+    ) -> Gc<'gc, Closure<'gc>>
+    where
+        F: FnOnce() -> Value<'gc>,
+    {
+        let slot = if oneshot {
+            &self.reified_1cc_site
+        } else {
+            &self.reified_cc_site
+        };
+        if let Some(site) = slot.get() {
+            // Matches `make_cached_closure`'s hit path exactly: the same
+            // `Procedure` kind, hence not a continuation closure.
+            let free = [site.proc, captured[0], captured[1], captured[2]];
+            return Closure::new_native(ctx, site.code_block, &free, false);
+        }
+        let meta = meta();
+        let closure = self.make_closure(ctx, f, captured, meta);
+        let _ = slot.set(CachedNativeSite {
+            proc: closure[0].get(),
+            code_block: closure.code_block,
+            meta,
+        });
+        closure
+    }
+
     fn build_native_closure(
         &self,
         ctx: MutationContext<'gc>,
@@ -293,6 +340,14 @@ unsafe impl<'gc> Trace for ProcedureRegistry<'gc> {
             visitor.trace(&mut site.code_block);
             visitor.trace(&mut site.meta);
         }
+
+        for slot in [&mut self.reified_cc_site, &mut self.reified_1cc_site] {
+            if let Some(site) = slot.get_mut() {
+                visitor.trace(&mut site.proc);
+                visitor.trace(&mut site.code_block);
+                visitor.trace(&mut site.meta);
+            }
+        }
     }
 
     // SAFETY: Weak refs are processed through the given weak_processor
@@ -323,5 +378,7 @@ pub static PROCEDURES: LazyLock<Global<RootedProcedureRegistry>> = LazyLock::new
         registered: Monitor::new(HashMap::new()),
         static_closures: Monitor::new(HashMap::new()),
         native_sites: Monitor::new(HashMap::new()),
+        reified_cc_site: OnceLock::new(),
+        reified_1cc_site: OnceLock::new(),
     })
 });

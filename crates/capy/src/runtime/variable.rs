@@ -3,6 +3,8 @@
 //! A [`Variable`] is the cell behind every linklet slot and every top-level
 //! name of a namespace. An unbound cell holds `Value::undefined()`.
 
+use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+
 use crate::heap::object::{ClassId, builtin_class_ids, class_header_word};
 use crate::heap::{Gc, Trace, barrier, cell::Lock};
 
@@ -11,6 +13,12 @@ use crate::runtime::{
     objectmodel::{ClassTagged, IntoValue, Symbol, Value},
     watchpoint::WatchpointSet,
 };
+
+/// Writes after which Tier 2 stops folding a variable
+pub const HOT_WRITE_THRESHOLD: u32 = 1024;
+
+/// Writes each fire of a variable's set counts as.
+pub const FIRE_WRITE_WEIGHT: u32 = HOT_WRITE_THRESHOLD / 4;
 
 /// A single mutable binding cell
 #[derive(Trace)]
@@ -21,6 +29,8 @@ pub struct Variable<'gc> {
     /// Tier 2 JIT folds global variables, and installs watchpoint on any folded variable.
     /// If the variable is modified, watchpoint fires and invalidates code.
     pub watch: Lock<Option<Gc<'gc, WatchpointSet<'gc>>>>,
+    #[collect(require_static)]
+    writes: AtomicU32,
 }
 
 pub const WATCH_OFFSET: i32 = 8;
@@ -38,9 +48,22 @@ impl<'gc> Variable<'gc> {
             Self {
                 value: Lock::new(value),
                 watch: Lock::new(None),
+                writes: AtomicU32::new(0),
             },
             variable_header_word(),
         )
+    }
+
+    /// True once the cell has been written often enough that folding its
+    /// value is hopeless: Tier 2 must keep live loads instead.
+    pub fn is_hot(&self) -> bool {
+        self.writes.load(Relaxed) >= HOT_WRITE_THRESHOLD
+    }
+
+    /// Marks the cell hot outright, for a variable observed changing under
+    /// an optimizing build: folding it can only refuse the install.
+    pub fn mark_hot(&self) {
+        self.writes.store(HOT_WRITE_THRESHOLD, Relaxed);
     }
 
     /// Is the variable bound?
@@ -56,14 +79,29 @@ impl<'gc> Variable<'gc> {
             .unlock()
             .set(value);
         if old != value {
+            let n = self.writes.load(Relaxed);
+            if n < HOT_WRITE_THRESHOLD {
+                self.writes.store(n + 1, Relaxed);
+            }
             self.fire_watch(ctx);
         }
     }
 
-    /// Fires the watchpoint set of a watched variable. The caller stored the
-    /// new value first (mutate, then fire).
+    /// Fires the watchpoint set of a watched variable.
     pub fn fire_watch(self: Gc<'gc, Self>, ctx: MutationContext<'gc>) {
         if let Some(set) = self.watch.get() {
+            let fresh = WatchpointSet::new(ctx);
+            // The value before the fresh set: an install reads the set, then
+            // fences (`AcqRel`) before rereading the value.
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+            barrier::field!(Gc::write(ctx, self), Variable, watch)
+                .unlock()
+                .set(Some(fresh));
+            let n = self.writes.load(Relaxed);
+            self.writes.store(
+                n.saturating_add(FIRE_WRITE_WEIGHT).min(HOT_WRITE_THRESHOLD),
+                Relaxed,
+            );
             WatchpointSet::fire(set, ctx);
         }
     }

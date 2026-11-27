@@ -22,11 +22,6 @@ use crate::runtime::objectmodel::{CodeBlock, CodeBuffer};
 use crate::runtime::service::{self, ServiceCtl, ServiceThread};
 use crate::utils::flags;
 
-/// Pending compiles per worker past which submit evicts the oldest job
-///
-/// TODO: tune this, too low: boot jobs are evicted, too high: takes too long to do anything useful
-const QUEUE_DEPTH_PER_WORKER: usize = 64;
-
 /// Queued jobs per worker that justify another worker
 const TASKS_PER_WORKER: usize = 4;
 
@@ -36,7 +31,10 @@ const IDLE_TIMEOUT: Duration = Duration::from_millis(200);
 
 /// The queue bound, scaled with the configured worker maximum
 fn queue_depth() -> usize {
-    QUEUE_DEPTH_PER_WORKER * max_workers().max(1)
+    // `CAPY_JIT_QUEUE_DEPTH` jobs per worker (default 256, measured on the r7rs
+    // benchmarks: 64 evicts about 400 jobs per run, 256 about none): lower evicts boot-time jobs,
+    // higher delays the useful ones. Evictions are counted by `record_eviction`.
+    flags::jit_queue_depth() * max_workers().max(1)
 }
 
 /// The configured worker cap. `CAPY_JIT_WORKERS` is the maximum: the pool
@@ -228,7 +226,10 @@ pub(crate) fn submit<'gc>(
         release_for(tier, code_block, generation);
         return;
     }
-    ensure_loaded();
+    if ensure_loaded().is_none() {
+        release_for(tier, code_block, generation);
+        return;
+    }
     let label = Some(crate::runtime::objectmodel::proc::procedure_label(
         code_block,
     ));
@@ -250,6 +251,7 @@ pub(crate) fn submit<'gc>(
                 old.label.as_deref().unwrap_or("<unknown procedure>")
             );
 
+            super::config::record_eviction();
             release_for(old.tier, old.code_block, old.generation);
         }
         None => {
@@ -405,11 +407,26 @@ pub(crate) fn compile_job<'gc>(
         closure,
         mutation,
     };
+    let started = std::time::Instant::now();
     match compiler.build(&request, masm) {
-        Ok(Some(built)) => Ok(built),
+        Ok(Some(built)) => {
+            let budget = flags::opt_compile_budget_ms();
+            if tier == Tier::Optimizing
+                && budget != 0
+                && started.elapsed().as_millis() as usize > budget
+            {
+                log::warn!(target: crate::heap::logging::JIT_LOG_TARGET, " job #{id} over its compile budget ({budget} ms)");
+                super::config::record_bailout("compile budget");
+                return Err(());
+            }
+            Ok(built)
+        }
         Ok(None) => Err(()), // over the per-block limit, already logged
         Err(err) => {
             log::warn!(target: crate::heap::logging::JIT_LOG_TARGET, " job #{id} failed: {err}");
+            if tier == Tier::Optimizing {
+                super::config::record_bailout(&err.to_string());
+            }
             Err(())
         }
     }

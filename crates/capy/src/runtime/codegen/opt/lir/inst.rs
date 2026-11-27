@@ -99,6 +99,69 @@ pub enum LirInst {
         rhs: VReg,
         exit: DeoptExit,
     },
+    /// Total int32 add, subtract or multiply. The result is the
+    /// sign-extended low 32 bits.
+    Int32Wrapping {
+        op: IntOp,
+        dst: VReg,
+        lhs: VReg,
+        rhs: VReg,
+    },
+    /// Total bitwise operation. With `wide` false both operands are
+    /// sign-extended int32s, so the result is one too.
+    Bitwise {
+        op: BitOp,
+        wide: bool,
+        dst: VReg,
+        lhs: VReg,
+        rhs: VReg,
+    },
+    /// Total shift or rotate by an immediate. With `wide` false it works on
+    /// the 32-bit pattern and sign-extends the result.
+    ShiftImm {
+        op: ShiftKind,
+        wide: bool,
+        amount: u8,
+        dst: VReg,
+        src: VReg,
+    },
+    /// `dst <- src << amount` on an int32, branching to `exit` when the exact
+    /// result leaves int32.
+    ShlOvf {
+        amount: u8,
+        dst: VReg,
+        src: VReg,
+        exit: DeoptExit,
+    },
+    /// Total shift or rotate of the 32-bit pattern of `src` by the low five
+    /// bits of the int32 `count`; the result is sign-extended.
+    ShiftReg {
+        op: ShiftKind,
+        dst: VReg,
+        src: VReg,
+        count: VReg,
+    },
+    /// `dst <- src << count` on an int32, branching to `exit` when `count`
+    /// is outside `0..32` or the exact result leaves int32.
+    ShlOvfReg {
+        dst: VReg,
+        src: VReg,
+        count: VReg,
+        exit: DeoptExit,
+    },
+    /// `dst <- (src << 16) | CHAR_TAG`: tags a checked scalar value.
+    TagChar {
+        dst: VReg,
+        src: VReg,
+    },
+    /// `dst <- element(base + index)`, sign- or zero-extended per `elem`.
+    /// `base` is a bytevector's contents pointer.
+    LoadBytes {
+        elem: BvElem,
+        dst: VReg,
+        base: VReg,
+        index: VReg,
+    },
     /// Total int64 add, subtract or multiply.
     Int64Wrapping {
         op: IntOp,
@@ -115,11 +178,14 @@ pub enum LirInst {
     },
     /// Guards that `obj` is a fixnum (whose payload it sign-extends) or a
     /// `BIGINT` of at most one limb whose signed value fits i64, and produces
-    /// that value. Deopts before the instruction otherwise.
+    /// that value. Deopts before the instruction otherwise. With `unsigned`
+    /// the accepted range is `0..2^64` instead, and the result is the bit
+    /// pattern ([`Op::CheckU64`](crate::runtime::codegen::opt::ir::inst::Op::CheckU64)).
     UnboxBigInt64 {
         dst: VReg,
         obj: VReg,
         exit: DeoptExit,
+        unsigned: bool,
     },
     /// Untags a fixnum and sign-extends its payload to int64. The operand must
     /// have passed [`Test::Fixnum`].
@@ -131,6 +197,13 @@ pub enum LirInst {
     TruncateI64ToI32 {
         dst: VReg,
         src: VReg,
+    },
+    /// `dst <- cond != 0 ? a : b`, without a branch. GPR words only.
+    Select {
+        dst: VReg,
+        cond: VReg,
+        a: VReg,
+        b: VReg,
     },
     /// `dst <- lhs cmp rhs`, as 0 or 1 in a GPR. Compares full words.
     IntCmp {
@@ -172,6 +245,11 @@ pub enum LirInst {
     },
     /// `dst <- sqrt(src)`, both unboxed doubles.
     SqrtF64 {
+        dst: VReg,
+        src: VReg,
+    },
+    /// `dst <- |src|`, both unboxed doubles.
+    AbsF64 {
         dst: VReg,
         src: VReg,
     },
@@ -335,6 +413,13 @@ pub enum LirInst {
         src_lo: VReg,
         src_hi: VReg,
     },
+    /// Boxes the bit pattern `src` as an unsigned integer: a fixnum below
+    /// `2^31`, otherwise a one-limb `BIGINT`. [`LirInst::BoxInt128`] with a
+    /// zero high limb.
+    BoxUInt64 {
+        dst: VReg,
+        src: VReg,
+    },
     /// Reads free variable `index` of a closure.
     LoadFree {
         dst: VReg,
@@ -397,6 +482,14 @@ pub enum LirInst {
         index: VReg,
         src: VReg,
     },
+    /// `element(base + index) <- src`: the low `elem.bytes` bytes of `src`
+    /// in `elem`'s byte order. `base` is a bytevector's contents pointer.
+    StoreBytes {
+        elem: BvElem,
+        base: VReg,
+        index: VReg,
+        src: VReg,
+    },
     /// `dst <- obj.slot`, through the inline entry of the `get_slot` site at
     /// `meta`. Branches to `exit` unless the entry matches `obj` (class and
     /// layout stamp) and the slot is bound. See `emit/slots.rs`.
@@ -431,10 +524,24 @@ pub enum LirInst {
         /// `Known` and `Generic` only: how the return point takes a callee
         /// that returns other than one value.
         values: ReturnValues,
+        /// The lazy deopt exit of the call's return point: where a callee
+        /// returns once the unit has been invalidated and the frame's return
+        /// address points at the call's shadow return address. It has the
+        /// safepoint's frame and values, and resumes baseline at the return
+        /// point with the callee's values in its frame. For a helper call
+        /// that can fire a watchpoint, the exit after the call that the
+        /// helper's lazy status takes.
+        lazy: Option<DeoptExit>,
     },
     /// A yieldpoint, where GC may run.
     Poll {
         safepoint: SafePoint,
+        /// The lazy deopt exit taken after the yield when the unit has been
+        /// invalidated meanwhile. Only the slow path tests it: a thread whose
+        /// unit is invalidated is asked for a yieldpoint by the invalidation's
+        /// handshake. Its values are read at the poll, where the slow path
+        /// restores every register it saved.
+        lazy: Option<DeoptExit>,
     },
 }
 
@@ -521,6 +628,7 @@ impl LirInst {
             | LirInst::CeilingF64 { dst, src }
             | LirInst::TruncateF64 { dst, src }
             | LirInst::SqrtF64 { dst, src }
+            | LirInst::AbsF64 { dst, src }
             | LirInst::BoolToValue { dst, src } => {
                 ops.push(use_any(*src));
                 ops.push(def_any(*dst));
@@ -578,11 +686,51 @@ impl LirInst {
                 ops.push(use_any(*rhs));
                 ops.push(def_any(*dst));
             }
+            LirInst::Int32Wrapping { dst, lhs, rhs, .. }
+            | LirInst::Bitwise { dst, lhs, rhs, .. } => {
+                ops.push(use_any(*lhs));
+                ops.push(use_any(*rhs));
+                ops.push(def_any(*dst));
+            }
+            LirInst::ShiftImm { dst, src, .. } | LirInst::TagChar { dst, src } => {
+                ops.push(use_any(*src));
+                ops.push(def_any(*dst));
+            }
+            LirInst::ShlOvf { dst, src, exit, .. } => {
+                ops.push(use_any(*src));
+                ops.extend(func.frame_ops(&func.exits[*exit].values));
+                ops.push(def_any(*dst));
+            }
+            LirInst::ShiftReg {
+                dst, src, count, ..
+            } => {
+                ops.push(use_any(*src));
+                ops.push(use_any(*count));
+                ops.push(def_any(*dst));
+            }
+            LirInst::ShlOvfReg {
+                dst,
+                src,
+                count,
+                exit,
+            } => {
+                ops.push(use_any(*src));
+                ops.push(use_any(*count));
+                ops.extend(func.frame_ops(&func.exits[*exit].values));
+                ops.push(def_any(*dst));
+            }
+            LirInst::LoadBytes {
+                dst, base, index, ..
+            } => {
+                ops.push(use_any(*base));
+                ops.push(use_any(*index));
+                ops.push(def_any(*dst));
+            }
             LirInst::BoxInt64 { dst, src } => {
                 ops.push(use_any(*src));
                 ops.push(def_any(*dst));
             }
-            LirInst::UnboxBigInt64 { dst, obj, exit } => {
+            LirInst::UnboxBigInt64 { dst, obj, exit, .. } => {
                 ops.push(use_any(*obj));
                 ops.extend(func.frame_ops(&func.exits[*exit].values));
                 ops.push(def_any(*dst));
@@ -599,6 +747,12 @@ impl LirInst {
                 ops.push(use_any(*lhs));
                 ops.push(use_any(*rhs));
                 ops.push(def_with(*dst, Constraint::Tied(0)));
+            }
+            LirInst::Select { dst, cond, a, b } => {
+                ops.push(use_any(*cond));
+                ops.push(use_any(*a));
+                ops.push(use_any(*b));
+                ops.push(def_any(*dst));
             }
             LirInst::IntCmp { dst, lhs, rhs, .. } | LirInst::FloatCmp { dst, lhs, rhs, .. } => {
                 ops.push(use_any(*lhs));
@@ -706,6 +860,10 @@ impl LirInst {
                 ops.push(use_any(*src_hi));
                 ops.push(def_any(*dst));
             }
+            LirInst::BoxUInt64 { dst, src } => {
+                ops.push(use_any(*src));
+                ops.push(def_any(*dst));
+            }
             LirInst::StoreFlonum { obj, src } | LirInst::StoreField { obj, src, .. } => {
                 ops.push(use_any(*obj));
                 ops.push(use_any(*src));
@@ -785,7 +943,10 @@ impl LirInst {
                 ops.push(def_any(*dst));
                 ops.extend(func.frame_ops(&func.exits[*exit].values));
             }
-            LirInst::StoreByte { base, index, src } => {
+            LirInst::StoreByte { base, index, src }
+            | LirInst::StoreBytes {
+                base, index, src, ..
+            } => {
                 ops.push(use_any(*base));
                 ops.push(use_any(*index));
                 ops.push(use_any(*src));
@@ -824,8 +985,11 @@ impl LirInst {
                     ops.push(def_with(*rv, Constraint::Fixed(PhysRole::Rv)));
                 }
             }
-            LirInst::Poll { safepoint } => {
+            LirInst::Poll { safepoint, lazy } => {
                 ops.extend(func.frame_ops(&func.safepoints[*safepoint].values));
+                if let Some(exit) = lazy {
+                    ops.extend(func.frame_ops(&func.exits[*exit].values));
+                }
             }
         }
         ops
@@ -850,7 +1014,9 @@ impl LirInst {
             // The allocation slow path never collects and saves every live
             // caller-saved pool register, so the fast path destroys nothing.
             LirInst::Alloc { .. } | LirInst::AllocVectorFill { .. } => Clobbers::None,
-            LirInst::BoxInt64 { .. } | LirInst::BoxInt128 { .. } => Clobbers::None,
+            LirInst::BoxInt64 { .. } | LirInst::BoxInt128 { .. } | LirInst::BoxUInt64 { .. } => {
+                Clobbers::None
+            }
             // The wide instructions compute in emitter scratch registers and
             // save/restore the fixed GPR pair they use, so no pool value is
             // destroyed.
@@ -887,6 +1053,8 @@ impl LirInst {
             | LirInst::StringRef { exit, .. }
             | LirInst::IntArith { exit, .. }
             | LirInst::Int64Arith { exit, .. }
+            | LirInst::ShlOvf { exit, .. }
+            | LirInst::ShlOvfReg { exit, .. }
             | LirInst::UnboxBigInt64 { exit, .. }
             | LirInst::StoreNumberTagged { exit, .. }
             | LirInst::LoadNumberFixnum { exit, .. }
@@ -900,10 +1068,18 @@ impl LirInst {
         }
     }
 
+    /// The lazy deopt exit of a call, if it has one.
+    pub fn lazy_exit(&self) -> Option<DeoptExit> {
+        match self {
+            LirInst::Call { lazy, .. } | LirInst::Poll { lazy, .. } => *lazy,
+            _ => None,
+        }
+    }
+
     /// The safepoint of a call or a yieldpoint, if this is one.
     pub fn safepoint(&self) -> Option<SafePoint> {
         match self {
-            LirInst::Call { safepoint, .. } | LirInst::Poll { safepoint } => Some(*safepoint),
+            LirInst::Call { safepoint, .. } | LirInst::Poll { safepoint, .. } => Some(*safepoint),
             _ => None,
         }
     }

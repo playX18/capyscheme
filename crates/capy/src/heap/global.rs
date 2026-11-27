@@ -72,6 +72,9 @@ where
     root: NonNull<GlobalInner<Root<'static, R>>>,
 }
 
+// SAFETY: `root` points at a heap allocation owned by the collector's root set, which the
+// collector traces and which does not move. The `Trace` bound on the rooted value makes the
+// collector, not the handle's thread, responsible for the pointee.
 unsafe impl<R> Send for Global<R>
 where
     R: for<'a> Rootable<'a>,

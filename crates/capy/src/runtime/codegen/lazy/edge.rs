@@ -190,3 +190,37 @@ pub(crate) fn emit_hit_block(masm: &mut Masm, ip: Ip, cell: SiteOperand) {
     let hit = masm.declare_rust_fn(RuntimeExtern::LazyHit);
     emit_site_slow_call(masm, hit, cell);
 }
+
+#[cfg(test)]
+mod encode_jump_tests {
+    use super::*;
+
+    fn at(addr: usize) -> Address {
+        // SAFETY: the address is only compared and encoded, never dereferenced.
+        unsafe { Address::from_usize(addr) }
+    }
+
+    #[test]
+    fn a_jump_within_range_encodes() {
+        assert!(encode_jump(at(0x1000_0000), at(0x1000_0100)).is_some());
+        assert!(
+            encode_jump(at(0x1000_0100), at(0x1000_0000)).is_some(),
+            "backwards too"
+        );
+    }
+
+    #[test]
+    fn a_jump_past_the_range_does_not_encode() {
+        // Beyond 2 GiB on x86-64 and beyond 128 MiB on aarch64: both reject 4 GiB.
+        assert!(encode_jump(at(0x1000_0000), at(0x1000_0000 + (4usize << 30))).is_none());
+        assert!(encode_jump(at(0x2_0000_0000), at(0x1000)).is_none());
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn aarch64_jumps_must_be_word_aligned_and_within_128_mib() {
+        assert!(encode_jump(at(0x1000_0000), at(0x1000_0002)).is_none());
+        assert!(encode_jump(at(0x1000_0000), at(0x1000_0000 + (128 << 20))).is_none());
+        assert!(encode_jump(at(0x1000_0000), at(0x1000_0000 + (128 << 20) - 4)).is_some());
+    }
+}

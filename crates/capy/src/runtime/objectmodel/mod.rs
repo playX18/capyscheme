@@ -450,13 +450,24 @@ impl<'gc> Value<'gc> {
         }
     }
 
+    #[inline]
     pub fn is<T: ClassTagged>(&self) -> bool {
         if !self.is_cell() {
             return false;
         }
 
         let class_id = self.as_cell_raw().class_id().bits();
-        T::CLASS_IDS.contains(&class_id)
+        if T::CLASS_IDS.contains(&class_id) {
+            return true;
+        }
+        match T::FAMILY {
+            None => false,
+            // Only user subclasses of metaobject classes get past this check:
+            // builtin ids are never extended layouts.
+            Some(family) => {
+                class_id > builtin_class_ids::MAX && is_extended_layout(class_id, family)
+            }
+        }
     }
 
     pub fn downcast<T: ClassTagged>(self) -> Gc<'gc, T> {
@@ -511,17 +522,17 @@ impl<'gc> std::ops::Not for Value<'gc> {
 
 pub mod boxed;
 pub mod call;
-pub mod control;
 pub mod class;
+pub mod control;
 pub mod conversions;
 pub mod env;
-pub mod ffi;
-pub mod io;
 pub mod ephemeron;
 pub mod eq;
+pub mod ffi;
 pub mod hamt;
 pub mod hash;
 pub mod header;
+pub mod io;
 pub mod list;
 pub mod number;
 pub mod port;
@@ -540,12 +551,12 @@ pub use call::*;
 pub use control::*;
 pub use conversions::*;
 pub use env::*;
-pub use ffi::*;
-pub use io::*;
 pub use ephemeron::*;
+pub use ffi::*;
 pub use hamt::{HamtKind, PersistentMap, PersistentSet};
 pub use hash::*;
 pub use header::*;
+pub use io::*;
 pub use list::*;
 pub use number::*;
 pub use print::*;
@@ -624,4 +635,11 @@ impl<'gc> std::hash::Hash for ValueEqual<'gc> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         EqualHash(self.0).hash(state);
     }
+}
+
+/// Whether the dynamic class `class_id` has the metaobject layout `family`.
+#[cold]
+#[inline(never)]
+fn is_extended_layout(class_id: u32, family: class::LayoutFamily) -> bool {
+    ClassId::new(class_id).is_some_and(|id| class::registered_layout_family(id) == family)
 }

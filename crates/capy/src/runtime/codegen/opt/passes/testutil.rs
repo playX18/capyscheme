@@ -1,4 +1,4 @@
-//! Tiny IR builders shared by the pass tests.
+//! IR builders shared by the pass tests.
 
 use cranelift_entity::EntityRef;
 
@@ -51,6 +51,7 @@ pub(crate) fn frame(func: &mut Func<'_>, closure: Value) -> FrameState {
         returned: None,
         rest: None,
         inline_site: None,
+        virtuals: Vec::new(),
     })
 }
 

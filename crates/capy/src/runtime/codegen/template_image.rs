@@ -32,7 +32,7 @@ const _: () = {
     assert!(def::OpReturnPoint::OPERAND_DST == 3);
 };
 
-static TEMPLATE_INTERPRETER: OnceLock<TemplateInterpreter> = OnceLock::new();
+static TEMPLATE_INTERPRETER: OnceLock<Option<TemplateInterpreter>> = OnceLock::new();
 
 type SchemeEntry = for<'gc> extern "C" fn(*const (), Slot<'gc>, usize) -> NativeReturn<'gc>;
 
@@ -55,23 +55,42 @@ pub enum HandlerKind {
     Bail,
 }
 
-// The image is written once before publication and only read afterwards.
+// SAFETY: the image is written once before publication and only read afterwards.
 unsafe impl Send for TemplateInterpreter {}
 unsafe impl Sync for TemplateInterpreter {}
 
 /// Generate and load the interpreter image once, install its markers, and log
-/// the generation time and size.
-pub fn ensure_loaded() -> &'static TemplateInterpreter {
-    TEMPLATE_INTERPRETER.get_or_init(|| {
+/// the generation time and size. `None` when the image cannot be generated: the
+/// failure is logged once, threads then run the Rust interpreter, and the JIT
+/// (whose code jumps into the image) is not used.
+pub fn ensure_loaded() -> Option<&'static TemplateInterpreter> {
+    TEMPLATE_INTERPRETER.get_or_init(load).as_ref()
+}
+
+fn load() -> Option<TemplateInterpreter> {
+    {
         let start = std::time::Instant::now();
-        let (image, handler_kinds) =
-            generate().expect("template: failed to generate interpreter image");
+        let (image, handler_kinds) = match generate() {
+            Ok(generated) => generated,
+            Err(err) => {
+                // The default max level is Off; this failure has to be seen (see `ensure_max_level`).
+                crate::heap::logging::ensure_max_level(log::LevelFilter::Error);
+                log::error!(
+                    "template: failed to generate the interpreter image ({err}); \
+                     falling back to the Rust interpreter without JIT"
+                );
+                return None;
+            }
+        };
         let gen_micros = start.elapsed().as_micros();
-        let scheme_entry = image
-            .symbol_addr("scheme_entry")
-            .expect("template: scheme_entry missing");
-        let scheme_entry =
-            unsafe { std::mem::transmute::<*const u8, SchemeEntry>(scheme_entry) };
+        let Some(scheme_entry) = image.symbol_addr("scheme_entry") else {
+            log::error!(
+                "template: scheme_entry is missing from the image; \
+                 falling back to the Rust interpreter without JIT"
+            );
+            return None;
+        };
+        let scheme_entry = unsafe { std::mem::transmute::<*const u8, SchemeEntry>(scheme_entry) };
         let sizes = image.code_size();
         install_markers(&image);
         stubs::maybe_report_bail_stats();
@@ -79,32 +98,41 @@ pub fn ensure_loaded() -> &'static TemplateInterpreter {
         super::gc::maybe_report_alloc_stats();
         super::jit::maybe_report_jit_stats();
         log::info!(target: crate::heap::logging::JIT_LOG_TARGET, "template: generated {sizes} bytes in {gen_micros} us");
-        TemplateInterpreter {
+        Some(TemplateInterpreter {
             image,
             scheme_entry,
             gen_micros,
             handler_kinds,
-        }
-    })
+        })
+    }
 }
 
 /// How each opcode-map handler was emitted: `[width][byte]`.
 pub fn handler_kinds() -> Option<&'static [[HandlerKind; 256]; 3]> {
-    TEMPLATE_INTERPRETER.get().map(|t| &t.handler_kinds)
+    TEMPLATE_INTERPRETER
+        .get()
+        .and_then(Option::as_ref)
+        .map(|t| &t.handler_kinds)
 }
 
 /// The loaded image, if TemplateInterpreter has been initialized.
 pub fn loaded() -> Option<&'static LoadedImage> {
-    TEMPLATE_INTERPRETER.get().map(|t| &t.image)
+    TEMPLATE_INTERPRETER
+        .get()
+        .and_then(Option::as_ref)
+        .map(|t| &t.image)
 }
 
 /// The loaded image's machine range, for classifying sampled `RIP`s.
 /// `None` until the image loads.
 pub(crate) fn code_range() -> Option<(u64, u64)> {
-    TEMPLATE_INTERPRETER.get().map(|t| {
-        let base = t.image.base().as_usize() as u64;
-        (base, base.wrapping_add(t.image.code_size() as u64))
-    })
+    TEMPLATE_INTERPRETER
+        .get()
+        .and_then(Option::as_ref)
+        .map(|t| {
+            let base = t.image.base().as_usize() as u64;
+            (base, base.wrapping_add(t.image.code_size() as u64))
+        })
 }
 
 static INTERPRETER_ENTER: AtomicUsize = AtomicUsize::new(0);
@@ -142,7 +170,9 @@ pub unsafe fn run_template<'gc>(
     fp: Slot<'gc>,
     argc: usize,
 ) -> NativeReturn<'gc> {
-    let entry = ensure_loaded().scheme_entry;
+    let entry = ensure_loaded()
+        .expect("a thread runs the template engine only when the image loaded")
+        .scheme_entry;
     entry(mutator.as_ptr(), fp, argc)
 }
 
@@ -218,6 +248,9 @@ pub(crate) fn declare_slow_paths(masm: &mut Masm) -> SlowPaths {
 }
 
 fn generate() -> io::Result<(LoadedImage, [[HandlerKind; 256]; 3])> {
+    if crate::utils::flags::template_fail() {
+        return Err(io::Error::other("CAPY_TEMPLATE_FAIL is set"));
+    }
     let mut masm = Masm::new();
     let image_start = masm.label();
     masm.bind(image_start);

@@ -8,15 +8,13 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::compiler::{
-    CompilationOptions, DumpArtifactsOptions, LoweredProgram, begin_compilation_artifact,
-    compile_file, compile_lowered_to_fasl_bytes, dump_lowered_program_artifacts,
-    merge_compile_dump_options, resolve_artifact_dump_path,
-};
+#[cfg(feature = "bootstrap")]
+use crate::compiler::{compile_file, direct::SeedProgram};
 use crate::runtime::MutationContext;
+#[cfg(feature = "bootstrap")]
 use crate::runtime::compile_service::{self, Failure, JobInput};
 use crate::runtime::objectmodel::{Closure, Str, Value};
-use crate::runtime::vm::libraries::LIBRARY_COLLECTION;
+use crate::runtime::vm::libraries;
 use crate::runtime::vm::thunks::make_io_error;
 
 use super::{
@@ -28,8 +26,14 @@ use super::{
 static TEMP_ARTIFACT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 enum LoadMode {
+    /// Load a precompiled artifact that the file times say is fresh, otherwise describe the
+    /// source (bootstrap).
     DescribeIfCompileNeeded,
+    /// Compile with the Rust expander when there is no fresh artifact (bootstrap builds).
     ForceCompile,
+    /// Never decide freshness: describe the source with every artifact that may hold its
+    /// compiled form, and leave the choice to the caller, see [`load_thunk_candidates`].
+    Candidates,
 }
 
 pub(crate) struct CompilationPhase<'gc> {
@@ -75,6 +79,27 @@ pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
     load_thunk(ctx, filename, in_vicinity, resolve_relative, arch, mode)
 }
 
+/// Like `load_thunk_in_vicinity::<false>`, but the freshness of the compiled artifacts is not
+/// decided here, by file times: an artifact named by a path is loaded, and a source is
+/// described as the list `(source full-source cache-artifact candidates)` where CANDIDATES
+/// lists the existing artifacts that may hold its compiled form. The caller decides which of
+/// them is fresh (see `fasl-needs-recompile?`) and loads it.
+pub fn load_thunk_candidates<'gc>(
+    ctx: MutationContext<'gc>,
+    filename: impl AsRef<Path>,
+    in_vicinity: Option<impl AsRef<Path>>,
+    resolve_relative: bool,
+) -> Result<Value<'gc>, Value<'gc>> {
+    load_thunk(
+        ctx,
+        filename,
+        in_vicinity,
+        resolve_relative,
+        None,
+        LoadMode::Candidates,
+    )
+}
+
 fn load_thunk<'gc>(
     ctx: MutationContext<'gc>,
     filename: impl AsRef<Path>,
@@ -101,19 +126,45 @@ fn load_thunk<'gc>(
         }
     };
 
-    let libs = LIBRARY_COLLECTION.fetch(ctx);
     match &resolved {
-        ResolvedLoadPath::Artifact { artifact, .. } => return load_artifact(ctx, libs, artifact),
+        ResolvedLoadPath::Artifact { artifact, .. } => return load_artifact(ctx, artifact),
         ResolvedLoadPath::Source { .. } => {}
     }
 
-    if let Some(thunk) = load_precompiled_thunk(ctx, libs, &resolved)? {
+    if matches!(mode, LoadMode::Candidates) {
+        return describe_with_candidates(ctx, filename, arch, &resolved);
+    }
+
+    if let Some(thunk) = load_precompiled_thunk(ctx, &resolved)? {
         return Ok(thunk);
     }
 
     match mode {
         LoadMode::DescribeIfCompileNeeded => describe_uncompiled_source(ctx, &resolved),
-        LoadMode::ForceCompile => compile_and_load_source(ctx, resolved),
+        LoadMode::ForceCompile => {
+            #[cfg(feature = "bootstrap")]
+            {
+                compile_and_load_source(ctx, resolved)
+            }
+            #[cfg(not(feature = "bootstrap"))]
+            {
+                Err(make_io_error(
+                    ctx,
+                    "load",
+                    Str::new(
+                        ctx,
+                        format!(
+                            "{} is not compiled: the runtime has no built-in compiler, load it through (boot compiler)",
+                            filename.to_string_lossy()
+                        ),
+                        true,
+                    )
+                    .into(),
+                    &[],
+                ))
+            }
+        }
+        LoadMode::Candidates => unreachable!("handled above"),
     }
 }
 
@@ -123,7 +174,6 @@ fn fresh_auto_compile<'gc>(ctx: MutationContext<'gc>) -> bool {
 
 fn load_precompiled_thunk<'gc>(
     ctx: MutationContext<'gc>,
-    libs: &crate::runtime::vm::libraries::LibraryCollection<'gc>,
     resolved: &ResolvedLoadPath,
 ) -> Result<Option<Value<'gc>>, Value<'gc>> {
     let ResolvedLoadPath::Source {
@@ -152,6 +202,8 @@ fn load_precompiled_thunk<'gc>(
                 source_time,
                 compiled_time,
             )
+            && super::paths::compiled_after_runtime(compiled_time)
+            && super::paths::compiled_matches_source(ctx, full_source_path, &build_destination.path)
         {
             Some(build_destination.clone())
         } else {
@@ -165,7 +217,7 @@ fn load_precompiled_thunk<'gc>(
         return Ok(None);
     };
 
-    let loaded = libs.load(&candidate, ctx).unwrap_or(Value::new(false));
+    let loaded = libraries::load_artifact(ctx, &candidate).unwrap_or(Value::new(false));
     if loaded.is::<Closure>() {
         Ok(Some(loaded))
     } else {
@@ -200,19 +252,61 @@ fn describe_uncompiled_source<'gc>(
     Ok(crate::list!(ctx, source, full_source, compiled))
 }
 
-/// Inputs of a compile of expanded Scheme.
+fn describe_with_candidates<'gc>(
+    ctx: MutationContext<'gc>,
+    filename: &Path,
+    arch: Option<&str>,
+    resolved: &ResolvedLoadPath,
+) -> Result<Value<'gc>, Value<'gc>> {
+    let ResolvedLoadPath::Source {
+        source_path,
+        full_source_path,
+        build_destination,
+        ..
+    } = resolved
+    else {
+        return Err(make_io_error(
+            ctx,
+            "load",
+            Str::new(ctx, "Cannot describe a direct artifact load", true).into(),
+            &[],
+        ));
+    };
+    let candidates = super::paths::compiled_candidates(
+        ctx,
+        filename,
+        arch,
+        build_destination,
+        !fresh_auto_compile(ctx),
+    );
+    let candidates: Vec<Value<'gc>> = candidates
+        .iter()
+        .map(|path| Str::new(ctx, path.display().to_string(), true).into())
+        .collect();
+    let source = Str::new(ctx, source_path.display().to_string(), true);
+    let full_source = Str::new(ctx, full_source_path.display().to_string(), true);
+    let destination = Str::new(ctx, build_destination.path.display().to_string(), true);
+    Ok(crate::list!(
+        ctx,
+        source,
+        full_source,
+        destination,
+        Value::list_from_slice(ctx, candidates)
+    ))
+}
+
+/// Inputs of a seed compile of expanded Scheme (`%compile-seed`).
+#[cfg(feature = "bootstrap")]
 #[derive(Clone)]
 pub(crate) struct ExpandedJob<'gc> {
     pub(crate) expanded: Value<'gc>,
     pub(crate) destination: LoadArtifact,
-    pub(crate) options: CompilationOptions,
-    pub(crate) dump_options: DumpArtifactsOptions,
-    pub(crate) preprocessed: bool,
     /// See [`SourceJob::unsaved`].
     pub(crate) unsaved: Option<Unsaved>,
 }
 
 /// Inputs of a compile of one source file with the Rust expander.
+#[cfg(feature = "bootstrap")]
 #[derive(Clone)]
 pub(crate) struct SourceJob {
     pub(crate) source: PathBuf,
@@ -226,29 +320,17 @@ pub(crate) struct SourceJob {
 pub(crate) type Unsaved = Arc<Mutex<Option<Vec<u8>>>>;
 
 /// Compile one source file on a compile thread. The caller loads the result.
+#[cfg(feature = "bootstrap")]
 pub(crate) fn run_source_job<'gc>(
     ctx: MutationContext<'gc>,
     job: SourceJob,
 ) -> Result<(), Failure<'gc>> {
-    begin_compilation_artifact(&job.destination.path);
-    let dump_options = merge_compile_dump_options(DumpArtifactsOptions::default());
-    let lowered = compile_file(ctx, &job.source, dump_options.dump_graph)?;
-    dump_lowered_program_artifacts(ctx, &job.destination.path, &lowered, dump_options);
-    let mut options = CompilationOptions::default();
-    if dump_options.dump_bytecode {
-        options.backend_dumps.bytecode =
-            Some(resolve_artifact_dump_path(&job.destination.path, ".bc.txt"));
-    }
-    compile_lowered_to_destination(
-        ctx,
-        lowered,
-        options,
-        &job.destination,
-        job.unsaved.as_ref(),
-    )?;
+    let lowered = compile_file(ctx, &job.source)?;
+    compile_lowered_to_destination(ctx, lowered, &job.destination, job.unsaved.as_ref())?;
     Ok(())
 }
 
+#[cfg(feature = "bootstrap")]
 fn compile_and_load_source<'gc>(
     ctx: MutationContext<'gc>,
     resolved: ResolvedLoadPath,
@@ -276,10 +358,9 @@ fn compile_and_load_source<'gc>(
     let (ctx, outcome) = compile_service::run(ctx, JobInput::Source(job));
     compile_service::raise_failure(ctx, outcome.unwrap_or_else(|killed| killed.unwind()))?;
 
-    let libs = LIBRARY_COLLECTION.fetch(ctx);
     match take_unsaved(&unsaved) {
         Some(bytes) => load_unsaved(ctx, &bytes, &build_destination.path),
-        None => load_artifact(ctx, libs, &build_destination),
+        None => load_artifact(ctx, &build_destination),
     }
 }
 
@@ -294,33 +375,48 @@ pub(crate) fn load_unsaved<'gc>(
     bytes: &[u8],
     path: &Path,
 ) -> Result<Value<'gc>, Value<'gc>> {
-    LIBRARY_COLLECTION
-        .fetch(ctx)
-        .load_image(bytes, ctx)
-        .map_err(|err| {
-            make_io_error(
+    libraries::load_image(ctx, bytes).map_err(|err| {
+        make_io_error(
+            ctx,
+            "load",
+            Str::new(
                 ctx,
-                "load",
-                Str::new(
-                    ctx,
-                    format!("Failed to load {}: {err}", path.display()),
-                    true,
-                )
-                .into(),
-                &[],
+                format!("Failed to load {}: {err}", path.display()),
+                true,
             )
-        })
+            .into(),
+            &[],
+        )
+    })
 }
 
+#[cfg(feature = "bootstrap")]
 pub(super) fn compile_lowered_to_destination<'gc>(
     ctx: MutationContext<'gc>,
-    lowered: LoweredProgram<'gc>,
-    options: CompilationOptions,
+    lowered: SeedProgram<'gc>,
     destination: &LoadArtifact,
     unsaved: Option<&Unsaved>,
 ) -> Result<(), Value<'gc>> {
     compile_to_destination(ctx, destination, unsaved, move || {
-        compile_lowered_to_fasl_bytes(ctx, lowered, options)
+        crate::compiler::direct::write_fasl(ctx, &lowered)
+    })
+}
+
+/// Stores the compiled image BYTES (made by the Scheme compiler) at the artifact PATH, as the
+/// Rust compile does for what it makes: the extension of the artifact kind of the execution
+/// policy, the lock for the artifacts of the compile cache, an atomic write. Returns the path
+/// written, or `None` when a cache artifact cannot be stored (the caller loads it from memory).
+pub(crate) fn store_compiled_image<'gc>(
+    ctx: MutationContext<'gc>,
+    path: &str,
+    bytes: &[u8],
+) -> Result<Option<PathBuf>, Value<'gc>> {
+    let destination = destination_artifact_for_current_policy(path);
+    let unsaved: Unsaved = Default::default();
+    compile_to_destination(ctx, &destination, Some(&unsaved), || Ok(bytes.to_vec()))?;
+    Ok(match take_unsaved(&unsaved) {
+        Some(_) => None,
+        None => Some(destination.path),
     })
 }
 
@@ -490,10 +586,9 @@ fn write_artifact_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 fn load_artifact<'gc>(
     ctx: MutationContext<'gc>,
-    libs: &crate::runtime::vm::libraries::LibraryCollection<'gc>,
     artifact: &LoadArtifact,
 ) -> Result<Value<'gc>, Value<'gc>> {
-    libs.load(artifact, ctx).map_err(|err| {
+    libraries::load_artifact(ctx, artifact).map_err(|err| {
         make_io_error(
             ctx,
             "load",

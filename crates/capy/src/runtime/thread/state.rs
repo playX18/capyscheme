@@ -37,8 +37,16 @@ unsafe impl Trace for SchemeState<'_> {
 
         visitor.trace(&mut self.root_stack);
         visitor.trace(&mut self.thread_object);
-        trace_root_guarded("SchemeState.accumulator", self.accumulator.get_mut(), visitor);
-        trace_root_guarded("SchemeState.current_marks", self.current_marks.get_mut(), visitor);
+        trace_root_guarded(
+            "SchemeState.accumulator",
+            self.accumulator.get_mut(),
+            visitor,
+        );
+        trace_root_guarded(
+            "SchemeState.current_marks",
+            self.current_marks.get_mut(),
+            visitor,
+        );
         trace_root_guarded("SchemeState.winders", self.winders.get_mut(), visitor);
         trace_root_guarded("SchemeState.exit_value", self.exit_value.get_mut(), visitor);
     }
@@ -55,12 +63,16 @@ impl<'gc> SchemeState<'gc> {
         thread_object: Gc<'gc, ThreadObject<'gc>>,
         dynamic_state: DynamicState<'gc>,
     ) -> Self {
-        let engine = Engine::from_flags_or_default();
+        #[allow(unused_mut)]
+        let mut engine = Engine::from_flags_or_default();
         #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
         if engine == Engine::Template {
             // Load the image before any closure is created: new closures
-            // carry its `interpreter_enter` as their machine entry.
-            crate::runtime::codegen::template_image::ensure_loaded();
+            // carry its `interpreter_enter` as their machine entry. When it
+            // cannot be generated, run the Rust interpreter.
+            if crate::runtime::codegen::template_image::ensure_loaded().is_none() {
+                engine = Engine::Rust;
+            }
         }
         Self {
             dynamic_state,
@@ -93,4 +105,3 @@ impl<'gc> SchemeState<'gc> {
         self.current_marks.set(marks);
     }
 }
-

@@ -9,6 +9,7 @@
 pub mod arith;
 pub mod debug;
 pub mod eval;
+#[cfg(feature = "bootstrap")]
 pub mod expand;
 pub mod format;
 pub mod gc;
@@ -17,5 +18,6 @@ pub mod list;
 pub mod memoize;
 pub mod persistent_map;
 pub mod persistent_set;
+pub mod random;
 pub mod strings;
 pub mod vector;

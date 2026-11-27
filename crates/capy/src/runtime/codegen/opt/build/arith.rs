@@ -595,7 +595,7 @@ impl Builder<'_, '_> {
         result
     }
 
-    fn dual_negate(&mut self, src: Value, frame: FrameState) -> Value {
+    pub(super) fn dual_negate(&mut self, src: Value, frame: FrameState) -> Value {
         let (join, result) = self.join_block(Type::Any);
         let generic = self.func.new_block();
         let flonum = self.func.new_block();
@@ -643,7 +643,7 @@ impl Builder<'_, '_> {
         result
     }
 
-    fn dual_compare(
+    pub(super) fn dual_compare(
         &mut self,
         cmp: Cmp,
         lhs: Value,

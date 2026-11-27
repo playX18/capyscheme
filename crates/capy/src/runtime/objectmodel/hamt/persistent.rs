@@ -1,5 +1,5 @@
-use super::*;
 use super::trie::*;
+use super::*;
 
 fn persistent_header_word(kind: HamtKind) -> u64 {
     let class_id = match kind {

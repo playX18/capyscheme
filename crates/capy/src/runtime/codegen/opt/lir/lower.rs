@@ -33,9 +33,7 @@ const BYTEVECTOR_CONTENTS_FIELD: u32 = 1;
 pub fn lower(func: &Func<'_>, name: &str) -> Result<LirFunc, String> {
     let sched = schedule::schedule(func);
     let lir = Lowerer::new(func, &sched).run()?;
-    if opt().verify {
-        lir.verify()?;
-    }
+    lir.verify()?;
     if opt().dump.iter().any(|stage| stage == "lir") {
         dump(&lir, name);
     }
@@ -178,6 +176,21 @@ impl<'a> Lowerer<'a> {
             ) => Some(c),
             _ => None,
         }
+    }
+
+    /// A constant a frame state names that the deopt rebuilds from the code
+    /// (`constant_value` in the deopt runtime) instead of reading a location.
+    /// Its register gets no definition, slot or livemask bit, so a constant
+    /// baseline still needs after a call costs nothing across the call.
+    /// Raw block addresses are not Scheme values, and table and pool
+    /// constants already live in pinned registers.
+    fn frame_immediate(&self, value: Value) -> Option<Constant> {
+        self.immediate(value).filter(|c| {
+            matches!(
+                c,
+                Constant::Bits(_) | Constant::Int32(_) | Constant::Int64(_) | Constant::Double(_)
+            )
+        })
     }
 
     fn number_store_kind(&self, value: Value) -> NumberStoreKind {
@@ -353,7 +366,8 @@ impl<'a> Lowerer<'a> {
     fn ensure_frame(&mut self, frame: FrameState) -> Result<(), String> {
         let func = self.func;
         for value in func.frame_values(frame) {
-            if matches!(self.immediate(value), Some(Constant::Bits(_))) {
+            // An alias of a virtual object has no runtime value.
+            if self.frame_immediate(value).is_some() || func.virtual_of(frame, value).is_some() {
                 continue;
             }
             self.ensure(value)?;
@@ -361,22 +375,66 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
+    /// The register that stands for `value` in the frame state `frame`. An
+    /// alias of one of the state's virtual objects gets a marker register of
+    /// its own: it has no runtime value, and its descriptor holds the fields
+    /// this state gives it. Two names of one alias share the marker, so the
+    /// deopt allocates the object once (F3).
+    fn frame_vreg(
+        &mut self,
+        frame: FrameState,
+        value: Value,
+        markers: &mut std::collections::HashMap<Value, VReg>,
+        building: &mut Vec<Value>,
+    ) -> Result<VReg, String> {
+        let func = self.func;
+        if let Some(object) = func.virtual_of(frame, value) {
+            if let Some(&marker) = markers.get(&value) {
+                return Ok(marker);
+            }
+            if building.contains(&value) {
+                return Err(format!("virtual object {value} contains itself"));
+            }
+            let (kind, field_values) = (object.kind, object.fields.clone());
+            if field_values.len() != kind.field_count() {
+                return Err(format!(
+                    "virtual object {value} of kind {kind} has {} fields",
+                    field_values.len()
+                ));
+            }
+            building.push(value);
+            let mut fields = Vec::with_capacity(field_values.len());
+            for field in field_values {
+                fields.push(self.frame_vreg(frame, field, markers, building)?);
+            }
+            building.pop();
+            let marker = self.out.new_vreg(VRepr::Tagged, Some(value));
+            let id = self.out.remats.push(LirRematDesc { kind, fields });
+            self.out.vregs[marker].remat = Some(id);
+            markers.insert(value, marker);
+            return Ok(marker);
+        }
+        match self.frame_immediate(value) {
+            Some(c) => Ok(match self.frame_consts.get(&value) {
+                Some(&v) => v,
+                None => {
+                    let v = self.out.new_vreg(VRepr::of_constant(c), Some(value));
+                    self.out.vregs[v].imm = Some(c);
+                    self.frame_consts.insert(value, v);
+                    v
+                }
+            }),
+            None => self.reg(value),
+        }
+    }
+
     fn frame_values(&mut self, frame: FrameState) -> Result<Vec<FrameValue>, String> {
         let func = self.func;
         let mut out = Vec::new();
-        for value in func.frame_values(frame) {
-            let vreg = match self.immediate(value) {
-                Some(c @ Constant::Bits(_)) => match self.frame_consts.get(&value) {
-                    Some(&v) => v,
-                    None => {
-                        let v = self.out.new_vreg(VRepr::Tagged, Some(value));
-                        self.out.vregs[v].imm = Some(c);
-                        self.frame_consts.insert(value, v);
-                        v
-                    }
-                },
-                _ => self.reg(value)?,
-            };
+        let mut markers = std::collections::HashMap::new();
+        let mut building = Vec::new();
+        for value in func.frame_placed_values(frame) {
+            let vreg = self.frame_vreg(frame, value, &mut markers, &mut building)?;
             let ty = func.value_type(value);
             if ty == Type::Int128 {
                 return Err(format!(
@@ -540,7 +598,28 @@ impl<'a> Lowerer<'a> {
                 let obj = self.reg(args[0])?;
                 let exit = self.exit(frame, GuardKind::BigInt)?;
                 let dst = self.define_as(inst, VRepr::RawInt64)?;
-                self.push(LirInst::UnboxBigInt64 { dst, obj, exit });
+                self.push(LirInst::UnboxBigInt64 {
+                    dst,
+                    obj,
+                    exit,
+                    unsigned: false,
+                });
+            }
+            Op::CheckU64 => {
+                let obj = self.reg(args[0])?;
+                let exit = self.exit(frame, GuardKind::BigInt)?;
+                let dst = self.define_as(inst, VRepr::RawInt64)?;
+                self.push(LirInst::UnboxBigInt64 {
+                    dst,
+                    obj,
+                    exit,
+                    unsigned: true,
+                });
+            }
+            Op::BoxU64 => {
+                let src = self.reg(args[0])?;
+                let dst = self.define_as(inst, VRepr::Tagged)?;
+                self.push(LirInst::BoxUInt64 { dst, src });
             }
             Op::CheckDouble => {
                 let src = self.reg(args[0])?;
@@ -707,11 +786,121 @@ impl<'a> Lowerer<'a> {
                     });
                 }
             }
-            Op::AddF64 | Op::SubF64 | Op::MulF64 | Op::DivF64 => {
+            Op::AddI32 | Op::SubI32 | Op::MulI32 => {
+                let op = match op {
+                    Op::AddI32 => IntOp::Add,
+                    Op::SubI32 => IntOp::Sub,
+                    _ => IntOp::Mul,
+                };
+                let lhs = self.reg(args[0])?;
+                let rhs = self.reg(args[1])?;
+                let dst = self.define_as(inst, VRepr::RawInt)?;
+                self.push(LirInst::Int32Wrapping { op, dst, lhs, rhs });
+            }
+            Op::BitI32(bit) | Op::BitI64(bit) => {
+                let wide = matches!(op, Op::BitI64(_));
+                let lhs = self.reg(args[0])?;
+                let rhs = self.reg(args[1])?;
+                let repr = if wide { VRepr::RawInt64 } else { VRepr::RawInt };
+                let dst = self.define_as(inst, repr)?;
+                self.push(LirInst::Bitwise {
+                    op: bit,
+                    wide,
+                    dst,
+                    lhs,
+                    rhs,
+                });
+            }
+            Op::ShiftI32(kind, amount) | Op::ShiftI64(kind, amount) => {
+                let wide = matches!(op, Op::ShiftI64(..));
+                let src = self.reg(args[0])?;
+                let repr = if wide { VRepr::RawInt64 } else { VRepr::RawInt };
+                let dst = self.define_as(inst, repr)?;
+                let width = if wide { 64 } else { 32 };
+                if amount >= width {
+                    return Err(format!("shift count {amount} is out of range"));
+                }
+                if amount == 0 {
+                    // A zero count is the identity.
+                    self.push(LirInst::Move { dst, src });
+                } else {
+                    self.push(LirInst::ShiftImm {
+                        op: kind,
+                        wide,
+                        amount,
+                        dst,
+                        src,
+                    });
+                }
+            }
+            Op::ShlI32Ovf(amount) => {
+                let src = self.reg(args[0])?;
+                let exit = self.exit(frame, GuardKind::IntOverflow)?;
+                let dst = self.define_as(inst, VRepr::RawInt)?;
+                self.push(LirInst::ShlOvf {
+                    amount,
+                    dst,
+                    src,
+                    exit,
+                });
+            }
+            Op::ShiftI32Var(kind) => {
+                let src = self.reg(args[0])?;
+                let count = self.reg(args[1])?;
+                let dst = self.define_as(inst, VRepr::RawInt)?;
+                self.push(LirInst::ShiftReg {
+                    op: kind,
+                    dst,
+                    src,
+                    count,
+                });
+            }
+            Op::ShlI32OvfVar => {
+                let src = self.reg(args[0])?;
+                let count = self.reg(args[1])?;
+                let exit = self.exit(frame, GuardKind::IntOverflow)?;
+                let dst = self.define_as(inst, VRepr::RawInt)?;
+                self.push(LirInst::ShlOvfReg {
+                    dst,
+                    src,
+                    count,
+                    exit,
+                });
+            }
+            Op::CharFromCode => {
+                let src = self.reg(args[0])?;
+                let dst = self.define_as(inst, VRepr::Tagged)?;
+                self.push(LirInst::TagChar { dst, src });
+            }
+            Op::LoadBytevector(elem) => {
+                let vector = self.reg(args[0])?;
+                let index = self.reg(args[1])?;
+                let base = self.out.new_vreg(VRepr::RawBits, None);
+                self.push(LirInst::LoadField {
+                    dst: base,
+                    obj: vector,
+                    field: BYTEVECTOR_CONTENTS_FIELD,
+                });
+                let repr = if elem.result_type() == Type::Int64 {
+                    VRepr::RawInt64
+                } else {
+                    VRepr::RawInt
+                };
+                let dst = self.define_as(inst, repr)?;
+                self.push(LirInst::LoadBytes {
+                    elem,
+                    dst,
+                    base,
+                    index,
+                });
+            }
+            Op::AddF64 | Op::SubF64 | Op::MulF64 | Op::DivF64 | Op::MinF64 | Op::MaxF64 => {
                 let op = match op {
                     Op::AddF64 => FloatOp::Add,
                     Op::SubF64 => FloatOp::Sub,
                     Op::MulF64 => FloatOp::Mul,
+                    Op::MinF64 => FloatOp::Min,
+                    Op::MaxF64 => FloatOp::Max,
                     _ => FloatOp::Div,
                 };
                 let lhs = self.reg(args[0])?;
@@ -780,6 +969,11 @@ impl<'a> Lowerer<'a> {
                 let src = self.reg(args[0])?;
                 let dst = self.define_as(inst, VRepr::Double)?;
                 self.push(LirInst::SqrtF64 { dst, src });
+            }
+            Op::AbsF64 => {
+                let src = self.reg(args[0])?;
+                let dst = self.define_as(inst, VRepr::Double)?;
+                self.push(LirInst::AbsF64 { dst, src });
             }
             Op::TestCode(code) => {
                 let src = self.reg(args[0])?;
@@ -1080,6 +1274,44 @@ impl<'a> Lowerer<'a> {
                 let dst = self.define_as(inst, VRepr::RawInt)?;
                 self.push(LirInst::TruncateI64ToI32 { dst, src: index });
             }
+            Op::Select => {
+                let cond = self.reg(args[0])?;
+                let a = self.reg(args[1])?;
+                let b = self.reg(args[2])?;
+                let dst = self.define(inst)?;
+                self.push(LirInst::Select { dst, cond, a, b });
+            }
+            Op::CheckBound { len, raw } => {
+                // The bounds check of `CheckIndex` or `CheckIndexRaw` against
+                // a constant length.
+                let index = self.reg(args[0])?;
+                let length = self.const_vreg(Constant::Int32(len as i32));
+                if raw {
+                    let exit = self.exit(frame, GuardKind::Range)?;
+                    self.push(LirInst::GuardIndex {
+                        index,
+                        length,
+                        exit,
+                    });
+                    let dst = self.define_as(inst, VRepr::RawInt)?;
+                    self.push(LirInst::TruncateI64ToI32 { dst, src: index });
+                } else {
+                    let exit = self.exit(frame, GuardKind::Fixnum)?;
+                    self.push(LirInst::Guard {
+                        test: Test::Fixnum,
+                        src: Some(index),
+                        exit,
+                    });
+                    let dst = self.define_as(inst, VRepr::RawInt)?;
+                    self.push(LirInst::UntagInt { dst, src: index });
+                    let exit = self.exit(frame, GuardKind::Range)?;
+                    self.push(LirInst::GuardIndex {
+                        index: dst,
+                        length,
+                        exit,
+                    });
+                }
+            }
             Op::CheckIndex => {
                 // The index must be a fixnum with 0 <= index < length.
                 let vector = self.reg(args[0])?;
@@ -1182,6 +1414,23 @@ impl<'a> Lowerer<'a> {
                     field: BYTEVECTOR_CONTENTS_FIELD,
                 });
                 self.push(LirInst::StoreByte { base, index, src });
+            }
+            Op::StoreBytevector(elem) => {
+                let vector = self.reg(args[0])?;
+                let index = self.reg(args[1])?;
+                let src = self.reg(args[2])?;
+                let base = self.out.new_vreg(VRepr::RawBits, None);
+                self.push(LirInst::LoadField {
+                    dst: base,
+                    obj: vector,
+                    field: BYTEVECTOR_CONTENTS_FIELD,
+                });
+                self.push(LirInst::StoreBytes {
+                    elem,
+                    base,
+                    index,
+                    src,
+                });
             }
             Op::SlotGet { meta } => {
                 let obj = self.reg(args[0])?;
@@ -1349,7 +1598,10 @@ impl<'a> Lowerer<'a> {
             }
             Op::Remat(kind) => {
                 let fields = self.regs(args)?;
-                if fields.len() != kind.field_count() {
+                // A placeholder with no fields is described by the frame
+                // states that name it (their virtual objects), which give
+                // their own marker registers; this register is then unused.
+                if !fields.is_empty() && fields.len() != kind.field_count() {
                     return Err(format!(
                         "{inst} rebuilds {kind} with {} fields",
                         fields.len()
@@ -1405,8 +1657,15 @@ impl<'a> Lowerer<'a> {
                 self.emit_call(inst, target, ReturnValues::Ignore)?
             }
             Op::Safepoint => {
+                let lazy = if crate::runtime::codegen::jit::config::opt().lazy_deopt
+                    && self.func.may_invalidate()
+                {
+                    Some(self.exit(frame, GuardKind::Lazy)?)
+                } else {
+                    None
+                };
                 let safepoint = self.safepoint_without_values(frame)?;
-                self.push(LirInst::Poll { safepoint });
+                self.push(LirInst::Poll { safepoint, lazy });
             }
         }
         Ok(())
@@ -1516,6 +1775,15 @@ impl<'a> Lowerer<'a> {
             }
             _ => None,
         };
+        // A frame call whose return point baseline can resume at gets a lazy
+        // exit: the shadow return address deopts there once the unit is
+        // invalidated (see `lazy_return_frame`).
+        let lazy = match target {
+            CallTarget::Known(_) | CallTarget::Generic if self.lazy_return_frame(frame) => {
+                Some(self.exit(frame, GuardKind::Lazy)?)
+            }
+            _ => None,
+        };
         // A call returns a Scheme value in RV, so its IR type must be one too.
         let rv = if func.insts[inst].result.is_some() {
             Some(self.define_as(inst, VRepr::Tagged)?)
@@ -1523,12 +1791,14 @@ impl<'a> Lowerer<'a> {
             None
         };
 
-        let safepoint =
-            if exit.is_none() && matches!(target, CallTarget::Known(_) | CallTarget::Generic) {
-                self.safepoint_without_values(frame)?
-            } else {
-                self.safepoint(frame)?
-            };
+        let safepoint = if exit.is_none()
+            && lazy.is_none()
+            && matches!(target, CallTarget::Known(_) | CallTarget::Generic)
+        {
+            self.safepoint_without_values(frame)?
+        } else {
+            self.safepoint(frame)?
+        };
         self.push(LirInst::Call {
             target,
             args,
@@ -1536,8 +1806,32 @@ impl<'a> Lowerer<'a> {
             safepoint,
             exit,
             values,
+            lazy,
         });
         Ok(())
+    }
+
+    /// Whether a frame call with `frame` gets a lazy return exit. The unit
+    /// must have a dependency that can break, and the frame must describe the
+    /// call's own return point: `returned` with the count in `AC`, so that
+    /// baseline resumes there with the callee's values as a return from the
+    /// interpreter would leave them. A call whose result is not the return
+    /// point's (one of several calls a generic dispatch makes) has no such
+    /// frame and keeps the post-call check instead.
+    fn lazy_return_frame(&self, frame: Option<FrameState>) -> bool {
+        let func = self.func;
+        if !crate::runtime::codegen::jit::config::opt().lazy_deopt || !func.may_invalidate() {
+            return false;
+        }
+        frame.is_some_and(|frame| {
+            matches!(
+                func.frames[frame].returned,
+                Some(crate::runtime::codegen::opt::ir::frame_state::ReturnedValues {
+                    count: None,
+                    ..
+                })
+            )
+        })
     }
 
     fn lower_term(&mut self, term: &Terminator) -> Result<LirTerm, String> {

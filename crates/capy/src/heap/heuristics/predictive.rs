@@ -291,8 +291,8 @@ impl HeuristicState {
             .unwrap_or(0.0);
         let average_rate = self.allocation_rate_history.average();
         let rate_sd = self.allocation_rate_history.standard_deviation();
-        let is_spiking =
-            rate_sd > 0.0 && current_rate > average_rate + self.predictive_spike_threshold * rate_sd;
+        let is_spiking = rate_sd > 0.0
+            && current_rate > average_rate + self.predictive_spike_threshold * rate_sd;
         let spike_consumption = (cycle_time * current_rate) as usize;
         // Momentary-spike trigger: distinguish bursty allocation from a sustained
         // rate increase so post-GC feedback can tune the spike threshold separately.
@@ -364,8 +364,8 @@ impl HeuristicState {
     }
 
     fn adjust_spike_threshold(&mut self, amount: f64) {
-        self.predictive_spike_threshold =
-            (self.predictive_spike_threshold - amount).clamp(MINIMUM_CONFIDENCE, MAXIMUM_CONFIDENCE);
+        self.predictive_spike_threshold = (self.predictive_spike_threshold - amount)
+            .clamp(MINIMUM_CONFIDENCE, MAXIMUM_CONFIDENCE);
     }
 
     #[allow(dead_code)]

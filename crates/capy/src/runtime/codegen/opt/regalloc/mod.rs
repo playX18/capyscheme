@@ -19,7 +19,6 @@ mod loops;
 pub(crate) mod pos;
 mod resolve;
 mod slots;
-mod split;
 mod stackmap;
 pub(crate) mod stats;
 mod weights;

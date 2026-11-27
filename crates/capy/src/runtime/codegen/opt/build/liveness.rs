@@ -474,6 +474,15 @@ fn effects_of(ins: &Instruction, e: &mut Effects) {
             e.read_range(2, 2 + u64::from(op.argc.0));
             e.falls_through = false;
         }
+        Instruction::OpApply(op) => {
+            let base = u64::from(op.base.0);
+            e.read_range(base + 1, base + 2 + u64::from(op.argc.0));
+        }
+        Instruction::OpTailApply(op) => {
+            e.read(1);
+            e.read_range(2, 2 + u64::from(op.argc.0));
+            e.falls_through = false;
+        }
         Instruction::OpReturn(op) => {
             e.read(op.src.0.into());
             e.falls_through = false;

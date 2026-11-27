@@ -4,8 +4,8 @@ use crate::{
     heap::{Gc, Trace},
     runtime::{
         MutationContext,
-        record::{Rcd, Rtd},
         objectmodel::{Tuple, Value},
+        record::{Rcd, Rtd},
     },
 };
 

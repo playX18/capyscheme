@@ -3,6 +3,7 @@
 use cranelift_entity::entity_impl;
 
 use super::func::{Func, Value};
+use super::inst::RematKind;
 use super::types::CodeRef;
 
 /// A frame state.
@@ -38,6 +39,53 @@ pub struct FrameStateData {
     /// For a frame of an inlined body: the call site in its caller. The
     /// outermost frame has none.
     pub inline_site: Option<CallSite>,
+    /// Objects that do not exist at this point (escape analysis removed
+    /// their allocation) and the field values they hold *here*. A value in
+    /// `closure`, in `registers` or in another entry's `fields` that names an
+    /// entry's `alias` is rebuilt from the entry when the frame is. Entries
+    /// of a frame are visible to the frames of its parent chain too: the
+    /// innermost state of a chain lists every object that the chain names.
+    /// See [`VirtualObject`] and `peval-plan/15-escape-analysis.md` §4.
+    pub virtuals: Vec<VirtualObject>,
+}
+
+/// One object that a frame state describes field by field instead of by
+/// a runtime value.
+///
+/// - F1: an alias named by a state is in `virtuals` of the state's chain, or
+///   is defined by an instruction that dominates the state. The only
+///   instruction an alias may stand for without existing at run time is an
+///   [`Op::Remat`](super::inst::Op::Remat) placeholder.
+/// - F2: `fields` are the object's contents at this state.
+/// - F3: two registers that held one object name one alias, so a deopt
+///   allocates it once and `eq?` holds afterwards.
+/// - F4: `fields` count as uses of the state, so the optimizer keeps them
+///   live.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct VirtualObject {
+    /// The value that stands for the object. It has no runtime value here.
+    pub alias: Value,
+    pub kind: RematKind,
+    /// `kind.field_count()` values: the fields in the order `RematKind`
+    /// documents. A field may itself be the alias of another entry.
+    pub fields: Vec<Value>,
+}
+
+impl FrameStateData {
+    /// Applies `f` to every value the state reads: closure, registers, and
+    /// the aliases and fields of its virtual objects.
+    pub fn map_values(&mut self, mut f: impl FnMut(Value) -> Value) {
+        self.closure = f(self.closure);
+        for (_, value) in self.registers.iter_mut() {
+            *value = f(*value);
+        }
+        for object in self.virtuals.iter_mut() {
+            object.alias = f(object.alias);
+            for field in object.fields.iter_mut() {
+                *field = f(*field);
+            }
+        }
+    }
 }
 
 /// The call that inlined a body into its caller, for deopt diagnostics.
@@ -65,8 +113,28 @@ pub struct ReturnedValues {
 }
 
 impl Func<'_> {
-    /// Every value that `frame` and its parents read, innermost frame first.
+    /// Every value that `frame` and its parents read, innermost frame first:
+    /// the values that go into the rebuilt frames (see
+    /// [`Func::frame_placed_values`]) and the fields of the virtual objects
+    /// of the chain. An alias is not listed unless a register or a field
+    /// names it, and it has no runtime value either way.
     pub fn frame_values(&self, frame: FrameState) -> Vec<Value> {
+        let mut values = self.frame_placed_values(frame);
+        let mut cur = Some(frame);
+        while let Some(fs) = cur {
+            let data = &self.frames[fs];
+            for object in &data.virtuals {
+                values.extend(object.fields.iter().copied());
+            }
+            cur = data.parent;
+        }
+        values
+    }
+
+    /// The values that `frame` and its parents write into the rebuilt
+    /// frames, innermost frame first, each frame's closure before its
+    /// registers. This is the order of `deopt_dests`.
+    pub fn frame_placed_values(&self, frame: FrameState) -> Vec<Value> {
         let mut values = Vec::new();
         let mut cur = Some(frame);
         while let Some(fs) = cur {
@@ -76,5 +144,18 @@ impl Func<'_> {
             cur = data.parent;
         }
         values
+    }
+
+    /// The virtual object that `alias` names in the chain of `frame`.
+    pub fn virtual_of(&self, frame: FrameState, alias: Value) -> Option<&VirtualObject> {
+        let mut cur = Some(frame);
+        while let Some(fs) = cur {
+            let data = &self.frames[fs];
+            if let Some(object) = data.virtuals.iter().find(|o| o.alias == alias) {
+                return Some(object);
+            }
+            cur = data.parent;
+        }
+        None
     }
 }
