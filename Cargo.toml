@@ -18,7 +18,7 @@ default-members = ["crates/capy", "crates/capy-cli"]
 
 [workspace.package]
 edition = "2024"
-version = "3.1.0"
+version = "4.0.0"
 
 [workspace.dependencies]
 onlineasm = "0.4.6"

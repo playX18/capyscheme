@@ -2,7 +2,7 @@
 ;; nothing but the primitives of (capy), so they need no std.
 (package
   (name r7rs-drafts)
-  (version "3.1.0")
+  (version "4.0.0")
   (edition r7rs)
   (provides (r7rs-drafts *))
   (source "src")

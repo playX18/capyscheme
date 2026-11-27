@@ -1,7 +1,7 @@
 ;; A Closer-MOP compatibility layer over the object system of (capy mop).
 (package
   (name closer-mop)
-  (version "3.1.0")
+  (version "4.0.0")
   (edition r6rs)
   (provides (closer-mop *))
   (source "src")

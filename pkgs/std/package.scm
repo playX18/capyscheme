@@ -1,7 +1,7 @@
 ;; The standard libraries: R6RS, R7RS, SRFIs and the (capy ...) libraries.
 (package
   (name std)
-  (version "3.1.0")
+  (version "4.0.0")
   (edition r6rs)
   (provides (rnrs) (rnrs *) (scheme *) (srfi *) (capy *) (cc))
   (source "src")

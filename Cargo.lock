@@ -295,7 +295,7 @@ dependencies = [
 
 [[package]]
 name = "capy"
-version = "3.1.0"
+version = "4.0.0"
 dependencies = [
  "atomic",
  "backtrace",
@@ -342,7 +342,7 @@ dependencies = [
 
 [[package]]
 name = "capy-cli"
-version = "3.1.0"
+version = "4.0.0"
 dependencies = [
  "capy-sni",
  "libsui",
@@ -350,11 +350,11 @@ dependencies = [
 
 [[package]]
 name = "capy-cparse"
-version = "3.1.0"
+version = "4.0.0"
 
 [[package]]
 name = "capy-cparse-sni"
-version = "3.1.0"
+version = "4.0.0"
 dependencies = [
  "capy-cparse",
  "capy-sni",
@@ -363,7 +363,7 @@ dependencies = [
 
 [[package]]
 name = "capy-derive"
-version = "3.1.0"
+version = "4.0.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -373,7 +373,7 @@ dependencies = [
 
 [[package]]
 name = "capy-sni"
-version = "3.1.0"
+version = "4.0.0"
 dependencies = [
  "bytemuck",
  "capy-sni-derive",
@@ -383,7 +383,7 @@ dependencies = [
 
 [[package]]
 name = "capy-sni-derive"
-version = "3.1.0"
+version = "4.0.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -392,14 +392,14 @@ dependencies = [
 
 [[package]]
 name = "capy-sni-sys"
-version = "3.1.0"
+version = "4.0.0"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "capy-static"
-version = "3.1.0"
+version = "4.0.0"
 dependencies = [
  "capy",
  "capy-cli",

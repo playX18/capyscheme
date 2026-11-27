@@ -2,7 +2,7 @@
 ;; core imports nothing outside of itself (`no-std`), see scripts/check-layering.scm.
 (package
   (name core)
-  (version "3.1.0")
+  (version "4.0.0")
   (edition r6rs)
   (provides (core) (core *) (boot *) (capy) (|#%capy|))
   (source "src")
