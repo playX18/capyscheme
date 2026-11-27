@@ -453,7 +453,7 @@ thunks! {
 }
 
 // SAFETY: Invariants are upheld at this call site
-unsafe extern "C" {
+unsafe extern "llvm-intrinsic" {
     #[link_name = "llvm.returnaddress"]
     fn returnaddress(_: i32) -> *const u8;
 }

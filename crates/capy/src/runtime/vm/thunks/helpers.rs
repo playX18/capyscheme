@@ -7,7 +7,7 @@ use crate::runtime::{
     objectmodel::{Closure, Number, Str, Value},
 };
 
-unsafe extern "C" {
+unsafe extern "llvm-intrinsic" {
     #[link_name = "llvm.returnaddress"]
     fn returnaddress(_: i32) -> *const u8;
 }
