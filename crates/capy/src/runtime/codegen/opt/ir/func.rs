@@ -125,7 +125,6 @@ pub struct CaseClause {
 }
 
 /// A function in SSA form.
-
 pub struct Func<'gc> {
     /// `name at file:line:col` of the root procedure, for dumps and logs.
     pub label: String,

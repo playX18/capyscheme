@@ -220,7 +220,7 @@ pub unsafe extern "C" fn sni_assertion_violation(
     message: *const c_char,
     n: i32,
     irritants: *const ScmRef,
-) -> () {
+) {
     if env.is_null() {
         return;
     }

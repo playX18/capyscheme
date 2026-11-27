@@ -43,10 +43,7 @@ impl Parser {
 
     fn parse_binary(&mut self, min: u8) -> PR<Expr> {
         let mut lhs = self.parse_cast()?;
-        loop {
-            let Some((op, p)) = self.tok().punct().and_then(BinOp::from_punct) else {
-                break;
-            };
+        while let Some((op, p)) = self.tok().punct().and_then(BinOp::from_punct) {
             if p <= min {
                 break;
             }
@@ -123,10 +120,11 @@ impl Parser {
                     if self.at(Punct::LParen) && self.is_type_start_at(1) {
                         let save = self.pos;
                         self.bump();
-                        if let Ok(ty) = self.type_name() {
-                            if self.eat(Punct::RParen) && !self.at(Punct::LBrace) {
-                                return Ok(Expr::SizeofType(ty));
-                            }
+                        if let Ok(ty) = self.type_name()
+                            && self.eat(Punct::RParen)
+                            && !self.at(Punct::LBrace)
+                        {
+                            return Ok(Expr::SizeofType(ty));
                         }
                         self.pos = save;
                     }

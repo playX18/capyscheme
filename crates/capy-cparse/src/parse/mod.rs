@@ -805,12 +805,11 @@ impl Parser {
         if let Some(n) = a.vector_size.take() {
             t = Type::Vector(Box::new(t), n);
         }
-        if let Some(n) = a.ext_vector.take() {
-            if let Some((es, _)) = self.u.size_align(&t) {
+        if let Some(n) = a.ext_vector.take()
+            && let Some((es, _)) = self.u.size_align(&t) {
                 let n = if n == 3 { 4 } else { n };
                 t = Type::Vector(Box::new(t), es * n);
             }
-        }
         t
     }
 
@@ -1295,8 +1294,8 @@ impl Parser {
         }
         let cond = parts.remove(0);
         let e = self.with_tokens(cond, |p| p.parse_assign());
-        if let Ok(e) = e {
-            if let Ok(ConstVal::Int(0, _)) = self.u.eval(&e) {
+        if let Ok(e) = e
+            && let Ok(ConstVal::Int(0, _)) = self.u.eval(&e) {
                 let msg = parts
                     .first()
                     .and_then(|m| m.first())
@@ -1308,7 +1307,6 @@ impl Parser {
                     format!("static assertion failed {msg}"),
                 );
             }
-        }
         Ok(())
     }
 

@@ -95,10 +95,7 @@ impl<'gc> Number<'gc> {
         match self {
             Self::Rational(_) | Self::Fixnum(_) | Self::BigInt(_) => true,
             Self::Flonum(fl) => {
-                if fl.is_infinite() || fl.is_nan() {
-                    return false;
-                }
-                true
+                !(fl.is_infinite() || fl.is_nan())
             }
             _ => false,
         }

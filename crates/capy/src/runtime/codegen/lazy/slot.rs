@@ -303,7 +303,6 @@ impl SlotSite {
                 paths,
             );
             gc.emit_store_barrier_slow(&mut masm, &mut context, barrier);
-            drop(context);
         } else {
             onlineasm!(*masm.assembler();
                 lshiftq {t3}, 3;

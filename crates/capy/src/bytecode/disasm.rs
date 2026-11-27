@@ -941,7 +941,7 @@ pub fn disassemble_insn(ins: &Instruction, width: OperandWidth, pc: usize, pool:
     let mut row = format!("{pc:6}  ");
     render_mnemonic_and_operands(ins, suffix, pc, &mut row);
     for entry in switch_entries(ins, pc, pool) {
-        row.push_str("\n");
+        row.push('\n');
         row.push_str(SWITCH_ENTRY_INDENT);
         row.push_str(&entry);
     }

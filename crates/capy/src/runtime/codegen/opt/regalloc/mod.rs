@@ -158,7 +158,7 @@ pub(crate) fn home_slot(word: u32) -> u32 {
 
 /// The frame word of a home slot, `None` for a numbered spill slot.
 pub(crate) fn home_word(slot: u32) -> Option<u32> {
-    (slot >= HOME_BASE).then(|| slot & !HOME_BASE)
+    (slot >= HOME_BASE).then_some(slot & !HOME_BASE)
 }
 
 /// The frame word `fp[w]` that slot `slot` occupies, for a frame of
@@ -364,8 +364,8 @@ pub fn allocate(
         let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
         stats::record(cfg.regalloc(), &alloc, &weights, micros);
     }
-    if cfg.verify {
-        if let Err(err) = check(func, &num, &alloc, regs) {
+    if cfg.verify
+        && let Err(err) = check(func, &num, &alloc, regs) {
             // Without this a rejected allocation leaves no trace: the unit is
             // simply never installed, and the reason is lost.
             if cfg.dump.iter().any(|stage| stage == "regalloc") {
@@ -374,7 +374,6 @@ pub fn allocate(
             }
             return Err(err);
         }
-    }
     Ok(alloc)
 }
 
@@ -576,13 +575,12 @@ pub fn check(
                         .ranges
                         .iter()
                         .any(|&(lo, hi)| lo <= pos::late(g) && pos::late(g) < hi);
-                    if let (true, Loc::Slot(s)) = (covers, piece.loc) {
-                        if !has(s) {
+                    if let (true, Loc::Slot(s)) = (covers, piece.loc)
+                        && !has(s) {
                             return Err(format!(
                                 "{v} is live across {sp} but missing from its livemask"
                             ));
                         }
-                    }
                 }
             }
 
@@ -859,11 +857,10 @@ fn check_clobbers(
                     if !covers {
                         continue;
                     }
-                    if let Loc::Reg(r) = piece.loc {
-                        if in_pool(r) && !(Some(v) == rv_def && r == regs.rv) {
+                    if let Loc::Reg(r) = piece.loc
+                        && in_pool(r) && !(Some(v) == rv_def && r == regs.rv) {
                             return Err(format!("{v} is in {r} across the clobber at {g}"));
                         }
-                    }
                 }
             }
         }
@@ -901,11 +898,10 @@ fn check_clobbers(
                     if !covers {
                         continue;
                     }
-                    if let Loc::Reg(r) = piece.loc {
-                        if regs.slow_clobbers.contains(&r) {
+                    if let Loc::Reg(r) = piece.loc
+                        && regs.slow_clobbers.contains(&r) {
                             return Err(format!("{v} is in slow-clobbered {r} at {g}"));
                         }
-                    }
                 }
             }
         }
@@ -928,11 +924,10 @@ fn check_clobbers(
                 if !covers {
                     continue;
                 }
-                if let Loc::Reg(r) = piece.loc {
-                    if r == regs.ac {
+                if let Loc::Reg(r) = piece.loc
+                    && r == regs.ac {
                         return Err(format!("{v} is in {r} across the count read at {g}"));
                     }
-                }
             }
         }
     }
@@ -1062,11 +1057,10 @@ fn check_coalescing(
                 let Some(rep) = alloc.group[op.vreg] else {
                     continue;
                 };
-                if let LirInst::Move { src, .. } = inst {
-                    if alloc.group[*src] == Some(rep) {
+                if let LirInst::Move { src, .. } = inst
+                    && alloc.group[*src] == Some(rep) {
                         continue;
                     }
-                }
                 for &w in &members[&rep] {
                     if w != op.vreg && live_at(w, q) {
                         return Err(format!(

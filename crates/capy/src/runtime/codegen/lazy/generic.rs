@@ -262,6 +262,7 @@ impl GenericPlan {
 
 /// Guard argument `index` (slot `offset` in the callee frame) as a heap cell
 /// of the cached dispatch class at `class_offset`.
+#[allow(clippy::too_many_arguments)]
 fn emit_class_check(
     masm: &mut Masm,
     frame: onlineasm::VReg,

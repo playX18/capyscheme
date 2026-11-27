@@ -1950,7 +1950,7 @@ impl<'gc> GenericDescriptor<'gc> {
                 .filter(|(index, _)| mask & (1 << index) != 0)
                 .map(|(_, method)| *method),
         );
-        let methods = Array::from_slice(ctx, &generic.rank_methods(ctx, args, &set, true));
+        let methods = Array::from_slice(ctx, generic.rank_methods(ctx, args, &set, true));
         Self::publish_bucket(ctx, generic, epoch, key, &rest, |existing| {
             let mut bucket = *existing?;
             let mut entries: Vec<EqlMemoEntry<'gc>> = bucket
@@ -3443,7 +3443,7 @@ impl<'gc> NextMethodDescriptor<'gc> {
             Self {
                 generic,
                 methods,
-                args: Array::from_slice(ctx, &[]),
+                args: Array::from_slice(ctx, []),
                 index,
                 tail,
                 cursor: true,

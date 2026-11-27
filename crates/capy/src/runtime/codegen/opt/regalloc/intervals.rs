@@ -301,12 +301,11 @@ pub(crate) fn merge(mut ranges: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
     ranges.sort_unstable();
     let mut out: Vec<(u32, u32)> = Vec::with_capacity(ranges.len());
     for (lo, hi) in ranges {
-        if let Some(last) = out.last_mut() {
-            if lo <= last.1 {
+        if let Some(last) = out.last_mut()
+            && lo <= last.1 {
                 last.1 = last.1.max(hi);
                 continue;
             }
-        }
         out.push((lo, hi));
     }
     out

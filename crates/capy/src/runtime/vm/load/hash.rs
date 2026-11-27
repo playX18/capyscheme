@@ -35,7 +35,7 @@ fn feed<'gc>(hasher: &mut Sha256, value: Value<'gc>) {
     let mut current = value;
     loop {
         if current.is_pair() {
-            hasher.update([b'(']);
+            hasher.update(*b"(");
             feed(hasher, current.car());
             current = current.cdr();
             continue;
@@ -43,42 +43,42 @@ fn feed<'gc>(hasher: &mut Sha256, value: Value<'gc>) {
         break;
     }
     if current.is_null() {
-        hasher.update([b'N']);
+        hasher.update(*b"N");
     } else if let Some(n) = current.int32() {
-        hasher.update([b'i']);
+        hasher.update(*b"i");
         hasher.update(n.to_le_bytes());
     } else if let Some(x) = current.flonum() {
-        hasher.update([b'f']);
+        hasher.update(*b"f");
         hasher.update(x.to_bits().to_le_bytes());
     } else if current.is_bool() {
         hasher.update([b'b', current.as_bool() as u8]);
     } else if current.is_char() {
-        hasher.update([b'c']);
+        hasher.update(*b"c");
         hasher.update((current.char() as u32).to_le_bytes());
     } else if current.is::<Symbol>() {
         let text = current.downcast::<Symbol>().to_string();
-        hasher.update([b's']);
+        hasher.update(*b"s");
         hasher.update((text.len() as u64).to_le_bytes());
         hasher.update(text.as_bytes());
     } else if current.is::<Str>() {
         let text = current.downcast::<Str>().to_string();
-        hasher.update([b'S']);
+        hasher.update(*b"S");
         hasher.update((text.len() as u64).to_le_bytes());
         hasher.update(text.as_bytes());
     } else if current.is::<Vector>() {
         let vector = current.downcast::<Vector>();
-        hasher.update([b'#']);
+        hasher.update(*b"#");
         hasher.update((vector.len() as u64).to_le_bytes());
         for item in vector.iter() {
             feed(hasher, item.get());
         }
     } else {
         let text = format!("{current}");
-        hasher.update([b'o']);
+        hasher.update(*b"o");
         hasher.update((text.len() as u64).to_le_bytes());
         hasher.update(text.as_bytes());
     }
-    hasher.update([b')']);
+    hasher.update(*b")");
 }
 
 /// The hash of the datum `value`.

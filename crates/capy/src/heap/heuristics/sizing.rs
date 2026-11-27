@@ -146,7 +146,7 @@ impl OverheadSizing {
     fn mean_gc_cpu(&self) -> Option<f64> {
         let total_gc: f64 = self.samples.iter().map(|s| s.gc_seconds).sum();
         let total_app: f64 = self.samples.iter().map(|s| s.app_cpu_seconds).sum();
-        (total_app > 0.0).then(|| total_gc / total_app)
+        (total_app > 0.0).then_some(total_gc / total_app)
     }
 }
 
@@ -305,7 +305,7 @@ fn process_cpu_time_seconds() -> Option<f64> {
     };
     // SAFETY: `ts` is a valid local `timespec` for `clock_gettime` to fill.
     let rc = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
-    (rc == 0).then(|| ts.tv_sec as f64 + ts.tv_nsec as f64 / 1_000_000_000.0)
+    (rc == 0).then_some(ts.tv_sec as f64 + ts.tv_nsec as f64 / 1_000_000_000.0)
 }
 
 #[cfg(test)]

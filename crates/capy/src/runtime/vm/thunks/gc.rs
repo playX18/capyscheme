@@ -6,7 +6,6 @@ use crate::heap::{
 use crate::runtime::{MutationContext, objectmodel::Value};
 
 /// Block for a pending GC / interrupt at a compiled Scheme entry yieldpoint.
-
 pub fn yieldpoint_block<'gc>(ctx: MutationContext<'gc>) {
     crate::heap::sync::thread::Thread::yieldpoint();
     unsafe { crate::runtime::sched::scheduler::kill_at_yieldpoint(ctx) };

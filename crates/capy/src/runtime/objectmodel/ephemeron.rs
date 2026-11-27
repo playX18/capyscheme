@@ -7,30 +7,6 @@ pub struct Ephemeron<'gc> {
     pub(crate) value: Value<'gc>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::runtime::Scheme;
-
-    #[test]
-    fn ephemeron_allocates_with_class_only_header() {
-        Scheme::new_uninit().enter(|ctx| {
-            let ephemeron = ctx.allocate_with(
-                Ephemeron {
-                    key: Value::null(),
-                    value: Value::undefined(),
-                },
-                ephemeron_header_word(),
-            );
-
-            assert_eq!(
-                ephemeron.as_gc_object().header().class_id(),
-                ClassId::new(builtin_class_ids::EPHEMERON).unwrap()
-            );
-        });
-    }
-}
-
 pub(crate) fn ephemeron_header_word() -> u64 {
     class_header_word(
         ClassId::new(builtin_class_ids::EPHEMERON).expect("builtin class id is nonzero"),
@@ -78,4 +54,28 @@ unsafe impl<'gc> Trace for Ephemeron<'gc> {
 unsafe impl<'gc> ClassTagged for Ephemeron<'gc> {
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::EPHEMERON];
     const TYPE_NAME: &'static str = "#<ephemeron>";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::Scheme;
+
+    #[test]
+    fn ephemeron_allocates_with_class_only_header() {
+        Scheme::new_uninit().enter(|ctx| {
+            let ephemeron = ctx.allocate_with(
+                Ephemeron {
+                    key: Value::null(),
+                    value: Value::undefined(),
+                },
+                ephemeron_header_word(),
+            );
+
+            assert_eq!(
+                ephemeron.as_gc_object().header().class_id(),
+                ClassId::new(builtin_class_ids::EPHEMERON).unwrap()
+            );
+        });
+    }
 }

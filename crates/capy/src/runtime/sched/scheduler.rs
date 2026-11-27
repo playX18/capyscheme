@@ -248,7 +248,7 @@ fn bring_up_vm() {
     VM_BOOT.call_once(|| {
         std::thread::spawn(|| {
             let scm = crate::runtime::Scheme::new_uninit();
-            scm.enter(|ctx| crate::runtime::init_once(ctx));
+            scm.enter(crate::runtime::init_once);
         })
         .join()
         .expect("failed to initialise the VM for threads");
@@ -424,8 +424,6 @@ where
         }
     }
 
-    let t_main = std::time::Instant::now();
-
     install_guard_handler();
     preempt::install();
     let cfg = Config::from_env();
@@ -483,19 +481,12 @@ where
     }
     sysmon::spawn(shared.clone());
 
-    if std::env::var_os("CAPY_STARTUP_DEBUG").is_some() {
-        eprintln!("startup: scheduler bring-up {:?}", t_main.elapsed());
-    }
     worker_loop(&shared, 0, mutator);
 
     // Give the other workers a moment to notice the stop flag
-    let t_stop = std::time::Instant::now();
     let deadline = std::time::Instant::now() + Duration::from_secs(1);
     while shared.running_workers() > 0 && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(1));
-    }
-    if std::env::var_os("CAPY_STARTUP_DEBUG").is_some() {
-        eprintln!("startup: scheduler shutdown {:?}", t_stop.elapsed());
     }
 }
 
@@ -640,7 +631,7 @@ fn submit(shared: &Arc<Shared>, task: Arc<Task>) {
 fn current_worker_of(shared: &Shared) -> Option<usize> {
     let cx = current()?;
     let g = cx.g();
-    (g.sched.shared.get() == shared as *const Shared).then(|| g.sched.worker.get())
+    std::ptr::eq(g.sched.shared.get(), shared).then(|| g.sched.worker.get())
 }
 
 pub(crate) struct Inner {
@@ -1002,6 +993,7 @@ pub(crate) enum Woken<R> {
 }
 
 /// Scheduler fields of a thread, the tail of its [`VirtualThread`] header.
+#[allow(clippy::type_complexity)]
 pub(crate) struct VirtualThreadSched {
     /// The thread's own saved stack pointer while it is switched out.
     saved: UnsafeCell<SavedContext>,
@@ -1297,10 +1289,8 @@ impl SchedContext {
             0,
             "park while holding a lock"
         );
-        if cancellable {
-            if let Err(killed) = self.check_kill() {
-                return (mc, Err(killed));
-            }
+        if cancellable && let Err(killed) = self.check_kill() {
+            return (mc, Err(killed));
         }
         if self.task().notified.swap(false, Ordering::SeqCst) {
             return (
@@ -1322,7 +1312,11 @@ impl SchedContext {
         self.assert_on_running_worker();
         // SAFETY: the thread is running again on its worker, which is
         // bound to this thread, and is in native state (see `park`).
-        let mc = unsafe { std::mem::transmute(crate::heap::Mutation::new()) };
+        let mc = unsafe {
+            std::mem::transmute::<_, crate::heap::mutator::Mutation<'gc>>(
+                crate::heap::Mutation::new(),
+            )
+        };
         (
             mc,
             if cancellable {
@@ -1671,10 +1665,11 @@ impl Drop for PinGuard {
             let left = task.pins.fetch_sub(1, Ordering::SeqCst) - 1;
             // A kill held back by this pin may have left the thread parked.
             // Wake it so the kill is delivered at its next switch point.
-            if left == 0 && task.virtual_thread_kill_state() == KILL_REQUESTED {
-                if let Some(arc) = task.self_ref.upgrade() {
-                    unpark(&arc);
-                }
+            if left == 0
+                && task.virtual_thread_kill_state() == KILL_REQUESTED
+                && let Some(arc) = task.self_ref.upgrade()
+            {
+                unpark(&arc);
             }
         }
     }

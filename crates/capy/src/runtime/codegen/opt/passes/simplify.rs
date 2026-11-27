@@ -601,15 +601,10 @@ fn fold_terminator(func: &mut Func, block: Block) -> bool {
             cases,
             default,
             ..
-        } => match int32_const(func, *value) {
-            Some(n) => Some(
-                cases
+        } => int32_const(func, *value).map(|n| cases
                     .iter()
                     .find(|(case, _)| *case == n)
-                    .map_or(*default, |(_, edge)| *edge),
-            ),
-            None => None,
-        },
+                    .map_or(*default, |(_, edge)| *edge)),
         _ => None,
     };
     match jump {

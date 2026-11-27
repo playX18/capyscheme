@@ -382,7 +382,7 @@ impl<'gc, W: Write> Writer<'gc, W> {
             self.put8((rtd.flags.get() & (RTD_SEALED | RTD_OPAQUE)) as u8)?;
             self.put32(own_field_count)?;
             self.put(rtd.fields)?;
-            self.put(parent.map_or(Value::new(false), |p| Value::from(p)))?;
+            self.put(parent.map_or(Value::new(false), Value::from))?;
             return Ok(());
         }
 

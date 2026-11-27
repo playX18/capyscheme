@@ -553,8 +553,8 @@ fn find_global(
     let mut found: Option<Value> = None;
     while let Some(block) = worklist.pop() {
         *work += 1;
-        if block != root && dom.dominates(block, root) {
-            if let Some(&(_, value)) = global.tails[block].iter().find(|(s, _)| *s == slot) {
+        if block != root && dom.dominates(block, root)
+            && let Some(&(_, value)) = global.tails[block].iter().find(|(s, _)| *s == slot) {
                 match found {
                     None => found = Some(value),
                     // Two dominating definitions cannot both lie on the
@@ -564,7 +564,6 @@ fn find_global(
                 }
                 continue;
             }
-        }
         if global.writes[block].overlaps(region) {
             return None;
         }

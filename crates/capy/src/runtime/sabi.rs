@@ -373,7 +373,7 @@ const _: () = {
     assert!(POINTER_VALUE == 0);
     assert!(VECTOR_SIZE == VECTOR_DATA);
     assert!(HEADER_OFFSET == -8);
-    assert!(OBJECT_HEADER_BYTES as isize == -HEADER_OFFSET as isize);
+    assert!(OBJECT_HEADER_BYTES as isize == -HEADER_OFFSET);
     assert!(CLOSURE_FREE == CLOSURE_SIZE && ENV_DATA == ENV_SIZE);
     assert!(CLASS_ID_MASK == 0x00ff_ffff);
     assert!(size_of::<Value<'static>>() == 8);

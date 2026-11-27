@@ -419,8 +419,8 @@ pub mod list_ops {
             }
         }
 
-        let result = transpose_impl(ctx, len, lists);
-        result
+        
+        transpose_impl(ctx, len, lists)
     }
 
     #[scheme(name = "list-transpose+")]
@@ -441,8 +441,8 @@ pub mod list_ops {
             }
         }
 
-        let result = transpose_impl(ctx, len, lists);
-        result
+        
+        transpose_impl(ctx, len, lists)
     }
 
     #[scheme(name = "list-transpose*")]

@@ -75,7 +75,6 @@ unsafe impl ClassTagged for Condition {
 }
 
 #[repr(C)]
-
 pub struct ThreadObject<'gc> {
     pub(crate) entrypoint: Lock<Option<Value<'gc>>>,
     /// Allocated by the first `enqueue_interrupt`: most threads never get one,

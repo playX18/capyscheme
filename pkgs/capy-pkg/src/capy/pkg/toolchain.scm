@@ -1,10 +1,5 @@
-;;; The toolchain the driver belongs to: the runtime executable, `capy-rt`, and the libmap of
-;;; the libraries that ship with it (core, std and the extras).
-;;;
-;;; The runtime is `capy-rt` in the directory of the driver, or the executable named by the
-;;; environment variable `CAPY_RT`. The libmap is the one the driver itself runs with: the
-;;; toolchain's own, found by the runtime next to its compiled files, or the one `CAPY_LIBMAP`
-;;; names.
+;;; Toolchain handling, used by bootstrap and for development of Capy. 
+;;; Not for public use!
 
 (library (capy pkg toolchain)
   (export locate-toolchain

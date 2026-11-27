@@ -186,11 +186,10 @@ pub fn char_to_integer<'gc>(ctx: MutationContext<'gc>, c: Value<'gc>) -> Value<'
 pub fn integer_to_char<'gc>(ctx: MutationContext<'gc>, n: Value<'gc>) -> Value<'gc> {
     // Fast path: an inline fixnum that is a Unicode scalar value, which is
     // every call from a port reader. Everything else takes the checked path.
-    if n.is_int32() {
-        if let Some(c) = u32::try_from(n.as_int32()).ok().and_then(char::from_u32) {
+    if n.is_int32()
+        && let Some(c) = u32::try_from(n.as_int32()).ok().and_then(char::from_u32) {
             return Value::from_char(c);
         }
-    }
 
     let Some(n) = n.number() else {
         thunk_raise(

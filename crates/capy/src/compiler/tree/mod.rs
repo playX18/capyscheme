@@ -286,6 +286,7 @@ pub fn global_set<'gc>(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn linklet_term<'gc>(
     ctx: MutationContext<'gc>,
     name: Value<'gc>,

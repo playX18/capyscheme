@@ -624,7 +624,7 @@ impl<'gc> BigInt<'gc> {
         if rhs.count() > this.count() {
             return (
                 want_quotient.then(|| BigInt::zero(ctx)),
-                want_remainder.then(|| this),
+                want_remainder.then_some(this),
             );
         }
         let neg = this.negative() != rhs.negative();
@@ -638,7 +638,7 @@ impl<'gc> BigInt<'gc> {
             } else if cmp == std::cmp::Ordering::Less {
                 return (
                     want_quotient.then(|| BigInt::zero(ctx)),
-                    want_remainder.then(|| this),
+                    want_remainder.then_some(this),
                 );
             }
         }

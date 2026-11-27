@@ -713,13 +713,12 @@ fn apply(func: &mut Func, cx: &mut Ctx, selected: &[(Block, usize, Value, Ty)], 
             *work += 1;
             let op = func.insts[inst].op;
             let args: Vec<Value> = func.args(inst).to_vec();
-            if let (Some(t), Some(result)) = (Ty::of_guard(op), func.insts[inst].result) {
-                if sel_ty.get(&args[0]) == Some(&t) {
+            if let (Some(t), Some(result)) = (Ty::of_guard(op), func.insts[inst].result)
+                && sel_ty.get(&args[0]) == Some(&t) {
                     subst.add(result, args[0]);
                     dead_guards.insert(inst);
                     continue;
                 }
-            }
             // A raw i64 value is an exact integer: the wide lane's operand
             // probe is always true and its bignum-fit check always passes.
             // Collapse them instead of boxing the parameter on every
@@ -735,13 +734,11 @@ fn apply(func: &mut Func, cx: &mut Ctx, selected: &[(Block, usize, Value, Ty)], 
             if op == Op::CheckBigIntFits64
                 && args.len() == 1
                 && sel_ty.get(&args[0]) == Some(&Ty::I64)
-            {
-                if let Some(result) = func.insts[inst].result {
+                && let Some(result) = func.insts[inst].result {
                     subst.add(result, args[0]);
                     dead_guards.insert(inst);
                     continue;
                 }
-            }
             if op == Op::Unbox(Repr::Int32)
                 && args.len() == 1
                 && sel_ty.get(&args[0]) == Some(&Ty::I64)

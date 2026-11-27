@@ -36,7 +36,7 @@ pub fn listing_for<'gc>(code_block: Gc<'gc, CodeBlock<'gc>>) -> Option<String> {
     }
     let code = code_block.code();
     let snapshot = snapshot_of(code_block)?;
-    Some(render(&snapshot, code, &code_block.buffer.pool()))
+    Some(render(&snapshot, code, code_block.buffer.pool()))
 }
 
 /// Write `code_block`'s listing and ELF to `CAPY_JIT_DUMP_DIR`, if set.
@@ -52,7 +52,7 @@ pub(crate) fn maybe_dump<'gc>(code_block: Gc<'gc, CodeBlock<'gc>>) {
     let Some(snapshot) = snapshot_of(code_block) else {
         return;
     };
-    if let Err(err) = dump_to_dir(dir, &snapshot, code, &code_block.buffer.pool()) {
+    if let Err(err) = dump_to_dir(dir, &snapshot, code, code_block.buffer.pool()) {
         crate::heap::logging::ensure_max_level(log::LevelFilter::Info);
         log::warn!(target: crate::heap::logging::DUMP_LOG_TARGET, "cannot write dump to {}: {err}", dir.display());
     }
@@ -296,7 +296,7 @@ fn render_bytes(out: &mut String, snapshot: &CompiledSnapshot, start: usize, end
     }
 }
 
-fn annotation_at<'a>(snapshot: &'a CompiledSnapshot, at: usize) -> Option<&'a str> {
+fn annotation_at(snapshot: &CompiledSnapshot, at: usize) -> Option<&str> {
     let end = snapshot
         .annotations
         .partition_point(|annotation| annotation.offset <= at);

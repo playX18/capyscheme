@@ -619,7 +619,7 @@ fn scalar_rest(code: &[u8], frame_size: usize, required: u32, cnt: u32) -> Optio
         match ins {
             Instruction::OpRestList(op) if op.cnt.0 == cnt => return None,
             Instruction::OpRestRef(op) if op.cnt.0 == cnt => {
-                count = count.max(op.index.0 as u32 + 1)
+                count = count.max(op.index.0 + 1)
             }
             _ => {}
         }
@@ -720,11 +720,10 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 // A forward whose entry is blocked belongs to a call that
                 // deopts before it (see `lower_forward_call`), so neither the
                 // forward nor the entry is reached.
-                if blocked(entry) {
-                    if let Some(index) = live.block_at(block.start) {
+                if blocked(entry)
+                    && let Some(index) = live.block_at(block.start) {
                         mv_only.insert(index);
                     }
-                }
             }
         }
         let order = reverse_postorder(&live, &mv_only);
@@ -888,7 +887,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             let args = func.params(entry).to_vec();
             let edge = func.edge(body, &args);
             func.set_terminator(entry, Terminator::Jump(edge));
-            func.entry_regs = regs.iter().map(|&r| r as u32).collect();
+            func.entry_regs = regs.to_vec();
         }
         func.rest = rest;
         func.checks_invalid = check_invalid;
@@ -1332,7 +1331,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                     || self
                         .case_ranges
                         .iter()
-                        .any(|(start, _, _)| *start as usize == pc)
+                        .any(|(start, _, _)| *start == pc)
                 {
                     self.argc = Some(op.argc.0);
                 }
@@ -1390,12 +1389,11 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 // runtime guard is needed beyond the dependency.
                 if self.fold {
                     let cell = self.buffer.constant(op.constant.0 as usize);
-                    if let Some(current) = self.foldable_value(cell) {
-                        if let Some(value) = self.folded_value(cell, current) {
+                    if let Some(current) = self.foldable_value(cell)
+                        && let Some(value) = self.folded_value(cell, current) {
                             self.set(op.dst.0, value)?;
                             return Ok(Flow::Next);
                         }
-                    }
                 }
                 let cell = self.konst(Constant::Pool {
                     code: root(),
@@ -1982,7 +1980,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 if let Some(n) = rest.scalars {
                     // The extras are values. Past the count baseline raises
                     // `car` of a non-pair from this pc, so deopt there.
-                    if op.index.0 as u32 >= n {
+                    if op.index.0 >= n {
                         return Err(self.unsupported(ins, "reads past the scalar extras"));
                     }
                     let count = self.reg(op.cnt.0)?;
@@ -1996,7 +1994,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                     let past =
                         self.value_op(Op::CmpI32(Cmp::Le), &[count, index], Type::Bool, None);
                     self.deopt_if(past, frame);
-                    let value = self.reg(rest.reg + op.index.0 as u32)?;
+                    let value = self.reg(rest.reg + op.index.0)?;
                     self.set(op.dst.0, value)?;
                     return Ok(Flow::Next);
                 }
@@ -2968,8 +2966,8 @@ impl<'s, 'gc> Builder<'s, 'gc> {
     }
 
     fn write_barrier(&mut self, obj: Value, value: Value) {
-        if let ValueDef::Inst(inst) = self.func.value_def(value) {
-            if matches!(
+        if let ValueDef::Inst(inst) = self.func.value_def(value)
+            && matches!(
                 self.func.insts[inst].op,
                 Op::BoolToValue
                     | Op::Box(Repr::Int32)
@@ -2978,7 +2976,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             ) {
                 return;
             }
-        }
         self.effect_op(Op::WriteBarrier, &[obj, value], None);
     }
 
@@ -3175,23 +3172,23 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         let default = target(word(table)?)?;
         let count = word(table + 1)?;
         let mut cases = Vec::new();
-        let density;
-        if switch_table_is_dense(count) {
+        
+        let density = if switch_table_is_dense(count) {
             let span = switch_table_len(count);
             let min = word(table + 2)? as i32;
             for index in 0..span {
                 let disp = word(table + 3 + index)?;
                 cases.push((min.wrapping_add(index as i32), target(disp)?));
             }
-            density = SwitchDensity::Dense { min };
+            SwitchDensity::Dense { min }
         } else {
             for case in 0..count as usize {
                 let key = word(table + 2 + 2 * case)? as i32;
                 let disp = word(table + 3 + 2 * case)?;
                 cases.push((key, target(disp)?));
             }
-            density = SwitchDensity::Sparse;
-        }
+            SwitchDensity::Sparse
+        };
         Ok((default, cases, density))
     }
 
@@ -4056,11 +4053,10 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         }
         // A fired set is replaced by a fresh one (`Variable::fire_watch`), so
         // this one is invalid only while that fire runs.
-        if let Some(set) = variable_ref.watch.get() {
-            if set.is_invalid() {
+        if let Some(set) = variable_ref.watch.get()
+            && set.is_invalid() {
                 return None;
             }
-        }
         // A cell written this often will change again mid-compile (refusing
         // the install) or right after it (invalidating the unit and leaving
         // a watchpoint firing on every later write), so keep live loads.

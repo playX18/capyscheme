@@ -147,8 +147,7 @@ pub enum Number<'gc> {
 /// | 0 | `Fixnum` | `i32` in the low 4 bytes; sign-extend it |
 /// | 1 | `Flonum` | `f64` bits: read as `u64`, then `f64::from_bits` |
 /// | 2 | `BigInt` | `Gc` pointer (non-null, 8 bytes) |
-
-// SAFETY: `gc` for `Number` upholds all trait invariants
+/// SAFETY: `gc` for `Number` upholds all trait invariants
 unsafe impl<'gc> Trace for Number<'gc> {
     // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, tracer: &mut Visitor) {

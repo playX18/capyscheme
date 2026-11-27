@@ -76,7 +76,7 @@ impl<'gc> EnvRecord<'gc> {
     /// uninitialized trace length (same discipline as `Closure::nfree`).
     pub fn new(ctx: MutationContext<'gc>, slots: &[Value<'gc>]) -> Gc<'gc, Self> {
         let length = slots.len();
-        let size = size_of::<Self>() + size_of::<Value>() * length;
+        let size = size_of::<Self>() + std::mem::size_of_val(slots);
         // SAFETY: We raw-allocate an `EnvRecord` + trailing slot array via the
         // GC allocator. The env-record class hooks ensure proper tracing. We
         // initialize all fields before returning the Gc handle.

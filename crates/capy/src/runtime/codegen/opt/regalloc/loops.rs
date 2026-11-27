@@ -179,7 +179,7 @@ impl Loops {
             for j in 0..loops.len() {
                 if contains(j, i) {
                     depth += 1;
-                    if outer.map_or(true, |o| loops[j].blocks.len() < loops[o].blocks.len()) {
+                    if outer.is_none_or(|o| loops[j].blocks.len() < loops[o].blocks.len()) {
                         outer = Some(j);
                     }
                 }

@@ -171,11 +171,10 @@ pub(crate) fn install_guard_handler() {
 extern "C" fn on_fault(sig: libc::c_int, info: *mut libc::siginfo_t, uctx: *mut libc::c_void) {
     // SAFETY: the kernel passes a valid siginfo for SA_SIGINFO handlers.
     let addr = unsafe { (*info).si_addr() } as usize;
-    if let Some((low, high)) = crate::heap::sync::thread::current_guard_range() {
-        if addr >= low.as_usize() && addr < high.as_usize() {
+    if let Some((low, high)) = crate::heap::sync::thread::current_guard_range()
+        && addr >= low.as_usize() && addr < high.as_usize() {
             overflow_abort(addr);
         }
-    }
     let idx = if sig == libc::SIGBUS { 1 } else { 0 };
     // SAFETY: initialised by `install_guard_handler` before this handler was
     // registered.

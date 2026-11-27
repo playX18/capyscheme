@@ -1173,7 +1173,7 @@ fn expand_case_lambda<'gc>(
     let length = prim_call_term(
         ctx,
         Symbol::from_str(ctx, "length").into(),
-        &[lref(ctx, args)],
+        [lref(ctx, args)],
         Value::new(false),
     );
     let sym = |name: &str| constant(ctx, Symbol::from_str(ctx, name).into());
@@ -1186,12 +1186,12 @@ fn expand_case_lambda<'gc>(
         call_term(
             ctx,
             sym("assertion-violation"),
-            &[
+            [
                 constant(ctx, Symbol::from_str(ctx, "case-lambda").into()),
                 call_term(
                     ctx,
                     sym("format"),
-                    &[constant(ctx, Value::new(false)), message, lref(ctx, n)],
+                    [constant(ctx, Value::new(false)), message, lref(ctx, n)],
                     Value::new(false),
                 ),
                 lref(ctx, args),
@@ -1206,7 +1206,7 @@ fn expand_case_lambda<'gc>(
         let test = prim_call_term(
             ctx,
             Symbol::from_str(ctx, if variadic.is_some() { ">=" } else { "=" }).into(),
-            &[lref(ctx, n), arity],
+            [lref(ctx, n), arity],
             Value::new(false),
         );
         let clause_term = ctx.allocate(Term {
@@ -1216,7 +1216,7 @@ fn expand_case_lambda<'gc>(
         let apply = call_term(
             ctx,
             sym("apply"),
-            &[clause_term, lref(ctx, args)],
+            [clause_term, lref(ctx, args)],
             Value::new(false),
         );
         chain = if_term(ctx, test, apply, chain);
@@ -1225,15 +1225,15 @@ fn expand_case_lambda<'gc>(
     let body = let_term(
         ctx,
         LetStyle::Let,
-        Array::from_slice(ctx, &[n]),
-        Array::from_slice(ctx, &[length]),
+        Array::from_slice(ctx, [n]),
+        Array::from_slice(ctx, [length]),
         chain,
         Value::new(false),
     );
     Ok(proc_term(
         ctx,
         Value::new(false),
-        Array::from_slice(ctx, &[args]),
+        Array::from_slice(ctx, [args]),
         None,
         body,
         datum_sourcev(ctx, form),

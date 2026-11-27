@@ -155,6 +155,7 @@ impl Builder<'_, '_> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn divide(
         &mut self,
         ins: &Instruction,
@@ -344,7 +345,7 @@ impl Builder<'_, '_> {
             Arith::Mul => Op::MulI64,
         };
         let raw = self.value_op(op, &[lhs, rhs], Type::Int64, None);
-        return self.value_op(Op::Box(Repr::Int64), &[raw], Type::Any, Some(frame));
+        self.value_op(Op::Box(Repr::Int64), &[raw], Type::Any, Some(frame))
     }
 
     fn flonum_binary(&mut self, arith: Arith, lhs: Value, rhs: Value, frame: FrameState) -> Value {
@@ -365,7 +366,7 @@ impl Builder<'_, '_> {
         let src = self.value_op(Op::CheckInt64, &[src], Type::Int64, Some(frame));
         let zero = self.value_op(Op::Const(Constant::Int64(0)), &[], Type::Int64, None);
         let raw = self.value_op(Op::SubI64, &[zero, src], Type::Int64, None);
-        return self.value_op(Op::Box(Repr::Int64), &[raw], Type::Any, Some(frame));
+        self.value_op(Op::Box(Repr::Int64), &[raw], Type::Any, Some(frame))
     }
 
     /// Widens a Scheme value to an i64. A fixnum is sign-extended, a
@@ -739,7 +740,7 @@ impl Builder<'_, '_> {
             ArithPlan::Fixnum => {
                 if let Some(n) = self
                     .tagged_fixnum(lhs_value)
-                    .filter(|n| matches!(n, 0 | 1 | -1))
+                    .filter(|n| matches!(n, -1..=1))
                 {
                     let rhs = self.value_op(Op::CheckInt64, &[rhs_value], Type::Int64, Some(frame));
                     self.reduce_known_numerator(n, rhs, true, frame)

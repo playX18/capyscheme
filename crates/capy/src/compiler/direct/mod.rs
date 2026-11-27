@@ -171,26 +171,6 @@ pub(crate) fn write_fasl<'gc>(
         )
     };
 
-    // `CAPY_SEED_DUMP=dir` writes the disassembly of each compiled program to `dir`.
-    let env_dump = std::env::var_os("CAPY_SEED_DUMP").map(|dir| {
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        PathBuf::from(dir).join(format!("seed-{n}.bc.txt"))
-    });
-    if let Some(path) = env_dump {
-        let path = &path;
-        let mut text = String::new();
-        for (index, block) in program.blocks.iter().enumerate() {
-            text.push_str(&format!(
-                ";; {} #{index} arity {} frame {} src {}\n",
-                block.name, block.arity, block.frame_size, block.source
-            ));
-            text.push_str(&disasm::disassemble(&block.code, &block.pool));
-            text.push('\n');
-        }
-        std::fs::write(path, text).map_err(|err| io_error(err.to_string()))?;
-    }
-
     // Cache cells are numbered across the whole program, in first-seen order.
     let mut cell_ids: std::collections::HashMap<u64, u32> = std::collections::HashMap::new();
     let constants: Vec<Vec<ConstSpec<'gc>>> = program

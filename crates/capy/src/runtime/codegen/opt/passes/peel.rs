@@ -316,11 +316,10 @@ fn profitable(func: &Func, lp: &Loop) -> bool {
                     return true;
                 }
             }
-            if let Some(result) = data.result {
-                if guard || is_load(op) || is_pure(op) {
+            if let Some(result) = data.result
+                && (guard || is_load(op) || is_pure(op)) {
                     chain.insert(result);
                 }
-            }
         }
     }
     false

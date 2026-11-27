@@ -39,7 +39,7 @@ fn sysmon_main(shared: Arc<Shared>) {
             return;
         }
         ticks += 1;
-        if ticks % BOOST_TICKS == 0 {
+        if ticks.is_multiple_of(BOOST_TICKS) {
             shared.boost();
         }
         for (index, (slot, seen)) in shared.slots.iter().zip(seen.iter_mut()).enumerate() {

@@ -1,3 +1,4 @@
+#![allow(clippy::missing_safety_doc)]
 //! Value constructors, predicates, and accessors (ScmRef in/out).
 
 use libc::c_char;
@@ -244,6 +245,11 @@ pub unsafe extern "C" fn sni_make_vector(
     e.make_local(Value::from(vec))
 }
 
+/// Returns the length of Scheme vector.
+///
+/// # Safety
+///
+/// env and vector must be valid pointers, or NULL pointers (returns 0 in that case)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sni_vector_length(env: *mut SniEnv<'static>, vector: ScmRef) -> usize {
     if env.is_null() || vector.is_null() {
@@ -260,6 +266,11 @@ pub unsafe extern "C" fn sni_vector_length(env: *mut SniEnv<'static>, vector: Sc
     }
 }
 
+/// Returns value at index in vector.
+///
+/// # Safety
+///
+/// env and vector must be valid pointers, and `index` must be in bounds.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sni_vector_ref(
     env: *mut SniEnv<'static>,
@@ -282,6 +293,11 @@ pub unsafe extern "C" fn sni_vector_ref(
     e.make_local(vec[index].get())
 }
 
+/// Sets value at `index` in vector.
+///
+/// # Safety
+///
+/// env, vector, and value must be valid pointers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sni_vector_set(
     env: *mut SniEnv<'static>,

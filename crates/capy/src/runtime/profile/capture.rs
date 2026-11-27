@@ -167,12 +167,12 @@ impl ProfileRing {
                 // aggregator's borrow, torn values are rejected by the
                 // generation check below.
                 unsafe {
-                    sample.sfp = std::ptr::addr_of!((*slot).sfp).read();
-                    sample.pcreg = std::ptr::addr_of!((*slot).pcreg).read();
-                    sample.rip = std::ptr::addr_of!((*slot).rip).read();
-                    sample.nframes = std::ptr::addr_of!((*slot).nframes).read();
-                    sample.flags = std::ptr::addr_of!((*slot).flags).read();
-                    sample.frames = std::ptr::addr_of!((*slot).frames).read();
+                    sample.sfp = std::ptr::addr_of!(slot.sfp).read();
+                    sample.pcreg = std::ptr::addr_of!(slot.pcreg).read();
+                    sample.rip = std::ptr::addr_of!(slot.rip).read();
+                    sample.nframes = std::ptr::addr_of!(slot.nframes).read();
+                    sample.flags = std::ptr::addr_of!(slot.flags).read();
+                    sample.frames = std::ptr::addr_of!(slot.frames).read();
                 }
                 if slot.seq.load(Relaxed) == observed {
                     return SealOutcome::Sample(sample);
@@ -267,9 +267,9 @@ unsafe fn interrupted_regs_platform(uctx: *mut libc::c_void) -> Option<Interrupt
         let machine = context.uc_mcontext.as_ref()?;
         let state = &machine.__ss;
         Some(InterruptedRegs {
-            sfp: state.__x[20] as u64,
-            pcreg: state.__x[23] as u64,
-            rip: state.__pc as u64,
+            sfp: state.__x[20],
+            pcreg: state.__x[23],
+            rip: state.__pc,
         })
     }
 }
@@ -448,9 +448,7 @@ unsafe fn decode_return_point_size(retpt: stack::Ip) -> Option<usize> {
             return None;
         }
 
-        if maps::handler_bytecode_span(retpt as u64).is_none() {
-            return None;
-        }
+        maps::handler_bytecode_span(retpt as u64)?;
         let (width, opcode, operands) = def::decode_header(retpt);
         match opcode {
             def::OpcodeId::OpReturnPoint => {

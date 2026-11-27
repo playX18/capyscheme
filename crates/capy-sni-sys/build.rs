@@ -42,8 +42,5 @@ fn main() {
     // Prefer RUNPATH so LD_LIBRARY_PATH can still override when needed.
     // Include $ORIGIN (portable/stage next to binary) and $ORIGIN/../lib (FHS).
     println!("cargo:rustc-link-arg=-Wl,--enable-new-dtags");
-    println!(
-        "cargo:rustc-link-arg=-Wl,-rpath,{}",
-        "$ORIGIN:$ORIGIN/../lib"
-    );
+    println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN:$ORIGIN/../lib",);
 }

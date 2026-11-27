@@ -269,7 +269,7 @@ fn datum_to_code<'gc>(block: Value<'gc>, ncodes: usize) -> Result<OwnedCode<'gc>
         return Err("pool bytevector length must be a multiple of 4".into());
     }
     let pool = pool_bytes
-        .chunks_exact(4)
+        .as_chunks::<4>().0.iter()
         .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
         .collect();
     let counts = vector_of(fields[5], "metadata counts")?;

@@ -227,9 +227,7 @@ pub mod port_ops {
         let mut newlines = 0usize;
         let mut tail: i64 = -1;
         while i < bytes.len() && chars < max_chars {
-            let (cp, len) = if codec == CODEC_LATIN1 {
-                (bytes[i] as u32, 1)
-            } else if bytes[i] < 0x80 {
+            let (cp, len) = if codec == CODEC_LATIN1 || bytes[i] < 0x80 {
                 (bytes[i] as u32, 1)
             } else {
                 match decode_utf8(&bytes[i..]) {

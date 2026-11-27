@@ -124,12 +124,11 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
             continue;
         };
         let ty = func.value_type(result);
-        if let Some(replaced) = apply(func, plan, ty, &mut subst) {
-            if replaced {
+        if let Some(replaced) = apply(func, plan, ty, &mut subst)
+            && replaced {
                 removed.push((plan.block, plan.inst));
                 changed = true;
             }
-        }
     }
     replace_uses(func, &subst);
     for (block, inst) in removed {

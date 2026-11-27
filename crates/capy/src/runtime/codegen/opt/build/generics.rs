@@ -528,7 +528,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         let mut befores = Vec::new();
         let mut afters = Vec::new();
         let mut primary = None;
-        for method in methods.iter().copied() {
+        for method in methods.iter() {
             let mflags = method.flags();
             if mflags.slot_reader()
                 || mflags.slot_writer()

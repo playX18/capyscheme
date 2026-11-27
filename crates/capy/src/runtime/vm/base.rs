@@ -56,8 +56,8 @@ pub mod base_ops {
         } else {
             "big"
         };
-        let endian = ctx.intern(endian);
-        endian
+        
+        ctx.intern(endian)
     }
 
     #[scheme(name = "host-arch")]
@@ -266,8 +266,8 @@ pub mod base_ops {
             );
         }
 
-        let lst = lst.destructive_delete(ctx, item);
-        lst
+        
+        lst.destructive_delete(ctx, item)
     }
 
     #[scheme(name = "unspecified")]
@@ -377,7 +377,7 @@ pub mod base_ops {
         match crate::heap::plans::parse_barrier_artifact_kind(name.trim()) {
             Some(barrier) => {
                 crate::heap::plans::set_compile_barrier_override(Some(barrier));
-                ()
+                
             }
             None => {
                 call.wrong_argument_violation(
@@ -506,8 +506,8 @@ pub mod base_ops {
             let mut tv: std::mem::MaybeUninit<libc::timeval> = std::mem::MaybeUninit::uninit();
             libc::gettimeofday(tv.as_mut_ptr(), std::ptr::null_mut());
             let tv = tv.assume_init();
-            let sec = tv.tv_sec as u128 * 1_000_000 + tv.tv_usec as u128;
-            sec
+            
+            tv.tv_sec as u128 * 1_000_000 + tv.tv_usec as u128
         }
     }
 
@@ -592,14 +592,14 @@ pub mod base_ops {
 
     #[scheme(name = "weak-mapping-value")]
     pub fn weak_mapping_value(wm: Gc<'gc, WeakMapping<'gc>>) -> Value<'gc> {
-        let value = wm.value(ctx);
-        value
+        
+        wm.value(ctx)
     }
 
     #[scheme(name = "weak-mapping-key")]
     pub fn weak_mapping_key(wm: Gc<'gc, WeakMapping<'gc>>) -> Value<'gc> {
-        let key = wm.key(ctx);
-        key
+        
+        wm.key(ctx)
     }
 
     /*#[scheme(name = "dump-heap")]

@@ -198,7 +198,7 @@ fn parse_default_initargs<'gc>(
 
 /// The list of `(keyword thunk)` pairs of a flat default initarg array.
 fn default_initarg_list<'gc>(ctx: MutationContext<'gc>, flat: &[Value<'gc>]) -> Value<'gc> {
-    flat.chunks_exact(2)
+    flat.as_chunks::<2>().0.iter()
         .rev()
         .fold(Value::null(), |rest, pair| {
             let thunk = Value::cons(ctx, pair[1], Value::null());
@@ -328,44 +328,44 @@ pub mod class_ops {
 
     #[scheme(name = "class-name")]
     pub fn class_name(class: Gc<'gc, ClassDescriptor<'gc>>) -> Value<'gc> {
-        let name = ctx.str(class.name());
-        name
+        
+        ctx.str(class.name())
     }
 
     #[scheme(name = "class-direct-supers")]
     pub fn class_direct_supers(class: Gc<'gc, ClassDescriptor<'gc>>) -> Value<'gc> {
-        let supers = class_id_list_to_class_objects(ctx, class.direct_supers());
-        supers
+        
+        class_id_list_to_class_objects(ctx, class.direct_supers())
     }
 
     #[scheme(name = "class-precedence-list")]
     pub fn class_precedence_list(class: Gc<'gc, ClassDescriptor<'gc>>) -> Value<'gc> {
-        let cpl = class_id_list_to_class_objects(ctx, class.cpl());
-        cpl
+        
+        class_id_list_to_class_objects(ctx, class.cpl())
     }
 
     #[scheme(name = "class-direct-slots")]
     pub fn class_direct_slots(class: Gc<'gc, ClassDescriptor<'gc>>) -> Value<'gc> {
-        let slots = slot_definition_list(ctx, class.direct_slots());
-        slots
+        
+        slot_definition_list(ctx, class.direct_slots())
     }
 
     #[scheme(name = "class-slots")]
     pub fn class_slots(class: Gc<'gc, ClassDescriptor<'gc>>) -> Value<'gc> {
-        let slots = slot_definition_list(ctx, class.slots());
-        slots
+        
+        slot_definition_list(ctx, class.slots())
     }
 
     #[scheme(name = "class-accessors")]
     pub fn class_accessors(class: Gc<'gc, ClassDescriptor<'gc>>) -> Value<'gc> {
-        let accessors = slot_accessor_list(ctx, class.accessors());
-        accessors
+        
+        slot_accessor_list(ctx, class.accessors())
     }
 
     #[scheme(name = "class-initargs")]
     pub fn class_initargs(class: Gc<'gc, ClassDescriptor<'gc>>) -> Value<'gc> {
-        let initargs = Value::list_from_slice(ctx, class.initargs());
-        initargs
+        
+        Value::list_from_slice(ctx, class.initargs())
     }
 
     #[scheme(name = "class-direct-default-initargs")]
@@ -393,8 +393,8 @@ pub mod class_ops {
 
     #[scheme(name = "class-direct-methods")]
     pub fn class_direct_methods(class: Gc<'gc, ClassDescriptor<'gc>>) -> Value<'gc> {
-        let methods = Value::list_from_slice(ctx, class.direct_methods().as_slice());
-        methods
+        
+        Value::list_from_slice(ctx, class.direct_methods().as_slice())
     }
 
     #[scheme(name = "class-direct-subclasses")]
@@ -404,8 +404,8 @@ pub mod class_ops {
             .iter()
             .filter_map(|weak| weak.upgrade(ctx).map(Value::from))
             .collect::<Vec<_>>();
-        let subclasses = Value::list_from_slice(ctx, &subclasses);
-        subclasses
+        
+        Value::list_from_slice(ctx, &subclasses)
     }
 
     #[scheme(name = "class-applicable?")]
@@ -504,21 +504,22 @@ pub mod class_ops {
 
     #[scheme(name = "generic?")]
     pub fn generic_p(value: Value<'gc>) -> bool {
-        let result = generic_descriptor_from_value(ctx, value).is_some();
-        result
+        
+        generic_descriptor_from_value(ctx, value).is_some()
     }
 
     #[scheme(name = "generic-name")]
     pub fn generic_name(value: Value<'gc>) -> Value<'gc> {
-        let name = generic_descriptor_from_value(ctx, value)
+        
+        generic_descriptor_from_value(ctx, value)
             .map(|generic| ctx.str(generic.name()))
-            .unwrap_or_else(|| Value::new(false));
-        name
+            .unwrap_or_else(|| Value::new(false))
     }
 
     #[scheme(name = "generic-methods")]
     pub fn generic_methods(value: Value<'gc>) -> Value<'gc> {
-        let methods = generic_descriptor_from_value(ctx, value)
+        
+        generic_descriptor_from_value(ctx, value)
             .map(|generic| {
                 let methods = generic
                     .methods()
@@ -528,16 +529,15 @@ pub mod class_ops {
                     .collect::<Vec<_>>();
                 Value::list_from_slice(ctx, &methods)
             })
-            .unwrap_or_else(|| Value::new(false));
-        methods
+            .unwrap_or_else(|| Value::new(false))
     }
 
     #[scheme(name = "generic-fallback")]
     pub fn generic_fallback(value: Value<'gc>) -> Value<'gc> {
-        let fallback = generic_descriptor_from_value(ctx, value)
+        
+        generic_descriptor_from_value(ctx, value)
             .map(|generic| generic.fallback())
-            .unwrap_or_else(|| Value::new(false));
-        fallback
+            .unwrap_or_else(|| Value::new(false))
     }
 
     #[scheme(name = "generic-required-dispatch-arg-count")]
@@ -550,10 +550,10 @@ pub mod class_ops {
 
     #[scheme(name = "generic-sealed?")]
     pub fn generic_sealed_p(value: Value<'gc>) -> bool {
-        let sealed = generic_descriptor_from_value(ctx, value)
+        
+        generic_descriptor_from_value(ctx, value)
             .map(|generic| generic.flags().sealed())
-            .unwrap_or(false);
-        sealed
+            .unwrap_or(false)
     }
 
     #[scheme(name = "generic-seal!")]
@@ -711,7 +711,7 @@ pub mod class_ops {
                 let values: Vec<Value<'gc>> = methods.iter().copied().map(Value::from).collect();
                 Value::list_from_slice(ctx, &values)
             }
-            Err(_) => Value::list_from_slice(ctx, &[]),
+            Err(_) => Value::list_from_slice(ctx, []),
         }
     }
 
@@ -1150,7 +1150,7 @@ pub mod class_ops {
     /// `after`, `around` or `other`.
     #[scheme(name = "%method-role")]
     pub fn method_role(method: Gc<'gc, MethodDescriptor<'gc>>) -> Value<'gc> {
-        ctx.intern(method.role().name()).into()
+        ctx.intern(method.role().name())
     }
 
     /// Whether the method's body never reads its next-method argument, so a
@@ -1167,14 +1167,14 @@ pub mod class_ops {
 
     #[scheme(name = "slot-definition-name")]
     pub fn slot_definition_name(slot: Gc<'gc, SlotDefinitionDescriptor<'gc>>) -> Value<'gc> {
-        let name = Symbol::from_str(ctx, slot.name()).into();
-        name
+        
+        Symbol::from_str(ctx, slot.name()).into()
     }
 
     #[scheme(name = "slot-definition-owner")]
     pub fn slot_definition_owner(slot: Gc<'gc, SlotDefinitionDescriptor<'gc>>) -> Value<'gc> {
-        let owner = class_id_to_class_object(ctx, slot.owner());
-        owner
+        
+        class_id_to_class_object(ctx, slot.owner())
     }
 
     #[scheme(name = "slot-definition-index")]
@@ -1267,14 +1267,14 @@ pub mod class_ops {
 
     #[scheme(name = "slot-accessor-name")]
     pub fn slot_accessor_name(accessor: Gc<'gc, SlotAccessorDefinition<'gc>>) -> Value<'gc> {
-        let name = Symbol::from_str(ctx, accessor.name()).into();
-        name
+        
+        Symbol::from_str(ctx, accessor.name()).into()
     }
 
     #[scheme(name = "slot-accessor-owner")]
     pub fn slot_accessor_owner(accessor: Gc<'gc, SlotAccessorDefinition<'gc>>) -> Value<'gc> {
-        let owner = class_id_to_class_object(ctx, accessor.owner());
-        owner
+        
+        class_id_to_class_object(ctx, accessor.owner())
     }
 
     #[scheme(name = "slot-accessor-index")]
@@ -2300,8 +2300,8 @@ pub mod class_ops {
             .iter()
             .map(|method| Value::from(*method))
             .collect::<Vec<_>>();
-        let methods = Value::list_from_slice(ctx, &methods);
-        methods
+        
+        Value::list_from_slice(ctx, &methods)
     }
 
     #[scheme(name = "next-method?")]
@@ -2316,8 +2316,8 @@ pub mod class_ops {
 
     #[scheme(name = "next-method-args")]
     pub fn next_method_args(next_method: Gc<'gc, NextMethodDescriptor<'gc>>) -> Value<'gc> {
-        let args = Value::list_from_slice(ctx, next_method.args().as_slice());
-        args
+        
+        Value::list_from_slice(ctx, next_method.args().as_slice())
     }
 
     #[scheme(name = "next-method-index")]
@@ -2360,8 +2360,8 @@ pub mod class_ops {
 
     #[scheme(name = "scheme-instance?")]
     pub fn scheme_instance_p(value: Value<'gc>) -> bool {
-        let is_instance = try_scheme_instance(ctx, value).is_some();
-        is_instance
+        
+        try_scheme_instance(ctx, value).is_some()
     }
 
     #[scheme(name = "make-instance")]

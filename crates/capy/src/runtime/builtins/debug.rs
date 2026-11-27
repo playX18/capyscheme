@@ -54,7 +54,7 @@ pub mod debug_ops {
     pub fn print_stacktrace(_args: &'gc [Value<'gc>]) -> () {
         print_stacktraces_impl(ctx);
 
-        ()
+        
     }
 
     /// Compile the procedure `proc` with the baseline JIT now.
@@ -198,11 +198,11 @@ pub mod debug_ops {
     /// frames, innermost first.
     #[scheme(name = "shadow-stack")]
     pub fn shadow_stack() -> Value<'gc> {
-        let frames = backtrace_frames(ctx)
+        
+        backtrace_frames(ctx)
             .into_iter()
             .rev()
-            .fold(Value::null(), |acc, frame| Value::cons(ctx, frame, acc));
-        frames
+            .fold(Value::null(), |acc, frame| Value::cons(ctx, frame, acc))
     }
 
     /// Attempt to resolve proper name for a given address
@@ -231,7 +231,7 @@ pub mod debug_ops {
         let code_block = proc.code_block;
         let srcmap = code_block.srcmap.get();
         let rendered =
-            disasm::disassemble_with_spans(code_block.code(), &code_block.buffer.pool(), &|pc| {
+            disasm::disassemble_with_spans(code_block.code(), code_block.buffer.pool(), &|pc| {
                 lookup_srcmap(srcmap, pc)
             });
         Ok(Str::new(ctx, rendered, true).into())

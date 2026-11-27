@@ -619,7 +619,7 @@ pub(crate) fn initargs_with_default_initargs<'gc>(
 
     let defaults = default_initarg_pairs(class.default_initargs());
     let supplied = initargs
-        .chunks_exact(2)
+        .as_chunks::<2>().0.iter()
         .map(|pair| initarg_key(pair[0]))
         .collect::<SmallVec<[Value<'gc>; 8]>>();
     let missing = defaults
@@ -635,7 +635,7 @@ pub(crate) fn initargs_with_default_initargs<'gc>(
     let mut frame = crate::runtime::sni::LocalFrame::push();
     let class_slot = frame.new_local_ref(class.into()).as_ptr();
     let mut pairs = Value::null();
-    for pair in initargs.chunks_exact(2) {
+    for pair in initargs.as_chunks::<2>().0 {
         pairs = Value::cons(ctx, Value::cons(ctx, pair[0], pair[1]), pairs);
     }
     let pairs_slot = frame.new_local_ref(pairs).as_ptr();

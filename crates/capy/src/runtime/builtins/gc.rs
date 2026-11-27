@@ -48,9 +48,9 @@ pub mod gc {
 
         let ephemeron = Ephemeron { key, value };
 
-        let cell = Value::from(ctx.allocate_with(ephemeron, ephemeron_header_word()));
+        
 
-        cell
+        Value::from(ctx.allocate_with(ephemeron, ephemeron_header_word()))
     }
 
     /// Returns key of the ephemeron. If the key is not reachable, returns #f.
@@ -111,8 +111,8 @@ pub mod gc {
         let Some(snapshot) = runtime_stats_snapshot(Some(&ctx.state().stats)) else {
             return Value::new(false);
         };
-        let report = Value::from(Str::new(ctx, snapshot.to_string(), true));
-        report
+        
+        Value::from(Str::new(ctx, snapshot.to_string(), true))
     }
 
     #[scheme(name = "gc-statistics")]

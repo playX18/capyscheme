@@ -80,7 +80,7 @@ impl StackPool {
     unsafe fn take<'gc>(&self, min: usize) -> Option<(Value<'gc>, Slot<'gc>, usize)> {
         unsafe {
             let stack = self.head.get().cast::<Value<'gc>>();
-            if stack.is_null() || (*stack.add(CACHED_STACK_SIZE)).bits() as usize <= min - 1 {
+            if stack.is_null() || ((*stack.add(CACHED_STACK_SIZE)).bits() as usize) < min {
                 return None;
             }
             let size = (*stack.add(CACHED_STACK_SIZE)).bits() as usize;
@@ -142,15 +142,14 @@ pub(super) unsafe fn reset_scheme_stack<'gc>(ctx: MutationContext<'gc>, n: usize
                 if n < floor {
                     n = floor;
                 }
-                if let Some(pool) = crate::runtime::sched::scheduler::stack_pool() {
-                    if let Some((segment, base, size)) = pool.take(n) {
+                if let Some(pool) = crate::runtime::sched::scheduler::stack_pool()
+                    && let Some((segment, base, size)) = pool.take(n) {
                         stack.segment.set(segment);
                         stack.scheme_stack.set(base);
                         stack.scheme_stack_size.set(size);
                         set_esp(tc);
                         return;
                     }
-                }
                 // stacks are non-moving bytevectors
                 let bytes = ByteVector::new::<false>(ctx, n * size_of::<Value>(), false);
                 stack.segment.set(bytes.into());

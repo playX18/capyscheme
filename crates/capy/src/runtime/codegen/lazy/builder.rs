@@ -90,6 +90,6 @@ impl UnloadedStub {
 
     /// Load, filling the stub's import slots through `imports`.
     pub(crate) fn load_with(self, imports: Resolve<'_>) -> io::Result<LoadedImage> {
-        image::load_with(self.image, |name| resolve_slow_path(name), imports)
+        image::load_with(self.image, resolve_slow_path, imports)
     }
 }

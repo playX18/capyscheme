@@ -506,14 +506,14 @@ fn generate() -> io::Result<(LoadedImage, [[HandlerKind; 256]; 3])> {
 
     let mut image = masm.finish().map_err(io::Error::other)?;
     image.tables.push(TablePatch { base: map, entries });
-    let loaded = image::load(image, |name| resolve_slow_path(name))?;
+    let loaded = image::load(image, resolve_slow_path)?;
     Ok((loaded, kinds))
 }
 
 fn emit_wide(masm: &mut Masm, map: Label, width: u8) {
     let pc = sabi::regs::PC;
     let (t5, t7) = (onlineasm::regs::t5, onlineasm::regs::t7);
-    let disp = if width == 1 { 256 * 8 } else { 512 * 8 } as i32;
+    let disp = if width == 1 { 256 * 8 } else { 512 * 8 };
     let slot = masm.assembler().mem_indexed(t7, t5, 8, disp);
     if width == 1 {
         onlineasm!(*masm.assembler();

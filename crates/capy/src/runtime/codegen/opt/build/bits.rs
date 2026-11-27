@@ -719,21 +719,21 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             ("u64+/wraparound", &[_, _]) => Native::U64Arith(Op::AddI64),
             ("u64-/wraparound", &[_, _]) => Native::U64Arith(Op::SubI64),
             ("u64*/wraparound", &[_, _]) => Native::U64Arith(Op::MulI64),
-            ("u64sll/wraparound", &[_, n]) => match u64_count(self, n) {
-                Some(n) => Native::U64Shift(ShiftKind::Shl, n),
-                None => return None,
+            ("u64sll/wraparound", &[_, n]) => {
+                let n = u64_count(self, n)?;
+                Native::U64Shift(ShiftKind::Shl, n)
             },
-            ("u64srl", &[_, n]) => match u64_count(self, n) {
-                Some(n) => Native::U64Shift(ShiftKind::Shr, n),
-                None => return None,
+            ("u64srl", &[_, n]) => {
+                let n = u64_count(self, n)?;
+                Native::U64Shift(ShiftKind::Shr, n)
             },
-            ("u64rotr", &[_, n]) => match u64_count(self, n) {
-                Some(n) => Native::U64Shift(ShiftKind::Rotr, n),
-                None => return None,
+            ("u64rotr", &[_, n]) => {
+                let n = u64_count(self, n)?;
+                Native::U64Shift(ShiftKind::Rotr, n)
             },
-            ("u64rotl", &[_, n]) => match u64_count(self, n) {
-                Some(n) => Native::U64Shift(ShiftKind::Rotr, (64 - n) % 64),
-                None => return None,
+            ("u64rotl", &[_, n]) => {
+                let n = u64_count(self, n)?;
+                Native::U64Shift(ShiftKind::Rotr, (64 - n) % 64)
             },
             ("u64->flonum", &[_]) => Native::U64ToFlonum,
             // A right shift of a non-negative word is the logical one.
@@ -758,9 +758,9 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             ("fxxor", &[_, _]) => Native::FxBit(BitOp::Xor),
             ("bitwise-not", &[_]) => Native::Not,
             ("bitwise-arithmetic-shift-left", &[_, n]) => {
-                match self.fixnum_constant(n).filter(|n| (0..63).contains(n)) {
-                    Some(n) => Native::Shl(n as u8),
-                    None => return None,
+                {
+                    let n = self.fixnum_constant(n).filter(|n| (0..63).contains(n))?;
+                    Native::Shl(n as u8)
                 }
             }
             ("bitwise-arithmetic-shift-right", &[_, n]) => match self.fixnum_constant(n) {
@@ -776,49 +776,45 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             ("fx-/wraparound", &[_, _]) => Native::Wrap(Op::SubI32),
             ("fx*/wraparound", &[_, _]) => Native::Wrap(Op::MulI32),
             ("fxsll/wraparound", &[_, n]) => {
-                match self
-                    .fixnum_constant(n)
-                    .filter(|n| (0..FIXNUM_WIDTH).contains(n))
                 {
-                    Some(n) => Native::Shift32(ShiftKind::Shl, n as u8),
-                    None => return None,
+                    let n = self
+                    .fixnum_constant(n)
+                    .filter(|n| (0..FIXNUM_WIDTH).contains(n))?;
+                    Native::Shift32(ShiftKind::Shl, n as u8)
                 }
             }
             ("fxsrl", &[_, n]) => {
-                match self
-                    .fixnum_constant(n)
-                    .filter(|n| (0..FIXNUM_WIDTH).contains(n))
                 {
-                    Some(n) => Native::Shift32(ShiftKind::Shr, n as u8),
-                    None => return None,
+                    let n = self
+                    .fixnum_constant(n)
+                    .filter(|n| (0..FIXNUM_WIDTH).contains(n))?;
+                    Native::Shift32(ShiftKind::Shr, n as u8)
                 }
             }
             ("fxrotr32", &[_, n]) => {
-                match self
-                    .fixnum_constant(n)
-                    .filter(|n| (0..FIXNUM_WIDTH).contains(n))
                 {
-                    Some(n) => Native::Shift32(ShiftKind::Rotr, n as u8),
-                    None => return None,
+                    let n = self
+                    .fixnum_constant(n)
+                    .filter(|n| (0..FIXNUM_WIDTH).contains(n))?;
+                    Native::Shift32(ShiftKind::Rotr, n as u8)
                 }
             }
             ("fxrotl32", &[_, n]) => {
-                match self
-                    .fixnum_constant(n)
-                    .filter(|n| (0..FIXNUM_WIDTH).contains(n))
                 {
-                    Some(n) => Native::Shift32(ShiftKind::Rotr, ((32 - n) % 32) as u8),
-                    None => return None,
+                    let n = self
+                    .fixnum_constant(n)
+                    .filter(|n| (0..FIXNUM_WIDTH).contains(n))?;
+                    Native::Shift32(ShiftKind::Rotr, ((32 - n) % 32) as u8)
                 }
             }
-            ("bytevector-u64-set!", &[_, _, _, endian]) => match self.constant_endianness(endian) {
-                Some(big) => Native::Store(elem(8, false, big)),
-                None => return None,
+            ("bytevector-u64-set!", &[_, _, _, endian]) => {
+                let big = self.constant_endianness(endian)?;
+                Native::Store(elem(8, false, big))
             },
             (name, &[_, _, endian]) if bytevector_ref_elem(name, false).is_some() => {
-                match self.constant_endianness(endian) {
-                    Some(big) => Native::Load(bytevector_ref_elem(name, big).unwrap()),
-                    None => return None,
+                {
+                    let big = self.constant_endianness(endian)?;
+                    Native::Load(bytevector_ref_elem(name, big).unwrap())
                 }
             }
             // The numeric natives, reached through a first-class use such as
@@ -833,9 +829,9 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             (">", &[_, _]) => Native::NumCmp(Cmp::Gt),
             (">=", &[_, _]) => Native::NumCmp(Cmp::Ge),
             ("=", &[_, _]) => Native::NumCmp(Cmp::Eq),
-            (name, args) => match self.text_shape(name, args) {
-                Some(text) => Native::Text(text),
-                None => return None,
+            (name, args) => {
+                let text = self.text_shape(name, args)?;
+                Native::Text(text)
             },
         };
         if blocked && !self.guard_free(&shape, args) {
@@ -937,7 +933,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 let flag = self.dual_compare(cmp, args[0], args[1], frame)?;
                 self.bool_value(flag)
             }
-            Native::Text(text) => self.text_lower(text, &args, frame),
+            Native::Text(text) => self.text_lower(text, args, frame),
         };
         Ok(value)
     }

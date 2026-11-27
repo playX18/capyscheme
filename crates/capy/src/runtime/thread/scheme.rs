@@ -58,17 +58,9 @@ impl Scheme {
     }
 
     pub fn new() -> Self {
-        let t = std::time::Instant::now();
         let (scm, should_init) = Self::new_runtime();
-        let runtime = t.elapsed();
-        let scm = if should_init { scm.boot() } else { scm };
-        if std::env::var_os("CAPY_STARTUP_DEBUG").is_some() {
-            eprintln!(
-                "startup: new_runtime {runtime:?}, boot {:?}",
-                t.elapsed() - runtime
-            );
-        }
-        scm
+
+        if should_init { scm.boot() } else { scm }
     }
 
     /// Runs a static bundle, the output of `capyc --static`, without booting the runtime.
@@ -88,7 +80,7 @@ impl Scheme {
     /// the native primitives only. Nothing of the bundle has run yet.
     pub fn new_static_runtime() -> Self {
         let (scm, _) = Self::new_runtime();
-        scm.enter(|ctx| crate::runtime::linklet::install_capy_primitive_instance(ctx));
+        scm.enter(crate::runtime::linklet::install_capy_primitive_instance);
         scm
     }
 
@@ -110,7 +102,6 @@ impl Scheme {
         // if VM is not initialized yet, we need to run init code
         SCM_INITIALIZED.call_once(|| {
             should_init = true;
-            let t = std::time::Instant::now();
             crate::heap::logging::init_rust_logger();
             let mmtk_builder = crate::heap::logging::mmtk_builder();
             /*match *mmtk_builder.options.plan {
@@ -127,9 +118,6 @@ impl Scheme {
                 }
             }*/
             GarbageCollector::init(mmtk_builder);
-            if std::env::var_os("CAPY_STARTUP_DEBUG").is_some() {
-                eprintln!("startup: gc init {:?}", t.elapsed());
-            }
         });
 
         let scm = Self {
@@ -145,13 +133,11 @@ impl Scheme {
                     let state = SchemeState::new(mc, thread_object);
                     mc.init_state(state);
                 });
-                let t = std::time::Instant::now();
+
                 m.mutate(|ctx, _| {
                     crate::runtime::init_once(ctx);
                 });
-                if std::env::var_os("CAPY_STARTUP_DEBUG").is_some() {
-                    eprintln!("startup: init_once {:?}", t.elapsed());
-                }
+
                 m
             },
         };
@@ -248,14 +234,11 @@ impl Scheme {
             #[cfg(all(not(windows), any(target_arch = "x86_64", target_arch = "aarch64")))]
             let _boot_hold = crate::runtime::codegen::jit::BootHold::hold();
 
-            let t = std::time::Instant::now();
             let thunk =
                 load_thunk_in_vicinity::<true>(ctx, "boot/main.scm", None::<&str>, false, None)
                     .expect("Failed to load boot/main.scm");
-            if std::env::var_os("CAPY_STARTUP_DEBUG").is_some() {
-                eprintln!("startup: load boot/main {:?}", t.elapsed());
-            }
-            let t = std::time::Instant::now();
+
+            let _t = std::time::Instant::now();
 
             let boot_fatal = |msg: &dyn std::fmt::Display| -> ! {
                 // Fatal and final: make sure the message is visible
@@ -265,10 +248,7 @@ impl Scheme {
                 crate::heap::sync::thread::Thread::begin_process_exit();
                 std::process::exit(1);
             };
-            // `boot/main.scm` is a boot linklet that imports only `(#%capy)`: its load thunk
-            // returns the linklet, which is instantiated against the primitives and run, as a
-            // static bundle is. A bare program (the output of the seed emitter) has run already
-            // when its thunk returns.
+
             let ran = match crate::runtime::sni::call_function(ctx, thunk, []) {
                 ExecutionResult::Ok(value) if value.is::<Linklet>() => {
                     let linklet = value.downcast::<Linklet>();
@@ -292,9 +272,6 @@ impl Scheme {
             // The boot allocates before the collector has every class's hooks, so stress
             // collections start here.
             crate::heap::mutator::arm_gc_stress();
-            if std::env::var_os("CAPY_STARTUP_DEBUG").is_some() {
-                eprintln!("startup: run boot/main {:?}", t.elapsed());
-            }
         });
 
         scm

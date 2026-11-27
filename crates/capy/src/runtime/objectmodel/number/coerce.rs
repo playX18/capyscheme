@@ -354,16 +354,13 @@ impl<'gc> Number<'gc> {
 
     pub fn normalize_integer(&self) -> Self {
         match self {
-            Self::BigInt(n) => n.try_as_i64().map_or_else(
-                || *self,
-                |v| {
+            Self::BigInt(n) => n.try_as_i64().map_or(*self, |v| {
                     if v >= i32::MIN as i64 && v <= i32::MAX as i64 {
                         Number::Fixnum(v as i32)
                     } else {
                         *self
                     }
-                },
-            ),
+                }),
             _ => *self,
         }
     }

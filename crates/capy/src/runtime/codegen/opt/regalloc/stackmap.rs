@@ -131,7 +131,7 @@ pub(crate) fn build(
                 exit_at[e] = Some(g);
             }
             if let LirInst::Const { dst, value } = inst {
-                konst[*dst] = Some(value.clone());
+                konst[*dst] = Some(*value);
             }
             for op in inst.operands(func) {
                 if op.role == Role::Def {
@@ -152,7 +152,7 @@ pub(crate) fn build(
     }
     // A constant is rebuilt from its immediate when it has one definition.
     let const_of =
-        |v: VReg| -> Option<Constant> { if defs[v] == 1 { konst[v].clone() } else { None } };
+        |v: VReg| -> Option<Constant> { if defs[v] == 1 { konst[v] } else { None } };
 
     let words = (asg.spill_slots as usize).div_ceil(64).max(1);
     let mut masks: Vec<(SafePoint, LiveMask, RegMask)> = Vec::with_capacity(sp_at.len());
@@ -182,11 +182,9 @@ pub(crate) fn build(
                 let c = &asg.children[id];
                 if c.assign == Some(super::intervals::Assign::Stack)
                     && covers(&c.ranges, pos::late(g))
-                {
-                    if let Some(s) = asg.slot_of[v] {
+                    && let Some(s) = asg.slot_of[v] {
                         set(&mut w, &mut homes, s);
                     }
-                }
             }
 
             match kind {
@@ -197,11 +195,10 @@ pub(crate) fn build(
                 }
 
                 Kind::RustCall => {
-                    if let Some(Loc::Reg(r)) = asg.loc_at(v, pos::early(g)) {
-                        if regs.call_preserved(r) {
+                    if let Some(Loc::Reg(r)) = asg.loc_at(v, pos::early(g))
+                        && regs.call_preserved(r) {
                             regmask.set(r.0);
                         }
-                    }
                 }
 
                 Kind::FrameCall => {}
@@ -284,11 +281,10 @@ impl ExitLocs<'_> {
         if let Some(c) = self.func.vregs[vreg].imm {
             return Ok(DeoptLoc::Const(c));
         }
-        if repr == VRepr::Tagged {
-            if let Some(c) = (self.const_of)(vreg) {
+        if repr == VRepr::Tagged
+            && let Some(c) = (self.const_of)(vreg) {
                 return Ok(DeoptLoc::Const(c));
             }
-        }
         let loc = self
             .asg
             .loc_at(vreg, self.pos)

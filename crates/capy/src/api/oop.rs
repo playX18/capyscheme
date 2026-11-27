@@ -171,7 +171,7 @@ pub unsafe extern "C" fn sni_is_record(_env: *mut SniEnv<'static>, obj: ScmRef) 
     // Need a context for is_record, use a dummy via trying tuple tag.
     let v = unsafe { ref_value::<'_>(obj) };
     v.is::<Tuple>()
-        && v.downcast::<Tuple>().len() > 0
+        && !v.downcast::<Tuple>().is_empty()
         && v.downcast::<Tuple>()[0].get().is::<Tuple>()
 }
 

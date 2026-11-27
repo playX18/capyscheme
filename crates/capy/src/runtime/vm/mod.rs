@@ -528,7 +528,7 @@ impl<'a, 'gc> NativeCall<'a, 'gc> {
         // SAFETY: `sfp` is the call's live frame (`from_sfp` contract), so
         // its value slot is writable for values of this call.
         unsafe {
-            *(self.sfp as *mut Value<'gc>).add(2) = value;
+            *(self.sfp).add(2) = value;
         }
     }
 

@@ -1,3 +1,4 @@
+#![allow(clippy::missing_safety_doc)]
 //! C SNI (Scheme Native Interface), embedding API.
 //!
 //! Public values are opaque [`ScmRef`] handles rooted in OopStorage. Raw

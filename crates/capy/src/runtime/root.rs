@@ -24,7 +24,7 @@ pub(crate) fn is_traceable_root(value: Value<'_>) -> bool {
     // SAFETY: `bits` is non-zero and aligned; `from_raw_address` validates the
     // rest before the space lookup.
     mmtk::util::ObjectReference::from_raw_address(unsafe { mmtk::util::Address::from_usize(bits) })
-        .is_some_and(|object| mmtk::memory_manager::is_in_mmtk_spaces(object))
+        .is_some_and(mmtk::memory_manager::is_in_mmtk_spaces)
 }
 
 /// Reports a root slot that does not hold a traceable value. The collector
@@ -146,6 +146,12 @@ impl<'gc> RootStack<'gc> {
             slots[i].set(Value::undefined());
         }
         self.len.set(new_len);
+    }
+}
+
+impl<'gc> Default for RootStack<'gc> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

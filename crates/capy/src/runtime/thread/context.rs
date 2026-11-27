@@ -6,7 +6,6 @@ use super::*;
 /// so the `TC` register reaches every field at a constant offset, see
 /// [`sabi`](crate::runtime::sabi).
 #[repr(C)]
-
 pub struct ThreadContext<'gc> {
     /// The Scheme stack and the registers the interpreter parks in it.
     pub(crate) stack: StackState<'gc>,

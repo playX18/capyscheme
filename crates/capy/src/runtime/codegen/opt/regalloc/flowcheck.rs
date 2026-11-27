@@ -66,11 +66,10 @@ pub(crate) fn check(
                     let Some(&param) = func.blocks[b].params.get(i) else {
                         break;
                     };
-                    if let Some(loc) = alloc.loc_at(param, target_pos) {
-                        if out.get(&loc) == Some(&alloc.canon(arg)) {
+                    if let Some(loc) = alloc.loc_at(param, target_pos)
+                        && out.get(&loc) == Some(&alloc.canon(arg)) {
                             st.insert(loc, alloc.canon(param));
                         }
-                    }
                 }
                 acc = Some(match acc {
                     None => st,

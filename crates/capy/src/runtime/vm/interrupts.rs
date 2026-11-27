@@ -59,8 +59,8 @@ pub mod interrupt_ops {
 
     #[scheme(name = "current-interrupt-level")]
     pub fn current_interrupt_level() -> usize {
-        let level = ctx.state().thread_object.interrupt_level();
-        level
+        
+        ctx.state().thread_object.interrupt_level()
     }
 
     #[scheme(name = "%call-without-interrupts")]

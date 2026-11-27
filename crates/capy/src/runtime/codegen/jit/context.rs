@@ -280,7 +280,7 @@ impl SpecSource for FixedSpec {
             profile_cell: None,
             link: self
                 .cell
-                .map_or(SiteLink::None, |cell| SiteLink::Resident(cell)),
+                .map_or(SiteLink::None, SiteLink::Resident),
         }
     }
 }
@@ -756,8 +756,8 @@ impl<T: Targets, S: SpecSource> Flow for CompiledContext<'_, T, S> {
         // A jump table holds labels of this image, so only deferred
         // placement keeps one: an inline context searches the same cases
         // instead (a dense table lists them in key order).
-        if self.targets.placement() == Placement::Inline {
-            if let JitIntTable::Dense { min, targets } = parsed {
+        if self.targets.placement() == Placement::Inline
+            && let JitIntTable::Dense { min, targets } = parsed {
                 let cases = targets
                     .into_iter()
                     .enumerate()
@@ -765,7 +765,6 @@ impl<T: Targets, S: SpecSource> Flow for CompiledContext<'_, T, S> {
                     .collect();
                 parsed = JitIntTable::Sparse { cases };
             }
-        }
         let mut hits = Vec::new();
         match parsed {
             JitIntTable::Sparse { cases } if cases.len() <= 4 => {

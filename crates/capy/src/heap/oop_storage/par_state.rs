@@ -187,7 +187,7 @@ impl<'a, const CONCURRENT: bool, const CONST_ITER: bool> ParState<'a, CONCURRENT
     where
         F: FnMut(*mut Value<'static>),
     {
-        self.iterate(|p| f(p));
+        self.iterate(f);
     }
 
     pub fn num_dead(&self) -> usize {

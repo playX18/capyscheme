@@ -213,11 +213,10 @@ impl Verifier<'_> {
         if data.op.has_result() != data.result.is_some() {
             self.error(format!("{inst} in {block} has a mismatched result"));
         }
-        if let Some(result) = data.result {
-            if func.values.is_valid(result) && func.value_def(result) != ValueDef::Inst(inst) {
+        if let Some(result) = data.result
+            && func.values.is_valid(result) && func.value_def(result) != ValueDef::Inst(inst) {
                 self.error(format!("{result} does not name {inst} as its definition"));
             }
-        }
         if data.op == Op::BoolToValue {
             for &arg in func.args(inst) {
                 if func.values.is_valid(arg) && func.value_type(arg) != Type::Bool {
@@ -295,20 +294,17 @@ impl Verifier<'_> {
     ) {
         let func = self.func;
         if func.values.is_valid(value) {
-            if let Some(head) = head {
-                if func.virtual_of(head, value).is_some() {
+            if let Some(head) = head
+                && func.virtual_of(head, value).is_some() {
                     return;
                 }
-            }
-            if let ValueDef::Inst(inst) = func.value_def(value) {
-                if let Op::Remat(kind) = func.insts[inst].op {
-                    if func.args(inst).len() != kind.field_count() {
+            if let ValueDef::Inst(inst) = func.value_def(value)
+                && let Op::Remat(kind) = func.insts[inst].op
+                    && func.args(inst).len() != kind.field_count() {
                         self.error(format!(
                             "{block} names the remat placeholder {value} as a {what}, which has no fields and no virtual object describes it"
                         ));
                     }
-                }
-            }
         }
         self.use_at(value, block, index, what);
     }
@@ -411,13 +407,12 @@ impl Verifier<'_> {
     /// state or by another marker's field list.
     fn check_not_remat_operand(&mut self, block: Block, value: Value, what: &str) {
         let func = self.func;
-        if let ValueDef::Inst(inst) = func.value_def(value) {
-            if matches!(func.insts[inst].op, Op::Remat(_)) {
+        if let ValueDef::Inst(inst) = func.value_def(value)
+            && matches!(func.insts[inst].op, Op::Remat(_)) {
                 self.error(format!(
                     "{block} reads the remat marker {value} as a {what}, which has no runtime value"
                 ));
             }
-        }
     }
 
     /// A Bool is a raw flag, so it cannot stand where a Scheme value is read.

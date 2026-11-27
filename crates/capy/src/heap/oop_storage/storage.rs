@@ -1,3 +1,4 @@
+#![allow(clippy::mut_from_ref)]
 //! OopStorage, full port of HotSpot `oopStorage.cpp`.
 
 use std::cell::UnsafeCell;
@@ -151,10 +152,10 @@ impl OopStorage {
         }
         let mut permit = CLEANUP_PERMIT_AFTER.lock();
         let now = Instant::now();
-        if let Some(after) = *permit {
-            if now <= after {
-                return false;
-            }
+        if let Some(after) = *permit
+            && now <= after
+        {
+            return false;
         }
         *permit = Some(now + CLEANUP_DEFER_PERIOD);
         NEEDS_CLEANUP_REQUESTED.store(false, Ordering::Release);
@@ -214,11 +215,11 @@ impl OopStorage {
 
         let limit = num_taken.min(size);
         let mut remaining = taken;
-        for i in 0..limit {
+        for ptr in ptrs.iter_mut().take(limit) {
             debug_assert_ne!(remaining, 0);
             let index = remaining.trailing_zeros();
             remaining ^= block_ref.bitmask_for_index(index);
-            ptrs[i] = block_ref.get_pointer(index);
+            *ptr = block_ref.get_pointer(index);
         }
 
         if remaining != 0 {
@@ -597,7 +598,7 @@ impl OopStorage {
         let limit = unsafe { (*array).block_count() };
         for i in 0..limit {
             let block = unsafe { (*array).at(i) };
-            if !unsafe { (*block).iterate(|p| f(p)) } {
+            if !unsafe { (*block).iterate(&mut f) } {
                 return false;
             }
         }

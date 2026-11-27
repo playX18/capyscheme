@@ -332,7 +332,6 @@ div_op!(op_div, OpDiv, fixnum_div_exact, false, true);
 div_op!(op_quotient, OpQuotient, fixnum_quotient, true, false);
 
 /// Remainder with a fixnum only
-
 macro_rules! rem_op {
     ($name:ident, $Op:ident, $fixleaf:ident) => {
         pub fn $name<C: TemplateContext>(masm: &mut Masm, context: &mut C) {

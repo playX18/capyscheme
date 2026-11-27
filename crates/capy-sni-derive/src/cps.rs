@@ -528,13 +528,12 @@ fn collect_ref_bindings_from_stmt(stmt: &Stmt, out: &mut Vec<Ident>) {
             }
         }
         Stmt::Expr(Expr::If(i), _) => {
-            if let Expr::Let(el) = i.cond.as_ref() {
-                if is_likely_ref_producing_expr(&el.expr)
-                    || matches!(&*el.expr, Expr::MethodCall(_))
+            if let Expr::Let(el) = i.cond.as_ref()
+                && (is_likely_ref_producing_expr(&el.expr)
+                    || matches!(&*el.expr, Expr::MethodCall(_)))
                 {
                     push_pat_idents(&el.pat, out);
                 }
-            }
         }
         _ => {}
     }
@@ -872,11 +871,10 @@ fn transform_if(
     let cond = &i.cond;
 
     let mut then_seed = Vec::new();
-    if let Expr::Let(el) = i.cond.as_ref() {
-        if is_likely_ref_producing_expr(&el.expr) || matches!(&*el.expr, Expr::MethodCall(_)) {
+    if let Expr::Let(el) = i.cond.as_ref()
+        && (is_likely_ref_producing_expr(&el.expr) || matches!(&*el.expr, Expr::MethodCall(_))) {
             push_pat_idents(&el.pat, &mut then_seed);
         }
-    }
 
     let then_body =
         transform_stmts_seeded(&i.then_branch.stmts, ret_ty, branch_tail.clone(), then_seed)?;

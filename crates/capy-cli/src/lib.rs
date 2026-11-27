@@ -235,6 +235,7 @@ fn apply_flag_args(args: Vec<OsString>) -> Result<Vec<OsString>, String> {
     Ok(output)
 }
 
+#[allow(clippy::type_complexity)]
 fn translate(
     args: Vec<OsString>,
     table: &[(&'static str, &'static str, CliKind)],

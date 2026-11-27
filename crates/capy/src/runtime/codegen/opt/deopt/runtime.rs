@@ -440,8 +440,8 @@ unsafe fn deoptimize<'gc>(
                 write_extra(index as usize, base, value);
             }
         }
-        if let Some((base, vector)) = area_f {
-            if !vector.is_null() {
+        if let Some((base, vector)) = area_f
+            && !vector.is_null() {
                 if !vector.is::<Vector>() {
                     fatal(exit, "the rest vector is not a vector");
                 }
@@ -453,7 +453,6 @@ unsafe fn deoptimize<'gc>(
                     write_extra(i, base, element);
                 }
             }
-        }
         if let Some((base, cnt, from, vector)) = tail_f {
             let count = unsafe { *fp_f.add(cnt as usize) };
             if count.is_int32() && !vector.is_null() {

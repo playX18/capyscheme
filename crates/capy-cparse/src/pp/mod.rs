@@ -186,7 +186,7 @@ impl Preprocessor {
             deps: Vec::new(),
             diags: Vec::new(),
             counter: 0,
-            oracle: Box::new(StaticOracle::default()),
+            oracle: Box::new(StaticOracle),
             out_extra: Vec::new(),
         };
         pp.load_predefined();
@@ -337,9 +337,9 @@ impl Preprocessor {
                 self.pending.extend(v);
                 continue;
             }
-            let Some(frame) = self.frames.last_mut() else {
-                return None;
-            };
+
+            let frame = self.frames.last_mut()?;
+
             if frame.pos >= frame.toks.len() {
                 self.pop_frame();
                 continue;
@@ -390,12 +390,12 @@ impl Preprocessor {
 
     fn directive(&mut self) {
         let hash_loc;
-        let line;
+
         {
             let f = self.frames.last().unwrap();
             hash_loc = f.toks[f.pos - 1].loc;
         }
-        line = self.line_tokens();
+        let line = self.line_tokens();
         let Some(name_tok) = line.first() else { return };
         let rest = &line[1..];
         let skipping = self.skipping();
@@ -681,10 +681,10 @@ impl Preprocessor {
         if self.once.contains(&path) {
             return;
         }
-        if let Some(g) = self.guards.get(&path) {
-            if self.macros.contains_key(g) {
-                return;
-            }
+        if let Some(g) = self.guards.get(&path)
+            && self.macros.contains_key(g)
+        {
+            return;
         }
         if self.frames.len() >= 200 {
             self.diag(Severity::Error, loc, "#include nested too deeply");

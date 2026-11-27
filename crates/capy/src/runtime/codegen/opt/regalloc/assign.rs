@@ -371,17 +371,15 @@ pub(crate) fn coherence(
             // A segment that does not continue the previous one is a new
             // definition (a coalesced vreg is defined more than once): the
             // slot holds the old value until it is stored again.
-            if let Some(p) = prev {
-                if p.1 != lo && valid && !stack {
+            if let Some(p) = prev
+                && p.1 != lo && valid && !stack {
                     ivals.push((from, p.1));
                     valid = false;
                 }
-            }
-            if let Some(p) = prev {
-                if p.1 == lo && !p.2 && stack && valid {
+            if let Some(p) = prev
+                && p.1 == lo && !p.2 && stack && valid {
                     skips.push(lo);
                 }
-            }
             if stack {
                 if !valid {
                     valid = true;
@@ -665,11 +663,10 @@ pub(crate) fn split_ranges(ranges: &[(u32, u32)], p: u32) -> (Vec<(u32, u32)>, V
 pub(crate) fn placed_reg(pieces: &Pieces, vreg: VReg, pos: u32) -> Option<PhysReg> {
     for &id in &pieces.vreg_children[vreg] {
         let child = &pieces.children[id];
-        if let Some(Assign::Reg(r)) = child.assign {
-            if covers(&child.ranges, pos) {
+        if let Some(Assign::Reg(r)) = child.assign
+            && covers(&child.ranges, pos) {
                 return Some(r);
             }
-        }
     }
     None
 }
@@ -682,11 +679,10 @@ pub(crate) fn placed_reg(pieces: &Pieces, vreg: VReg, pos: u32) -> Option<PhysRe
 pub(crate) fn placed_reg_before(pieces: &Pieces, vreg: VReg, pos: u32) -> Option<PhysReg> {
     for &id in &pieces.vreg_children[vreg] {
         let child = &pieces.children[id];
-        if let Some(Assign::Reg(r)) = child.assign {
-            if end_of(&child.ranges) == pos {
+        if let Some(Assign::Reg(r)) = child.assign
+            && end_of(&child.ranges) == pos {
                 return Some(r);
             }
-        }
     }
     None
 }

@@ -1229,7 +1229,7 @@ pub(crate) fn note_call_case<'gc>(
     };
     let _writes = SITE_WRITES.lock();
     let barrier = Gc::write(mutator, buffer.downcast::<CodeBuffer>());
-    if insert_one(&barrier, &link.cases, block) == CaseInsert::Full {
+    if insert_one(barrier, &link.cases, block) == CaseInsert::Full {
         link.polymorphic.store(LINK_MEGA, Relaxed);
     }
 }

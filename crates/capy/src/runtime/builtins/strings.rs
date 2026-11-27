@@ -297,8 +297,8 @@ mod string_ops {
 
     #[scheme(name = "string-length")]
     pub fn string_length(str: Gc<'gc, Str<'gc>>) -> usize {
-        let len = str.len();
-        len
+        
+        str.len()
     }
 
     #[scheme(name = "string-append")]
@@ -355,8 +355,8 @@ mod string_ops {
         for str in strs.iter() {
             write!(buffer, "{}", str.downcast::<Str>()).unwrap();
         }
-        let s = Ok(Str::new(ctx, &buffer, false));
-        s
+        
+        Ok(Str::new(ctx, &buffer, false))
     }
 
     #[scheme(name = "symbol-append")]
@@ -399,27 +399,27 @@ mod string_ops {
 
             buffer.push_str(&sym.downcast::<Symbol>().to_string());
         }
-        let s = Ok(Symbol::from_str(ctx, &buffer));
-        s
+        
+        Ok(Symbol::from_str(ctx, &buffer))
     }
 
     #[scheme(name = "symbol->string")]
     pub fn symbol_to_string(sym: Gc<'gc, Symbol<'gc>>) -> Gc<'gc, Str<'gc>> {
-        let s = sym.to_str(ctx);
+        
 
-        s
+        sym.to_str(ctx)
     }
 
     #[scheme(name = "string->symbol")]
     pub fn string_to_symbol(str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Symbol<'gc>> {
-        let sym = Symbol::from_string(ctx, str);
-        sym
+        
+        Symbol::from_string(ctx, str)
     }
 
     #[scheme(name = "string->uninterned-symbol")]
     pub fn string_to_uninterned_symbol(str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Symbol<'gc>> {
-        let sym = Symbol::from_string_uninterned(ctx, str, None);
-        sym
+        
+        Symbol::from_string_uninterned(ctx, str, None)
     }
 
     #[scheme(name = "uninterned-symbol?")]
@@ -482,7 +482,7 @@ mod string_ops {
             print!("{}", arg);
         }
         println!();
-        ()
+        
     }
 
     #[scheme(name = "substring")]
@@ -526,8 +526,8 @@ mod string_ops {
 
     #[scheme(name = "string-copy")]
     pub fn string_copy(s1: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
-        let s2 = Str::substring_copy(s1, ctx, 0, s1.len());
-        s2
+        
+        Str::substring_copy(s1, ctx, 0, s1.len())
     }
 
     #[scheme(name = "string-contains")]
@@ -765,14 +765,14 @@ mod string_ops {
     }
     #[scheme(name = "string-split")]
     pub fn string_split(str: Gc<'gc, Str<'gc>>, ch: char) -> Value<'gc> {
-        let parts = str
+        
+        str
             .to_string()
             .split(ch)
             .rev()
             .fold(Value::null(), |acc, part| {
                 Value::cons(ctx, Str::new(ctx, part, false).into(), acc)
-            });
-        parts
+            })
     }
 
     #[scheme(name = "string")]
@@ -802,8 +802,8 @@ mod string_ops {
     #[scheme(name = "make-string")]
     pub fn make_string(length: usize, fill_char: Option<char>) -> Gc<'gc, Str<'gc>> {
         let ch = fill_char.unwrap_or(0x20u8 as char);
-        let s = Str::from_char(ctx, ch, length);
-        s
+        
+        Str::from_char(ctx, ch, length)
     }
 
     #[scheme(name = "string-ref")]
@@ -880,16 +880,16 @@ mod string_ops {
         let bytes = str.to_string().into_bytes();
         // Default (movable): general conversion. FFI paths use string->utf8/nul,
         // string->pointer, or bytevector->pointer (which copies to NonMoving).
-        let bytevec = ByteVector::from_slice(ctx, &bytes, true);
-        bytevec
+        
+        ByteVector::from_slice(ctx, &bytes, true)
     }
 
     #[scheme(name = "string->utf8/nul")]
     pub fn string_to_utf8_nul(str: Gc<'gc, Str<'gc>>) -> Gc<'gc, ByteVector> {
         let mut bytes = str.to_string().into_bytes();
         bytes.push(0); // NUL terminator
-        let bytevec = ByteVector::from_slice(ctx, &bytes, false);
-        bytevec
+        
+        ByteVector::from_slice(ctx, &bytes, false)
     }
 
     #[scheme(name = "utf16->string")]
@@ -941,8 +941,8 @@ mod string_ops {
             bytes.extend_from_slice(&ebytes);
         }
 
-        let bytevec = ByteVector::from_slice(ctx, &bytes, true);
-        bytevec
+        
+        ByteVector::from_slice(ctx, &bytes, true)
     }
 
     #[scheme(name = "string->utf32")]
@@ -1080,8 +1080,8 @@ mod string_ops {
             _ => "Cn", // Shouldn't happen
         };
 
-        let sym = Symbol::from_str(ctx, category_str);
-        sym
+        
+        Symbol::from_str(ctx, category_str)
     }
 
     #[scheme(name = "list->string")]
@@ -1669,8 +1669,8 @@ mod string_ops {
         let cm = icu::casemap::CaseMapperBorrowed::new();
         let str = str.to_string();
         let lowercased = cm.lowercase_to_string(&str, &icu::locale::langid!("und"));
-        let s = Str::new(ctx, &lowercased, false);
-        s
+        
+        Str::new(ctx, &lowercased, false)
     }
 
     #[scheme(name = "string-foldcase")]
@@ -1678,8 +1678,8 @@ mod string_ops {
         let cm = icu::casemap::CaseMapperBorrowed::new();
         let str = str.to_string();
         let folded = cm.fold_string(&str);
-        let s = Str::new(ctx, &folded, false);
-        s
+        
+        Str::new(ctx, &folded, false)
     }
 
     #[scheme(name = "string-upcase")]
@@ -1687,8 +1687,8 @@ mod string_ops {
         let str = str.to_string();
         let cm = icu::casemap::CaseMapperBorrowed::new();
         let uppercased = cm.uppercase_to_string(&str, &icu::locale::langid!("und"));
-        let s = Str::new(ctx, &uppercased, false);
-        s
+        
+        Str::new(ctx, &uppercased, false)
     }
 
     #[scheme(name = "string-titlecase")]
@@ -1715,36 +1715,36 @@ mod string_ops {
                 ch.is_whitespace() || get_general_category(ch) == GeneralCategory::DashPunctuation;
         }
 
-        let s = Str::new(ctx, &result, false);
-        s
+        
+        Str::new(ctx, &result, false)
     }
 
     #[scheme(name = "char-upcase")]
     pub fn char_upcase(ch: char) -> char {
         let cm = icu::casemap::CaseMapperBorrowed::new();
-        let uppercased = cm.simple_uppercase(ch);
-        uppercased
+        
+        cm.simple_uppercase(ch)
     }
 
     #[scheme(name = "char-downcase")]
     pub fn char_downcase(ch: char) -> char {
         let cm = icu::casemap::CaseMapperBorrowed::new();
-        let lowercased = cm.simple_lowercase(ch);
-        lowercased
+        
+        cm.simple_lowercase(ch)
     }
 
     #[scheme(name = "char-foldcase")]
     pub fn char_foldcase(ch: char) -> char {
         let cm = icu::casemap::CaseMapperBorrowed::new();
-        let folded = cm.simple_fold(ch);
-        folded
+        
+        cm.simple_fold(ch)
     }
 
     #[scheme(name = "char-titlecase")]
     pub fn char_titlecase(ch: char) -> char {
         let cm = icu::casemap::CaseMapperBorrowed::new();
-        let titlecased = cm.simple_titlecase(ch);
-        titlecased
+        
+        cm.simple_titlecase(ch)
     }
 
     #[scheme(name = "string-normalize-nfc")]
@@ -1752,8 +1752,8 @@ mod string_ops {
         use unicode_normalization::UnicodeNormalization;
 
         let normalized: String = str.to_string().nfc().collect();
-        let s = Str::new(ctx, &normalized, false);
-        s
+        
+        Str::new(ctx, &normalized, false)
     }
 
     #[scheme(name = "string-normalize-nfd")]
@@ -1761,8 +1761,8 @@ mod string_ops {
         use unicode_normalization::UnicodeNormalization;
 
         let normalized: String = str.to_string().nfd().collect();
-        let s = Str::new(ctx, &normalized, false);
-        s
+        
+        Str::new(ctx, &normalized, false)
     }
 
     #[scheme(name = "string-normalize-nfkc")]
@@ -1770,8 +1770,8 @@ mod string_ops {
         use unicode_normalization::UnicodeNormalization;
 
         let normalized: String = str.to_string().nfkc().collect();
-        let s = Str::new(ctx, &normalized, false);
-        s
+        
+        Str::new(ctx, &normalized, false)
     }
 
     #[scheme(name = "string-normalize-nfkd")]
@@ -1779,8 +1779,8 @@ mod string_ops {
         use unicode_normalization::UnicodeNormalization;
 
         let normalized: String = str.to_string().nfkd().collect();
-        let s = Str::new(ctx, &normalized, false);
-        s
+        
+        Str::new(ctx, &normalized, false)
     }
 
     #[scheme(name = "keyword?")]
@@ -1814,8 +1814,8 @@ mod string_ops {
     #[scheme(name = "keyword->string")]
     pub fn keyword_to_string(kw: Gc<'gc, Keyword<'gc>>) -> Gc<'gc, Str<'gc>> {
         let sym = kw.symbol;
-        let s = sym.to_str(ctx);
-        s
+        
+        sym.to_str(ctx)
     }
 }
 

@@ -54,6 +54,11 @@ impl<'a> LocalFrame<'a> {
         self.scope.len()
     }
 
+    /// Is local frame empty?
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn ensure_capacity(&mut self, capacity: usize) {
         self.scope.ensure_capacity(capacity);
     }

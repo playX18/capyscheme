@@ -76,7 +76,7 @@ impl Numbering {
             return false;
         }
         let b = self.block_at[g as usize];
-        p % pos::POINTS == 0 || self.term[b] != g
+        p.is_multiple_of(pos::POINTS) || self.term[b] != g
     }
 }
 

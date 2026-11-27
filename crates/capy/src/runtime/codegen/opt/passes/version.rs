@@ -179,7 +179,7 @@ fn passed_on_an_edge(func: &Func, value: Value) -> bool {
             continue;
         };
         for edge in term.edges() {
-            if func.edge_args(&edge).iter().any(|&arg| arg == value) {
+            if func.edge_args(&edge).contains(&value) {
                 return true;
             }
         }

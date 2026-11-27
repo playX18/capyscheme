@@ -115,10 +115,10 @@ pub mod hash_ops {
         key: Value<'gc>,
         default_value: Option<Value<'gc>>,
     ) -> Value<'gc> {
-        let res = ht
+        
+        ht
             .get(ctx, key)
-            .unwrap_or(default_value.unwrap_or(Value::new(false)));
-        res
+            .unwrap_or(default_value.unwrap_or(Value::new(false)))
     }
 
     #[scheme(name = "core-hash-put!")]
@@ -141,8 +141,8 @@ pub mod hash_ops {
 
     #[scheme(name = "core-hash-size")]
     pub fn hash_size(ht: Gc<'gc, HashTable<'gc>>) -> usize {
-        let size = ht.len();
-        size
+        
+        ht.len()
     }
 
     #[scheme(name = "core-hash->list")]
@@ -151,13 +151,13 @@ pub mod hash_ops {
     ) -> Value<'gc> {
         match ht {
             Either::Right(ht) => {
-                let ls = ht.fold(
+                
+
+                ht.fold(
                     ctx,
                     |k, v, acc| Value::cons(ctx, Value::cons(ctx, k, v), acc),
                     Value::null(),
-                );
-
-                ls
+                )
             }
 
             Either::Left(ht) => {
@@ -199,9 +199,9 @@ pub mod hash_ops {
     #[scheme(name = "hash")]
     pub fn hash(value: Value<'gc>, bound: Option<u64>) -> Value<'gc> {
         let hash = value.hash_equal() % bound.unwrap_or(u64::MAX);
-        let hash = hash.into_value(ctx);
+        
 
-        hash
+        hash.into_value(ctx)
     }
 
     /// Computes the `eq?` hash of the value. If `bound` is provided, the result is taken modulo `bound`.
@@ -214,9 +214,9 @@ pub mod hash_ops {
         value.hash(&mut hasher);
         let hash = hasher.finish_raw() % bound.unwrap_or(u64::MAX);
 
-        let hash = hash.into_value(ctx);
+        
 
-        hash
+        hash.into_value(ctx)
     }
 
     #[scheme(name = "make-core-hashtable")]
@@ -479,12 +479,12 @@ pub mod hash_ops {
                     _ => (),
                 }
 
-                let res = ht.get(ctx, key).unwrap_or(default);
-                res
+                
+                ht.get(ctx, key).unwrap_or(default)
             }
             Either::Right(ht) => {
-                let res = ht.get(ctx, key).unwrap_or(default);
-                res
+                
+                ht.get(ctx, key).unwrap_or(default)
             }
         }
     }
@@ -662,13 +662,13 @@ pub mod hash_ops {
             }
 
             Either::Right(ht) => {
-                let ls = ht.fold(
+                
+
+                ht.fold(
                     ctx,
                     |k, v, acc| Value::cons(ctx, Value::cons(ctx, k, v), acc),
                     Value::null(),
-                );
-
-                ls
+                )
             }
         }
     }

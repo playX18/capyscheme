@@ -584,8 +584,8 @@ pub mod fluid_ops {
 
     #[scheme(name = "fluid-ref")]
     pub fn fluid_ref(fluid: FluidRef<'gc>) -> Value<'gc> {
-        let value = fluid.get(ctx);
-        value
+        
+        fluid.get(ctx)
     }
 
     #[scheme(name = "fluid-set!")]
@@ -598,13 +598,13 @@ pub mod fluid_ops {
     #[scheme(name = "current-dynamic-state")]
     pub fn current_dynamic_state() -> Value<'gc> {
         let dynamic_state = ctx.state().dynamic_state.save(ctx);
-        let val = Value::from(ctx.allocate_with(
+        
+        Value::from(ctx.allocate_with(
             DynamicStateObject {
                 saved: dynamic_state,
             },
             dynamic_state_header_word(),
-        ));
-        val
+        ))
     }
 
     #[scheme(name = "dynamic-state?")]

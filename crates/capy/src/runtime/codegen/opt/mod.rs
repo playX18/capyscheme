@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
 //! The Tier 2 optimizing compiler.
 //!
 //! The pipeline is build (bytecode to SSA), lower (SSA to LIR), allocate
@@ -283,7 +284,7 @@ impl OptimizingCompiler {
             .map(|(ra, shadow)| {
                 let ra = image.finished.offset(ra).expect("bound label");
                 let shadow = image.finished.offset(shadow).expect("bound label");
-                (ra as u32, shadow as u32)
+                (ra, shadow)
             })
             .collect();
         lazy_returns.sort_unstable_by_key(|&(ra, _)| ra);
@@ -297,7 +298,7 @@ impl OptimizingCompiler {
             };
             let pc = BytecodePc::new(entry.pc as usize)
                 .ok_or_else(|| io::Error::other("an OSR pc does not fit in a word"))?;
-            osr.push((pc, CodeOffset(at as u32)));
+            osr.push((pc, CodeOffset(at)));
         }
         let jump_at = match image.finished.location(entry_jump) {
             Some(PatchLocation::Jump(jump)) => jump.offset() as usize,

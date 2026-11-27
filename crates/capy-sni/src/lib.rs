@@ -274,11 +274,10 @@ impl Scm {
             // SAFETY: data is the `&mut Data` passed to scm_run_main below, and
             // scm_run_main calls this exactly once, synchronously.
             let data = unsafe { &mut *(data as *mut Data<F>) };
-            if let Some(f) = data.f.take() {
-                if let Err(panicked) = catch_unwind(AssertUnwindSafe(f)) {
+            if let Some(f) = data.f.take()
+                && let Err(panicked) = catch_unwind(AssertUnwindSafe(f)) {
                     data.panic = Some(panicked);
                 }
-            }
         }
 
         let mut data = Data {

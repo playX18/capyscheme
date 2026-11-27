@@ -72,10 +72,10 @@ pub mod persistent_map_ops {
         key: Value<'gc>,
         default_value: Option<Value<'gc>>,
     ) -> Value<'gc> {
-        let res = map
+        
+        map
             .get(key)
-            .unwrap_or(default_value.unwrap_or(Value::new(false)));
-        res
+            .unwrap_or(default_value.unwrap_or(Value::new(false)))
     }
 
     #[scheme(name = "core-persistent-map-assoc")]
@@ -106,11 +106,11 @@ pub mod persistent_map_ops {
 
     #[scheme(name = "core-persistent-map->alist")]
     pub fn persistent_map_to_alist(map: Gc<'gc, PersistentMap<'gc>>) -> Value<'gc> {
-        let ls = map.fold(
+        
+        map.fold(
             |acc, key, value| Value::cons(ctx, Value::cons(ctx, key, value), acc),
             Value::null(),
-        );
-        ls
+        )
     }
 
     #[scheme(name = "alist->core-persistent-map-eq")]

@@ -4,9 +4,9 @@ use syn::spanned::Spanned;
 use crate::{Input, ModulePath, fun::FunctionDefinition, get_path, var::Variable};
 
 pub enum ModuleItem {
-    Function(FunctionDefinition),
-    Variable(Variable),
-    Use(syn::ItemUse),
+    Function(Box<FunctionDefinition>),
+    Variable(Box<Variable>),
+    Use(Box<syn::ItemUse>),
 }
 
 fn take_scheme_attr(attrs: &mut Vec<syn::Attribute>) -> syn::Result<Option<Input>> {
@@ -66,7 +66,7 @@ pub fn handle(Input { meta: args }: Input, input: syn::ItemMod) -> syn::Result<M
                         "Function within #[scheme] module cannot specify module path",
                     ));
                 }
-                registrations.push(ModuleItem::Function(registration));
+                registrations.push(ModuleItem::Function(Box::new(registration)));
             }
             syn::Item::Static(mut static_) => {
                 let args = take_scheme_attr(&mut static_.attrs)?
@@ -85,10 +85,10 @@ pub fn handle(Input { meta: args }: Input, input: syn::ItemMod) -> syn::Result<M
                     ));
                 }
 
-                registrations.push(ModuleItem::Variable(registration));
+                registrations.push(ModuleItem::Variable(Box::new(registration)));
             }
             syn::Item::Use(use_) => {
-                registrations.push(ModuleItem::Use(use_));
+                registrations.push(ModuleItem::Use(Box::new(use_)));
             }
             _ => {
                 return Err(syn::Error::new_spanned(

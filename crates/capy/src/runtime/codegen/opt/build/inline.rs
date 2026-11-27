@@ -306,11 +306,10 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             return None;
         }
         let mut cell = self.func.args(inst)[0];
-        if let ValueDef::Inst(check) = self.func.value_def(cell) {
-            if matches!(self.func.insts[check].op, Op::CheckClass(_)) {
+        if let ValueDef::Inst(check) = self.func.value_def(cell)
+            && matches!(self.func.insts[check].op, Op::CheckClass(_)) {
                 cell = self.func.args(check)[0];
             }
-        }
         let variable = self.pool_constant(cell)?;
         Some(format!("global {}", self.variable_label(variable)))
     }
@@ -442,8 +441,8 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 if natives.iter().any(|arm| arm.value == value) {
                     continue;
                 }
-                if target.callee.is_native() && target.hits >= MIN_TARGET_HITS {
-                    if let Some(shape) = self.native_arm_shape(target.callee, args) {
+                if target.callee.is_native() && target.hits >= MIN_TARGET_HITS
+                    && let Some(shape) = self.native_arm_shape(target.callee, args) {
                         natives.push(NativeArm {
                             value,
                             shape,
@@ -454,7 +453,6 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                         });
                         continue;
                     }
-                }
             }
             let callee_value = SchemeValue::from(target.callee);
             let buffer = target.callee.buffer;

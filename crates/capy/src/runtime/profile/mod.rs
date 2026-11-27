@@ -65,7 +65,7 @@ impl ServiceThread for Aggregator {
             }
             drain_all();
             drains += 1;
-            if drains % REAP_EVERY_DRAINS == 0 {
+            if drains.is_multiple_of(REAP_EVERY_DRAINS) {
                 maps::reap_interp();
             }
             write_output();

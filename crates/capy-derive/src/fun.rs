@@ -212,6 +212,7 @@ impl FunctionDefinition {
             quote_spanned! {
                 self.transformed_function.span() =>
                 #[allow(unused_parens, unused_mut)]
+                #[allow(clippy::too_many_arguments, clippy::type_complexity)]
                 extern "C" fn #raw_name<'gc>(
                     ctx: MutationContext<'gc>,
                     sfp: Slot<'gc>,

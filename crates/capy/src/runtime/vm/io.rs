@@ -154,6 +154,7 @@ pub enum IoOperation {
     Select,
 }
 #[scheme(path=capy)]
+#[allow(clippy::type_complexity)]
 pub mod io_ops {
 
     #[scheme(name = "usleep")]
@@ -726,8 +727,7 @@ pub mod io_ops {
 
     #[scheme(name = "file-exists?")]
     pub fn file_exists(path: Gc<'gc, Str<'gc>>) -> bool {
-        let metadata = std::path::Path::new(&path.to_string()).exists();
-        metadata
+        std::path::Path::new(&path.to_string()).exists()
     }
 
     #[scheme(name = "file-name-separator?")]
@@ -755,13 +755,11 @@ pub mod io_ops {
             SYM_UNIX = "unix"
         }
 
-        let sym = if cfg!(windows) {
+        if cfg!(windows) {
             sym_windows(ctx)
         } else {
             sym_unix(ctx)
-        };
-
-        sym
+        }
     }
 
     #[scheme(name = "absolute-path-string?")]
@@ -855,12 +853,11 @@ pub mod io_ops {
                 );
             }
 
-            let list = Value::cons(
+            Value::cons(
                 ctx,
                 fds[0].into(),
                 Value::cons(ctx, fds[1].into(), Value::null()),
-            );
-            list
+            )
         }
     }
 
@@ -1337,10 +1334,7 @@ pub mod io_ops {
     #[scheme(name = "io/lseek")]
     pub fn io_lseek64(fd: i32, offset: i64, whence: i32) -> i64 {
         // SAFETY: FFI: fd is valid, whence is a valid seek origin
-        unsafe {
-            let ret = libc::lseek(fd, offset, whence);
-            ret
-        }
+        unsafe { libc::lseek(fd, offset, whence) }
     }
 
     #[scheme(name = "io/mkstemp")]
@@ -1364,8 +1358,8 @@ pub mod io_ops {
             let ret = libc::mkstemp(arr.as_mut_ptr() as *mut _);
             let newname = std::ffi::CStr::from_ptr(arr.as_ptr() as _).to_string_lossy();
             let gname = Str::new(ctx, &newname, true);
-            let res = crate::list!(ctx, ret, gname);
-            res
+
+            crate::list!(ctx, ret, gname)
         }
     }
 
@@ -1405,8 +1399,8 @@ pub mod io_ops {
         unsafe {
             let cpath =
                 CString::new(filename.to_string()).expect("filename should not contain null bytes");
-            let ret = retry_eintr(|| libc::open(cpath.as_ptr(), newflags | libc::O_NONBLOCK, mode));
-            ret
+
+            retry_eintr(|| libc::open(cpath.as_ptr(), newflags | libc::O_NONBLOCK, mode))
         }
     }
 
@@ -1414,11 +1408,7 @@ pub mod io_ops {
     pub fn syscall_close(fd: i32) -> i32 {
         reactor::fd_closed(fd);
         // SAFETY: FFI: fd is a valid open file descriptor
-        unsafe {
-            let ret = libc::close(fd);
-
-            ret
-        }
+        unsafe { libc::close(fd) }
     }
 
     #[scheme(name = "syscall:read")]
@@ -1574,10 +1564,7 @@ pub mod io_ops {
         let cpath =
             CString::new(filename.to_string()).expect("filename should not contain null bytes");
         // SAFETY: Preconditions verified by the surrounding code
-        unsafe {
-            let ret = libc::unlink(cpath.as_ptr());
-            ret
-        }
+        unsafe { libc::unlink(cpath.as_ptr()) }
     }
 
     #[scheme(name = "syscall:rename")]
@@ -1587,10 +1574,7 @@ pub mod io_ops {
         let cnew = CString::new(new_filename.to_string())
             .expect("new filename should not contain null bytes");
         // SAFETY: Preconditions verified by the surrounding code
-        unsafe {
-            let ret = libc::rename(cold.as_ptr(), cnew.as_ptr());
-            ret
-        }
+        unsafe { libc::rename(cold.as_ptr(), cnew.as_ptr()) }
     }
 
     #[scheme(name = "syscall:mtime")]
@@ -1641,10 +1625,7 @@ pub mod io_ops {
         let cpath =
             CString::new(filename.to_string()).expect("filename should not contain null bytes");
         // SAFETY: Preconditions verified by the surrounding code
-        unsafe {
-            let ret = retry_eintr(|| libc::access(cpath.as_ptr(), rmode));
-            ret
-        }
+        unsafe { retry_eintr(|| libc::access(cpath.as_ptr(), rmode)) }
     }
 
     #[scheme(name = "syscall:recv")]

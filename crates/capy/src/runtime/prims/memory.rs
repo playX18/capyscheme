@@ -85,7 +85,7 @@ fn bytevector_address<'gc>(
         raise(ctx, who, "index out of bounds", &[bv, index]);
     }
     let i = i as usize;
-    if i % elem.index_alignment() != 0 {
+    if !i.is_multiple_of(elem.index_alignment()) {
         raise(ctx, who, "unaligned access", &[bv, index]);
     }
     // SAFETY: `i + size <= len`, so the element lies inside the bytevector's storage.

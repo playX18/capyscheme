@@ -123,12 +123,11 @@ pub unsafe extern "C" fn sni_cont_free(_env: *mut SniEnv<'static>, c: *mut SniCo
     // SAFETY: allocated by sni_cont_alloc.
     unsafe {
         let mut boxed = Box::from_raw(c);
-        if let Some(drop_fn) = boxed.drop_data {
-            if !boxed.data.is_null() {
+        if let Some(drop_fn) = boxed.drop_data
+            && !boxed.data.is_null() {
                 drop_fn(boxed.data);
                 boxed.data = ptr::null_mut();
             }
-        }
         release_result_slot(boxed.result);
         boxed.result = SCM_REF_NULL;
         drop(boxed);

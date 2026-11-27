@@ -387,7 +387,7 @@ fn step_of(func: &Func, param: Value, mut value: Value) -> Option<i64> {
     let (delta, base) = match func.insts[inst].op {
         Op::AddI64 | Op::AddI64Ovf | Op::AddI32Ovf => match (
             int_const(func, *args.get(1)?),
-            int_const(func, *args.get(0)?),
+            int_const(func, *args.first()?),
         ) {
             (Some(c), _) => (c, args[0]),
             (None, Some(c)) => (c, args[1]),

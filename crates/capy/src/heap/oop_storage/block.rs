@@ -533,8 +533,8 @@ impl Block {
         let from_full = is_full_bitmask(old_allocated);
         let mut claimed_deferred = false;
 
-        if to_empty || from_full {
-            if self
+        if (to_empty || from_full)
+            && self
                 .deferred_updates_next
                 .compare_exchange(
                     ptr::null_mut(),
@@ -561,7 +561,6 @@ impl Block {
                 }
                 claimed_deferred = true;
             }
-        }
 
         self.release_refcount.fetch_sub(1, Ordering::Relaxed);
         ReleaseTransition {

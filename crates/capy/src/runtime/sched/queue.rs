@@ -525,12 +525,11 @@ impl Shared {
             // wake cannot wait behind a thread that keeps yielding.
             return self.pop_global().or_else(|| self.pop_local(w, false));
         }
-        if rng.tick % GLOBAL_CHECK_INTERVAL == 0 {
-            if let Some(task) = self.pop_global() {
+        if rng.tick.is_multiple_of(GLOBAL_CHECK_INTERVAL)
+            && let Some(task) = self.pop_global() {
                 return Some(task);
             }
-        }
-        let worst = rng.tick % STARVATION_INTERVAL == 0;
+        let worst = rng.tick.is_multiple_of(STARVATION_INTERVAL);
         if let Some(task) = self.pop_local(w, worst) {
             return Some(task);
         }

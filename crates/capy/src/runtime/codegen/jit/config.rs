@@ -185,7 +185,8 @@ impl OptConfig {
             .filter(|stage| !stage.is_empty())
             .map(str::to_string)
             .collect();
-        let config = OptConfig {
+        
+        OptConfig {
             threshold: flags::jit_opt_threshold(),
             version: flags::opt_version(),
             unswitch: flags::opt_unswitch(),
@@ -203,14 +204,13 @@ impl OptConfig {
             stress_deopt: flags::opt_stress_deopt(),
             lazy_deopt: flags::opt_lazy_deopt(),
             stress_lazy_deopt: flags::opt_stress_lazy_deopt(),
-        };
-        config
+        }
     }
 }
 
 pub(crate) fn opt() -> &'static OptConfig {
     static OPT: OnceLock<OptConfig> = OnceLock::new();
-    OPT.get_or_init(|| OptConfig::from_flags())
+    OPT.get_or_init(OptConfig::from_flags)
 }
 
 pub(crate) enum Bisect {

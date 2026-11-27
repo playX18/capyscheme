@@ -884,7 +884,7 @@ impl<E: Emit> Ser<'_, E> {
                 join(&format!("{kw} {}", r.tag.as_deref()?))
             }
             Type::Enum(id) => join(&format!("enum {}", self.u.enums[*id].tag.as_deref()?)),
-            Type::Typedef(n) => join(&**n),
+            Type::Typedef(n) => join(n),
             Type::VaList => join("__builtin_va_list"),
             Type::Vector(..) | Type::Atomic(_) | Type::NullPtr | Type::Unsupported(_) => {
                 return None;

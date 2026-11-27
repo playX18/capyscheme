@@ -50,7 +50,7 @@ fn record_rtd_of<'gc>(obj: Value<'gc>) -> Option<Gc<'gc, Rtd<'gc>>> {
         return None;
     }
     let tuple = obj.downcast::<Tuple>();
-    if tuple.len() == 0 {
+    if tuple.is_empty() {
         return None;
     }
     let first = tuple[0].get();
@@ -269,7 +269,7 @@ const MAKE_RTD: &str = "make-record-type-descriptor";
 fn is_record_value(obj: Value<'_>) -> bool {
     obj.is::<Tuple>() && {
         let tuple = obj.downcast::<Tuple>();
-        tuple.len() > 0 && tuple[0].get().is::<Rtd>()
+        !tuple.is_empty() && tuple[0].get().is::<Rtd>()
     }
 }
 

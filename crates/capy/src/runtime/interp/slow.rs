@@ -1249,7 +1249,7 @@ fn fill_slot_site<'gc>(
         kind: SLOT_KIND_ACCESS,
         effective: Value::empty(),
     });
-    let stored = site.fill(ctx, &Gc::write(ctx, buffer), entry);
+    let stored = site.fill(ctx, Gc::write(ctx, buffer), entry);
     if hit.wp.is_invalid() {
         site.clear();
         return false;
@@ -2041,7 +2041,7 @@ unsafe fn return_stub_step<'gc>(
             std::ptr::copy(fp.add(2), cont_frame.add(2), count as usize);
             stack.fp.set(cont_frame);
             stack.sp.set(cont_frame.add(2 + count as usize));
-            ctx.tc().ac.set(count as u64);
+            ctx.tc().ac.set(count);
             let native =
                 Closure::free_get(Closure::from_value(k), 0).downcast_unchecked::<NativeProc>();
             let proc: NativeFn<'gc> = std::mem::transmute(native.proc.to_ptr::<()>());
@@ -2137,7 +2137,7 @@ pub(crate) unsafe fn control_values_error<'gc>(
             Value::new(false),
             Str::new(
                 ctx,
-                &format!("returned {count} values to single value return context"),
+                format!("returned {count} values to single value return context"),
                 true,
             )
             .into(),
@@ -2184,7 +2184,7 @@ unsafe fn apply_violation<'gc>(
         let message: Value<'gc> = match shown {
             Some((value, position)) => Str::new(
                 ctx,
-                &format!("{description}, got {value}, as argument {}", position + 1),
+                format!("{description}, got {value}, as argument {}", position + 1),
                 true,
             )
             .into(),

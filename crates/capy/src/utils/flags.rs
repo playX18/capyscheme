@@ -804,7 +804,7 @@ fn render_size(bytes: usize) -> String {
         ("M", 1024usize.pow(2)),
         ("K", 1024),
     ] {
-        if bytes >= multiplier && bytes % multiplier == 0 {
+        if bytes >= multiplier && bytes.is_multiple_of(multiplier) {
             return format!("{}{}", bytes / multiplier, suffix);
         }
     }

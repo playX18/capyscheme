@@ -227,11 +227,10 @@ fn known_blocks<'gc>(link: &'gc CallLinkInfo) -> Vec<Value<'gc>> {
         blocks.push(callee);
     }
     for case in &link.cases {
-        if let Some(block) = case.get_value() {
-            if !blocks.iter().any(|known| known.bits() == block.bits()) {
+        if let Some(block) = case.get_value()
+            && !blocks.iter().any(|known| known.bits() == block.bits()) {
                 blocks.push(block);
             }
-        }
     }
     blocks
 }

@@ -170,8 +170,8 @@ pub mod variable_ops {
     #[scheme(name = "make-variable")]
     pub fn make_variable(value: Option<Value<'gc>>) -> Gc<'gc, Variable<'gc>> {
         let value = value.unwrap_or(Value::undefined());
-        let var = Variable::new(ctx, value);
-        var
+        
+        Variable::new(ctx, value)
     }
 
     #[scheme(name = "variable-bound?")]

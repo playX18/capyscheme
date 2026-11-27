@@ -46,7 +46,7 @@ impl Unit {
             }
             Type::Enum(id) => return self.size_align(&self.enum_underlying(*id)),
             Type::Typedef(_) | Type::Atomic(_) => return self.size_align(&self.resolve(t)),
-            Type::Vector(_, bytes) => (*bytes, (*bytes).min(16).max(1)),
+            Type::Vector(_, bytes) => (*bytes, (*bytes).clamp(1, 16)),
             Type::VaList => match (abi.arch.as_str(), abi.os.as_str()) {
                 ("x86_64", "macos" | "linux" | "freebsd") => (24, 8),
                 ("aarch64", "linux") => (32, 8),

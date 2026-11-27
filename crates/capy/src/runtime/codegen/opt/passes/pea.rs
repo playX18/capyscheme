@@ -2165,8 +2165,8 @@ impl<'a, 'gc> Analysis<'a, 'gc> {
         let func = self.func;
         let data = &func.insts[inst];
         let args = func.args(inst);
-        if let Some(&k) = self.inst_obj.get(&inst) {
-            if !self.cs.excluded.contains(&k) {
+        if let Some(&k) = self.inst_obj.get(&inst)
+            && !self.cs.excluded.contains(&k) {
                 // A candidate: its fields are the values it was allocated with.
                 let init = self.obj(k).init.clone();
                 let mut fields = Vec::with_capacity(init.len());
@@ -2181,7 +2181,6 @@ impl<'a, 'gc> Analysis<'a, 'gc> {
                 self.deleted.insert(inst);
                 return Ok(());
             }
-        }
         let is_eq = match data.op {
             Op::EqBits => Some(false),
             Op::CallPrim { prim, .. }
@@ -2210,13 +2209,11 @@ impl<'a, 'gc> Analysis<'a, 'gc> {
                 return Ok(());
             }
         }
-        if let Some(&first) = args.first() {
-            if let Some(k) = self.virtual_obj(st, first) {
-                if self.virtual_op(inst, st, k)? {
+        if let Some(&first) = args.first()
+            && let Some(k) = self.virtual_obj(st, first)
+                && self.virtual_op(inst, st, k)? {
                     return Ok(());
                 }
-            }
-        }
         self.generic(inst, st)
     }
 
@@ -2309,13 +2306,12 @@ impl<'a, 'gc> Analysis<'a, 'gc> {
         // reachable block: that edge carries plain values and is not in
         // `incoming`, so the target keeps its parameters.
         for b in func.blocks.keys() {
-            if self.rpo_num(b) < 0 && self.live[b] {
-                if let Some(term) = &func.blocks[b].term {
+            if self.rpo_num(b) < 0 && self.live[b]
+                && let Some(term) = &func.blocks[b].term {
                     for e in term.edges() {
                         self.ext[e.block] = true;
                     }
                 }
-            }
         }
         for c in func.blocks.keys() {
             for (i, &e) in self.incoming[c].iter().enumerate() {
@@ -2585,15 +2581,14 @@ fn apply(func: &mut Func, fx: Effects, objs: &[Obj], rpo: &[Block]) -> Res<()> {
                 }
             }
             if fx.deleted.contains(&inst) {
-                if let Some(&k) = inst_cand.get(&inst) {
-                    if fx.named.contains(&k) {
+                if let Some(&k) = inst_cand.get(&inst)
+                    && fx.named.contains(&k) {
                         let data = &mut func.insts[inst];
                         data.op = Op::Remat(objs[k as usize].kind);
                         data.args = EntityList::new();
                         data.frame = None;
                         out.push(inst);
                     }
-                }
                 continue;
             }
             if let Some(&c) = fx.rewrites.get(&inst) {

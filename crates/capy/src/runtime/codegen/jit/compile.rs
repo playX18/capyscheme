@@ -507,12 +507,9 @@ pub(crate) fn invalidate_optimized<'gc>(
     code_block: Gc<'gc, CodeBlock<'gc>>,
     owner: Gc<'gc, CodeImage<'gc>>,
 ) -> Option<super::super::install::Generation> {
-    let Some(unit) = CodeUnit::of_image(owner) else {
-        return None;
-    };
-    let Some(opt) = unit.opt.as_ref() else {
-        return None;
-    };
+    let unit = CodeUnit::of_image(owner)?;
+    let opt = unit.opt.as_ref()?;
+
     if opt.invalid.load(Acquire) != 0 {
         return None;
     }

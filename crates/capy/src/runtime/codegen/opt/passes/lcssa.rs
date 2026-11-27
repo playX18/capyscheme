@@ -171,12 +171,11 @@ fn rewrite_block(func: &mut Func, block: Block, values: HashMap<Value, Value>) {
             .map(|arg| values.get(arg).copied().unwrap_or(*arg))
             .collect();
         func.insts[inst].args = cranelift_entity::EntityList::from_slice(&args, &mut func.pool);
-        if let Some(frame) = func.insts[inst].frame {
-            if frame_uses(func, frame, &check) {
+        if let Some(frame) = func.insts[inst].frame
+            && frame_uses(func, frame, &check) {
                 let rebuilt = cloner.clone_frame(func, &values, frame);
                 func.insts[inst].frame = Some(rebuilt);
             }
-        }
     }
     if let Some(term) = func.blocks[block].term.clone() {
         let map = LoopClone {

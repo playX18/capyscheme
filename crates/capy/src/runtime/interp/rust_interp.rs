@@ -687,7 +687,7 @@ op! { fn op_return_point_values_rest<W>(ip, fp, th, clo, md, dt, count) {
     if count < op.nvals.0 as u64 {
         become wrong_value_count(ip, fp, th, clo, md, dt, count)
     }
-    fp[Register(op.frame.0 as u32)] = Value::from_i32((count - op.nvals.0 as u64) as i32);
+    fp[Register(op.frame.0)] = Value::from_i32((count - op.nvals.0 as u64) as i32);
     let clo = Closure::from_value(fp.callee());
     let md = MetadataArea::from_ptr(Closure::code_block(clo).buffer.metadata());
     advance!(OpReturnPointValuesRest, W, ip, fp, th, Some(clo), md, dt)
@@ -1318,13 +1318,12 @@ fn div_fixnums(x: Value<'_>, y: Value<'_>) -> Option<(i32, i32)> {
 
 op! { fn op_div<W>(ip, fp, th, clo, md, dt, w) {
     let op = decode!(OpDiv, W, ip);
-    if let Some((lhs, rhs)) = div_fixnums(fp[op.lhs], fp[op.rhs]) {
-        if lhs % rhs == 0 {
+    if let Some((lhs, rhs)) = div_fixnums(fp[op.lhs], fp[op.rhs])
+        && lhs % rhs == 0 {
             (*md.entry::<def::OpDiv>(op.metadata_id)).profile.observe_fixnums();
             fp[op.dst] = Value::from_i32(lhs / rhs);
             advance!(OpDiv, W, ip, fp, th, clo, md, dt)
         }
-    }
     become arith_slow(ip, fp, th, clo, md, dt, w)
 }}
 

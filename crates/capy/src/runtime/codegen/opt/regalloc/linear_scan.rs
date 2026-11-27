@@ -150,29 +150,25 @@ fn scan_class(
         let mut free = vec![u32::MAX; pool.len()];
         let mut holder: Vec<Option<usize>> = vec![None; pool.len()];
         for &i in &inactive {
-            if let Some(Assign::Reg(r)) = pieces.children[i].assign {
-                if let Some(k) = reg_index(r) {
-                    if let Some(p) = next_intersection(&pieces.children[i].ranges, &ranges, s) {
+            if let Some(Assign::Reg(r)) = pieces.children[i].assign
+                && let Some(k) = reg_index(r)
+                    && let Some(p) = next_intersection(&pieces.children[i].ranges, &ranges, s) {
                         free[k] = free[k].min(p);
                     }
-                }
-            }
         }
         for (k, r) in pool.iter().enumerate() {
-            if let Some(f) = built.fixed.get(r) {
-                if let Some(p) = next_intersection(f, &ranges, s) {
+            if let Some(f) = built.fixed.get(r)
+                && let Some(p) = next_intersection(f, &ranges, s) {
                     free[k] = free[k].min(p);
                 }
-            }
         }
         let free_static = free.clone();
         for &a in &active {
-            if let Some(Assign::Reg(r)) = pieces.children[a].assign {
-                if let Some(k) = reg_index(r) {
+            if let Some(Assign::Reg(r)) = pieces.children[a].assign
+                && let Some(k) = reg_index(r) {
                     free[k] = 0;
                     holder[k] = Some(a);
                 }
-            }
         }
 
         let vreg = pieces.children[cur].vreg;
@@ -186,13 +182,11 @@ fn scan_class(
         let mut full_hint = None;
 
         let mut candidates: Vec<usize> = Vec::new();
-        if let Some(r) = placed_reg_before(pieces, vreg, s) {
-            if let Some(k) = reg_index(r) {
-                if allowed(r) {
+        if let Some(r) = placed_reg_before(pieces, vreg, s)
+            && let Some(k) = reg_index(r)
+                && allowed(r) {
                     candidates.push(k);
                 }
-            }
-        }
         for hint in &built.hints[vreg] {
             if !covers(&ranges, hint.pos) {
                 continue;
@@ -231,13 +225,12 @@ fn scan_class(
                     // it: a conflict that starts mid-instruction is reached by
                     // a move at the Pre gap of that instruction.
                     let p = pos::gap_floor(bf);
-                    if p > s {
-                        if let Some(id) = pieces.split(cur, p) {
+                    if p > s
+                        && let Some(id) = pieces.split(cur, p) {
                             pieces.children[cur].assign = Some(Assign::Reg(pool[k]));
                             assigned = true;
                             unhandled.push(Reverse((pieces.children[id].ranges[0].0, id)));
                         }
-                    }
                 }
             }
         }
@@ -269,7 +262,7 @@ fn scan_class(
                     if w.saturating_mul(4) > cur_weight {
                         continue;
                     }
-                    if victim.as_ref().map_or(true, |&(bw, _, _)| w < bw) {
+                    if victim.as_ref().is_none_or(|&(bw, _, _)| w < bw) {
                         victim = Some((w, a, k));
                     }
                 }

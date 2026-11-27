@@ -364,11 +364,10 @@ impl<'gc> Value<'gc> {
     pub fn equal(self, other: Self, visited: &mut HashMap<Value<'gc>, Vec<Value<'gc>>>) -> bool {
         // Only a fresh visited set lets the fast path ignore it and restart
         // from the top on failure; every caller passes a fresh one.
-        if visited.is_empty() {
-            if let Some(result) = self.equal_with_fresh_visited(other) {
+        if visited.is_empty()
+            && let Some(result) = self.equal_with_fresh_visited(other) {
                 return result;
             }
-        }
 
         self.equal_slow(other, visited)
     }

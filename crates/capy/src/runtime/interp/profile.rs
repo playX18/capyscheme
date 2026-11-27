@@ -377,7 +377,6 @@ impl ArithProfile {
 /// bits 5-7   reserved
 /// bits 8-31  class id of the first heap object seen (0 = none yet)
 /// ```
-
 pub const VALUE_FIXNUM: u32 = 1;
 pub const VALUE_FLONUM: u32 = 1 << 1;
 pub const VALUE_BOOL: u32 = 1 << 2;

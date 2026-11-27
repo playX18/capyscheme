@@ -34,7 +34,7 @@ impl<'gc> Value<'gc> {
     /// The type descriptor of a record instance, or `None` for any other value.
     pub fn record_rtd(&self) -> Option<Gc<'gc, Rtd<'gc>>> {
         let tuple = self.try_as::<Tuple>()?;
-        if tuple.len() == 0 {
+        if tuple.is_empty() {
             return None;
         }
         tuple[0].get().try_as::<Rtd>()

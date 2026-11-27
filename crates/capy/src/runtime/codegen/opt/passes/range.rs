@@ -1274,12 +1274,10 @@ pub(super) fn run(func: &mut Func) -> PassOutcome {
             then,
             otherwise,
         }) = func.blocks[block].term.clone()
-        {
-            if let Some(taken) = analysis.truth(block, cond) {
+            && let Some(taken) = analysis.truth(block, cond) {
                 let edge = if taken { then } else { otherwise };
                 jumps.push((block, edge));
             }
-        }
     }
 
     // The proofs are complete; the immutable analysis borrow ends here.

@@ -117,7 +117,7 @@ pub fn execute_constraints<C: ObjectTracerContext<MemoryManager> + Clone + 'stat
             .map(|n| n.get())
             .unwrap_or(1)
             .max(1);
-        let chunk = (parallel.len() + workers - 1) / workers;
+        let chunk = parallel.len().div_ceil(workers);
         let mut packets: Vec<Box<dyn GCWork<MemoryManager>>> = Vec::new();
         for start in (0..parallel.len()).step_by(chunk.max(1)) {
             let end = (start + chunk).min(parallel.len());

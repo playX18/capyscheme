@@ -620,14 +620,13 @@ fn analyze_uses(
                     },
                 }
             }
-            if let Some(frame) = inst_data.frame {
-                if frame_refs(func, Some(frame), alloc) {
+            if let Some(frame) = inst_data.frame
+                && frame_refs(func, Some(frame), alloc) {
                     candidate.frame_referenced = true;
                     if !dom.dominates(candidate.block, block) {
                         unsupported(candidate, Escape::GlobalEscape);
                     }
                 }
-            }
         }
 
         let Some(term) = &data.term else {
@@ -679,14 +678,13 @@ fn analyze_uses(
                 unsupported(candidate, Escape::GlobalEscape);
             }
         }
-        if let Terminator::TailCall { frame, .. } | Terminator::Deopt { frame } = term {
-            if frame_refs(func, Some(*frame), alloc) {
+        if let Terminator::TailCall { frame, .. } | Terminator::Deopt { frame } = term
+            && frame_refs(func, Some(*frame), alloc) {
                 candidate.frame_referenced = true;
                 if !dom.dominates(candidate.block, block) {
                     unsupported(candidate, Escape::GlobalEscape);
                 }
             }
-        }
     }
 }
 
@@ -889,11 +887,10 @@ fn solve_flow(
             for inst in insts {
                 if inst == candidate.alloc {
                     state = initial.clone();
-                } else if let Some((field, value)) = store_to(func, inst, candidate) {
-                    if field < n {
+                } else if let Some((field, value)) = store_to(func, inst, candidate)
+                    && field < n {
                         state[field] = Some(value);
                     }
-                }
             }
             if out_state.get(&block) != Some(&state) {
                 out_state.insert(block, state);
@@ -1003,9 +1000,9 @@ fn state_map(
         let mut state = if block == candidate.block {
             vec![None; n]
         } else {
-            match flow.in_state.get(&block) {
-                Some(state) => state.clone(),
-                None => return None,
+            {
+                let state = flow.in_state.get(&block)?;
+                state.clone()
             }
         };
         let insts = func.blocks[block].insts.clone();
@@ -1019,11 +1016,10 @@ fn state_map(
             }
             if inst == candidate.alloc {
                 state = initial.clone();
-            } else if let Some((field, value)) = store_to(func, inst, candidate) {
-                if field < n {
+            } else if let Some((field, value)) = store_to(func, inst, candidate)
+                && field < n {
                     state[field] = Some(value);
                 }
-            }
         }
     }
     Some(out)
@@ -1130,14 +1126,14 @@ fn plan_rewrite(
                         | Op::TestCode(_)
                         | Op::EqBits => {}
                         Op::CallPrim { prim, .. }
-                            if prim.is(Primitive::IsEq) && eq_foldable(func, &args) => {}
+                            if prim.is(Primitive::IsEq) && eq_foldable(func, args) => {}
                         Op::CallPrim { .. } | Op::CallOp(_) => ok = false,
                         _ => ok = false,
                     },
                     _ => match data.op {
                         Op::EqBits => {}
                         Op::CallPrim { prim, .. }
-                            if prim.is(Primitive::IsEq) && eq_foldable(func, &args) => {}
+                            if prim.is(Primitive::IsEq) && eq_foldable(func, args) => {}
                         _ => ok = false,
                     },
                 }

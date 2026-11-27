@@ -417,7 +417,7 @@ impl<'gc> ClassDescriptor<'gc> {
         let direct_slots = Array::new(ctx, direct_defs.len(), |_, index| direct_defs[index]);
         let slots = Array::new(ctx, effective_defs.len(), |_, index| effective_defs[index]);
         let accessors = Array::new(ctx, slots.len(), |ctx, index| {
-            SlotAccessorDescriptor::from_slot(ctx.into(), slots[index])
+            SlotAccessorDescriptor::from_slot(ctx, slots[index])
         });
         let class_slots = Array::new(ctx, slots.len(), |_, index| {
             let slot = slots[index];
@@ -1144,7 +1144,7 @@ fn default_initarg_array<'gc>(
 
 /// The (keyword, thunk) pairs of a flat default initarg array.
 pub(crate) fn default_initarg_pairs<'gc>(flat: &[Value<'gc>]) -> Vec<(Value<'gc>, Value<'gc>)> {
-    flat.chunks_exact(2)
+    flat.as_chunks::<2>().0.iter()
         .map(|pair| (pair[0], pair[1]))
         .collect()
 }

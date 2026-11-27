@@ -584,10 +584,10 @@ fn classify(
                     )),
                 }
             }
-            if let Some(frame) = inst_data.frame {
-                if frame_closure_is_member(func, frame, members) {
-                    escape!(format!("frame closure in {inst}"));
-                }
+            if let Some(frame) = inst_data.frame
+                && frame_closure_is_member(func, frame, members)
+            {
+                escape!(format!("frame closure in {inst}"));
             }
         }
         let Some(term) = &data.term else {
@@ -640,10 +640,10 @@ fn classify(
                 }
             }
         }
-        if let Some(frame) = term_frame(term) {
-            if frame_closure_is_member(func, frame, members) {
-                escape!(format!("terminator frame closure in {block}"));
-            }
+        if let Some(frame) = term_frame(term)
+            && frame_closure_is_member(func, frame, members)
+        {
+            escape!(format!("terminator frame closure in {block}"));
         }
     }
     Some(uses)
@@ -795,6 +795,7 @@ fn seeds(
 /// Solves the value dataflow. Returns the version on *entry* to every block and
 /// the blocks that need a value parameter. The exit versions stay internal:
 /// they only fill the arguments of the parameters the flow adds.
+#[allow(clippy::too_many_arguments)]
 fn solve(
     func: &Func,
     candidate: &Candidate,

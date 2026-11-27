@@ -344,7 +344,7 @@ impl Greedy<'_> {
                         }
                     }
 
-                    if before && first_store.map_or(true, |(at, _)| lo < at) {
+                    if before && first_store.is_none_or(|(at, _)| lo < at) {
                         first_store = Some((lo, self.block_frequency(lo)));
                     }
                 }
@@ -623,7 +623,7 @@ impl Greedy<'_> {
             .find(|&r| {
                 self.reg_ranges
                     .get(&r)
-                    .map_or(true, |rr| !rr.has_conflict(ranges))
+                    .is_none_or(|rr| !rr.has_conflict(ranges))
             });
 
         match free {
@@ -1183,7 +1183,7 @@ impl Greedy<'_> {
             }
             let kept: f64 = (0..n).filter(|&i| in_reg[i]).map(|i| want[i]).sum();
             let gain = kept - 2.0 * border;
-            if gain > 0.0 && best.as_ref().map_or(true, |(g, _)| gain > *g) {
+            if gain > 0.0 && best.as_ref().is_none_or(|(g, _)| gain > *g) {
                 best = Some((gain, in_reg));
             }
         }

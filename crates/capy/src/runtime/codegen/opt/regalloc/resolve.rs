@@ -287,15 +287,14 @@ impl<'a> Remat<'a> {
         let mut untag_of: SecondaryMap<VReg, Option<VReg>> = SecondaryMap::new();
         for (_, data) in func.blocks.iter() {
             for inst in &data.insts {
-                if let LirInst::Const { dst, value } = inst {
-                    if matches!(
+                if let LirInst::Const { dst, value } = inst
+                    && matches!(
                         value,
                         Constant::Int32(_) | Constant::Int64(_) | Constant::Bits(_)
                     ) && func.class(*dst) == RegClass::Gpr
                     {
-                        of[*dst] = Some(value.clone());
+                        of[*dst] = Some(*value);
                     }
-                }
                 if let LirInst::UntagInt { dst, src } | LirInst::UntagInt64 { dst, src } = inst {
                     untag_of[*dst] = Some(*src);
                 }
@@ -437,7 +436,7 @@ impl<'a> Remat<'a> {
         if !matches!((src, dst), (Loc::Slot(_), Loc::Reg(_))) {
             return None;
         }
-        let value = self.of[v].clone()?;
+        let value = self.of[v]?;
         let consts = &mut self.consts;
         Some(*self.index.entry(v).or_insert_with(|| {
             consts.push(value);

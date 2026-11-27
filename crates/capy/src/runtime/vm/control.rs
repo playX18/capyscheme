@@ -24,7 +24,7 @@ const REIFIED_CC_NFREE: usize = 4;
 pub fn is_reified_continuation_value(value: Value<'_>) -> bool {
     value
         .try_as::<Closure>()
-        .is_some_and(|clos| is_reified_continuation_closure(&*clos))
+        .is_some_and(|clos| is_reified_continuation_closure(&clos))
 }
 
 pub fn is_reified_continuation_closure(clos: &Closure<'_>) -> bool {
@@ -566,8 +566,8 @@ pub mod control_ops {
                 &[k],
             );
         }
-        let winders = k.downcast::<Closure>()[2].get();
-        winders
+        
+        k.downcast::<Closure>()[2].get()
     }
 
     /// Wind from the current winders to `new_winders`, running out/in thunks.

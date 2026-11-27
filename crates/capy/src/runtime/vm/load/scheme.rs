@@ -45,14 +45,14 @@ pub(super) mod load_ops {
         let filename = PathBuf::from(filename.as_gc_ref().to_string());
         let in_vicinity = in_vicinity.map(|path| PathBuf::from(path.as_gc_ref().to_string()));
         let arch = arch.map(|value| value.to_string());
-        let result = find_path_to_public(
+        
+        find_path_to_public(
             ctx,
             filename,
             resolve_relative,
             in_vicinity,
             arch.as_deref(),
-        );
-        result
+        )
     }
 
     /// `(%compile-seed expanded destination [load-thunk? [dump-selections [preprocessed]]])`:
@@ -192,8 +192,8 @@ pub(super) mod load_ops {
     ) -> LoadResult<'gc> {
         let filename = PathBuf::from(filename.as_gc_ref().to_string());
         let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_gc_ref().to_string()));
-        let result = load_thunk_candidates(ctx, filename, in_vicinity, resolve_relative);
-        result
+        
+        load_thunk_candidates(ctx, filename, in_vicinity, resolve_relative)
     }
 
     /// `(%file-hash path)`: the hash of the bytes of the file, or `#f` when it cannot be read.
@@ -288,7 +288,7 @@ pub(super) mod load_ops {
             Err(err) => Err(make_io_error(
                 ctx,
                 "%run-static-bundle",
-                Str::new(ctx, format!("cannot run {}: {err}", path.to_string()), true).into(),
+                Str::new(ctx, format!("cannot run {}: {err}", path), true).into(),
                 &[],
             )),
         }
@@ -310,9 +310,8 @@ pub(super) mod load_ops {
     ) -> LoadResult<'gc> {
         let filename = PathBuf::from(filename.as_gc_ref().to_string());
         let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_gc_ref().to_string()));
-        let result =
-            load_thunk_in_vicinity::<true>(ctx, filename, in_vicinity, resolve_relative, None);
-        result
+        
+        load_thunk_in_vicinity::<true>(ctx, filename, in_vicinity, resolve_relative, None)
     }
 
     #[scheme(name = "%bootstrapping?")]
@@ -354,7 +353,7 @@ pub(super) mod load_ops {
                 #[cfg(feature = "bootstrap")]
                 {
                     let file = thunk.car().downcast::<Str>().to_string();
-                    let file_in = match std::fs::File::open(&file).map_err(|e| {
+                    let file_in = std::fs::File::open(&file).map_err(|e| {
                         make_io_error(
                             ctx,
                             "compile-file",
@@ -366,12 +365,9 @@ pub(super) mod load_ops {
                             .into(),
                             &[],
                         )
-                    }) {
-                        Ok(file_in) => file_in,
-                        Err(err) => return Err(err),
-                    };
+                    })?;
 
-                    let text = match std::io::read_to_string(&file_in).map_err(|e| {
+                    let text = std::io::read_to_string(&file_in).map_err(|e| {
                         make_io_error(
                             ctx,
                             "compile-file",
@@ -383,19 +379,13 @@ pub(super) mod load_ops {
                             .into(),
                             &[],
                         )
-                    }) {
-                        Ok(text) => text,
-                        Err(err) => return Err(err),
-                    };
+                    })?;
                     let src = Str::new(ctx, &file, true);
                     let parser =
                         crate::frontend::reader::TreeSitter::new(ctx, &text, src.into(), true);
-                    let program = match parser.read_program().map_err(|err| {
+                    let program = parser.read_program().map_err(|err| {
                         make_lexical_violation(ctx, "compile-file", err.display_with_file(&file))
-                    }) {
-                        Ok(program) => program,
-                        Err(err) => return Err(err),
-                    };
+                    })?;
 
                     let after_call =
                         make_closure_continue_loading_k(ctx, [thunk, Value::current_k()]);
@@ -477,7 +467,7 @@ fn scan_boot_requires<'gc>(ctx: MutationContext<'gc>, text: &str) -> Option<Valu
     let bytes: Vec<char> = text.chars().collect();
     let mut pos = 0;
 
-    fn skip<'a>(b: &'a [char], pos: &mut usize) {
+    fn skip(b: &[char], pos: &mut usize) {
         loop {
             match b.get(*pos) {
                 Some(c) if c.is_whitespace() => *pos += 1,

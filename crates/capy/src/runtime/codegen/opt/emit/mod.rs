@@ -702,13 +702,12 @@ impl<'a> Emitter<'a> {
             return Ok(());
         };
         let cp = self.gpr_of(arch::CP)?;
-        if let Loc::Slot(s) = self.loc(callee, self.use_pos())? {
-            if super::regalloc::home_word(s).is_some() {
+        if let Loc::Slot(s) = self.loc(callee, self.use_pos())?
+            && super::regalloc::home_word(s).is_some() {
                 let mem = self.masm.assembler().mem(SFP, callee_frame + 8);
                 onlineasm!(*self.asm(); loadq {cp}, {mem};);
                 return Ok(());
             }
-        }
         let from = self.read(callee, cp)?;
         if from != cp {
             self.mov(cp, from);
@@ -1397,7 +1396,7 @@ impl<'a> Emitter<'a> {
         self.collect_rest_inline(rest);
         self.masm.bind(done);
 
-        return Ok(());
+        Ok(())
         /*
         onlineasm!(*self.asm();
             subp {T2}, {AC}, {required};
@@ -3234,7 +3233,7 @@ impl<'a> Emitter<'a> {
                 self.masm.bind(ready);
                 onlineasm!(*self.asm();
                     lshiftq {T3}, 16;
-                    orq {T3}, {T3}, {crate::runtime::objectmodel::Value::CHAR_TAG as i64};
+                    orq {T3}, {T3}, {crate::runtime::objectmodel::Value::CHAR_TAG};
                 );
                 let t = self.write(*dst)?;
                 self.mov(t.reg, T3);

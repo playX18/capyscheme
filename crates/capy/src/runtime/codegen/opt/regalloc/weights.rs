@@ -205,12 +205,11 @@ fn record(
     free_accesses: &mut SecondaryMap<VReg, Vec<(u32, u64)>>,
 ) {
     for op in operands.into_iter().rev() {
-        if op.role == Role::Use {
-            if let Some(i) = frame.iter().position(|&v| v == op.vreg) {
+        if op.role == Role::Use
+            && let Some(i) = frame.iter().position(|&v| v == op.vreg) {
                 frame.swap_remove(i);
                 continue;
             }
-        }
         let at = if op.role == Role::Def { late } else { early };
         accesses[op.vreg].push((at, w));
         if !matches!(op.constraint, Constraint::Fixed(_)) {

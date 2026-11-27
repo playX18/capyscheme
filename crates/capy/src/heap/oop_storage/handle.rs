@@ -88,6 +88,10 @@ impl<'a> HandleScope<'a> {
         self.handles.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Ensure the scope can hold at least `capacity` additional refs without realloc churn.
     pub fn ensure_capacity(&mut self, capacity: usize) {
         self.handles.reserve(capacity);

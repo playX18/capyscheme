@@ -61,6 +61,7 @@ const NAMES: [&str; REFUSALS] = [
     "other",
 ];
 
+#[allow(clippy::declare_interior_mutable_const)]
 const ZERO: AtomicU64 = AtomicU64::new(0);
 static REFUSED: [AtomicU64; REFUSALS] = [ZERO; REFUSALS];
 static SITES: AtomicU64 = ZERO;
@@ -225,8 +226,8 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         let Some(closure) = self.self_tail_closure(pc, argc) else {
             // In an inlined body, a monomorphic tail call inlines in turn: its
             // frames replace this body's, as the tail call replaces the frame.
-            if self.inline.depth > 0 {
-                if let Some(result) = self.try_inline(
+            if self.inline.depth > 0
+                && let Some(result) = self.try_inline(
                     pc,
                     pc,
                     1,
@@ -235,10 +236,10 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                     (ReturnValues::Ignore, frame),
                     false,
                     true,
-                )? {
-                    self.terminate(Terminator::Return(result[0]));
-                    return Ok(());
-                }
+                )?
+            {
+                self.terminate(Terminator::Return(result[0]));
+                return Ok(());
             }
             // A recognized record procedure is cheaper inline than called.
             if self.try_record_tail_call(pc, argc)? {

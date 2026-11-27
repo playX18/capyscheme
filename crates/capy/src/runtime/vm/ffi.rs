@@ -307,8 +307,8 @@ pub mod ffi_ops {
     #[scheme(name = "scm->pointer")]
     pub fn value_to_pointer(v: Value<'gc>) -> Gc<'gc, Pointer<'gc>> {
         let p = Pointer::new(v.bits() as *mut std::ffi::c_void);
-        let p = ctx.allocate_with(p, pointer_header_word());
-        p
+        
+        ctx.allocate_with(p, pointer_header_word())
     }
 
     #[scheme(name = "pointer->bytevector")]
@@ -1762,7 +1762,7 @@ fn struct_argument<'gc>(
                 Value::new(false),
                 Str::from_str(
                     ctx,
-                    &format!(
+                    format!(
                         "bytevector of {} bytes is too short for FFI struct of {size} bytes",
                         bv.len()
                     ),
@@ -1812,7 +1812,7 @@ unsafe fn unpack<'gc>(
                     Value::new(false),
                     Str::from_str(
                         ctx,
-                        &format!("argument out of range or wrong type for FFI {name}"),
+                        format!("argument out of range or wrong type for FFI {name}"),
                     )
                     .into(),
                     &[val],
@@ -2143,7 +2143,7 @@ unsafe fn pack<'gc>(
         Err(make_assertion_violation(
             ctx,
             Value::new(false),
-            Str::from_str(ctx, &format!("unsupported FFI type tag: {t}")).into(),
+            Str::from_str(ctx, format!("unsupported FFI type tag: {t}")).into(),
             &[],
         ))
     }

@@ -556,10 +556,11 @@ pub mod threading_ops {
     /// checked to be in range. Does nothing outside a thread.
     #[scheme(name = "%thread-set-priority!")]
     pub fn virtual_thread_set_priority(level: Value<'gc>) -> Value<'gc> {
-        if let Some(cx) = crate::runtime::sched::scheduler::current() {
-            if level.is_int32() && level.as_int32() >= 0 {
-                cx.set_priority(level.as_int32().min(u8::MAX as i32) as u8);
-            }
+        if let Some(cx) = crate::runtime::sched::scheduler::current()
+            && level.is_int32()
+            && level.as_int32() >= 0
+        {
+            cx.set_priority(level.as_int32().min(u8::MAX as i32) as u8);
         }
         Value::undefined()
     }
@@ -1038,7 +1039,7 @@ fn wait_on_condition<'gc>(
     deadline: Option<Instant>,
 ) -> (MutationContext<'gc>, Result<bool, Killed>) {
     let scope = RootScope::new(ctx);
-    let cond_root = scope.root(cond_obj.into());
+    let _cond_root = scope.root(cond_obj.into());
     let mutex_root = scope.root(mutex_obj.into());
     let cond_key = cond_obj.key();
     let waiter = Waiter::current(wait::CONDITION, cond_key as u64);
@@ -1052,15 +1053,15 @@ fn wait_on_condition<'gc>(
         Ok(_) => Ok(!sync::cancel(cond_key, &waiter)),
         Err(killed) => {
             // A signal this waiter took is passed on to the next waiter.
-            if !sync::cancel(cond_key, &waiter) {
-                if let Some(next) = sync::grant_first(cond_key) {
-                    next.wake();
-                }
+            if !sync::cancel(cond_key, &waiter)
+                && let Some(next) = sync::grant_first(cond_key)
+            {
+                next.wake();
             }
             Err(killed)
         }
     };
-    drop(cond_root);
+
     let mutex_obj: Gc<'gc, Mutex> = mutex_root.get().downcast();
     // The reacquire is not cancellable, so it returns with the lock held.
     let (ctx, reacquired) = acquire(ctx, mutex_obj, true, false, false);
