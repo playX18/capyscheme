@@ -440,8 +440,9 @@ impl Block {
     }
 
     pub fn is_safe_to_delete(&self) -> bool {
-        debug_assert!(self.is_empty());
-        std::sync::atomic::fence(Ordering::Acquire);
+        let allocated = self.allocated_bitmask.load(Ordering::Acquire);
+        debug_assert!(is_empty_bitmask(allocated));
+
         self.release_refcount.load(Ordering::Acquire) == 0
             && self.deferred_updates_next.load(Ordering::Acquire).is_null()
     }
@@ -562,7 +563,7 @@ impl Block {
             claimed_deferred = true;
         }
 
-        self.release_refcount.fetch_sub(1, Ordering::Relaxed);
+        self.release_refcount.fetch_sub(1, Ordering::Release);
         ReleaseTransition {
             to_empty,
             from_full,
