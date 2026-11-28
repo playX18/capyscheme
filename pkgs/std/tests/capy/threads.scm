@@ -97,17 +97,21 @@
          [t1 (go (lambda () (set-thread-name! "alice") (mutex-acquire a) (sleep 0.1) (mutex-acquire b)))]
          [t2 (go (lambda () (set-thread-name! "bob") (mutex-acquire b) (sleep 0.1) (mutex-acquire a)))])
     (define (dump) (call-with-string-output-port (lambda (p) (dump-threads p))))
-    ;; Wait for the dump itself to show the cycle: the names are set by the
-    ;; threads, so the report is only complete once both have run that far.
-    (wait-for (lambda () (and (string-contains* (dump) "deadlock among 2 threads")
-                              (string-contains* (dump) "alice")
-                              (string-contains* (dump) "bob"))))
+
+    (define (our-cycle? text)
+      (let ([p (open-string-input-port text)])
+        (let loop ()
+          (let ([line (get-line p)])
+            (and (not (eof-object? line))
+              (or (and (string-contains* line "deadlock among 2 threads")
+                       (string-contains* line "(alice)")
+                       (string-contains* line "(bob)"))
+                  (loop)))))))
+    (wait-for (lambda () (our-cycle? (dump))))
     (let ([text (dump)])
       (thread-cancel! t1)
       (thread-cancel! t2)
-      (and (string-contains* text "deadlock among 2 threads")
-        (string-contains* text "alice")
-        (string-contains* text "bob")))))
+      (our-cycle? text))))
 
 (test-assert "the tree lists children under their parent"
   (let* ([t (go (lambda () (set-thread-name! "kid") (sleep 30)))])
