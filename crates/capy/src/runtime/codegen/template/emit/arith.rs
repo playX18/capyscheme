@@ -455,6 +455,7 @@ pub fn op_sqrt<C: TemplateContext>(masm: &mut Masm, context: &mut C) {
     context.slow_site(masm, slow, &spec, SlowPath::NumberArith);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_addi_fast<C: TemplateContext>(
     masm: &mut Masm,
     context: &mut C,

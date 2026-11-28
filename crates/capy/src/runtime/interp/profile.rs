@@ -59,6 +59,12 @@ impl<T: ?Sized> GcCell<T> {
     }
 }
 
+/// The same type branded with `'gc` instead of `'static`.
+///
+/// # Safety
+///
+/// `To` must be `Self` with only its lifetimes changed, so the two have the
+/// same layout and a `GcCell` word read as `To` is a valid `Self`.
 pub unsafe trait Rebind<'gc> {
     type To: 'gc;
 }

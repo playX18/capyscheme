@@ -27,7 +27,7 @@
 //! [`SaveArea`](super::deopt::metadata::SaveArea) reads, and resumes at the
 //! address the runtime returns, with the registers reloaded. A constant-table slot is loaded through the owner import, the
 //! address of the code image, at a fixed offset into its inline references.
-//! [`HELPERS`] lists the runtime helpers that a `CallOp` names by index. The
+//! [`HELPERS`] lists the runtime helpers that a `CallHelper` names by index. The
 //! builder emits those calls.
 
 #[cfg(target_arch = "aarch64")]

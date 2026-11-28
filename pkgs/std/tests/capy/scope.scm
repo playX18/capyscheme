@@ -15,9 +15,22 @@
 (define (sleeper log tag)
   (go (lambda ()
         (dynamic-wind
-          (lambda () #f)
+          (lambda () (entered!))
           (lambda () (sleep 30))
           (lambda () (note! log tag))))))
+
+(define entered-lock (make-mutex))
+(define entered 0)
+(define (entered!)
+  (mutex-acquire entered-lock) (set! entered (+ entered 1)) (mutex-release entered-lock))
+(define (wait-entered! n)
+  (let wait ([tries 10000])
+    (mutex-acquire entered-lock)
+    (let ([e entered]) (mutex-release entered-lock)
+      (when (and (< e n) (> tries 0))
+        (sleep 0.001)
+        (wait (- tries 1)))))
+  (mutex-acquire entered-lock) (set! entered 0) (mutex-release entered-lock))
 
 (define-record-type cell (fields (mutable value)))
 (define (box v) (make-cell v))
@@ -41,7 +54,7 @@
          [r (guard (e [#t (list (uncaught-exception? e) (unbox log))])
               (with-thread-scope
                 (sleeper log 'sibling)
-                (go (lambda () (sleep 0.05) (error 'child "boom")))
+                (go (lambda () (wait-entered! 1) (error 'child "boom")))
                 (sleep 30)
                 'not-reached))])
     (equal? r '(#t (sibling)))))
@@ -51,7 +64,7 @@
     (guard (e [#t #f])
       (with-thread-scope
         (sleeper log 'child)
-        (sleep 0.05)
+        (wait-entered! 1)
         (error 'owner "boom")))
     (unbox log))
   '(child))
@@ -60,12 +73,13 @@
   (let ([log (box '())])
     (list
       (guard (e [(deadline-exceeded? e) (deadline-exceeded-seconds e)])
-        (with-thread-deadline 0.1
+        (with-thread-deadline 1.0
           (sleeper log 'child)
+          (wait-entered! 1)
           (sleep 30)
           'not-reached))
       (unbox log)))
-  '(0.1 (child)))
+  '(1.0 (child)))
 
 (test-equal "a scope that finishes before its deadline is not cancelled"
   (with-thread-deadline 5
@@ -76,14 +90,15 @@
 (test-equal "cancelling an outer scope unwinds the grandchildren"
   (let ([log (box '())])
     (guard (e [(deadline-exceeded? e) #t])
-      (with-thread-deadline 0.1
+      (with-thread-deadline 1.0
         (go (lambda ()
               (with-thread-scope
                 (sleeper log 'grandchild)
                 (dynamic-wind
-                  (lambda () #f)
+                  (lambda () (entered!))
                   (lambda () (sleep 30))
                   (lambda () (note! log 'child))))))
+        (wait-entered! 2)
         (sleep 30)))
     (list-sort (lambda (a b) (string<? (symbol->string a) (symbol->string b)))
       (unbox log)))
@@ -102,7 +117,7 @@
   (let ([log (box '())])
     (with-thread-scope
       (sleeper log 'child)
-      (sleep 0.05)
+      (wait-entered! 1)
       (thread-scope-cancel!))
     (unbox log))
   '(child))
@@ -147,21 +162,22 @@
              (sleeper log 'sleep)
              (go (lambda ()
                    (dynamic-wind
-                     (lambda () #f)
+                     (lambda () (entered!))
                      (lambda () (mutex-acquire m))
                      (lambda () (note! log 'mutex)))))
              (go (lambda ()
                    (dynamic-wind
-                     (lambda () #f)
+                     (lambda () (entered!))
                      (lambda ()
                        (mutex-acquire cvm)
                        (condition-variable-wait cv cvm))
                      (lambda () (note! log 'condition)))))
              (go (lambda ()
                    (dynamic-wind
-                     (lambda () #f)
+                     (lambda () (entered!))
                      (lambda () (let loop () (loop)))
                      (lambda () (note! log 'busy))))))])
+    (wait-entered! 4)
     (sleep 0.2)
     (for-each thread-cancel! blocked)
     (for-each (lambda (t) (guard (e [#t #f]) (thread-join t))) blocked)

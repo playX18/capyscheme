@@ -633,7 +633,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                         span: src.0,
                         error: e,
                     })?
-                    .to_vm_number(self.ctx)
+                    .into_vm_number(self.ctx)
                     .into_value(self.ctx);
 
                 // Numbers are immediates without table identity, the syntax

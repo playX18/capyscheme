@@ -114,7 +114,7 @@ pub(crate) fn record(kind: RegAllocKind, alloc: &Allocation, weights: &Weights, 
             }
         }
     }
-    if std::env::var_os("CAPY_STATS_PER").is_some() {
+    if crate::utils::flags::stats_per() {
         eprintln!("PER {} {weighted} {moves} {slot_operands}", kind.name());
     }
     row.slot_operands.fetch_add(slot_operands, Relaxed);

@@ -101,8 +101,8 @@ impl Loops {
         // One loop per header: the union of the natural loops of its back edges.
         let mut headers: Vec<usize> = Vec::new();
         let mut bodies: Vec<Vec<bool>> = Vec::new();
-        for b in 0..n {
-            for &s in &succs[b] {
+        for (b, block_succs) in succs.iter().enumerate().take(n) {
+            for &s in block_succs {
                 if !dominates(s, b) {
                     continue;
                 }

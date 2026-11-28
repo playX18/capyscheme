@@ -497,6 +497,7 @@ pub trait Speculation {
     /// template's guard-failure target. `obj`/`arg` are the operand fields
     /// of the object and of the loaded or stored value. Returns false when
     /// no site was declared, in which case the caller keeps its slow path.
+    #[allow(clippy::too_many_arguments)]
     fn lazy_slot_edge(
         &mut self,
         _masm: &mut Masm,

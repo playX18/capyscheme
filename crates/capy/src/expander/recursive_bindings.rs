@@ -227,41 +227,22 @@ pub fn rewrite_recursive_bindings<'gc>(ctx: MutationContext<'gc>, t: TermRef<'gc
             if matches!(l.style, LetStyle::LetRec | LetStyle::LetRecStar) {
                 let in_order = matches!(l.style, LetStyle::LetRecStar);
 
-                if in_order {
-                    let mut fix_state = FixTermState {
-                        sym_id: &sym_id,
-                        referenced: &referenced,
-                        assigned: &assigned,
-                        compute_free_variables: &mut compute_free_variables,
-                        complex: &complex,
-                    };
-                    fix_term(
-                        ctx,
-                        x.source(),
-                        in_order,
-                        &l.lhs,
-                        &l.rhs,
-                        l.body,
-                        &mut fix_state,
-                    )
-                } else {
-                    let mut fix_state = FixTermState {
-                        sym_id: &sym_id,
-                        referenced: &referenced,
-                        assigned: &assigned,
-                        compute_free_variables: &mut compute_free_variables,
-                        complex: &complex,
-                    };
-                    fix_term(
-                        ctx,
-                        x.source(),
-                        in_order,
-                        &l.lhs,
-                        &l.rhs,
-                        l.body,
-                        &mut fix_state,
-                    )
-                }
+                let mut fix_state = FixTermState {
+                    sym_id: &sym_id,
+                    referenced: &referenced,
+                    assigned: &assigned,
+                    compute_free_variables: &mut compute_free_variables,
+                    complex: &complex,
+                };
+                fix_term(
+                    ctx,
+                    x.source(),
+                    in_order,
+                    &l.lhs,
+                    &l.rhs,
+                    l.body,
+                    &mut fix_state,
+                )
             } else {
                 if l.rhs.iter().any(|x| matches!(x.kind, TermKind::Proc(_))) {
                     let mut fix_state = FixTermState {

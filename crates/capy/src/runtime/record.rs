@@ -74,6 +74,7 @@ impl<'gc> Rtd<'gc> {
     /// normalized list of `(mutable? . name)` pairs for the fields this type
     /// declares, and `own_field_count` is the number of those fields. Opacity
     /// is inherited from `parent`.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ctx: MutationContext<'gc>,
         name: Value<'gc>,

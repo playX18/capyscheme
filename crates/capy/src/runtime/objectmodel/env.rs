@@ -92,8 +92,8 @@ impl<'gc> EnvRecord<'gc> {
             );
             let this = ptr.to_address().as_mut_ref::<Self>();
             this.length = length;
-            for i in 0..length {
-                this.slots.as_mut_ptr().add(i).write(Lock::new(slots[i]));
+            for (i, &slot) in slots.iter().enumerate() {
+                this.slots.as_mut_ptr().add(i).write(Lock::new(slot));
             }
             Gc::from_gc_object(ptr)
         }

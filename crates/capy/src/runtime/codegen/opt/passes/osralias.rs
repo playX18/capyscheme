@@ -142,7 +142,7 @@ fn escapes(func: &Func, site: Inst) -> bool {
                     | Op::EqBits
                     | Op::CheckNotInvalid
                     | Op::Safepoint => {}
-                    Op::CallOp(helper)
+                    Op::CallHelper(helper)
                         if helper == Helper::Arith.helper_ref()
                             || helper == Helper::Length.helper_ref() =>
                     {

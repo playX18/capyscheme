@@ -15,6 +15,13 @@
 (define (join-all threads)
   (for-each thread-join threads))
 
+
+(define (hold-until-peak peak level)
+  (let wait ([n 2000])
+    (when (and (< (atomic-ref peak) level) (> n 0))
+      (sleep 0.001)
+      (wait (- n 1)))))
+
 (define (raises-assertion? thunk)
   (guard (c [(assertion-violation? c) #t]
             [(message-condition? c) #t]
@@ -97,7 +104,7 @@
                          (let ([p (atomic-ref peak)])
                            (when (and (> now p) (not (atomic-cas! peak p now)))
                              (retry))))
-                       (sleep 0.02)
+                       (hold-until-peak peak 2)
                        (atomic-add! inside -1))))))])
       (join-all threads)
       (> (atomic-ref peak) 1))
@@ -209,7 +216,7 @@
                          (let ([p (atomic-ref peak)])
                            (when (and (> now p) (not (atomic-cas! peak p now)))
                              (retry))))
-                       (sleep 0.005)
+                       (hold-until-peak peak 3)
                        (atomic-add! inside -1))))))])
       (join-all threads)
       (atomic-ref peak))

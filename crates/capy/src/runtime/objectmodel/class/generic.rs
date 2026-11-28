@@ -377,6 +377,12 @@ pub(crate) mod cache_layout {
     pub const METHOD_CACHE: usize = offset_of!(GenericDescriptor<'static>, method_cache);
 }
 
+/// A [`CursorEntry`] copied out for the compiler, as `(class0, class1, body, cursor)`.
+pub(crate) type CursorSnapshot<'gc> = (u32, u32, Value<'gc>, Value<'gc>);
+
+/// A [`MethodEntry`] copied out for the compiler, as `(class0, class1, body)`.
+pub(crate) type MethodSnapshot<'gc> = (u32, u32, Value<'gc>);
+
 /// Layout of a cached method descriptor, read by the lazy generic site
 /// (`codegen::lazy::generic`): the body of the first cached method.
 pub(crate) mod method_layout {
@@ -1623,6 +1629,7 @@ impl<'gc> GenericDescriptor<'gc> {
     }
 
     /// Add (or replace) a method. `specializers` holds the class part of each
+    #[allow(clippy::too_many_arguments)]
     pub fn add_method_with_flags(
         ctx: MutationContext<'gc>,
         generic: Gc<'gc, GenericDescriptor<'gc>>,
@@ -1646,6 +1653,7 @@ impl<'gc> GenericDescriptor<'gc> {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn add_method_in_table(
         ctx: MutationContext<'gc>,
         table: &super::table::ClassTable<'gc>,
@@ -2223,15 +2231,12 @@ impl<'gc> GenericDescriptor<'gc> {
     }
 
     /// Every cursor cache entry for calls of `argc` arguments, as
-    pub(crate) fn cursor_entries(
-        &self,
-        argc: usize,
-    ) -> Option<(u32, Vec<(u32, u32, Value<'gc>, Value<'gc>)>)> {
+    pub(crate) fn cursor_entries(&self, argc: usize) -> Option<(u32, Vec<CursorSnapshot<'gc>>)> {
         let epoch = self.epoch();
         if epoch & 1 != 0 {
             return None;
         }
-        let entries: Vec<(u32, u32, Value<'gc>, Value<'gc>)> = self
+        let entries: Vec<CursorSnapshot<'gc>> = self
             .cursor_cache
             .get()
             .iter()
@@ -2245,12 +2250,12 @@ impl<'gc> GenericDescriptor<'gc> {
     pub(crate) fn method_cache_entries(
         &self,
         argc: usize,
-    ) -> Option<(u32, Vec<(u32, u32, Value<'gc>)>)> {
+    ) -> Option<(u32, Vec<MethodSnapshot<'gc>>)> {
         let epoch = self.epoch();
         if epoch & 1 != 0 {
             return None;
         }
-        let entries: Vec<(u32, u32, Value<'gc>)> = self
+        let entries: Vec<MethodSnapshot<'gc>> = self
             .method_cache
             .get()
             .iter()
@@ -3189,6 +3194,7 @@ impl<'gc> GenericDescriptor<'gc> {
 }
 
 impl<'gc> MethodDescriptor<'gc> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         ctx: MutationContext<'gc>,
         generic: Gc<'gc, GenericDescriptor<'gc>>,
@@ -3241,7 +3247,7 @@ impl<'gc> MethodDescriptor<'gc> {
     }
 
     pub fn body(&self) -> Value<'gc> {
-        self.body.get()
+        self.body.load(Ordering::Acquire)
     }
 
     pub fn flags(&self) -> MethodFlags {
@@ -3263,9 +3269,14 @@ impl<'gc> MethodDescriptor<'gc> {
         method: Gc<'gc, MethodDescriptor<'gc>>,
         body: Value<'gc>,
     ) {
-        barrier::field!(Gc::write(ctx, method), MethodDescriptor, body)
-            .unlock()
-            .set(body);
+        // Release, not a plain store: `begin_change` has just swapped in an
+        // empty dispatch table, and a dispatch-table bucket keeps a copy of the
+        // old body. On a weakly ordered CPU a plain store can be seen before
+        // that swap, so a reader would get the new body for one class and the
+        // old cached body for the next.
+        let owner = Gc::write(ctx, method);
+        let _ = owner;
+        method.body.atomic_swap(body, Ordering::Release);
         GenericDescriptor::clear_method_cache(ctx, method.generic);
     }
 

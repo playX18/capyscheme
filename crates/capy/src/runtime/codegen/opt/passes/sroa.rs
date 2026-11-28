@@ -63,6 +63,8 @@ enum FieldPos {
 }
 
 /// The escape classification of a candidate.
+// The standard escape-analysis names, kept so they read as the literature does.
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Escape {
     NoEscape,
@@ -586,7 +588,7 @@ fn analyze_uses(
                         | Op::TestCode(_)
                         | Op::EqBits => {}
                         Op::CallPrim { prim, .. } if prim.is(Primitive::IsEq) => {}
-                        Op::CallPrim { .. } | Op::CallOp(_) => {
+                        Op::CallPrim { .. } | Op::CallHelper(_) => {
                             unsupported(candidate, Escape::ArgEscape)
                         }
                         Op::AllocPair
@@ -1131,7 +1133,7 @@ fn plan_rewrite(
                         | Op::EqBits => {}
                         Op::CallPrim { prim, .. }
                             if prim.is(Primitive::IsEq) && eq_foldable(func, args) => {}
-                        Op::CallPrim { .. } | Op::CallOp(_) => ok = false,
+                        Op::CallPrim { .. } | Op::CallHelper(_) => ok = false,
                         _ => ok = false,
                     },
                     _ => match data.op {

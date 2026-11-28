@@ -46,7 +46,7 @@ extern "C" fn print_bail_stats() {
         .filter(|(_, count)| **count > 0)
         .map(|(op, count)| (op as u8, *count))
         .collect();
-    ranked.sort_by(|a, b| b.1.cmp(&a.1));
+    ranked.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
     log::info!(
         target: crate::heap::logging::STATS_LOG_TARGET,
         "template bail stats: {total} total"
@@ -114,7 +114,7 @@ extern "C" fn print_op_stats() {
             }
         }
     }
-    ranked.sort_by(|a, b| b.2.cmp(&a.2));
+    ranked.sort_by_key(|&(_, _, count)| std::cmp::Reverse(count));
     for (width, op, count) in ranked.iter().take(15) {
         let width_name = ["narrow", "wide16", "wide32"][*width];
         let name: &str = match (*width, *op) {

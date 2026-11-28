@@ -101,9 +101,24 @@ impl<'gc> RootStack<'gc> {
         }
     }
 
-    fn slots(&self) -> &mut SmallVec<[Cell<Value<'gc>>; 8]> {
+    /// The slots, shared: each is a `Cell`, so reads and writes need no `&mut`.
+    fn slots(&self) -> &SmallVec<[Cell<Value<'gc>>; 8]> {
+        // SAFETY: RootStack is exclusively owned by the mutator thread, and the
+        // only `&mut` to the vector (`slots_mut`) never outlives a `push`.
+        unsafe { &*self.slots.inner.get() }
+    }
+
+    /// The slot vector, to grow it.
+    ///
+    /// # Safety
+    ///
+    /// No other reference into the vector may be live while the result is:
+    /// growing it can move every slot.
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn slots_mut(&self) -> &mut SmallVec<[Cell<Value<'gc>>; 8]> {
         // SAFETY: RootStack is exclusively owned by the mutator thread. GC
-        // tracing runs stop-the-world with no concurrent push/pop.
+        // tracing runs stop-the-world with no concurrent push/pop; the caller
+        // holds no other reference into the vector.
         unsafe { &mut *self.slots.inner.get() }
     }
 
@@ -118,11 +133,11 @@ impl<'gc> RootStack<'gc> {
     /// Push `value` and return its slot index.
     pub fn push(&self, value: Value<'gc>) -> usize {
         let idx = self.len.get();
-        let slots = self.slots();
-        if idx < slots.len() {
-            slots[idx].set(value);
+        if idx < self.slots().len() {
+            self.slots()[idx].set(value);
         } else {
-            slots.push(Cell::new(value));
+            // SAFETY: no reference into the vector is held across this push.
+            unsafe { self.slots_mut() }.push(Cell::new(value));
         }
         self.len.set(idx + 1);
         idx
@@ -141,9 +156,8 @@ impl<'gc> RootStack<'gc> {
     /// Truncate the stack to `new_len` (clears dropped slots).
     pub fn truncate(&self, new_len: usize) {
         debug_assert!(new_len <= self.len.get());
-        let slots = self.slots();
-        for i in new_len..self.len.get() {
-            slots[i].set(Value::undefined());
+        for slot in &self.slots()[new_len..self.len.get()] {
+            slot.set(Value::undefined());
         }
         self.len.set(new_len);
     }

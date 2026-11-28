@@ -261,6 +261,7 @@ pub(crate) fn reap_interp() {
 }
 
 /// Publish a compiled procedure's debug info
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn publish_jit<'gc>(
     ctx: MutationContext<'gc>,
     base: u64,

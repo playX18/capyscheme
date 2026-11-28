@@ -260,8 +260,10 @@ pub(crate) fn run(func: &mut Func, name: &str) -> Result<PipelineStats, String> 
     // the interpreter may have taken before an OSR transfer is still here.
     osralias::compute(func);
     let timed = crate::utils::flags::jit_stats();
-    let mut stats = PipelineStats::default();
-    stats.insts_before = func.insts.len();
+    let mut stats = PipelineStats {
+        insts_before: func.insts.len(),
+        ..PipelineStats::default()
+    };
     let mut gas = DEFAULT_GAS.max(GAS_PER_INST * func.insts.len());
     'rounds: loop {
         stats.rounds += 1;

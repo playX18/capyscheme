@@ -62,7 +62,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
 
     fn helper_call(&mut self, helper: Helper, args: &[Value], frame: FrameState) -> Value {
         self.value_op(
-            Op::CallOp(helper.helper_ref()),
+            Op::CallHelper(helper.helper_ref()),
             args,
             Type::Any,
             Some(frame),

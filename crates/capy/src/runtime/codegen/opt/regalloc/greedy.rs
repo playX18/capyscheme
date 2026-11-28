@@ -22,8 +22,8 @@ fn split_knobs() -> (bool, bool) {
     static KNOBS: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
     *KNOBS.get_or_init(|| {
         (
-            std::env::var("CAPY_GREEDY_REGION").map_or(true, |v| v != "0"),
-            std::env::var("CAPY_GREEDY_LOOPS").is_ok_and(|v| v != "0"),
+            crate::utils::flags::greedy_region(),
+            crate::utils::flags::greedy_loops(),
         )
     })
 }

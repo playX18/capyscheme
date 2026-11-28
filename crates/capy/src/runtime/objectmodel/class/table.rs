@@ -625,6 +625,9 @@ fn inherited_slots_for_cpl<'gc>(
     slots
 }
 
+/// A redefined class, as `(old, new)`.
+type ClassReplacement<'gc> = (Gc<'gc, ClassDescriptor<'gc>>, Gc<'gc, ClassDescriptor<'gc>>);
+
 impl<'gc> ClassTable<'gc> {
     pub fn new(ctx: MutationContext<'gc>) -> Self {
         Self::with_max_id(ctx, MAX_CLASS_ID)
@@ -739,6 +742,7 @@ impl<'gc> ClassTable<'gc> {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn register_dynamic_with_slots_and_hooks(
         &self,
         ctx: MutationContext<'gc>,
@@ -1067,8 +1071,7 @@ impl<'gc> ClassTable<'gc> {
         ctx: MutationContext<'gc>,
         redefinition: &ClassRedefinitionState,
         ids: &[ClassId],
-    ) -> Result<Vec<(Gc<'gc, ClassDescriptor<'gc>>, Gc<'gc, ClassDescriptor<'gc>>)>, ClassTableError>
-    {
+    ) -> Result<Vec<ClassReplacement<'gc>>, ClassTableError> {
         let order = self.superclass_first(ids);
         let mut changed = Vec::new();
         for id in order {
@@ -1374,6 +1377,7 @@ impl<'gc> ClassTable<'gc> {
 
     /// Redefine a Scheme class. `metaclass`, when given, must be the class's
     /// current metaclass; `None` keeps it.
+    #[allow(clippy::too_many_arguments)]
     pub fn redefine_scheme_class_from_slot_list(
         &self,
         ctx: MutationContext<'gc>,

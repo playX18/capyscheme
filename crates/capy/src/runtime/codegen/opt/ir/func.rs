@@ -446,10 +446,7 @@ impl<'gc> Func<'gc> {
         let mut post = Vec::new();
         let mut stack = vec![(self.entry, self.successors(self.entry))];
         visited[self.entry] = true;
-        loop {
-            let Some((block, succs)) = stack.last_mut() else {
-                break;
-            };
+        while let Some((block, succs)) = stack.last_mut() {
             match succs.pop() {
                 Some(next) => {
                     if !visited[next] {

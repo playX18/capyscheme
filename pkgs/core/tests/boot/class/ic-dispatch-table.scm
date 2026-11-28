@@ -114,6 +114,12 @@
 (define-generic dt-g)
 (define-method (dt-g (o <dt-base>)) 0)
 
+;; The flag goes through the lock: a plain global read gives no ordering on
+;; a weakly ordered CPU, so a reader could see #t before the last method.
+(define (writer-finished?)
+  (mutex-acquire lock)
+  (let ([f writer-finished]) (mutex-release lock) f))
+
 (define (note! what)
   (mutex-acquire lock)
   (set! failures (cons what failures))
@@ -124,21 +130,25 @@
 
 (define (reader seed)
   (lambda ()
-    (let loop ([i seed] [last 0])
-      (let* ([o (list-ref objs (modulo i n))]
-             [v (dt-g o)])
-        (when (< v last) (note! (list 'backwards last v)))
-        (if writer-finished
-            (let ([final (dt-g o)])
-              (unless (= final rounds) (note! (list 'stale final))))
-            (loop (+ i 7) (if (eq? o (car objs)) v last)))))
+    (let ([lasts (make-vector n 0)])
+      (let loop ([i seed])
+        (let* ([j (modulo i n)]
+               [o (list-ref objs j)]
+               [v (dt-g o)])
+          (when (< v (vector-ref lasts j))
+            (note! (list 'backwards j (vector-ref lasts j) v)))
+          (vector-set! lasts j v)
+          (if (writer-finished?)
+              (let ([final (dt-g o)])
+                (unless (= final rounds) (note! (list 'stale final))))
+              (loop (+ i 7))))))
     (finish!)))
 
 (define (writer)
   (do ([i 1 (+ i 1)]) ((> i rounds))
     (let ([k i])
       (define-method (dt-g (o <dt-base>)) k)))
-  (set! writer-finished #t)
+  (mutex-acquire lock) (set! writer-finished #t) (mutex-release lock)
   (finish!))
 
 (test-group "readers vs. method replacement"
@@ -155,7 +165,8 @@
         [(= d 4) #t]
         [(> naps 15000) #f]
         [else (usleep 2000) (wait (+ naps 1))])))
-  (test-equal "no failures" '() failures)
+  (test-eqv "all threads finished" 4 (begin (mutex-acquire lock) (let ([d done]) (mutex-release lock) d)))
+  (test-equal "no failures" '() (begin (mutex-acquire lock) (let ([f failures]) (mutex-release lock) f)))
   (test-eqv "final body" rounds (dt-g (list-ref objs 77))))
 
 ;; `make` asks `initialize` per class: a custom method on one class makes

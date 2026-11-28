@@ -131,7 +131,6 @@ impl<'a, T> std::ops::DerefMut for MonitorGuard<'a, T> {
 
 /// A reentrant monitor: the same thread may lock it multiple times without
 /// deadlocking.
-
 pub struct ReentrantMonitor<T = ()> {
     mutex: ReentrantMutex<T>,
 }

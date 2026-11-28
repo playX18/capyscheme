@@ -14,6 +14,7 @@ use crate::runtime::{
 mod directory;
 mod effects;
 mod instance;
+#[allow(clippy::module_inception)]
 mod linklet;
 mod registry;
 

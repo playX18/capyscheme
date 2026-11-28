@@ -227,10 +227,10 @@ fn fold_bool_ops(func: &Func, subst: &mut Subst) -> bool {
                 }
                 continue;
             }
-            let ne = match func.insts[inst].op {
-                Op::CmpI32(Cmp::Ne) | Op::CmpI64(Cmp::Ne) => true,
-                _ => false,
-            };
+            let ne = matches!(
+                func.insts[inst].op,
+                Op::CmpI32(Cmp::Ne) | Op::CmpI64(Cmp::Ne)
+            );
             if !ne {
                 continue;
             }
@@ -760,10 +760,7 @@ fn merge_blocks(func: &mut Func, subst: &mut Subst) -> bool {
         if merged[block] {
             continue;
         }
-        loop {
-            let Some(Terminator::Jump(edge)) = func.blocks[block].term.clone() else {
-                break;
-            };
+        while let Some(Terminator::Jump(edge)) = func.blocks[block].term.clone() {
             let target = edge.block;
             if target == block || target == func.entry || pred_edges[target] != 1 || merged[target]
             {

@@ -212,7 +212,7 @@ fn observed_targets<'gc>(link: &CallLinkInfo, site_hits: u32) -> Vec<CallTarget<
             hits: site_hits,
         });
     }
-    targets.sort_by(|a, b| b.hits.cmp(&a.hits));
+    targets.sort_by_key(|target| std::cmp::Reverse(target.hits));
     targets
 }
 

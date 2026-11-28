@@ -81,6 +81,9 @@ impl SampleSlot {
 }
 
 /// What [`SampleSlot::read_sealed`] found.
+// The sample is returned by value once per read: boxing it would allocate on
+// every sample the aggregator drains.
+#[allow(clippy::large_enum_variant)]
 pub enum SealOutcome {
     /// A complete sample of the expected generation.
     Sample(Sample),

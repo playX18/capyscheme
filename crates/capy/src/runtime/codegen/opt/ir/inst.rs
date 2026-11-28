@@ -79,7 +79,7 @@ impl PrimRef {
 pub struct HelperRef(u32);
 entity_impl!(HelperRef, "helper");
 
-/// The returning helpers Tier 2 calls through [`Op::CallOp`]. Each returns a
+/// The returning helpers Tier 2 calls through [`Op::CallHelper`]. Each returns a
 /// value and a status (glue.rs `OptReturn`). A nonzero status deopts before
 /// the instruction, so baseline runs it from its own pc. The emitter's helper
 /// table (emit/mod.rs `HELPERS`) is in this order.
@@ -730,7 +730,7 @@ pub enum Op {
     /// the callee frame, for a helper that reads the extras.
     ReturnedAddr(u32),
     /// `[args...] -> Any`. A returning runtime helper.
-    CallOp(HelperRef),
+    CallHelper(HelperRef),
     /// `[args...] -> Any`
     CallPrim { prim: PrimRef, effects: Effects },
     /// `[] -> none`. A yieldpoint, where GC may run.
@@ -855,7 +855,7 @@ impl Op {
             | Op::Remat(_)
             | Op::CallKnown(..)
             | Op::CallGeneric(_)
-            | Op::CallOp(_)
+            | Op::CallHelper(_)
             | Op::CallPrim { .. } => None,
         }
     }
@@ -927,7 +927,7 @@ impl Op {
             self,
             Op::CallKnown(..)
                 | Op::CallGeneric(_)
-                | Op::CallOp(_)
+                | Op::CallHelper(_)
                 | Op::CallPrim { .. }
                 | Op::Safepoint
         )
@@ -1076,7 +1076,7 @@ impl Op {
             Op::StoreCell => Effects::write(MemoryRegion::Variables, SemanticEffects::VARIABLE),
             Op::StoreFree { .. } => Effects::write(MemoryRegion::Heap, SemanticEffects::NONE),
             Op::WriteBarrier => Effects::write(MemoryRegion::Heap, SemanticEffects::NONE),
-            Op::CallOp(helper) => helper_effects(helper),
+            Op::CallHelper(helper) => helper_effects(helper),
             Op::CallKnown(..) | Op::CallGeneric(_) => Effects::for_call(),
             // A safepoint polls for the collector but runs no Scheme code:
             // the collector preserves every Scheme value, and finalization
@@ -1592,7 +1592,7 @@ mod helper_tests {
             Helper::VectorToList,
             Helper::CharWhitespace,
         ] {
-            let effects = Op::CallOp(helper.helper_ref()).effects();
+            let effects = Op::CallHelper(helper.helper_ref()).effects();
             assert!(!effects.flags.contains(EffectFlags::MAY_CALL), "{helper:?}");
             assert!(
                 !effects.flags.contains(EffectFlags::EXITS_SIDEWAYS),
@@ -1612,11 +1612,11 @@ mod helper_tests {
     #[test]
     fn allocating_text_helpers_say_so() {
         for helper in [Helper::ListHead, Helper::StringAppend, Helper::Substring] {
-            let effects = Op::CallOp(helper.helper_ref()).effects();
+            let effects = Op::CallHelper(helper.helper_ref()).effects();
             assert!(effects.flags.contains(EffectFlags::ALLOCATES), "{helper:?}");
         }
         for helper in [Helper::ListRef, Helper::StringEq, Helper::CharWhitespace] {
-            let effects = Op::CallOp(helper.helper_ref()).effects();
+            let effects = Op::CallHelper(helper.helper_ref()).effects();
             assert!(
                 !effects.flags.contains(EffectFlags::ALLOCATES),
                 "{helper:?}"
@@ -1627,7 +1627,7 @@ mod helper_tests {
 
     #[test]
     fn other_helpers_keep_the_effects_of_a_call() {
-        let effects = Op::CallOp(Helper::VariableSet.helper_ref()).effects();
+        let effects = Op::CallHelper(Helper::VariableSet.helper_ref()).effects();
         assert_eq!(effects, Effects::for_call());
     }
 }

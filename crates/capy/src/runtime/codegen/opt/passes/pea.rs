@@ -469,7 +469,7 @@ fn captures(op: Op) -> bool {
         // The helpers are leaves of the runtime (numeric operations, slot
         // caches, list helpers): none calls Scheme code, and the ones that
         // fail deopt.
-        Op::CallOp(_) => false,
+        Op::CallHelper(_) => false,
         Op::CallPrim { effects, .. } => effects.flags.contains(EffectFlags::MAY_CALL),
         _ => true,
     }
@@ -2024,7 +2024,7 @@ impl<'a, 'gc> Analysis<'a, 'gc> {
                     set_field!(0, args[1])
                 }
             }
-            Op::CallOp(helper) => {
+            Op::CallHelper(helper) => {
                 if shape == Shape::Variable
                     && helper == Helper::VariableSet.helper_ref()
                     && args.len() == 2

@@ -77,6 +77,7 @@ pub fn set_source_property<'gc>(ctx: MutationContext<'gc>, obj: Value<'gc>, alis
     props.put(ctx, obj, alist);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn add_source<'gc>(
     ctx: MutationContext<'gc>,
     obj: Value<'gc>,

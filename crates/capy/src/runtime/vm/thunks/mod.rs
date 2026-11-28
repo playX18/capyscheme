@@ -40,7 +40,9 @@ macro_rules! thunks {
     )*) => {
         $(
             $(#[$attr])*
-            #[allow(clippy::too_many_arguments)]
+            // Every thunk takes `'gc`, even one whose arguments are all
+            // plain words.
+            #[allow(clippy::too_many_arguments, clippy::extra_unused_lifetimes)]
             pub fn $name<$gl>($($arg: $t),*) -> $ret $b
         )*
     };

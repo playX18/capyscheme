@@ -908,9 +908,7 @@ pub fn lookup_srcmap(map: Value<'_>, pc: usize) -> Option<SpanHit<'_>> {
     let (mut lo, mut hi) = (0usize, count);
     while lo < hi {
         let mid = (lo + hi) / 2;
-        let Some(start) = runs[mid * 4].get().int32() else {
-            return None;
-        };
+        let start = runs[mid * 4].get().int32()?;
         if (start as usize) <= pc {
             lo = mid + 1;
         } else {

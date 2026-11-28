@@ -1,4 +1,4 @@
-(import (rnrs) (srfi 64) (capy process) (capy concurrency) (only (capy) current-second executable-path))
+(import (rnrs) (srfi 64) (capy process) (capy concurrency) (only (capy) current-second executable-path microsecond))
 
 (test-begin "capy process")
 
@@ -39,7 +39,7 @@
   (test-equal "cwd" "/\n" (run/string "pwd" '() #:cwd "/")))
 
 (test-group "files and pipes"
-  (let ([log "/tmp/capy-process-test.log"])
+  (let ([log (string-append "/tmp/capy-process-test-" (number->string (microsecond)) ".log")])
     (test-equal "stdout to a file" '("one")
       (begin
         (process-wait (spawn "echo" '("one") #:stdout log))

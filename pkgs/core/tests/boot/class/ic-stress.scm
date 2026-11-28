@@ -32,6 +32,12 @@
 (define writer-finished #f)
 (define failures '())
 
+(define (locked thunk)
+  (mutex-acquire lock)
+  (let ([v (thunk)]) (mutex-release lock) v))
+
+(define (writer-finished?) (locked (lambda () writer-finished)))
+
 (define (note-failure! what)
   (mutex-acquire lock)
   (set! failures (cons what failures))
@@ -42,7 +48,7 @@
     (let loop ([last 0])
       (let ([v (st-f o)])
         (when (< v last) (note-failure! (list 'backwards last v)))
-        (if writer-finished
+        (if (writer-finished?)
             (let ([final (st-f o)])
               (unless (= final rounds) (note-failure! (list 'stale final))))
             (loop v))))
@@ -52,7 +58,7 @@
   (do ([i 1 (+ i 1)]) ((> i rounds))
     (let ([k i])
       (define-method (st-f (o <st-a>)) k)))
-  (set! writer-finished #t)
+  (locked (lambda () (set! writer-finished #t)))
   (bump-done!))
 
 (test-group "readers vs. method replacement"
@@ -64,7 +70,7 @@
       (usleep 1000)
       (wait (+ n 1))))
   (test-equal 3 (done-count))
-  (test-equal '() failures)
+  (test-equal '() (locked (lambda () failures)))
   (test-equal rounds (st-f (make <st-a>))))
 
 ;; A hot slot read races repeated redefinition of its class. Each
@@ -82,8 +88,8 @@
   (define reads 0)
   (define (reader-loop)
     (let loop ([n 0])
-      (if stop
-          (begin (set! reads n) (set! redef-reader-done #t))
+      (if (locked (lambda () stop))
+          (locked (lambda () (set! reads n) (set! redef-reader-done #t)))
           (begin
             ;; A redefinition between the touch and the protocol dispatch in
             ;; the slow path raises a class/instance mismatch; that is the
@@ -91,20 +97,20 @@
             ;; value must still be the migrated one.
             (guard (e [#t #f])
               (unless (eqv? (slot-ref inst 'kept) 42)
-                (set! redef-failures (+ redef-failures 1))))
+                (locked (lambda () (set! redef-failures (+ redef-failures 1))))))
             (loop (+ n 1))))))
   (go reader-loop)
   (do ([i 0 (+ i 1)]) ((= i 400))
     (set! cls
       (redefine-class! cls 'st-redef
         (if (even? i) '(pad kept) '(kept)))))
-  (set! stop #t)
+  (locked (lambda () (set! stop #t)))
   (let wait ([n 0])
-    (when (and (not redef-reader-done) (< n 20000))
+    (when (and (not (locked (lambda () redef-reader-done))) (< n 20000))
       (usleep 1000)
       (wait (+ n 1))))
-  (test-assert redef-reader-done)
-  (test-equal 0 redef-failures)
+  (test-assert (locked (lambda () redef-reader-done)))
+  (test-equal 0 (locked (lambda () redef-failures)))
   (test-equal 42 (slot-ref inst 'kept)))
 
 (test-end "boot class ic stress")

@@ -58,6 +58,10 @@ pub unsafe trait Trace {
     unsafe fn process_weak_refs(&mut self, _weak_processor: &mut WeakProcessor) {}
 
     /// Weak-reference processing during `VMRefClosure` (alias of [`Self::process_weak_refs`]).
+    ///
+    /// # Safety
+    ///
+    /// Same as [`Self::process_weak_refs`].
     unsafe fn trace_weak(&mut self, weak_processor: &mut WeakProcessor) {
         unsafe { self.process_weak_refs(weak_processor) }
     }

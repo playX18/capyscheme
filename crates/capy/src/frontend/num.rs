@@ -58,7 +58,7 @@ unsafe impl Trace for Number {
 use crate::runtime::objectmodel::number::Number as RNumber;
 
 impl Number {
-    pub fn to_vm_number<'gc>(self, ctx: MutationContext<'gc>) -> RNumber<'gc> {
+    pub fn into_vm_number<'gc>(self, ctx: MutationContext<'gc>) -> RNumber<'gc> {
         match self {
             Number::ExactFixnum(n) => RNumber::from_i64(ctx, n),
 

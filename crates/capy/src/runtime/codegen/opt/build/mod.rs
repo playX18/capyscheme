@@ -185,7 +185,7 @@ fn fire_point(func: &Func, inst: Inst) -> FirePoint {
             }
         }
         Op::Safepoint => FirePoint::Lazy,
-        Op::CallOp(helper) if helper == Helper::VariableSet.helper_ref() => FirePoint::Lazy,
+        Op::CallHelper(helper) if helper == Helper::VariableSet.helper_ref() => FirePoint::Lazy,
         Op::CallPrim { prim, .. }
             if Primitive::from_id(prim.index() as u16) == Some(Primitive::VariableSet) =>
         {
@@ -1411,7 +1411,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 // barrier and fires, and never fails.
                 let frame = self.frame(pc, pc)?;
                 let _ = self.value_op(
-                    Op::CallOp(Helper::VariableSet.helper_ref()),
+                    Op::CallHelper(Helper::VariableSet.helper_ref()),
                     &[cell, value],
                     Type::Any,
                     Some(frame),
@@ -1669,7 +1669,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                     None,
                 );
                 let value = self.value_op(
-                    Op::CallOp(Helper::RuntimeProc.helper_ref()),
+                    Op::CallHelper(Helper::RuntimeProc.helper_ref()),
                     &[id],
                     Type::Any,
                     Some(frame),
@@ -1850,7 +1850,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 let src = self.reg(op.src.0)?;
                 let table = self.table_address(op.table.0);
                 let entry = self.value_op(
-                    Op::CallOp(Helper::SwitchSymbol.helper_ref()),
+                    Op::CallHelper(Helper::SwitchSymbol.helper_ref()),
                     &[src, table],
                     Type::Any,
                     Some(frame),
@@ -1928,7 +1928,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 // A watched variable fires its set on a write, so the store
                 // goes through the helper.
                 let _ = self.value_op(
-                    Op::CallOp(Helper::VariableSet.helper_ref()),
+                    Op::CallHelper(Helper::VariableSet.helper_ref()),
                     &[cell, value],
                     Type::Any,
                     Some(frame),
@@ -1946,7 +1946,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                     unsafe { OpGetSlot::metadata_ptr(md, op.metadata_id) as u64 }
                 });
                 let value = self.value_op(
-                    Op::CallOp(Helper::GetSlot.helper_ref()),
+                    Op::CallHelper(Helper::GetSlot.helper_ref()),
                     &[obj, meta],
                     Type::Any,
                     Some(frame),
@@ -1963,7 +1963,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                     unsafe { OpPutSlot::metadata_ptr(md, op.metadata_id) as u64 }
                 });
                 self.effect_op(
-                    Op::CallOp(Helper::PutSlot.helper_ref()),
+                    Op::CallHelper(Helper::PutSlot.helper_ref()),
                     &[obj, src, meta],
                     Some(frame),
                 );
@@ -2051,7 +2051,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 let vector = self.reg(rest.reg)?;
                 let skip = self.bits(SchemeValue::from_i32(op.skip.0 as i32).bits());
                 let list = self.value_op(
-                    Op::CallOp(Helper::RestList.helper_ref()),
+                    Op::CallHelper(Helper::RestList.helper_ref()),
                     &[vector, skip],
                     Type::Any,
                     Some(frame),
@@ -2163,7 +2163,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                         let from =
                             self.value_op(Op::ReturnedAddr(count), &[value], Type::Int64, None);
                         self.value_op(
-                            Op::CallOp(Helper::ValuesRest.helper_ref()),
+                            Op::CallHelper(Helper::ValuesRest.helper_ref()),
                             &[from, extra],
                             Type::Any,
                             Some(frame),
@@ -2766,7 +2766,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 let list = if wants_list {
                     let from = self.value_op(Op::ReturnedAddr(count), &[result], Type::Int64, None);
                     let list = self.value_op(
-                        Op::CallOp(Helper::ValuesRest.helper_ref()),
+                        Op::CallHelper(Helper::ValuesRest.helper_ref()),
                         &[from, extra],
                         Type::Any,
                         Some(frame),
@@ -3211,7 +3211,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         if args.len() == 2 && Primitive::from_id(prim as u16) == Some(Primitive::VariableSet) {
             let cell = self.check_class(operands[0], ClassRef::VARIABLE, frame);
             let _ = self.value_op(
-                Op::CallOp(Helper::VariableSet.helper_ref()),
+                Op::CallHelper(Helper::VariableSet.helper_ref()),
                 &[cell, operands[1]],
                 Type::Any,
                 Some(frame),
@@ -3331,13 +3331,13 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                 self.value_op(Op::AllocVector, elements, Type::Vector, None)
             }
             (P::Length, &[list]) => self.value_op(
-                Op::CallOp(Helper::Length.helper_ref()),
+                Op::CallHelper(Helper::Length.helper_ref()),
                 &[list],
                 Type::Any,
                 Some(frame),
             ),
             (P::Append, &[a, b]) => self.value_op(
-                Op::CallOp(Helper::Append.helper_ref()),
+                Op::CallHelper(Helper::Append.helper_ref()),
                 &[a, b],
                 Type::Any,
                 Some(frame),
@@ -3571,7 +3571,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
                     Some(frame),
                 );
                 self.value_op(
-                    Op::CallOp(Helper::StringSet.helper_ref()),
+                    Op::CallHelper(Helper::StringSet.helper_ref()),
                     &[string, index, value],
                     Type::Any,
                     Some(frame),

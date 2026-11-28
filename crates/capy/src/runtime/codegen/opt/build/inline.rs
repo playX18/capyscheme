@@ -1016,7 +1016,7 @@ fn taken_args<'gc>(
                 let from = push(func, Op::ReturnedAddr(fixed), &[result], Type::Int64, None);
                 push(
                     func,
-                    Op::CallOp(Helper::ValuesRest.helper_ref()),
+                    Op::CallHelper(Helper::ValuesRest.helper_ref()),
                     &[from, count],
                     Type::Any,
                     Some(frame),

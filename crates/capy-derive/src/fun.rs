@@ -230,6 +230,7 @@ impl FunctionDefinition {
             quote_spanned! {
                 self.transformed_function.span() =>
                 #[allow(unused_parens, unused_mut)]
+                #[allow(clippy::too_many_arguments, clippy::type_complexity)]
                 extern "C" fn #raw_name<'gc>(
                     ctx: MutationContext<'gc>,
                     sfp: Slot<'gc>,
@@ -321,6 +322,11 @@ in CPS with `call.tail`."
         self.transformed_function
             .attrs
             .push(syn::parse_quote!(#[doc = #leaf_doc]));
+        // The macro adds `call` to the argument list, and the Scheme arity
+        // decides the rest, so neither lint is about code the author wrote.
+        self.transformed_function.attrs.push(syn::parse_quote!(
+            #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+        ));
         let func = &self.transformed_function;
         let vis = &func.vis;
 

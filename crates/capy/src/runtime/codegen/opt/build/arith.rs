@@ -493,7 +493,7 @@ impl Builder<'_, '_> {
     fn generic_numop(&mut self, op: NumOp, lhs: Value, rhs: Value, frame: FrameState) -> Value {
         let kind = self.bits(SchemeValue::from_i32(op as i32).bits());
         self.value_op(
-            Op::CallOp(Helper::Arith.helper_ref()),
+            Op::CallHelper(Helper::Arith.helper_ref()),
             &[kind, lhs, rhs],
             Type::Any,
             Some(frame),
@@ -886,14 +886,14 @@ impl Builder<'_, '_> {
         let den_lo = self.value_op(Op::Int128Low, &[deno], Type::Int64, None);
         let den_hi = self.value_op(Op::Int128High, &[deno], Type::Int64, None);
         self.value_op(
-            Op::CallOp(Helper::ReduceRational128.helper_ref()),
+            Op::CallHelper(Helper::ReduceRational128.helper_ref()),
             &[num_lo, num_hi, den_lo, den_hi],
             Type::Any,
             Some(frame),
         )
     }
 
-    fn to_i128(&mut self, v: Value) -> Value {
+    fn extend_to_i128(&mut self, v: Value) -> Value {
         self.value_op(Op::ExtendI64To128, &[v], Type::Int128, None)
     }
 
@@ -903,7 +903,7 @@ impl Builder<'_, '_> {
 
     fn i128_zero(&mut self) -> Value {
         let zero = self.i64_const(0);
-        self.to_i128(zero)
+        self.extend_to_i128(zero)
     }
 
     fn rational_operand_wide(&mut self, v: Value, frame: FrameState) -> (Value, Value) {

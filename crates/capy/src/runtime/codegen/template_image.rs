@@ -486,8 +486,8 @@ fn generate() -> io::Result<(LoadedImage, [[HandlerKind; 256]; 3])> {
     // symbol is the map's start: constants have no end label to bind.
     masm.define_symbol("opcode_map", map, map, SymbolKind::Handler);
     let mut entries = Vec::with_capacity(MAP_ENTER_SLOT + 1);
-    for width in 0..3 {
-        for slot in 0..256 {
+    for (width, row) in handlers.iter().enumerate() {
+        for (slot, handler) in row.iter().enumerate() {
             let label = if width == 0 && slot == WIDE16_PREFIX as usize {
                 op_wide16
             } else if width == 0 && slot == WIDE32_PREFIX as usize {
@@ -495,7 +495,7 @@ fn generate() -> io::Result<(LoadedImage, [[HandlerKind; 256]; 3])> {
             } else if slot == WIDE16_PREFIX as usize || slot == WIDE32_PREFIX as usize {
                 op_invalid
             } else {
-                handlers[width][slot].unwrap_or(op_invalid)
+                handler.unwrap_or(op_invalid)
             };
             entries.push(label);
         }

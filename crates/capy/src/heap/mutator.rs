@@ -647,7 +647,7 @@ impl<'gc> Mutation<'gc> {
             let size = raw_align_up(size, alignment);
             debug_assert!(size.is_multiple_of(alignment));
             if semantics == AllocationSemantics::Default
-                && self.nd().alloc_fastpath() == AllocFastPath::TLAB
+                && self.nd().alloc_fastpath() == AllocFastPath::Tlab
             {
                 let lab = &mut *self.virtual_thread_ptr();
 
@@ -967,8 +967,10 @@ impl<'gc> Mutation<'gc> {
     /// `src` must be a live object outside the nursery whose reference
     /// fields are all initialized.
     pub unsafe fn remember_new_object(&self, src: GcObject) {
-        match self.nd().barrier() {
-            BarrierSelector::ObjectBarrier => unsafe {
+        // The other barriers either need nothing for a new object or have no
+        // generational remembered set.
+        if self.nd().barrier() == BarrierSelector::ObjectBarrier {
+            unsafe {
                 let addr = src.to_address();
                 let meta_addr = global_side_metadata_vm_base_address() + (addr >> 6);
                 let shift = (addr >> 3) & 0b111;
@@ -979,10 +981,7 @@ impl<'gc> Mutation<'gc> {
                     ObjectSlot::from_address(Address::ZERO),
                     GcObject::NULL,
                 );
-            },
-            // The other barriers either need nothing for a new object or
-            // have no generational remembered set.
-            _ => {}
+            }
         }
     }
 

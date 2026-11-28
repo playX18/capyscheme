@@ -42,7 +42,7 @@ extern "C" fn print_prim_stats() {
             ranked.push((*prim, count));
         }
     }
-    ranked.sort_by(|a, b| b.1.cmp(&a.1));
+    ranked.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
     let total: u64 = ranked.iter().map(|(_, count)| count).sum();
     log::info!(
         target: crate::heap::logging::STATS_LOG_TARGET,

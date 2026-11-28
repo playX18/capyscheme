@@ -504,7 +504,7 @@ impl<'a, 'gc> FnCx<'a, 'gc> {
 
     // ----- terms
 
-    fn to_reg(&mut self, term: TermRef<'gc>, dst: u32) {
+    fn comp_to_reg(&mut self, term: TermRef<'gc>, dst: u32) {
         self.comp(term, Dest::Reg(dst));
         self.define(dst);
     }
@@ -519,7 +519,7 @@ impl<'a, 'gc> FnCx<'a, 'gc> {
             }
         }
         let reg = self.alloc();
-        self.to_reg(term, reg);
+        self.comp_to_reg(term, reg);
         reg
     }
 
@@ -545,7 +545,7 @@ impl<'a, 'gc> FnCx<'a, 'gc> {
                     LetStyle::Let => {
                         let regs: Vec<_> = let_.lhs.iter().map(|_| self.alloc()).collect();
                         for (rhs, reg) in let_.rhs.iter().zip(regs.iter()).rev() {
-                            self.to_reg(*rhs, *reg);
+                            self.comp_to_reg(*rhs, *reg);
                         }
                         for (var, reg) in let_.lhs.iter().zip(regs) {
                             self.bind(*var, reg);
@@ -557,7 +557,7 @@ impl<'a, 'gc> FnCx<'a, 'gc> {
                     LetStyle::LetStar => {
                         for (var, rhs) in let_.lhs.iter().zip(let_.rhs.iter()) {
                             let reg = self.alloc();
-                            self.to_reg(*rhs, reg);
+                            self.comp_to_reg(*rhs, reg);
                             self.bind(*var, reg);
                             if self.home(*var).boxed {
                                 self.make_box(reg, reg);
@@ -575,7 +575,7 @@ impl<'a, 'gc> FnCx<'a, 'gc> {
                         for (var, rhs) in let_.lhs.iter().zip(let_.rhs.iter()) {
                             let inner = self.mark();
                             let tmp = self.alloc();
-                            self.to_reg(*rhs, tmp);
+                            self.comp_to_reg(*rhs, tmp);
                             let var = self.home(*var).reg;
                             self.variable_set(var, tmp);
                             self.release(inner);
@@ -725,7 +725,7 @@ impl<'a, 'gc> FnCx<'a, 'gc> {
                 let first = self.top;
                 for value in values {
                     let reg = self.alloc();
-                    self.to_reg(*value, reg);
+                    self.comp_to_reg(*value, reg);
                 }
                 for index in 0..values.len() as u32 {
                     self.mov(2 + index, first + index);
@@ -758,7 +758,7 @@ impl<'a, 'gc> FnCx<'a, 'gc> {
                     return self.raise(RaiseKind::AssertionViolation, &[]);
                 }
                 for (value, target) in values.iter().zip(targets.iter()) {
-                    self.to_reg(*value, *target);
+                    self.comp_to_reg(*value, *target);
                 }
                 if let Some(rest) = rest {
                     let extra = &values[fixed..];
@@ -769,7 +769,7 @@ impl<'a, 'gc> FnCx<'a, 'gc> {
                         let first = self.top;
                         for value in extra {
                             let reg = self.alloc();
-                            self.to_reg(*value, reg);
+                            self.comp_to_reg(*value, reg);
                         }
                         self.call_prim_n(rest, Primitive::List, first, extra.len() as u32);
                         self.release(mark);
@@ -824,10 +824,10 @@ impl<'a, 'gc> FnCx<'a, 'gc> {
         let mark = self.mark();
         if matches!(dest, Dest::Tail) {
             let callee_reg = self.alloc();
-            self.to_reg(callee, callee_reg);
+            self.comp_to_reg(callee, callee_reg);
             for arg in args {
                 let reg = self.alloc();
-                self.to_reg(*arg, reg);
+                self.comp_to_reg(*arg, reg);
             }
             self.note_source(src);
             self.mov(1, callee_reg);
@@ -845,10 +845,10 @@ impl<'a, 'gc> FnCx<'a, 'gc> {
         let reserved = self.alloc();
         let base = self.alloc();
         let callee_reg = self.alloc();
-        self.to_reg(callee, callee_reg);
+        self.comp_to_reg(callee, callee_reg);
         for arg in args {
             let reg = self.alloc();
-            self.to_reg(*arg, reg);
+            self.comp_to_reg(*arg, reg);
         }
         let mask = self.mask_ref(reserved);
         self.touch(base + 2 + argc);
@@ -1354,7 +1354,7 @@ impl<'a, 'gc> FnCx<'a, 'gc> {
             let first = self.top;
             for arg in args {
                 let reg = self.alloc();
-                self.to_reg(*arg, reg);
+                self.comp_to_reg(*arg, reg);
             }
             self.call_prim_n(dst, prim, first, args.len() as u32);
         }

@@ -147,7 +147,7 @@ impl<'gc> SniEnv<'gc> {
 /// `env` must be a live pointer from `scm_enter` / attach.
 pub(crate) unsafe fn env_mut<'gc>(env: *mut SniEnv<'static>) -> &'gc mut SniEnv<'gc> {
     // SAFETY: caller guarantees live env for current enter.
-    unsafe { &mut *(env as *mut SniEnv<'gc>) }
+    unsafe { &mut *env.cast::<SniEnv<'gc>>() }
 }
 
 /// # Safety

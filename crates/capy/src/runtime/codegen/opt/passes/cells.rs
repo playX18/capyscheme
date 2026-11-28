@@ -310,7 +310,7 @@ fn reentrant_write(func: &Func, live: &SecondaryMap<Block, bool>, uses: &Uses) -
             !mine.contains(inst)
                 && matches!(
                     func.insts[**inst].op,
-                    Op::CallKnown(..) | Op::CallGeneric(_) | Op::CallOp(_)
+                    Op::CallKnown(..) | Op::CallGeneric(_) | Op::CallHelper(_)
                 )
         })
         .map(|(_, p)| *p)
@@ -562,7 +562,7 @@ fn classify(
                         uses.stores.push(inst);
                         uses.store_values.insert(inst, args[1]);
                     }
-                    (0, Op::CallOp(helper))
+                    (0, Op::CallHelper(helper))
                         if helper == Helper::VariableSet.helper_ref() && args.len() == 2 =>
                     {
                         if inst_data.result.is_some_and(|r| used.contains(&r)) {
@@ -575,7 +575,7 @@ fn classify(
                     (1, Op::StoreCell) => {
                         escape!(format!("cell stored as itself in {inst}"))
                     }
-                    (1, Op::CallOp(helper)) if helper == Helper::VariableSet.helper_ref() => {
+                    (1, Op::CallHelper(helper)) if helper == Helper::VariableSet.helper_ref() => {
                         escape!(format!("cell stored as itself in {inst}"))
                     }
                     _ => escape!(format!(

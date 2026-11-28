@@ -24,10 +24,11 @@
 //!    parent. Every allocation obeys the Tier 2 non-collecting slow-path
 //!    contract, so no collection runs while the rebuild holds its values in
 //!    plain Rust locals, and nothing needs rooting.
-//! 2b. A return into a multiple-value entry: the callee's values sit above the
-//!    optimized frame's spill slots and baseline reads them at `r[base + 2..]`.
-//!    They are read before any frame is written, since an inlined frame may
-//!    cover them.
+//!
+//!    For a return into a multiple-value entry, the callee's values sit above
+//!    the optimized frame's spill slots and baseline reads them at
+//!    `r[base + 2..]`. They are read before any frame is written, since an
+//!    inlined frame may cover them.
 //! 3. Write the frames in place. Frame 0 is the optimized frame itself: the
 //!    closure goes to slot 1, the live registers to their bytecode slots, and
 //!    every other register to `undefined`, so no raw spill bits survive. Slot 0,
@@ -93,6 +94,9 @@ pub(crate) unsafe extern "C" fn capy_opt_deopt(
 /// # Safety
 ///
 /// Same as [`capy_opt_deopt`].
+// `'gc` is not in the signature: it names the lifetime of the values this
+// function boxes, which live only for the call.
+#[allow(clippy::extra_unused_lifetimes)]
 unsafe fn deoptimize<'gc>(
     th: *const (),
     exit: usize,

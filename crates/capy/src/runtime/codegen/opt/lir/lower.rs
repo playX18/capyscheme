@@ -1641,7 +1641,7 @@ impl<'a> Lowerer<'a> {
             }
             Op::CallKnown(code, values) => self.emit_call(inst, CallTarget::Known(code), values)?,
             Op::CallGeneric(values) => self.emit_call(inst, CallTarget::Generic, values)?,
-            Op::CallOp(helper) => {
+            Op::CallHelper(helper) => {
                 self.emit_call(inst, CallTarget::Helper(helper), ReturnValues::Ignore)?
             }
             Op::CallPrim { prim, .. } => {

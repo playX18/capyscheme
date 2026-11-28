@@ -873,7 +873,7 @@ impl Thread {
             _ => AllocationSemantics::NonMoving,
         };
         native_data.alloc_fastpath = match selector {
-            AllocatorSelector::BumpPointer(_) | AllocatorSelector::Immix(_) => AllocFastPath::TLAB,
+            AllocatorSelector::BumpPointer(_) | AllocatorSelector::Immix(_) => AllocFastPath::Tlab,
             _ => AllocFastPath::None,
         };
 
@@ -991,7 +991,7 @@ unsafe impl Sync for Thread {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(C)]
 pub enum AllocFastPath {
-    TLAB,
+    Tlab,
     None,
 }
 

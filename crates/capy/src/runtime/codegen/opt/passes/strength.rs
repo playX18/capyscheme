@@ -721,14 +721,13 @@ fn plan_induction(func: &Func, lp: &Loop) -> Option<Induction> {
         .insts
         .iter()
         .find_map(|&inst| func.insts[inst].frame);
-    for index in 0..params.len() {
+    for (index, &param) in params.iter().enumerate() {
         let Some(step) = induction_step(func, lp, header, index) else {
             continue;
         };
         if step.delta == 0 {
             continue;
         }
-        let param = params[index];
         let counter_type = func.value_type(param);
         if counter_type != Type::Int64 && counter_type != Type::Any {
             continue;

@@ -164,18 +164,17 @@ pub(super) fn counter(func: &Func, lp: &Loop) -> Option<Counter> {
     }
     let params = func.params(header);
     let mut chosen = None;
-    for index in 0..params.len() {
+    for (index, &param) in params.iter().enumerate() {
         let Some(step) = induction_step(func, lp, header, index) else {
             continue;
         };
         if step.delta != 1 && step.delta != -1 {
             continue;
         }
-        let candidate = if canon(func, args[0]) == params[index]
-            && func.value_type(args[0]) == Type::Int64
+        let candidate = if canon(func, args[0]) == param && func.value_type(args[0]) == Type::Int64
         {
             Some((true, args[0], args[1]))
-        } else if canon(func, args[1]) == params[index] && func.value_type(args[1]) == Type::Int64 {
+        } else if canon(func, args[1]) == param && func.value_type(args[1]) == Type::Int64 {
             Some((false, args[1], args[0]))
         } else {
             None
@@ -186,7 +185,7 @@ pub(super) fn counter(func: &Func, lp: &Loop) -> Option<Counter> {
         if !bound_invariant(func, lp, &inst_block, bound) {
             continue;
         }
-        chosen = Some((counter_is_lhs, raw, bound, step.delta, params[index]));
+        chosen = Some((counter_is_lhs, raw, bound, step.delta, param));
         break;
     }
     let (counter_is_lhs, raw, bound, step, param) = chosen?;

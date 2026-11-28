@@ -20,9 +20,12 @@ const KILLED: c_int = 2;
 const CAPY_THREAD_READABLE: c_int = 1;
 const CAPY_THREAD_WRITABLE: c_int = 2;
 
+/// A collector binding with no root of its own.
+type AttachedMutator = Mutator<crate::Rootable!(())>;
+
 thread_local! {
     /// The collector binding made by `capy_sched_attach` on this thread.
-    static ATTACHED: RefCell<Option<Mutator<crate::Rootable!(())>>> = const { RefCell::new(None) };
+    static ATTACHED: RefCell<Option<AttachedMutator>> = const { RefCell::new(None) };
 }
 
 /// Run `f`, mapping a panic to `fallback`. A kill payload also maps to

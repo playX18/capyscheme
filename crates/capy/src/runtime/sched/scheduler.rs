@@ -1313,7 +1313,7 @@ impl SchedContext {
         // SAFETY: the thread is running again on its worker, which is
         // bound to this thread, and is in native state (see `park`).
         let mc = unsafe {
-            std::mem::transmute::<_, crate::heap::mutator::Mutation<'gc>>(
+            std::mem::transmute::<crate::heap::Mutation<'_>, crate::heap::mutator::Mutation<'gc>>(
                 crate::heap::Mutation::new(),
             )
         };

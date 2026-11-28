@@ -270,7 +270,7 @@ impl<'gc> SlotDescriptor<'gc> {
 
     /// The direct slot as a spec, so its class can be redefined with the
     /// same declaration. `name` is the slot's name (it must outlive the spec).
-    pub(crate) fn to_spec<'a>(&self, name: &'a str) -> SlotSpec<'a, 'gc> {
+    pub(crate) fn to_spec<'a>(self, name: &'a str) -> SlotSpec<'a, 'gc> {
         SlotSpec {
             name,
             init_value: self.init_value,

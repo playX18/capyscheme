@@ -617,6 +617,15 @@ define_flags! {
     opt_regalloc: Text, "CAPY_OPT_REGALLOC", Some("--opt-regalloc"), "greedy", "jit",
         "Register allocator for Tier 2 JIT. Available options: LSRA and Greedy. Greedy by default.";
 
+    greedy_region: Bool, "CAPY_GREEDY_REGION", None, "1", "jit",
+        "Greedy register allocator: split a live range by region before spilling it. On by default.";
+
+    greedy_loops: Bool, "CAPY_GREEDY_LOOPS", None, "0", "jit",
+        "Greedy register allocator: split a live range around loops before spilling it. Off by default.";
+
+    stats_per: Bool, "CAPY_STATS_PER", None, "0", "jit",
+        "Print one `PER` line of register-allocation statistics per Tier 2 compile to stderr (with `CAPY_JIT_STATS`).";
+
     opt_evict: Bool, "CAPY_OPT_EVICT", None, "0", "jit",
         "Optimizing tier: let linear scan evict a cheaper active piece when no register is free, instead of spilling the incoming one. Experimental: it costs more moves than it saves.";
 

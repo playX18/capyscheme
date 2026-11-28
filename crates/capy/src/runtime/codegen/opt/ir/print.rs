@@ -253,7 +253,7 @@ impl Display for Op {
             Op::Remat(kind) => write!(f, "remat {kind}"),
             Op::CallKnown(code, values) => write!(f, "call.known {code} {values}"),
             Op::CallGeneric(values) => write!(f, "call.generic {values}"),
-            Op::CallOp(helper) => write!(f, "call.op {helper}"),
+            Op::CallHelper(helper) => write!(f, "call.op {helper}"),
             Op::CallPrim { prim, .. } => write!(f, "call.prim {prim}"),
             Op::Safepoint => write!(f, "safepoint"),
         }

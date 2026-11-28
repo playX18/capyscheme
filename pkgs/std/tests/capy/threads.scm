@@ -1,5 +1,6 @@
 (import (rnrs)
         (srfi 64)
+        (only (capy) microsecond)
         (capy concurrency)
         (capy threads))
 
@@ -23,7 +24,7 @@
             [else (loop (+ i 1))]))))
 
 (define (wait-for pred)
-  (let loop ([n 200])
+  (let loop ([n 2000])
     (cond [(pred) #t]
           [(zero? n) #f]
           [else (sleep 0.01) (loop (- n 1))])))
@@ -122,7 +123,8 @@
 
 (test-assert "thread-backtrace reads the stack of a blocked thread"
   (let* ([t (go (lambda () (sleep 30)))])
-    (sleep 0.1)
+    (let ([id (started-id t)])
+      (wait-for (lambda () (let ([i (find-info id)]) (and i (eq? 'sleep (thread-info-wait i)))))))
     (let ([frames (thread-backtrace t 2.0)])
       (thread-cancel! t)
       (and frames (pair? frames) (vector? (car frames))))))
@@ -134,7 +136,7 @@
   #f)
 
 (test-assert "a trace records a span per thread state as Chrome trace JSON"
-  (let ([path "/tmp/capy-thread-trace-test.json"])
+  (let ([path (string-append "/tmp/capy-thread-trace-test-" (number->string (microsecond)) ".json")])
     (call-with-thread-trace path 0.002
       (lambda ()
         (let ([t (go (lambda () (set-thread-name! "napper \"x\"") (sleep 0.05)))])

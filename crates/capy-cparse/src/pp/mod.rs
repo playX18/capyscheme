@@ -778,12 +778,8 @@ impl Frame {
 
     /// Something other than the guard wrapper is present at file scope.
     fn note_other(&mut self) {
-        if self.conds.is_empty() {
-            if self.guard.is_some() && self.guard_closed {
-                self.other_seen = true;
-            } else if self.guard.is_none() {
-                self.other_seen = true;
-            }
+        if self.conds.is_empty() && (self.guard.is_none() || self.guard_closed) {
+            self.other_seen = true;
         }
     }
 

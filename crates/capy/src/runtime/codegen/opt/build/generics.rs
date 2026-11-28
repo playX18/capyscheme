@@ -209,7 +209,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             let argc_raw = self.bits(argc as u64);
             let arg1 = *args.get(1).unwrap_or(&args[0]);
             let body = self.value_op(
-                Op::CallOp(Helper::GenericMethod.helper_ref()),
+                Op::CallHelper(Helper::GenericMethod.helper_ref()),
                 &[generic_value, args[0], arg1, argc_raw],
                 Type::Closure(None),
                 Some(frame),
@@ -628,7 +628,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         self.cur = many_block;
         let list_frame = self.frame(next, next)?;
         let list = self.value_op(
-            Op::CallOp(Helper::ValuesRest.helper_ref()),
+            Op::CallHelper(Helper::ValuesRest.helper_ref()),
             &[addr, count],
             Type::Any,
             Some(list_frame),
@@ -998,7 +998,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
         let helper = |this: &mut Self, args: &[IrValue]| {
             if argc == 1 {
                 this.value_op(
-                    Op::CallOp(Helper::GenericSlotGet.helper_ref()),
+                    Op::CallHelper(Helper::GenericSlotGet.helper_ref()),
                     &[generic_value, args[0]],
                     Type::Any,
                     Some(frame),
@@ -1006,7 +1006,7 @@ impl<'s, 'gc> Builder<'s, 'gc> {
             } else {
                 // Writer.
                 this.value_op(
-                    Op::CallOp(Helper::GenericSlotPut.helper_ref()),
+                    Op::CallHelper(Helper::GenericSlotPut.helper_ref()),
                     &[generic_value, args[0], args[1]],
                     Type::Any,
                     Some(frame),
